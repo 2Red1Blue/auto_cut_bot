@@ -1,3 +1,5 @@
+import type { PipelineJob, PipelineTriggerRequest, PipelineTriggerResponse, MediaAsset, MediaFolder, MediaLibrary } from "./types/pipeline";
+
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8765";
 
 interface RequestOptions {
