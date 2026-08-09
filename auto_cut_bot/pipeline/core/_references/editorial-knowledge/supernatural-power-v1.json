@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "case_id": "supernatural-power-v1",
+  "genre_profile": "supernatural_power",
+  "purpose": "玄幻/奇幻身份、规则与能力成长的可迁移正反例",
+  "transferable_contract": {
+    "primary_thread": "身份/规则/能力成长",
+    "integrated_support_thread": false,
+    "support_roles": ["感情", "族群冲突", "阵营选择"],
+    "ending_rule": "停在规则揭示、能力觉醒或下一次试炼之前"
+  },
+  "positive_templates": [
+    "先让观众理解非人身份、能力规则和当前限制",
+    "能力成长必须有训练、代价或关系助力的原片证据",
+    "能力高潮后停在新的规则风险或试炼，不接完整后续弧"
+  ],
+  "approved_story_sequence": ["身份规则", "限制与代价", "能力/关系推进", "觉醒或试炼悬念"],
+  "required_bridge_beats": ["能力结果前的规则、代价和关系助力不能被无理由删除"],
+  "approved_cut": "按身份规则与能力因果组织素材，感情作为有证据的支撑线",
+  "negative_examples": [
+    {"id": "power-ruleless-battle", "expected_status": "blocked", "violations": ["未交代规则就直接进入战斗"]},
+    {"id": "power-late-trial", "expected_status": "blocked", "violations": ["为凑时长接入后续完整试炼"]},
+    {"id": "power-romance-erasure", "expected_status": "blocked", "violations": ["删除关键感情助力导致能力结果无因果"]}
+  ],
+  "regression_assertions": ["rule_context_requires_evidence", "integrated_support_state_change_must_remain", "future_arc_injection_forbidden"]
+}

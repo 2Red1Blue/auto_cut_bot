@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agent.runner_helpers import make_run_spec
-from nanobot.agent.hook import CompositeHook
-from nanobot.agent.hooks import FileEditActivityHook
-from nanobot.agent.progress_hook import AgentProgressHook
-from nanobot.agent.runner import AgentRunner
-from nanobot.agent.tools.filesystem import EditFileTool, WriteFileTool
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from auto_cut_bot.agent.hook import CompositeHook
+from auto_cut_bot.agent.hooks import FileEditActivityHook
+from auto_cut_bot.agent.progress_hook import AgentProgressHook
+from auto_cut_bot.agent.runner import AgentRunner
+from auto_cut_bot.agent.tools.filesystem import EditFileTool, WriteFileTool
+from auto_cut_bot.config.schema import AgentDefaults
+from auto_cut_bot.providers.base import LLMResponse, ToolCallRequest
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -101,7 +101,7 @@ async def test_runner_routes_hosted_tool_events_to_structured_progress():
             "phase": "start",
             "call_id": "x-search-1",
             "name": "x_search",
-            "arguments": {"query": "nanobot oauth"},
+            "arguments": {"query": "auto_cut_bot oauth"},
             "result": None,
         })
         await on_tool_call_delta({
@@ -109,7 +109,7 @@ async def test_runner_routes_hosted_tool_events_to_structured_progress():
             "phase": "end",
             "call_id": "x-search-1",
             "name": "x_search",
-            "arguments": {"query": "nanobot oauth"},
+            "arguments": {"query": "auto_cut_bot oauth"},
             "result": {"name": "x_semantic_search"},
         })
         await on_content_delta("done")
@@ -148,7 +148,7 @@ async def test_runner_routes_hosted_tool_events_to_structured_progress():
             "phase": "start",
             "call_id": "x-search-1",
             "name": "x_search",
-            "arguments": {"query": "nanobot oauth"},
+            "arguments": {"query": "auto_cut_bot oauth"},
             "result": None,
             "error": None,
             "files": [],
@@ -159,14 +159,14 @@ async def test_runner_routes_hosted_tool_events_to_structured_progress():
             "phase": "end",
             "call_id": "x-search-1",
             "name": "x_search",
-            "arguments": {"query": "nanobot oauth"},
+            "arguments": {"query": "auto_cut_bot oauth"},
             "result": {"name": "x_semantic_search"},
             "error": None,
             "files": [],
             "embeds": [],
         },
     ]
-    assert progress_text == ['search X "nanobot oauth"', "", "done"]
+    assert progress_text == ['search X "auto_cut_bot oauth"', "", "done"]
     provider.chat_with_retry.assert_not_awaited()
 
 
@@ -181,7 +181,7 @@ async def test_runner_fails_pending_hosted_tool_when_model_request_fails():
             "phase": "start",
             "call_id": "x-search-failed",
             "name": "x_search",
-            "arguments": {"query": "nanobot oauth"},
+            "arguments": {"query": "auto_cut_bot oauth"},
             "result": None,
         })
         return LLMResponse(
@@ -221,7 +221,7 @@ async def test_runner_fails_pending_hosted_tool_when_model_request_fails():
         "phase": "error",
         "call_id": "x-search-failed",
         "name": "x_search",
-        "arguments": {"query": "nanobot oauth"},
+        "arguments": {"query": "auto_cut_bot oauth"},
         "result": None,
         "error": "hosted search backend failed",
         "files": [],

@@ -1,0 +1,15 @@
+{
+  "description": "Sử dụng auto_cut_bot từ không gian làm việc trên trình duyệt cục bộ.",
+  "requirements": "Gateway cục bộ và token WebSocket",
+  "setup": {
+    "docsLabel": "Mở hướng dẫn WebSocket",
+    "officialLabel": "Mở WebUI cục bộ",
+    "tryIt": "Mở WebUI và gửi một tin nhắn ngắn.",
+    "summary": "Không gian làm việc trên trình duyệt cần WebSocket, được chuẩn bị bởi lệnh auto_cut_bot webui.",
+    "steps": [
+      "Khởi động auto_cut_bot bằng lệnh webui.",
+      "Mở URL cục bộ hiển thị trong terminal.",
+      "Giữ WebSocket bật khi sử dụng không gian làm việc trên trình duyệt."
+    ]
+  }
+}

@@ -523,7 +523,7 @@ describe("webui API helpers", () => {
       }),
     ).rejects.toMatchObject({
       status: 200,
-      message: "Gateway returned WebUI HTML instead of JSON. Restart nanobot gateway and try again.",
+      message: "Gateway returned WebUI HTML instead of JSON. Restart auto_cut_bot gateway and try again.",
     });
   });
 
@@ -802,7 +802,7 @@ describe("webui API helpers", () => {
     );
   });
 
-  it("reads and toggles nanobot optional features", async () => {
+  it("reads and toggles auto_cut_bot optional features", async () => {
     vi.mocked(fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -813,7 +813,7 @@ describe("webui API helpers", () => {
 
     await expect(fetchNanobotFeatures("tok")).resolves.toMatchObject({ features: [] });
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/nanobot-features",
+      "/api/settings/auto_cut_bot-features",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
@@ -821,7 +821,7 @@ describe("webui API helpers", () => {
 
     await enableNanobotFeature("tok", "matrix");
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/nanobot-features/enable?name=matrix",
+      "/api/settings/auto_cut_bot-features/enable?name=matrix",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
@@ -829,7 +829,7 @@ describe("webui API helpers", () => {
 
     await disableNanobotFeature("tok", "matrix");
     expect(fetch).toHaveBeenCalledWith(
-      "/api/settings/nanobot-features/disable?name=matrix",
+      "/api/settings/auto_cut_bot-features/disable?name=matrix",
       expect.objectContaining({
         headers: { Authorization: "Bearer tok" },
       }),
@@ -966,7 +966,7 @@ describe("webui API helpers", () => {
       archived_keys: ["websocket:old"],
       session_order: ["websocket:chat-1", "websocket:old"],
       title_overrides: { "websocket:chat-1": "Release" },
-      project_name_overrides: { "/Users/me/nanobot": "Core" },
+      project_name_overrides: { "/Users/me/auto_cut_bot": "Core" },
       tags_by_key: {},
       collapsed_groups: {},
       view: {
@@ -1002,7 +1002,7 @@ describe("webui API helpers", () => {
     expect(JSON.parse(encodedState ?? "{}")).toMatchObject({
       pinned_keys: ["websocket:chat-1"],
       title_overrides: { "websocket:chat-1": "Release" },
-      project_name_overrides: { "/Users/me/nanobot": "Core" },
+      project_name_overrides: { "/Users/me/auto_cut_bot": "Core" },
     });
   });
 
@@ -1078,7 +1078,7 @@ describe("webui API helpers", () => {
           },
           {
             command: "/restart",
-            title: "Restart nanobot",
+            title: "Restart auto_cut_bot",
             description: "Restart the bot process.",
             icon: "rotate-cw",
             lifecycle: "side_channel",
@@ -1115,7 +1115,7 @@ describe("webui API helpers", () => {
       },
       {
         command: "/restart",
-        title: "Restart nanobot",
+        title: "Restart auto_cut_bot",
         description: "Restart the bot process.",
         icon: "rotate-cw",
         argHint: "",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.outbound_events import (
+from auto_cut_bot.bus.events import OutboundMessage
+from auto_cut_bot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
     ProgressEvent,

@@ -17,7 +17,7 @@ describe("gzipWebuiAssets", () => {
     expect(plugin.generateBundle).toBeUndefined();
     expect(plugin.writeBundle).toBeTypeOf("function");
 
-    const outputDir = mkdtempSync(path.join(tmpdir(), "nanobot-vite-gzip-"));
+    const outputDir = mkdtempSync(path.join(tmpdir(), "auto_cut_bot-vite-gzip-"));
     try {
       const assetPath = path.join(outputDir, "assets", "index-final.js");
       mkdirSync(path.dirname(assetPath), { recursive: true });

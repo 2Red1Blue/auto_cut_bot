@@ -1,4 +1,4 @@
-from nanobot.utils.helpers import (
+from auto_cut_bot.utils.helpers import (
     extract_reasoning,
     extract_think,
     strip_reasoning_tags,

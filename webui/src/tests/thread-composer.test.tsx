@@ -179,7 +179,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
-  Reflect.deleteProperty(window, "nanobotHost");
+  Reflect.deleteProperty(window, "auto_cut_botHost");
   if (ORIGINAL_MEDIA_DEVICES) {
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
@@ -1012,7 +1012,7 @@ describe("ThreadComposer", () => {
     const user = userEvent.setup();
     const onWorkspaceScopeChange = vi.fn();
     const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
+      project_path: "/Users/test/.auto_cut_bot/workspace",
       project_name: "workspace",
       access_mode: "restricted" as const,
       restrict_to_workspace: true,
@@ -1072,7 +1072,7 @@ describe("ThreadComposer", () => {
 
   it("slides project controls closed without offering a compact replacement", () => {
     const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
+      project_path: "/Users/test/.auto_cut_bot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,
@@ -1123,12 +1123,12 @@ describe("ThreadComposer", () => {
     const onWorkspaceScopeChange = vi.fn();
     const pickFolder = vi.fn().mockResolvedValue("/Users/test/native-project");
     const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
+      project_path: "/Users/test/.auto_cut_bot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,
     };
-    Object.defineProperty(window, "nanobotHost", {
+    Object.defineProperty(window, "auto_cut_botHost", {
       configurable: true,
       value: {
         getRuntimeInfo: vi.fn(),
@@ -1166,7 +1166,7 @@ describe("ThreadComposer", () => {
   it("uses the web path menu when no native host picker is available", async () => {
     const user = userEvent.setup();
     const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
+      project_path: "/Users/test/.auto_cut_bot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,
@@ -1385,11 +1385,11 @@ describe("ThreadComposer", () => {
 
     expect(onStop).toHaveBeenCalledTimes(1);
     expect(input).toHaveValue("");
-    expect(window.localStorage.getItem("nanobot.webui.slashCommandRecents")).toBeNull();
+    expect(window.localStorage.getItem("auto_cut_bot.webui.slashCommandRecents")).toBeNull();
   });
 
   it("orders recent slash commands first for the blank slash menu", () => {
-    window.localStorage.setItem("nanobot.webui.slashCommandRecents", JSON.stringify(["/history"]));
+    window.localStorage.setItem("auto_cut_bot.webui.slashCommandRecents", JSON.stringify(["/history"]));
     render(
       <ThreadComposer
         onSend={vi.fn()}
@@ -2956,7 +2956,7 @@ describe("ThreadComposer", () => {
     expect(await screen.findByText("do not persist this")).toBeInTheDocument();
     expect(
       window.localStorage.getItem(
-        "nanobot.webui.composerQueuedGuidance.v1:temporary-private",
+        "auto_cut_bot.webui.composerQueuedGuidance.v1:temporary-private",
       ),
     ).toBeNull();
 
@@ -2976,7 +2976,7 @@ describe("ThreadComposer", () => {
     });
     expect(
       window.localStorage.getItem(
-        "nanobot.webui.composerQueuedGuidance.v1:temporary-private",
+        "auto_cut_bot.webui.composerQueuedGuidance.v1:temporary-private",
       ),
     ).toBeNull();
   });

@@ -7,8 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Package = "nanobot-ai"
-$MainSource = "https://github.com/HKUDS/nanobot/archive/refs/heads/main.zip"
+$Package = "auto-cut-bot-ai"
+$MainSource = "https://github.com/HKUDS/auto_cut_bot/archive/refs/heads/main.zip"
 $InstallTarget = $Package
 $InstallSource = "PyPI"
 $script:NanobotRunner = $null
@@ -26,21 +26,21 @@ function Fail {
 }
 
 function Show-InstallFailureHint {
-    [Console]::Error.WriteLine("Error: could not install nanobot from $InstallSource.")
+    [Console]::Error.WriteLine("Error: could not install auto_cut_bot from $InstallSource.")
     [Console]::Error.WriteLine("If pip mentioned externally-managed-environment, use uv, pipx, or a virtual environment instead of system pip.")
     [Console]::Error.WriteLine("You can also run manually:")
     [Console]::Error.WriteLine("  uv tool install --force --upgrade $InstallTarget")
-    [Console]::Error.WriteLine("  $Python -m venv `$HOME\.nanobot\venv")
-    [Console]::Error.WriteLine("  `$HOME\.nanobot\venv\Scripts\python.exe -m pip install --upgrade $InstallTarget")
+    [Console]::Error.WriteLine("  $Python -m venv `$HOME\.auto_cut_bot\venv")
+    [Console]::Error.WriteLine("  `$HOME\.auto_cut_bot\venv\Scripts\python.exe -m pip install --upgrade $InstallTarget")
     [Console]::Error.WriteLine("Then start setup with:")
-    [Console]::Error.WriteLine("  nanobot onboard --wizard")
-    throw "could not install nanobot from $InstallSource"
+    [Console]::Error.WriteLine("  auto_cut_bot onboard --wizard")
+    throw "could not install auto_cut_bot from $InstallSource"
 }
 
 function Show-Usage {
     Write-Host "Usage: install.ps1 [-Dev|--dev] [-DryRun|--dry-run]"
     Write-Host ""
-    Write-Host "By default this installs or upgrades nanobot-ai from PyPI."
+    Write-Host "By default this installs or upgrades auto-cut-bot-ai from PyPI."
     Write-Host "Use --dev to install from the current main branch on GitHub."
     Write-Host "Use --dry-run to print what would happen without installing or starting setup."
 }
@@ -110,26 +110,26 @@ function Invoke-Nanobot {
 
     switch ($script:NanobotRunner) {
         "uv" {
-            & uv tool run --from $InstallTarget nanobot @NanobotArgs
+            & uv tool run --from $InstallTarget auto_cut_bot @NanobotArgs
         }
         "pipx" {
-            & pipx run --spec $InstallTarget nanobot @NanobotArgs
+            & pipx run --spec $InstallTarget auto_cut_bot @NanobotArgs
         }
         "python" {
-            & $script:NanobotPython -m nanobot @NanobotArgs
+            & $script:NanobotPython -m auto_cut_bot @NanobotArgs
         }
         default {
-            Fail "nanobot was installed, but no runner was configured."
+            Fail "auto_cut_bot was installed, but no runner was configured."
         }
     }
 }
 
 function Get-NanobotCommand {
     switch ($script:NanobotRunner) {
-        "uv" { return "uv tool run --from $InstallTarget nanobot" }
-        "pipx" { return "pipx run --spec $InstallTarget nanobot" }
-        "python" { return "$script:NanobotPython -m nanobot" }
-        default { return "nanobot" }
+        "uv" { return "uv tool run --from $InstallTarget auto_cut_bot" }
+        "pipx" { return "pipx run --spec $InstallTarget auto_cut_bot" }
+        "python" { return "$script:NanobotPython -m auto_cut_bot" }
+        default { return "auto_cut_bot" }
     }
 }
 
@@ -138,7 +138,7 @@ function Test-FreshNanobotInstall {
     if (-not $HomeDir) {
         return $false
     }
-    return -not (Test-Path -LiteralPath (Join-Path $HomeDir ".nanobot\config.json"))
+    return -not (Test-Path -LiteralPath (Join-Path $HomeDir ".auto_cut_bot\config.json"))
 }
 
 function Test-BrowserSession {
@@ -166,7 +166,7 @@ function Install-WithActivePython {
 
 function Install-WithUv {
     $script:LastInstallSucceeded = $false
-    Write-Info "Installing or upgrading nanobot from $InstallSource with uv tool..."
+    Write-Info "Installing or upgrading auto_cut_bot from $InstallSource with uv tool..."
     & uv tool install --python $Python --force --upgrade $InstallTarget
     if ($LASTEXITCODE -ne 0) {
         return
@@ -177,7 +177,7 @@ function Install-WithUv {
 
 function Install-WithPipx {
     $script:LastInstallSucceeded = $false
-    Write-Info "Installing or upgrading nanobot from $InstallSource with pipx..."
+    Write-Info "Installing or upgrading auto_cut_bot from $InstallSource with pipx..."
     & pipx install --python $Python --force $InstallTarget
     if ($LASTEXITCODE -ne 0) {
         return
@@ -192,7 +192,7 @@ function Install-WithManagedVenv {
         Fail "HOME is not set; cannot create a managed virtual environment."
     }
 
-    $VenvDir = if ($env:NANOBOT_VENV) { $env:NANOBOT_VENV } else { Join-Path $HomeDir ".nanobot\venv" }
+    $VenvDir = if ($env:AUTO_CUT_BOT_VENV) { $env:AUTO_CUT_BOT_VENV } else { Join-Path $HomeDir ".auto_cut_bot\venv" }
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 
     if (-not (Test-Path $VenvPython)) {
@@ -208,10 +208,10 @@ function Install-WithManagedVenv {
     }
 
     if (-not (Test-Python $VenvPython)) {
-        Fail "The managed venv uses Python older than 3.11. Remove it or set NANOBOT_VENV to a new path."
+        Fail "The managed venv uses Python older than 3.11. Remove it or set AUTO_CUT_BOT_VENV to a new path."
     }
 
-    Write-Info "Installing or upgrading nanobot from $InstallSource in $VenvDir..."
+    Write-Info "Installing or upgrading auto_cut_bot from $InstallSource in $VenvDir..."
     Ensure-Pip $VenvPython
     & $VenvPython -m pip install --upgrade $InstallTarget
     if ($LASTEXITCODE -ne 0) {
@@ -254,25 +254,25 @@ $Version = & $Python --version
 Write-Info "Using Python: $Version"
 
 if ($DryRun) {
-    Write-Info "Dry run: would install or upgrade nanobot from $InstallSource."
+    Write-Info "Dry run: would install or upgrade auto_cut_bot from $InstallSource."
     if (Test-VirtualEnv $Python) {
         Write-Info "Dry run: active virtual environment detected; would run: $Python -m pip install --upgrade $InstallTarget"
-        Write-Info "Dry run: would run nanobot as: $Python -m nanobot"
+        Write-Info "Dry run: would run auto_cut_bot as: $Python -m auto_cut_bot"
     } elseif (Get-Command uv -ErrorAction SilentlyContinue) {
         Write-Info "Dry run: would run: uv tool install --python $Python --force --upgrade $InstallTarget"
-        Write-Info "Dry run: would run nanobot as: uv tool run --from $InstallTarget nanobot"
+        Write-Info "Dry run: would run auto_cut_bot as: uv tool run --from $InstallTarget auto_cut_bot"
     } elseif (Get-Command pipx -ErrorAction SilentlyContinue) {
         Write-Info "Dry run: would run: pipx install --python $Python --force $InstallTarget"
-        Write-Info "Dry run: would run nanobot as: pipx run --spec $InstallTarget nanobot"
+        Write-Info "Dry run: would run auto_cut_bot as: pipx run --spec $InstallTarget auto_cut_bot"
     } else {
         $HomeDir = if ($env:HOME) { $env:HOME } elseif ($env:USERPROFILE) { $env:USERPROFILE } else { "~" }
-        $VenvDir = if ($env:NANOBOT_VENV) { $env:NANOBOT_VENV } else { Join-Path $HomeDir ".nanobot\venv" }
+        $VenvDir = if ($env:AUTO_CUT_BOT_VENV) { $env:AUTO_CUT_BOT_VENV } else { Join-Path $HomeDir ".auto_cut_bot\venv" }
         Write-Info "Dry run: would create or reuse a dedicated virtual environment: $VenvDir"
         Write-Info "Dry run: would run: $VenvDir\Scripts\python.exe -m pip install --upgrade $InstallTarget"
-        Write-Info "Dry run: would run nanobot as: $VenvDir\Scripts\python.exe -m nanobot"
+        Write-Info "Dry run: would run auto_cut_bot as: $VenvDir\Scripts\python.exe -m auto_cut_bot"
     }
-    if ($env:NANOBOT_SKIP_WIZARD -eq "1") {
-        Write-Info "Dry run: would skip automatic setup because NANOBOT_SKIP_WIZARD=1."
+    if ($env:AUTO_CUT_BOT_SKIP_WIZARD -eq "1") {
+        Write-Info "Dry run: would skip automatic setup because AUTO_CUT_BOT_SKIP_WIZARD=1."
     } elseif ((Test-FreshNanobotInstall) -and (Test-BrowserSession)) {
         Write-Info "Dry run: would start the WebUI for this fresh desktop install."
         Write-Info "Dry run: would fall back to the setup wizard for older releases."
@@ -310,14 +310,14 @@ if (Test-VirtualEnv $Python) {
     }
 }
 
-Write-Info "Installed nanobot:"
+Write-Info "Installed auto_cut_bot:"
 Invoke-Nanobot @("--version")
 if ($LASTEXITCODE -ne 0) {
-    Fail "nanobot was installed, but the command could not be started."
+    Fail "auto_cut_bot was installed, but the command could not be started."
 }
 
-if ($env:NANOBOT_SKIP_WIZARD -eq "1") {
-    Write-Info "Skipping automatic setup because NANOBOT_SKIP_WIZARD=1."
+if ($env:AUTO_CUT_BOT_SKIP_WIZARD -eq "1") {
+    Write-Info "Skipping automatic setup because AUTO_CUT_BOT_SKIP_WIZARD=1."
     Write-Info "Run this later: $(Get-NanobotCommand) webui"
     return
 }
@@ -325,7 +325,7 @@ if ($env:NANOBOT_SKIP_WIZARD -eq "1") {
 if ((Test-FreshNanobotInstall) -and (Test-BrowserSession)) {
     Invoke-Nanobot @("webui", "--help") *> $null
     if ($LASTEXITCODE -eq 0) {
-        Write-Info "Starting nanobot WebUI..."
+        Write-Info "Starting auto_cut_bot WebUI..."
         Write-Info "Configure your first provider and model in Settings > Models."
         Write-Info "Run this later: $(Get-NanobotCommand) webui"
         Invoke-Nanobot @("webui", "--yes")
@@ -334,7 +334,7 @@ if ((Test-FreshNanobotInstall) -and (Test-BrowserSession)) {
         }
         return
     }
-    Write-Info "The installed release does not support nanobot webui yet."
+    Write-Info "The installed release does not support auto_cut_bot webui yet."
     Write-Info "Falling back to the setup wizard..."
 }
 

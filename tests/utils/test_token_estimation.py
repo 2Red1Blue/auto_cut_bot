@@ -1,7 +1,7 @@
 import json
 
-from nanobot.utils import helpers
-from nanobot.utils.helpers import (
+from auto_cut_bot.utils import helpers
+from auto_cut_bot.utils.helpers import (
     estimate_message_tokens,
     estimate_prompt_tokens,
     estimate_prompt_tokens_chain,

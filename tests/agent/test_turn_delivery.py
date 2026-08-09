@@ -2,13 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.turn_delivery import TurnDeliveryFactory
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.bus.runtime_events import RuntimeEventBus
-from nanobot.session.manager import SessionManager
-from nanobot.session.webui_turns import WebuiTurnRoutePolicy
-from nanobot.webui.metadata import (
+from auto_cut_bot.agent.turn_delivery import TurnDeliveryFactory
+from auto_cut_bot.bus.events import InboundMessage
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.bus.runtime_events import RuntimeEventBus
+from auto_cut_bot.session.manager import SessionManager
+from auto_cut_bot.session.webui_turns import WebuiTurnRoutePolicy
+from auto_cut_bot.webui.metadata import (
     WEBSOCKET_TURN_OWNER_METADATA_KEY,
     WEBUI_TURN_METADATA_KEY,
 )
@@ -50,7 +50,7 @@ def test_websocket_lifecycles_get_distinct_internal_owners(tmp_path: Path) -> No
 
 
 def test_websocket_lifecycle_reuses_registered_ingress_owner(tmp_path: Path) -> None:
-    from nanobot.session import webui_turns as wth
+    from auto_cut_bot.session import webui_turns as wth
 
     owner = wth.register_queued_websocket_turn_if_idle("chat-queued", "turn-queued")
     assert owner is not None
@@ -85,7 +85,7 @@ async def test_same_chat_different_sessions_restore_previous_active_projection(
 ) -> None:
     from unittest.mock import AsyncMock, MagicMock
 
-    from nanobot.session import webui_turns as wth
+    from auto_cut_bot.session import webui_turns as wth
 
     factory = TurnDeliveryFactory(
         MessageBus(),

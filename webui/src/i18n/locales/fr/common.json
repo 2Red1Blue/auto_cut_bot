@@ -1,13 +1,13 @@
 {
   "app": {
-    "brand": "nanobot",
+    "brand": "auto_cut_bot",
     "loading": {
-      "connecting": "Connexion à nanobot…",
-      "boot": "Chargement de nanobot…"
+      "connecting": "Connexion à auto_cut_bot…",
+      "boot": "Chargement de auto_cut_bot…"
     },
     "error": {
-      "title": "Impossible de joindre nanobot",
-      "gatewayHint": "Assurez-vous que la gateway est en cours d’exécution (`nanobot gateway`) et que cette page est ouverte sur la même machine."
+      "title": "Impossible de joindre auto_cut_bot",
+      "gatewayHint": "Assurez-vous que la gateway est en cours d’exécution (`auto_cut_bot gateway`) et que cette page est ouverte sur la même machine."
     },
     "auth": {
       "title": "Authentification requise",
@@ -23,8 +23,8 @@
     },
     "system": {
       "section": "Système",
-      "restartHint": "Redémarrez nanobot pour appliquer les changements d’exécution.",
-      "restart": "Redémarrer nanobot",
+      "restartHint": "Redémarrez auto_cut_bot pour appliquer les changements d’exécution.",
+      "restart": "Redémarrer auto_cut_bot",
       "restarting": "Redémarrage...",
       "restartEngine": "Redémarrer le moteur",
       "restartingEngine": "Redémarrage du moteur..."
@@ -33,11 +33,11 @@
       "completed": "Redémarrage terminé en {{seconds}} s."
     },
     "documentTitle": {
-      "base": "nanobot",
-      "chat": "{{title}} · nanobot"
+      "base": "auto_cut_bot",
+      "chat": "{{title}} · auto_cut_bot"
     },
     "meta": {
-      "description": "Interface web nanobot — discutez avec votre espace de travail nanobot."
+      "description": "Interface web auto_cut_bot — discutez avec votre espace de travail auto_cut_bot."
     },
     "pairing": {
       "title": "Associer un utilisateur du chat",
@@ -130,7 +130,7 @@
       "language": "Langue",
       "provider": "Fournisseur",
       "model": "Modèle",
-      "restart": "Redémarrer nanobot",
+      "restart": "Redémarrer auto_cut_bot",
       "configPath": "Chemin de config",
       "activePreset": "Préréglage actif",
       "gateway": "Passerelle",
@@ -203,7 +203,7 @@
       "selectedModelProvider": "Défini par le modèle sélectionné.",
       "selectedModelValue": "Défini par le modèle sélectionné.",
       "brandLogos": "Affiche les logos de fournisseurs tiers et CLI dans les Réglages.",
-      "cliAppsCatalog": "Installe uniquement les adaptateurs CLI d’applications que nanobot peut exécuter localement ; les applications natives restent inchangées.",
+      "cliAppsCatalog": "Installe uniquement les adaptateurs CLI d’applications que auto_cut_bot peut exécuter localement ; les applications natives restent inchangées.",
       "cliAppsFilter": "Recherchez par application, catégorie ou capacité.",
       "logs": "Ouvre le dossier des journaux du moteur natif.",
       "diagnostics": "Exporte un petit rapport d’exécution pour le support.",
@@ -252,11 +252,11 @@
       "loadError": "Impossible de charger les réglages",
       "unsaved": "Modifications non enregistrées.",
       "upToDate": "À jour.",
-      "savedRestart": "Enregistré. Redémarrez nanobot pour appliquer.",
+      "savedRestart": "Enregistré. Redémarrez auto_cut_bot pour appliquer.",
       "restartAfterSaving": "Enregistrez les changements, puis redémarrez quand vous êtes prêt.",
       "savedRestartApply": "Enregistré. Redémarrez quand vous êtes prêt.",
       "imageProviderRestart": "Changements du fournisseur d’image enregistrés. Redémarrez quand vous êtes prêt.",
-      "hostRestartAfterSaving": "En enregistrant, nanobot redémarrera son moteur.",
+      "hostRestartAfterSaving": "En enregistrant, auto_cut_bot redémarrera son moteur.",
       "hostRestartPending": "Enregistré. Le moteur redémarrera lorsqu’il sera prêt.",
       "hostApiUnavailable": "Les actions de l’hôte ne sont disponibles que dans l’app native.",
       "logsOpened": "Dossier des journaux ouvert.",
@@ -522,7 +522,7 @@
       "saveCustom": "Enregistrer MCP",
       "configImport": "Importer mcp.json",
       "importConfig": "Importer",
-      "restartRequired": "Redémarrez nanobot pour connecter les outils MCP mis à jour.",
+      "restartRequired": "Redémarrez auto_cut_bot pour connecter les outils MCP mis à jour.",
       "toolsFound": "{{count}} outils",
       "loading": "Chargement des préréglages MCP...",
       "empty": "Aucun préréglage MCP ne correspond à ce filtre.",
@@ -560,14 +560,14 @@
       "autoInstall": "Le support API sera installé automatiquement au démarrage."
     },
     "observability": {
-      "title": "Observabilité", "configured": "Les identifiants de traçage sont disponibles pour nanobot.",
-      "environment": "Définissez LANGFUSE_SECRET_KEY et LANGFUSE_PUBLIC_KEY, puis redémarrez nanobot.", "enable": "Activer le traçage"
+      "title": "Observabilité", "configured": "Les identifiants de traçage sont disponibles pour auto_cut_bot.",
+      "environment": "Définissez LANGFUSE_SECRET_KEY et LANGFUSE_PUBLIC_KEY, puis redémarrez auto_cut_bot.", "enable": "Activer le traçage"
     },
     "legal": {
       "thirdPartyBrands": "Les noms, logos et marques de produits appartiennent à leurs propriétaires respectifs. Leur utilisation sert uniquement à l'identification et n'implique aucune approbation."
     },
     "apps": {
-      "description": "Ajoutez des outils à nanobot, puis utilisez-les avec @ dans le chat.",
+      "description": "Ajoutez des outils à auto_cut_bot, puis utilisez-les avec @ dans le chat.",
       "cliLabel": "Application",
       "mcpLabel": "Intégration",
       "channelLabel": "Canal",
@@ -582,21 +582,21 @@
       "featured": "Outils",
       "loading": "Chargement des applications...",
       "empty": "Aucun outil ne correspond à cette vue.",
-      "restartRequired": "Redémarrez nanobot pour appliquer les applications et fonctions mises à jour."
+      "restartRequired": "Redémarrez auto_cut_bot pour appliquer les applications et fonctions mises à jour."
     },
     "channels": {
-      "description": "Connectez nanobot aux applications de discussion. L'installation du support ajoute seulement le paquet d'intégration ; la plupart des canaux nécessitent encore des jetons ou des réglages d'espace de travail.",
+      "description": "Connectez auto_cut_bot aux applications de discussion. L'installation du support ajoute seulement le paquet d'intégration ; la plupart des canaux nécessitent encore des jetons ou des réglages d'espace de travail.",
       "caption": "{{enabled}} activés · {{total}} canaux",
       "searchPlaceholder": "Rechercher des canaux",
       "backToChannels": "Tous les canaux",
       "catalog": "Canaux",
       "loading": "Chargement des canaux...",
       "empty": "Aucun canal ne correspond à ce filtre.",
-      "restartRequired": "Redémarrez nanobot pour appliquer le support de canal mis à jour.",
+      "restartRequired": "Redémarrez auto_cut_bot pour appliquer le support de canal mis à jour.",
       "requires": "Requiert : {{requirements}}",
       "setUp": "Configurer",
       "setupGuide": "Guide de configuration",
-      "setupSummary": "L'activation n'active que le support nanobot. Ajoutez les identifiants de la plateforme, puis redémarrez nanobot.",
+      "setupSummary": "L'activation n'active que le support auto_cut_bot. Ajoutez les identifiants de la plateforme, puis redémarrez auto_cut_bot.",
       "configKeys": "Clés de configuration",
       "enable": "Activer le canal",
       "disable": "Désactiver le canal",
@@ -651,7 +651,7 @@
         "unsupported": "Configuration manuelle"
       }
     },
-    "nanobotFeatures": {
+    "auto_cut_botFeatures": {
       "enabled": "Activé",
       "enable": "Activer",
       "disable": "Désactiver",
@@ -659,7 +659,7 @@
       "missingDependency": "Support manquant",
       "installSupport": "Installer le support",
       "installConfirmTitle": "Installer le support pour {{name}} ?",
-      "installConfirmDescription": "nanobot ajoutera ce dont {{name}} a besoin, puis l'activera. Continuer ?",
+      "installConfirmDescription": "auto_cut_bot ajoutera ce dont {{name}} a besoin, puis l'activera. Continuer ?",
       "installConfirmAction": "Installer et activer",
       "websocketRequired": "Requis pour la WebUI",
       "channelDisabled": "Canal désactivé",
@@ -684,7 +684,7 @@
       "loading": "Chargement des automatisations...",
       "noMatches": "Aucune automatisation ne correspond à cette vue.",
       "empty": "Aucune automatisation pour le moment.",
-      "emptyHint": "Créez-la depuis son point d'exécution pour que nanobot conserve le bon contexte.",
+      "emptyHint": "Créez-la depuis son point d'exécution pour que auto_cut_bot conserve le bon contexte.",
       "oneShot": "Ponctuelle",
       "systemTask": "Automatisation gérée par le système",
       "localTrigger": "Déclencheur local",
@@ -801,7 +801,7 @@
       "signedInAs": "Connecté en tant que {{account}}",
       "signInHelp": "Connectez-vous depuis cet appareil ; aucune clé API n’est enregistrée dans la configuration.",
       "remoteSignInHelp": "Sélectionnez Se connecter pour ouvrir xAI sur votre ordinateur, puis collez le code d’autorisation affiché après la connexion.",
-      "codexRemoteSignInHelp": "Connectez-vous dans ce navigateur, puis recollez dans nanobot l’URL complète de rappel localhost.",
+      "codexRemoteSignInHelp": "Connectez-vous dans ce navigateur, puis recollez dans auto_cut_bot l’URL complète de rappel localhost.",
       "signInRequired": "Connexion requise",
       "signInBeforeSaving": "Connectez-vous à ce fournisseur avant d’enregistrer le préréglage.",
       "signedIn": "Connecté",
@@ -809,9 +809,9 @@
       "proxyLabel": "Proxy réseau",
       "proxySaveBeforeSignIn": "Enregistrez les modifications du proxy avant de vous connecter.",
       "saveProxy": "Enregistrer le proxy",
-      "localCodeHelp": "Terminez la connexion dans votre navigateur. nanobot termine généralement automatiquement ; sinon, collez le code d’autorisation ci-dessous.",
+      "localCodeHelp": "Terminez la connexion dans votre navigateur. auto_cut_bot termine généralement automatiquement ; sinon, collez le code d’autorisation ci-dessous.",
       "remoteCodeHelp": "Sélectionnez Se connecter pour ouvrir xAI sur votre ordinateur. Après la connexion, collez ci-dessous le code d’autorisation affiché par xAI.",
-      "localCallbackHelp": "Terminez la connexion dans votre navigateur. nanobot termine généralement automatiquement ; sinon, copiez l’URL complète de rappel localhost depuis la barre d’adresse et collez-la ci-dessous.",
+      "localCallbackHelp": "Terminez la connexion dans votre navigateur. auto_cut_bot termine généralement automatiquement ; sinon, copiez l’URL complète de rappel localhost depuis la barre d’adresse et collez-la ci-dessous.",
       "remoteCallbackHelp": "Ouvrez ChatGPT dans ce navigateur et terminez la connexion. Lorsque la page localhost ne se charge pas, copiez l’URL complète de la barre d’adresse et collez-la ci-dessous.",
       "authorizationCode": "Code d’autorisation",
       "callbackUrl": "URL complète de rappel",
@@ -854,7 +854,7 @@
       "deleteConfirmAction": "Supprimer la compétence",
       "instructionsTitle": "Instructions de la compétence",
       "setupRequired": "Configuration requise",
-      "setupDescription": "Installez la dépendance manquante sur la machine qui exécute nanobot, puis vérifiez à nouveau.",
+      "setupDescription": "Installez la dépendance manquante sur la machine qui exécute auto_cut_bot, puis vérifiez à nouveau.",
       "copySetupCommand": "Copier la commande de configuration",
       "checkAgain": "Vérifier à nouveau",
       "marketplaceSearchFailed": "Impossible de rechercher dans les catalogues de compétences.",
@@ -1022,7 +1022,7 @@
       "imageQuickActions": {
         "icon": {
           "title": "Créer une icône d’app",
-          "prompt": "Générez une icône d’application 1:1 propre pour nanobot : robot sympathique, style vectoriel simple, palette douce bleu et blanc, sans texte."
+          "prompt": "Générez une icône d’application 1:1 propre pour auto_cut_bot : robot sympathique, style vectoriel simple, palette douce bleu et blanc, sans texte."
         },
         "sticker": {
           "title": "Créer un sticker",
@@ -1158,7 +1158,7 @@
             "description": "Annuler le tour actif de l’agent pour cette discussion."
           },
           "restart": {
-            "title": "Redémarrer nanobot",
+            "title": "Redémarrer auto_cut_bot",
             "description": "Redémarrer le processus du bot sur place."
           },
           "status": {
@@ -1343,7 +1343,7 @@
     "close": "Fermer l’aperçu du fichier",
     "loading": "Chargement de l’aperçu...",
     "failed": "Impossible de prévisualiser ce fichier.",
-    "routeMissing": "L’aperçu du fichier nécessite le dernier gateway. Redémarrez nanobot gateway puis réessayez.",
+    "routeMissing": "L’aperçu du fichier nécessite le dernier gateway. Redémarrez auto_cut_bot gateway puis réessayez.",
     "resize": "Redimensionner l’aperçu du fichier",
     "truncated": "L’aperçu est tronqué car le fichier est volumineux."
   },

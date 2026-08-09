@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nanobot.security.workspace_access import workspace_sandbox_status
+from auto_cut_bot.security.workspace_access import workspace_sandbox_status
 
 
 def test_workspace_sandbox_disabled(tmp_path: Path) -> None:
@@ -33,7 +33,7 @@ def test_workspace_sandbox_system_provider_from_compact_env(tmp_path: Path) -> N
     status = workspace_sandbox_status(
         restrict_to_workspace=True,
         workspace=tmp_path,
-        environ={"NANOBOT_SANDBOX_ENFORCED": "macos_app_sandbox"},
+        environ={"AUTO_CUT_BOT_SANDBOX_ENFORCED": "macos_app_sandbox"},
     )
 
     assert status.level == "system"
@@ -47,8 +47,8 @@ def test_workspace_sandbox_system_provider_from_boolean_env(tmp_path: Path) -> N
         restrict_to_workspace=True,
         workspace=tmp_path,
         environ={
-            "NANOBOT_WORKSPACE_SANDBOX_ENFORCED": "true",
-            "NANOBOT_WORKSPACE_SANDBOX_PROVIDER": "macOS App Sandbox",
+            "AUTO_CUT_BOT_WORKSPACE_SANDBOX_ENFORCED": "true",
+            "AUTO_CUT_BOT_WORKSPACE_SANDBOX_PROVIDER": "macOS App Sandbox",
         },
     )
 
@@ -61,7 +61,7 @@ def test_workspace_sandbox_false_env_does_not_enforce(tmp_path: Path) -> None:
     status = workspace_sandbox_status(
         restrict_to_workspace=True,
         workspace=tmp_path,
-        environ={"NANOBOT_WORKSPACE_SANDBOX_ENFORCED": "false"},
+        environ={"AUTO_CUT_BOT_WORKSPACE_SANDBOX_ENFORCED": "false"},
     )
 
     assert status.level == "application"

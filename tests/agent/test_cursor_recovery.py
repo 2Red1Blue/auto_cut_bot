@@ -8,7 +8,7 @@ history.jsonl (e.g. ``"cursor": "abc"``).  The original ``_next_cursor`` and
 
 import pytest
 
-from nanobot.agent.memory import MemoryStore
+from auto_cut_bot.agent.memory import MemoryStore
 
 
 @pytest.fixture

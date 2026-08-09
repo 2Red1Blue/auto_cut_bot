@@ -5,13 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.skills import SkillsLoader
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.command.builtin import cmd_skill, register_builtin_commands
-from nanobot.command.router import CommandContext, CommandRouter
-from nanobot.config.schema import ModelPresetConfig
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.agent.skills import SkillsLoader
+from auto_cut_bot.bus.events import InboundMessage
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.command.builtin import cmd_skill, register_builtin_commands
+from auto_cut_bot.command.router import CommandContext, CommandRouter
+from auto_cut_bot.config.schema import ModelPresetConfig
 
 
 def _provider(default_model: str = "test-model") -> MagicMock:

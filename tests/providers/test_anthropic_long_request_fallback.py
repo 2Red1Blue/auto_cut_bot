@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.providers.anthropic_provider import AnthropicProvider
-from nanobot.providers.base import LLMResponse
+from auto_cut_bot.providers.anthropic_provider import AnthropicProvider
+from auto_cut_bot.providers.base import LLMResponse
 
 _LONG_REQUEST_MESSAGE = (
     "Streaming is required for operations that may take longer than 10 minutes. "

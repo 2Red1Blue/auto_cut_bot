@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-import nanobot.webui.session_list_index as session_list_index
-from nanobot.cron.session_turns import CRON_HISTORY_META
-from nanobot.providers.base import ProviderConversationState
-from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
-from nanobot.session.automation_turns import AUTOMATION_HISTORY_META
-from nanobot.session.history_visibility import HIDDEN_HISTORY_META
-from nanobot.session.manager import SessionManager
-from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
+import auto_cut_bot.webui.session_list_index as session_list_index
+from auto_cut_bot.cron.session_turns import CRON_HISTORY_META
+from auto_cut_bot.providers.base import ProviderConversationState
+from auto_cut_bot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
+from auto_cut_bot.session.automation_turns import AUTOMATION_HISTORY_META
+from auto_cut_bot.session.history_visibility import HIDDEN_HISTORY_META
+from auto_cut_bot.session.manager import SessionManager
+from auto_cut_bot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
 
 
 def test_webui_session_list_reuses_valid_index_without_scanning_files(

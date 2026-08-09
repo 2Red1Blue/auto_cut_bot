@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot.agent.runner import AgentRunSpec
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import GenerationSettings, LLMProvider
-from nanobot.utils.llm_runtime import LLMRuntime
+from auto_cut_bot.agent.runner import AgentRunSpec
+from auto_cut_bot.config.schema import AgentDefaults
+from auto_cut_bot.providers.base import GenerationSettings, LLMProvider
+from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 
 def make_run_spec(provider: LLMProvider, **kwargs: Any) -> AgentRunSpec:

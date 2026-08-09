@@ -730,13 +730,13 @@ export function SettingsView({
     typeof window !== "undefined" && !isLoopbackHost(window.location.hostname);
   const [settings, setSettings] = useState<SettingsPayload | null>(() => initialSettings);
   const [cliApps, setCliApps] = useState<CliAppsPayload | null>(null);
-  const [nanobotFeatures, setNanobotFeatures] = useState<NanobotFeaturesPayload | null>(null);
-  const featureCatalog = nanobotFeatures?.features ?? [];
+  const [auto_cut_botFeatures, setNanobotFeatures] = useState<NanobotFeaturesPayload | null>(null);
+  const featureCatalog = auto_cut_botFeatures?.features ?? [];
   const [mcpPresets, setMcpPresets] = useState<McpPresetsPayload | null>(null);
   const [automations, setAutomations] = useState<AutomationsPayload | null>(null);
   const [loading, setLoading] = useState(() => initialSettings === null);
   const [cliAppsLoading, setCliAppsLoading] = useState(true);
-  const [nanobotFeaturesLoading, setNanobotFeaturesLoading] = useState(true);
+  const [auto_cut_botFeaturesLoading, setNanobotFeaturesLoading] = useState(true);
   const [mcpPresetsLoading, setMcpPresetsLoading] = useState(true);
   const [automationsLoading, setAutomationsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -748,8 +748,8 @@ export function SettingsView({
     useState<SettingsPayload["model_presets"][number] | null>(null);
   const modelPresetBeforeCreateRef = useRef<string | null>(null);
   const [cliAppsAction, setCliAppsAction] = useState<string | null>(null);
-  const [nanobotFeatureAction, setNanobotFeatureAction] = useState<string | null>(null);
-  const [nanobotFeatureConfirm, setNanobotFeatureConfirm] = useState<NanobotFeatureInfo | null>(null);
+  const [auto_cut_botFeatureAction, setNanobotFeatureAction] = useState<string | null>(null);
+  const [auto_cut_botFeatureConfirm, setNanobotFeatureConfirm] = useState<NanobotFeatureInfo | null>(null);
   const [mcpPresetAction, setMcpPresetAction] = useState<string | null>(null);
   const [providerSaving, setProviderSaving] = useState<string | null>(null);
   const [providerOAuthFlow, setProviderOAuthFlow] =
@@ -777,7 +777,7 @@ export function SettingsView({
   const [automationsSort, setAutomationsSort] = useState<AutomationSort>("next");
   const [cliAppsMessage, setCliAppsMessage] = useState<string | null>(null);
   const [cliAppsError, setCliAppsError] = useState<string | null>(null);
-  const [nanobotFeaturesError, setNanobotFeaturesError] = useState<string | null>(null);
+  const [auto_cut_botFeaturesError, setNanobotFeaturesError] = useState<string | null>(null);
   const [cliAppsFocusName, setCliAppsFocusName] = useState<string | null>(null);
   const [appsKindFilter, setAppsKindFilter] = useState<AppsKindFilter>("cli");
   const [mcpMessage, setMcpMessage] = useState<string | null>(null);
@@ -1542,7 +1542,7 @@ export function SettingsView({
     setNanobotFeatureAction(`enable:${names.join("+")}`);
     setNanobotFeaturesError(null);
     try {
-      let latest = nanobotFeatures;
+      let latest = auto_cut_botFeatures;
       for (const name of missing) {
         latest = await enableNanobotFeature(token, name);
         if (latest.requires_restart) {
@@ -2142,9 +2142,9 @@ export function SettingsView({
             />
             <ProvidersSettings
               settings={settings}
-              nanobotFeatures={nanobotFeatures}
-              featureAction={nanobotFeatureAction}
-              capabilityError={nanobotFeaturesError}
+              auto_cut_botFeatures={auto_cut_botFeatures}
+              featureAction={auto_cut_botFeatureAction}
+              capabilityError={auto_cut_botFeaturesError}
               expandedProvider={expandedProvider}
               providerForms={providerForms}
               visibleProviderKeys={visibleProviderKeys}
@@ -2236,21 +2236,21 @@ export function SettingsView({
             isRestarting={isRestarting || hostEngineApplying}
             requiresRestartPending={pendingRestartSections.browser}
             olostepFeature={featureCatalog.find((feature) => feature.name === "olostep")}
-            olostepInstalling={nanobotFeatureAction === "enable:olostep"}
-            capabilityError={nanobotFeaturesError}
+            olostepInstalling={auto_cut_botFeatureAction === "enable:olostep"}
+            capabilityError={auto_cut_botFeaturesError}
           />
         );
       case "channels":
         return (
           <ChannelsSettings
             token={token}
-            nanobotFeatures={nanobotFeatures}
-            loading={nanobotFeaturesLoading}
+            auto_cut_botFeatures={auto_cut_botFeatures}
+            loading={auto_cut_botFeaturesLoading}
             query={channelsQuery}
-            actionKey={nanobotFeatureAction}
+            actionKey={auto_cut_botFeatureAction}
             chatAppsDocsUrl={settings.docs?.chat_apps_url}
             showBrandLogos={localPrefs.brandLogos}
-            error={nanobotFeaturesError}
+            error={auto_cut_botFeaturesError}
             requiresRestartPending={pendingRestartSections.runtime}
             onQueryChange={setChannelsQuery}
             onAction={handleNanobotFeatureAction}
@@ -2345,9 +2345,9 @@ export function SettingsView({
             apiServiceAction={apiServiceAction}
             apiServiceError={apiServiceError}
             langfuseFeature={featureCatalog.find((feature) => feature.name === "langfuse")}
-            capabilitiesLoading={nanobotFeaturesLoading}
-            capabilityAction={nanobotFeatureAction}
-            capabilityError={nanobotFeaturesError}
+            capabilitiesLoading={auto_cut_botFeaturesLoading}
+            capabilityAction={auto_cut_botFeatureAction}
+            capabilityError={auto_cut_botFeaturesError}
             onApiServiceAction={handleApiServiceAction}
             onInstallCapability={(name) => void installCapabilities([name])}
           />
@@ -2422,8 +2422,8 @@ export function SettingsView({
       />
 
       <NanobotFeatureInstallDialog
-        feature={nanobotFeatureConfirm}
-        installing={nanobotFeatureAction === `enable:${nanobotFeatureConfirm?.name ?? ""}`}
+        feature={auto_cut_botFeatureConfirm}
+        installing={auto_cut_botFeatureAction === `enable:${auto_cut_botFeatureConfirm?.name ?? ""}`}
         onOpenChange={(open) => {
           if (!open) setNanobotFeatureConfirm(null);
         }}
@@ -2886,7 +2886,7 @@ function VersionCheckRow({ currentVersion }: { currentVersion?: string }) {
           {tx("settings.about.version", "Version")}
         </div>
         <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">
-          {currentVersion ? `v${currentVersion}` : "nanobot"}
+          {currentVersion ? `v${currentVersion}` : "auto_cut_bot"}
         </div>
       </div>
       <div className="flex shrink-0 flex-col items-end gap-2">
@@ -4279,7 +4279,7 @@ function ProviderAdvancedOptions({
 
 function ProvidersSettings({
   settings,
-  nanobotFeatures,
+  auto_cut_botFeatures,
   featureAction,
   capabilityError,
   expandedProvider,
@@ -4302,7 +4302,7 @@ function ProvidersSettings({
   isRestarting,
 }: {
   settings: SettingsPayload;
-  nanobotFeatures: NanobotFeaturesPayload | null;
+  auto_cut_botFeatures: NanobotFeaturesPayload | null;
   featureAction: string | null;
   capabilityError: string | null;
   expandedProvider: string | null;
@@ -4407,7 +4407,7 @@ function ProvidersSettings({
         ? "azure"
         : null;
     const supportFeature = supportName
-      ? (nanobotFeatures?.features ?? []).find((feature) => feature.name === supportName)
+      ? (auto_cut_botFeatures?.features ?? []).find((feature) => feature.name === supportName)
       : null;
     return (
       <div key={provider.name} className="divide-y divide-border/45">
@@ -4473,7 +4473,7 @@ function ProvidersSettings({
                         : provider.name === "openai_codex" && remoteBrowserAccess
                           ? tx(
                               "settings.oauth.codexRemoteSignInHelp",
-                              "Sign in through this browser, then paste the full localhost callback URL back into nanobot.",
+                              "Sign in through this browser, then paste the full localhost callback URL back into auto_cut_bot.",
                             )
                           : provider.name === "xai_grok" && remoteBrowserAccess
                           ? tx(
@@ -5677,7 +5677,7 @@ function AutomationsSettings({
             <div className="mx-auto mt-2 max-w-[28rem] text-[12px] leading-5">
               {tx(
                 "settings.automations.emptyHint",
-                "Create one from where it should run so nanobot keeps the right context.",
+                "Create one from where it should run so auto_cut_bot keeps the right context.",
               )}
             </div>
           ) : null}
@@ -6394,12 +6394,12 @@ function NanobotFeatureInstallDialog({
       >
         <DialogHeader className="items-center space-y-0 text-center">
           <DialogTitle className="text-center text-[20px] font-semibold leading-tight tracking-[-0.02em] text-foreground">
-            {tx("settings.nanobotFeatures.installConfirmTitle", "Install support for {{name}}?", { name })}
+            {tx("settings.auto_cut_botFeatures.installConfirmTitle", "Install support for {{name}}?", { name })}
           </DialogTitle>
           <DialogDescription className="mt-3 max-w-[20rem] text-center text-[14px] leading-6 text-muted-foreground">
             {tx(
-              "settings.nanobotFeatures.installConfirmDescription",
-              "nanobot will add what {{name}} needs, then turn it on. Continue?",
+              "settings.auto_cut_botFeatures.installConfirmDescription",
+              "auto_cut_bot will add what {{name}} needs, then turn it on. Continue?",
               { name },
             )}
           </DialogDescription>
@@ -6421,7 +6421,7 @@ function NanobotFeatureInstallDialog({
             className="h-11 w-full min-w-0 !whitespace-normal rounded-full px-5 text-center text-[15px] font-semibold"
           >
             {installing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
-            {tx("settings.nanobotFeatures.installConfirmAction", "Install and enable")}
+            {tx("settings.auto_cut_botFeatures.installConfirmAction", "Install and enable")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -7060,7 +7060,7 @@ function RestartRequiredNotice({
 
 function ChannelsSettings({
   token,
-  nanobotFeatures,
+  auto_cut_botFeatures,
   loading,
   query,
   actionKey,
@@ -7076,7 +7076,7 @@ function ChannelsSettings({
   isRestarting,
 }: {
   token: string;
-  nanobotFeatures: NanobotFeaturesPayload | null;
+  auto_cut_botFeatures: NanobotFeaturesPayload | null;
   loading: boolean;
   query: string;
   actionKey: string | null;
@@ -7099,7 +7099,7 @@ function ChannelsSettings({
   const containerRef = useRef<HTMLDivElement>(null);
   const compactDetailTopRef = useRef<HTMLButtonElement>(null);
   const [compactDetailOpen, setCompactDetailOpen] = useState(false);
-  const allChannels = (nanobotFeatures?.features ?? [])
+  const allChannels = (auto_cut_botFeatures?.features ?? [])
     .filter((feature) => feature.type === "channel")
     .filter((feature) => feature.settings_visible !== false)
     .filter((feature) => !normalizedQuery || channelSearchText(feature, t).includes(normalizedQuery))
@@ -7225,7 +7225,7 @@ function ChannelsSettings({
       {requiresRestartPending ? (
         <div className="mt-3 shrink-0">
           <RestartRequiredNotice
-            message={tx("settings.channels.restartRequired", "Restart nanobot to apply updated channel support.")}
+            message={tx("settings.channels.restartRequired", "Restart auto_cut_bot to apply updated channel support.")}
             onRestart={onRestart}
             isRestarting={isRestarting}
           />
@@ -7239,7 +7239,7 @@ function ChannelsSettings({
           splitLayout && "min-h-0 overflow-hidden",
         )}
       >
-        {loading && !nanobotFeatures ? (
+        {loading && !auto_cut_botFeatures ? (
           <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
             {tx("settings.channels.loading", "Loading Channels...")}
@@ -7439,7 +7439,7 @@ function AppsCatalogSettings({
 
       {requiresRestartPending ? (
         <RestartRequiredNotice
-          message={tx("settings.apps.restartRequired", "Restart nanobot to apply updated apps and features.")}
+          message={tx("settings.apps.restartRequired", "Restart auto_cut_bot to apply updated apps and features.")}
           onRestart={onRestart}
           isRestarting={isRestarting}
         />
@@ -8433,7 +8433,7 @@ function RuntimeSettings({
     timeout: settings.api?.timeout ?? 120,
     api_key_hint: settings.api?.api_key_hint,
     endpoint: `http://127.0.0.1:${settings.api?.port ?? 8900}/v1`,
-    command: "nanobot serve",
+    command: "auto_cut_bot serve",
   };
   const [apiHost, setApiHost] = useState(apiDefaults.host);
   const [apiPort, setApiPort] = useState(apiDefaults.port);
@@ -8679,7 +8679,7 @@ function RuntimeSettings({
                 ? undefined
                 : tx(
                     "settings.observability.environment",
-                    "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart nanobot.",
+                    "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart auto_cut_bot.",
                   )
             }
           >

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nanobot.agent.context import ContextBuilder
+from auto_cut_bot.agent.context import ContextBuilder
 
 
 def _make_builder(tmp_path: Path) -> ContextBuilder:

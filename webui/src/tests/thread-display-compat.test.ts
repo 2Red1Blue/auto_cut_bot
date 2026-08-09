@@ -57,7 +57,7 @@ describe("normalizeLegacyLongTaskMessages", () => {
       "This unrelated reply stays visible.",
     ]);
     expect([
-      isModelCommandText("/MODEL@nanobot fast"),
+      isModelCommandText("/MODEL@auto_cut_bot fast"),
       isModelCommandText("/modelish"),
     ]).toEqual([true, false]);
     expect(visibleSessionPreview("Switched model preset to `fast`.")).toBe("");

@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.runner_helpers import make_run_spec
-from nanobot.agent.automation_turns import publish_next_deferred_turn
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from auto_cut_bot.agent.automation_turns import publish_next_deferred_turn
+from auto_cut_bot.config.schema import AgentDefaults
+from auto_cut_bot.providers.base import LLMResponse, ToolCallRequest
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -27,16 +27,16 @@ def _make_injection_callback(queue: asyncio.Queue):
 
 
 def _make_loop(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from auto_cut_bot.agent.loop import AgentLoop
+    from auto_cut_bot.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as mock_sub_mgr:
+    with patch("auto_cut_bot.agent.loop.ContextBuilder"), \
+         patch("auto_cut_bot.agent.loop.SessionManager"), \
+         patch("auto_cut_bot.agent.loop.SubagentManager") as mock_sub_mgr:
         mock_sub_mgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         mock_sub_mgr.return_value.close = AsyncMock()
         loop = AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
@@ -45,7 +45,7 @@ def _make_loop(tmp_path):
 @pytest.mark.asyncio
 async def test_drain_injections_returns_empty_when_no_callback():
     """No injection_callback → empty list."""
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -63,8 +63,8 @@ async def test_drain_injections_returns_empty_when_no_callback():
 @pytest.mark.asyncio
 async def test_drain_injections_extracts_content_from_inbound_messages():
     """Should extract .content from InboundMessage objects."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -94,8 +94,8 @@ async def test_drain_injections_extracts_content_from_inbound_messages():
 @pytest.mark.asyncio
 async def test_drain_injections_passes_limit_to_callback_when_supported():
     """Limit-aware callbacks can preserve overflow in their own queue."""
-    from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -129,8 +129,8 @@ async def test_drain_injections_passes_limit_to_callback_when_supported():
 @pytest.mark.asyncio
 async def test_drain_injections_skips_empty_content():
     """Messages with blank content should be filtered out."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -158,7 +158,7 @@ async def test_drain_injections_skips_empty_content():
 @pytest.mark.asyncio
 async def test_drain_injections_filters_empty_dict_payloads():
     """Pre-normalized dict injections should obey the same empty-content guard."""
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -196,7 +196,7 @@ async def test_drain_injections_skips_objects_with_none_content():
     """Objects exposing content=None should be skipped rather than stringified."""
     from types import SimpleNamespace
 
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -222,7 +222,7 @@ async def test_drain_injections_skips_objects_with_none_content():
 @pytest.mark.asyncio
 async def test_drain_injections_handles_callback_exception():
     """If the callback raises, return empty list (error is logged)."""
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
     runner = AgentRunner()
@@ -244,8 +244,8 @@ async def test_drain_injections_handles_callback_exception():
 @pytest.mark.asyncio
 async def test_checkpoint1_injects_after_tool_execution():
     """Follow-up messages are injected after tool execution, before next LLM call."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -297,9 +297,9 @@ async def test_checkpoint1_injects_after_tool_execution():
 @pytest.mark.asyncio
 async def test_checkpoint2_injects_after_final_response_with_resuming_stream():
     """After final response, if injections exist, stream_end should get resuming=True."""
-    from nanobot.agent.hook import AgentHook, AgentHookContext
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.hook import AgentHook, AgentHookContext
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -356,8 +356,8 @@ async def test_checkpoint2_injects_after_final_response_with_resuming_stream():
 @pytest.mark.asyncio
 async def test_injected_followup_starts_new_length_recovery_chain():
     """A follow-up gets a fresh recovery budget and no content from the prior answer."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     provider.chat_with_retry = AsyncMock(side_effect=[
@@ -395,8 +395,8 @@ async def test_injected_followup_starts_new_length_recovery_chain():
 @pytest.mark.asyncio
 async def test_checkpoint2_preserves_final_response_in_history_before_followup():
     """A follow-up injected after a final answer must still see that answer in history."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -450,9 +450,9 @@ async def test_checkpoint2_preserves_final_response_in_history_before_followup()
 @pytest.mark.asyncio
 async def test_loop_injected_followup_preserves_image_media(tmp_path):
     """Mid-turn follow-ups with images should keep multimodal content."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from auto_cut_bot.agent.loop import AgentLoop
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.bus.queue import MessageBus
 
     image_path = tmp_path / "followup.png"
     image_path.write_bytes(base64.b64decode(
@@ -510,10 +510,10 @@ async def test_loop_injected_followup_preserves_image_media(tmp_path):
 
 @pytest.mark.asyncio
 async def test_pending_injection_resolves_its_own_runtime_context(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
-    from nanobot.runtime_context import (
+    from auto_cut_bot.agent.loop import AgentLoop
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.runtime_context import (
         RUNTIME_CONTEXT_MESSAGE_META,
         RuntimeContextBlock,
         public_history_message,
@@ -635,10 +635,10 @@ async def test_pending_injection_resolves_its_own_runtime_context(tmp_path):
 
 @pytest.mark.asyncio
 async def test_subagent_pending_injection_is_hidden_history_and_not_merged(tmp_path):
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
-    from nanobot.session.history_visibility import HIDDEN_HISTORY_META
+    from auto_cut_bot.agent.loop import AgentLoop
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.session.history_visibility import HIDDEN_HISTORY_META
 
     bus = MessageBus()
     provider = MagicMock()
@@ -699,7 +699,7 @@ async def test_subagent_pending_injection_is_hidden_history_and_not_merged(tmp_p
 @pytest.mark.asyncio
 async def test_runner_merges_multiple_injected_user_messages_without_losing_media():
     """Multiple injected follow-ups should not create lossy consecutive user messages."""
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -760,8 +760,8 @@ async def test_runner_merges_multiple_injected_user_messages_without_losing_medi
 
 
 def test_runner_merge_preserves_runtime_markers_with_media() -> None:
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.runtime_context import (
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.runtime_context import (
         RUNTIME_CONTEXT_HISTORY_META,
         RUNTIME_CONTEXT_MESSAGE_META,
         RuntimeContextBlock,
@@ -814,8 +814,8 @@ def test_runner_merge_preserves_runtime_markers_with_media() -> None:
 @pytest.mark.asyncio
 async def test_injection_cycles_capped_at_max():
     """Injection cycles should be capped at _MAX_INJECTION_CYCLES."""
-    from nanobot.agent.runner import _MAX_INJECTION_CYCLES, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import _MAX_INJECTION_CYCLES, AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -855,7 +855,7 @@ async def test_injection_cycles_capped_at_max():
 @pytest.mark.asyncio
 async def test_no_injections_flag_is_false_by_default():
     """had_injections should be False when no injection callback or no messages."""
-    from nanobot.agent.runner import AgentRunner
+    from auto_cut_bot.agent.runner import AgentRunner
 
     provider = MagicMock()
 
@@ -888,7 +888,7 @@ async def test_pending_queue_cleanup_on_dispatch(tmp_path):
 
     loop.provider.chat_with_retry = chat_with_retry
 
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.bus.events import InboundMessage
 
     msg = InboundMessage(channel="cli", sender_id="u", chat_id="c", content="hello")
     # The queue should not exist before dispatch
@@ -903,7 +903,7 @@ async def test_pending_queue_cleanup_on_dispatch(tmp_path):
 @pytest.mark.asyncio
 async def test_waiting_dispatch_does_not_replace_active_pending_queue(tmp_path):
     """A queued dispatch must not steal the active task's injection queue."""
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     route_policy = MagicMock(side_effect=lambda _msg, _key, route: route)
@@ -943,8 +943,8 @@ async def test_waiting_dispatch_does_not_replace_active_pending_queue(tmp_path):
 @pytest.mark.asyncio
 async def test_followup_routed_to_pending_queue(tmp_path):
     """Unified-session follow-ups should route into the active pending queue."""
-    from nanobot.bus.events import InboundMessage
-    from nanobot.session.keys import UNIFIED_SESSION_KEY
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY
 
     loop = _make_loop(tmp_path)
     loop._unified_session = True
@@ -970,7 +970,7 @@ async def test_followup_routed_to_pending_queue(tmp_path):
 @pytest.mark.asyncio
 async def test_mid_turn_subagent_result_does_not_resolve_a_new_turn_route(tmp_path):
     """Injected results stay inside the active turn instead of opening a side turn."""
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     loop._dispatch = AsyncMock()  # type: ignore[method-assign]
@@ -1008,8 +1008,8 @@ async def test_mid_turn_subagent_result_does_not_resolve_a_new_turn_route(tmp_pa
 @pytest.mark.asyncio
 async def test_cron_turn_deferred_while_session_active(tmp_path):
     """Cron turns wait for the active session instead of becoming injections."""
-    from nanobot.bus.events import InboundMessage
-    from nanobot.cron.session_turns import (
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.cron.session_turns import (
         CRON_DEFER_UNTIL_IDLE_META,
         CRON_TRIGGER_META,
     )
@@ -1062,8 +1062,8 @@ async def test_cron_turn_deferred_while_session_active(tmp_path):
 @pytest.mark.asyncio
 async def test_local_trigger_turn_deferred_while_session_active(tmp_path):
     """Local trigger turns wait for the active session instead of becoming injections."""
-    from nanobot.bus.events import InboundMessage
-    from nanobot.triggers.local_session_turns import LOCAL_TRIGGER_META
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.triggers.local_session_turns import LOCAL_TRIGGER_META
 
     loop = _make_loop(tmp_path)
     loop._dispatch = AsyncMock()  # type: ignore[method-assign]
@@ -1116,8 +1116,8 @@ async def test_local_trigger_turn_deferred_while_session_active(tmp_path):
 @pytest.mark.asyncio
 async def test_submitted_cron_turn_reports_pending_until_completed(tmp_path):
     """Bound cron jobs remain marked pending while their session turn is in flight."""
-    from nanobot.bus.events import InboundMessage, OutboundMessage
-    from nanobot.cron.session_turns import CRON_TRIGGER_META
+    from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
+    from auto_cut_bot.cron.session_turns import CRON_TRIGGER_META
 
     loop = _make_loop(tmp_path)
     loop._running = True
@@ -1152,8 +1152,8 @@ async def test_submitted_cron_turn_reports_pending_until_completed(tmp_path):
 @pytest.mark.asyncio
 async def test_submitted_local_trigger_turn_reports_pending_until_completed(tmp_path):
     """Local triggers remain marked pending while their session turn is in flight."""
-    from nanobot.bus.events import InboundMessage, OutboundMessage
-    from nanobot.triggers.local_session_turns import LOCAL_TRIGGER_META
+    from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
+    from auto_cut_bot.triggers.local_session_turns import LOCAL_TRIGGER_META
 
     loop = _make_loop(tmp_path)
     loop._running = True
@@ -1194,9 +1194,9 @@ async def test_submitted_local_trigger_turn_reports_pending_until_completed(tmp_
 @pytest.mark.asyncio
 async def test_local_trigger_turn_cancellation_reports_agent_failure(tmp_path):
     """A cancelled agent turn should not cancel the local-trigger worker."""
-    from nanobot.agent.automation_turns import AutomationTurnError
-    from nanobot.bus.events import InboundMessage
-    from nanobot.triggers.local_session_turns import LOCAL_TRIGGER_META
+    from auto_cut_bot.agent.automation_turns import AutomationTurnError
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.triggers.local_session_turns import LOCAL_TRIGGER_META
 
     loop = _make_loop(tmp_path)
     loop._running = True
@@ -1231,10 +1231,10 @@ async def test_local_trigger_turn_cancellation_reports_agent_failure(tmp_path):
 @pytest.mark.asyncio
 async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_path):
     """Pending queue should leave overflow messages queued for later drains."""
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from auto_cut_bot.agent.loop import AgentLoop
+    from auto_cut_bot.agent.runner import _MAX_INJECTIONS_PER_TURN
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -1285,7 +1285,7 @@ async def test_pending_queue_preserves_overflow_for_next_injection_cycle(tmp_pat
 @pytest.mark.asyncio
 async def test_pending_queue_full_falls_back_to_queued_task(tmp_path):
     """QueueFull should preserve the message by dispatching a queued task."""
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     dispatched = asyncio.Event()
@@ -1322,7 +1322,7 @@ async def test_dispatch_republishes_leftover_queue_messages(tmp_path):
     the runner exits early (e.g., max_iterations, tool_error) with messages
     still in the queue.
     """
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.bus.events import InboundMessage
 
     loop = _make_loop(tmp_path)
     bus = loop.bus
@@ -1361,8 +1361,8 @@ async def test_dispatch_republishes_leftover_queue_messages(tmp_path):
 @pytest.mark.asyncio
 async def test_drain_injections_on_fatal_tool_error():
     """A fatal tool error must not leak recovered content into an injected follow-up."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1421,8 +1421,8 @@ async def test_drain_injections_on_fatal_tool_error():
 @pytest.mark.asyncio
 async def test_drain_injections_on_llm_error():
     """Pending injections should be drained when the LLM returns an error finish_reason."""
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1476,8 +1476,8 @@ async def test_drain_injections_on_llm_error():
 @pytest.mark.asyncio
 async def test_drain_injections_on_empty_final_response():
     """Pending injections should be drained when the runner exits due to empty response."""
-    from nanobot.agent.runner import _MAX_EMPTY_RETRIES, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import _MAX_EMPTY_RETRIES, AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1531,8 +1531,8 @@ async def test_drain_injections_on_max_iterations():
     injections are appended to messages but not processed by the LLM.
     The key point is they are consumed from the queue to prevent re-publish.
     """
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1582,9 +1582,9 @@ async def test_drain_injections_on_max_iterations():
 @pytest.mark.asyncio
 async def test_drain_injections_set_flag_when_followup_arrives_after_last_iteration():
     """Late follow-ups drained in max_iterations should still flip had_injections."""
-    from nanobot.agent.hook import AgentHook
-    from nanobot.agent.runner import AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.hook import AgentHook
+    from auto_cut_bot.agent.runner import AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}
@@ -1645,8 +1645,8 @@ async def test_drain_injections_set_flag_when_followup_arrives_after_last_iterat
 @pytest.mark.asyncio
 async def test_injection_cycle_cap_on_error_path():
     """Injection cycles should be capped even when every iteration hits an LLM error."""
-    from nanobot.agent.runner import _MAX_INJECTION_CYCLES, AgentRunner
-    from nanobot.bus.events import InboundMessage
+    from auto_cut_bot.agent.runner import _MAX_INJECTION_CYCLES, AgentRunner
+    from auto_cut_bot.bus.events import InboundMessage
 
     provider = MagicMock()
     call_count = {"n": 0}

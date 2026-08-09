@@ -132,8 +132,8 @@ export function ChannelInstancesPanel({
         channelValuesForSave(instanceFields, fieldValues),
         { enable: selected.enabled, instanceId: selected.id },
       );
-      if (payload.nanobot_features) {
-        onFeaturesUpdate(payload.nanobot_features);
+      if (payload.auto_cut_bot_features) {
+        onFeaturesUpdate(payload.auto_cut_bot_features);
       }
       setNotice(tx("settings.channels.savedSettings", "Saved settings."));
     } catch (err) {

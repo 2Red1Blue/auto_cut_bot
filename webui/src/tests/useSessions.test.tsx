@@ -50,7 +50,7 @@ function wrap(
     const token = typeof tokenSource === "string" ? tokenSource : tokenSource.current;
     return (
       <ClientProvider
-        client={client as unknown as import("@/lib/nanobot-client").NanobotClient}
+        client={client as unknown as import("@/lib/auto_cut_bot-client").NanobotClient}
         token={token}
       >
         {children}

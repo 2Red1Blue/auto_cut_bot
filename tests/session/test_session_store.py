@@ -1,8 +1,8 @@
 from unittest.mock import MagicMock
 
-import nanobot.session as session_api
-from nanobot.session import Session, SessionManager
-from nanobot.session.manager import FILE_MAX_MESSAGES, SessionStore
+import auto_cut_bot.session as session_api
+from auto_cut_bot.session import Session, SessionManager
+from auto_cut_bot.session.manager import FILE_MAX_MESSAGES, SessionStore
 
 
 def test_store_types_are_not_public_session_api() -> None:

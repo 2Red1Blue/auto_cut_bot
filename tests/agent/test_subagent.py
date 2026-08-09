@@ -5,14 +5,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.runner import AgentRunResult
-from nanobot.agent.subagent import SubagentManager, SubagentStatus
-from nanobot.agent.tools.filesystem import FileToolsConfig
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ToolsConfig
-from nanobot.providers.base import GenerationSettings, LLMProvider
-from nanobot.security.workspace_access import build_workspace_scope
-from nanobot.utils.llm_runtime import LLMRuntime
+from auto_cut_bot.agent.runner import AgentRunResult
+from auto_cut_bot.agent.subagent import SubagentManager, SubagentStatus
+from auto_cut_bot.agent.tools.filesystem import FileToolsConfig
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.config.schema import ToolsConfig
+from auto_cut_bot.providers.base import GenerationSettings, LLMProvider
+from auto_cut_bot.security.workspace_access import build_workspace_scope
+from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 
 def _runtime(provider: LLMProvider) -> LLMRuntime:

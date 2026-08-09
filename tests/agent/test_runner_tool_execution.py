@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent.runner_helpers import make_run_spec
-from nanobot.agent.runner import AgentRunner
-from nanobot.agent.tools.base import Tool, ToolResult
-from nanobot.agent.tools.context import ToolContext
-from nanobot.agent.tools.loader import ToolLoader
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.config.schema import AgentDefaults
-from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-from nanobot.providers.openai_responses.parsing import parse_response_output
+from auto_cut_bot.agent.runner import AgentRunner
+from auto_cut_bot.agent.tools.base import Tool, ToolResult
+from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.agent.tools.loader import ToolLoader
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.config.schema import AgentDefaults
+from auto_cut_bot.providers.base import LLMResponse, ToolCallRequest
+from auto_cut_bot.providers.openai_compat_provider import OpenAICompatProvider
+from auto_cut_bot.providers.openai_responses.parsing import parse_response_output
 
 _MAX_TOOL_RESULT_CHARS = AgentDefaults().max_tool_result_chars
 
@@ -134,7 +134,7 @@ def _load_entry_point_plugin(tool_cls: type[Tool], tmp_path) -> ToolRegistry:
     mock_ep.load.return_value = tool_cls
 
     registry = ToolRegistry()
-    with patch("nanobot.agent.tools.loader.entry_points", return_value=[mock_ep]):
+    with patch("auto_cut_bot.agent.tools.loader.entry_points", return_value=[mock_ep]):
         ToolLoader(test_classes=[]).load(
             ToolContext(config=None, workspace=str(tmp_path)),
             registry,
@@ -321,7 +321,7 @@ async def test_runner_rejects_near_miss_tool_name_without_executing():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arguments", ['{path:"notes.txt"}', "null"])
 async def test_runner_rejects_openai_compat_invalid_arguments_without_executing(arguments):
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI"):
+    with patch("auto_cut_bot.providers.openai_compat_provider.AsyncOpenAI"):
         parsed = OpenAICompatProvider()._parse({
             "choices": [{
                 "message": {

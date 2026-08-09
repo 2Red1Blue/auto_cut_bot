@@ -1,8 +1,8 @@
 """Tests for the OpenCode Zen and OpenCode Go provider registrations."""
 
-from nanobot.config.schema import Config, ProvidersConfig
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-from nanobot.providers.registry import PROVIDERS, find_by_name
+from auto_cut_bot.config.schema import Config, ProvidersConfig
+from auto_cut_bot.providers.openai_compat_provider import OpenAICompatProvider
+from auto_cut_bot.providers.registry import PROVIDERS, find_by_name
 
 
 def test_opencode_config_fields_exist() -> None:

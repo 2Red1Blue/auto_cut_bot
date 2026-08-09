@@ -1,7 +1,7 @@
 import pytest
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
-from nanobot.utils.evaluator import (
+from auto_cut_bot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from auto_cut_bot.utils.evaluator import (
     EVALUATOR_PROMPT_MAX_CHARS,
     default_evaluator_prompt,
     evaluate_response,

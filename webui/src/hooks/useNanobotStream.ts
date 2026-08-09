@@ -9,7 +9,7 @@ import {
   toolTraceLinesFromEvents,
 } from "@/lib/tool-traces";
 import { hasPendingAgentActivity } from "@/lib/activity-timeline";
-import type { StreamError } from "@/lib/nanobot-client";
+import type { StreamError } from "@/lib/auto_cut_bot-client";
 import { formatQuotedUserMessage } from "@/lib/user-message-quote";
 import type {
   InboundEvent,

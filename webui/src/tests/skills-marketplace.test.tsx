@@ -7,7 +7,7 @@ import {
   fetchTrendingMarketplaceSkills,
   searchMarketplaceSkills,
 } from "@/lib/api";
-import type { NanobotClient } from "@/lib/nanobot-client";
+import type { NanobotClient } from "@/lib/auto_cut_bot-client";
 import { SKILLS_CHANGED_EVENT } from "@/lib/skill-events";
 import { ClientProvider } from "@/providers/ClientProvider";
 import { useSkills } from "@/hooks/useSkills";

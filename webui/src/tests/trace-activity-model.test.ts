@@ -13,7 +13,7 @@ describe("trace activity semantics", () => {
   });
 
   it.each([
-    ['web_search({"query":"nanobot latest release"})', "done", "Searched nanobot latest release", ""],
+    ['web_search({"query":"auto_cut_bot latest release"})', "done", "Searched auto_cut_bot latest release", ""],
     ['web_fetch({"url":"https://example.com/docs?token=private"})', "done", "Read", "example.com/docs"],
     ['read_file({"path":"/Users/alice/project/README.md"})', "done", "Read", "~/project/README.md"],
     ['exec({"command":"date +%Y-%m-%d"})', "done", "Checked current time", ""],

@@ -133,14 +133,14 @@ const LOCALIZED_SETTINGS_COPY_KEYS = [
   "settings.skills.marketplaceInstall",
   "settings.skills.marketplaceNoTrend",
   "settings.skills.marketplaceTrendLabel",
-  "settings.nanobotFeatures.disable",
-  "settings.nanobotFeatures.ready",
-  "settings.nanobotFeatures.missingDependency",
-  "settings.nanobotFeatures.installConfirmTitle",
-  "settings.nanobotFeatures.installConfirmDescription",
-  "settings.nanobotFeatures.installConfirmAction",
-  "settings.nanobotFeatures.channelDisabled",
-  "settings.nanobotFeatures.notEnabled",
+  "settings.auto_cut_botFeatures.disable",
+  "settings.auto_cut_botFeatures.ready",
+  "settings.auto_cut_botFeatures.missingDependency",
+  "settings.auto_cut_botFeatures.installConfirmTitle",
+  "settings.auto_cut_botFeatures.installConfirmDescription",
+  "settings.auto_cut_botFeatures.installConfirmAction",
+  "settings.auto_cut_botFeatures.channelDisabled",
+  "settings.auto_cut_botFeatures.notEnabled",
   "settings.sections.about",
   "settings.rows.theme",
   "settings.rows.language",
@@ -304,9 +304,9 @@ const ACCIDENTALLY_SPANISH_SETTINGS_KEYS = [
 ];
 const INDEX_HTML = readFileSync(resolve(process.cwd(), "index.html"), "utf8");
 const PREBOOT_SCRIPT = INDEX_HTML.match(
-  /<script>\s*(\(function \(\) \{\s*var localeKey = "nanobot\.locale";[\s\S]*?\}\)\(\);)\s*<\/script>/,
+  /<script>\s*(\(function \(\) \{\s*var localeKey = "auto_cut_bot\.locale";[\s\S]*?\}\)\(\);)\s*<\/script>/,
 )?.[1];
-const BOOT_COPY_MARKUP = '<span data-boot-copy>Loading nanobot…</span>';
+const BOOT_COPY_MARKUP = '<span data-boot-copy>Loading auto_cut_bot…</span>';
 
 function runPrebootLocale(storedLocale: string) {
   if (!PREBOOT_SCRIPT) throw new Error("Could not find the preboot locale script in index.html");
@@ -432,7 +432,7 @@ describe("webui i18n", () => {
     await waitFor(() => {
       expect(document.documentElement.lang).toBe("zh-CN");
     });
-    expect(localStorage.getItem("nanobot.locale")).toBe("zh-CN");
+    expect(localStorage.getItem("auto_cut_bot.locale")).toBe("zh-CN");
     expect(screen.getByPlaceholderText("输入消息…")).toBeInTheDocument();
   });
 

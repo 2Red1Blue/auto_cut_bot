@@ -172,7 +172,7 @@ export function ChannelSetupPanel({
     || channelBusy
     || needsSetupBeforeEnable
     || (!feature.install_supported && !feature.installed && !feature.enabled);
-  const installSupportLabel = tx("settings.nanobotFeatures.installSupport", "Install support");
+  const installSupportLabel = tx("settings.auto_cut_botFeatures.installSupport", "Install support");
   const toggleAriaLabel = t("settings.channels.toggleChannel", {
     name: displayName,
     defaultValue: "{{name}} channel",
@@ -294,7 +294,7 @@ function ChannelSetupSurface({
   const requirements = channelRequirements(feature, t);
   const summary = setup.summary ?? tx(
     "settings.channels.setupSummary",
-    "Enable only turns on nanobot support. Add the platform credentials, then restart nanobot.",
+    "Enable only turns on auto_cut_bot support. Add the platform credentials, then restart auto_cut_bot.",
   );
   const [fieldValues, setFieldValues] = useState<Record<string, string>>(() =>
     defaultChannelFieldValues(editableFields, feature.config_values),
@@ -360,8 +360,8 @@ function ChannelSetupSurface({
         values,
         { enable: true },
       );
-      if (payload.nanobot_features) {
-        onFeaturesUpdate(payload.nanobot_features);
+      if (payload.auto_cut_bot_features) {
+        onFeaturesUpdate(payload.auto_cut_bot_features);
       }
       setNotice(tx("settings.channels.checkedAndEnabled", "Checked and enabled."));
     } catch (err) {

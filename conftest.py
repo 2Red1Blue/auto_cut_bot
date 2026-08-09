@@ -13,13 +13,13 @@ from loguru import logger
 
 
 @pytest.fixture(autouse=True)
-def _isolate_nanobot_log_activation() -> Iterator[None]:
+def _isolate_auto_cut_bot_log_activation() -> Iterator[None]:
     """Keep CLI log settings from leaking into later tests in the same process."""
-    logger.enable("nanobot")
+    logger.enable("auto_cut_bot")
     try:
         yield
     finally:
-        logger.enable("nanobot")
+        logger.enable("auto_cut_bot")
 
 
 @pytest.fixture(scope="session", autouse=True)

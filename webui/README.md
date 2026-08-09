@@ -1,7 +1,7 @@
-# nanobot WebUI Source
+# auto_cut_bot WebUI Source
 
-This directory contains the React/TypeScript source for the nanobot WebUI. If
-you installed `nanobot-ai` from PyPI and only want to use the bundled browser UI,
+This directory contains the React/TypeScript source for the auto_cut_bot WebUI. If
+you installed `auto-cut-bot-ai` from PyPI and only want to use the bundled browser UI,
 read the user guide in [`docs/webui.md`](../docs/webui.md). You do not need
 Node.js, Bun, Vite, or anything in this directory unless you are changing the
 frontend.
@@ -25,12 +25,12 @@ reads session metadata from the embedded REST surface on the same port.
 
 ```text
 webui/                 source tree (this directory)
-nanobot/web/dist/      build output served by the gateway
+auto_cut_bot/web/dist/      build output served by the gateway
 ```
 
 ## Develop the WebUI (Vite HMR)
 
-### 1. Install nanobot from source
+### 1. Install auto_cut_bot from source
 
 From the repository root:
 
@@ -45,7 +45,7 @@ python -m pip install -e .
 From the repository root:
 
 ```bash
-nanobot webui --dev
+auto_cut_bot webui --dev
 ```
 
 The command safely prepares the local WebSocket channel, starts both the gateway and Vite,
@@ -61,7 +61,7 @@ The two-terminal workflow remains available when you want to manage each process
 
 ### 1. Enable the WebSocket channel
 
-In `~/.nanobot/config.json`, merge:
+In `~/.auto_cut_bot/config.json`, merge:
 
 ```json
 { "channels": { "websocket": { "enabled": true } } }
@@ -72,7 +72,7 @@ In `~/.nanobot/config.json`, merge:
 In one terminal:
 
 ```bash
-nanobot gateway
+auto_cut_bot gateway
 ```
 
 ### 3. Start the WebUI dev server
@@ -92,7 +92,7 @@ By default the dev server proxies `/api`, `/webui`, `/auth`, and WebSocket traff
 If your gateway listens on a non-default port, point the dev server at it:
 
 ```bash
-NANOBOT_API_URL=http://127.0.0.1:9000 bun run dev
+AUTO_CUT_BOT_API_URL=http://127.0.0.1:9000 bun run dev
 ```
 
 ## Build for packaged runtime
@@ -103,7 +103,7 @@ If you want to preview the production bundle locally without rebuilding the whee
 
 ```bash
 cd webui
-bun run build          # writes to ../nanobot/web/dist
+bun run build          # writes to ../auto_cut_bot/web/dist
 ```
 
 The gateway picks up the new bundle on the next restart.

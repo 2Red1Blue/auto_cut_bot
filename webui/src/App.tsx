@@ -37,7 +37,7 @@ import {
 } from "@/lib/bootstrap";
 import { displayTitle } from "@/lib/chat-groups";
 import { deriveTitle } from "@/lib/format";
-import { NanobotClient } from "@/lib/nanobot-client";
+import { NanobotClient } from "@/lib/auto_cut_bot-client";
 import { ClientProvider, useClient } from "@/providers/ClientProvider";
 import type {
   BootstrapResponse,
@@ -81,11 +81,11 @@ type BootState =
       runtimeSurface: RuntimeSurface;
     };
 
-const SIDEBAR_STORAGE_KEY = "nanobot-webui.sidebar";
-const SESSION_UPDATES_STORAGE_KEY = "nanobot-webui.sidebar.session-updates.v1";
-const LEGACY_COMPLETED_RUNS_STORAGE_KEY = "nanobot-webui.sidebar.completed-runs.v1";
-const RESTART_STARTED_KEY = "nanobot-webui.restartStartedAt";
-const RESTART_ROUTE_KEY = "nanobot-webui.restartRoute";
+const SIDEBAR_STORAGE_KEY = "auto_cut_bot-webui.sidebar";
+const SESSION_UPDATES_STORAGE_KEY = "auto_cut_bot-webui.sidebar.session-updates.v1";
+const LEGACY_COMPLETED_RUNS_STORAGE_KEY = "auto_cut_bot-webui.sidebar.completed-runs.v1";
+const RESTART_STARTED_KEY = "auto_cut_bot-webui.restartStartedAt";
+const RESTART_ROUTE_KEY = "auto_cut_bot-webui.restartRoute";
 const RESTART_ROUTE_TTL_MS = 5 * 60 * 1000;
 const SIDEBAR_WIDTH = 272;
 const SIDEBAR_RAIL_WIDTH = 56;

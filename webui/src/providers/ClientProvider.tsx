@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { NanobotClient } from "@/lib/nanobot-client";
+import type { NanobotClient } from "@/lib/auto_cut_bot-client";
 import type { WebUIIngressLimits } from "@/lib/types";
 
 interface ClientContextValue {

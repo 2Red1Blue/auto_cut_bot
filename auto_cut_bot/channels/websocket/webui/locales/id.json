@@ -1,0 +1,15 @@
+{
+  "description": "Gunakan auto_cut_bot dari ruang kerja browser lokal.",
+  "requirements": "Gateway lokal dan token WebSocket",
+  "setup": {
+    "docsLabel": "Buka panduan WebSocket",
+    "officialLabel": "Buka WebUI lokal",
+    "tryIt": "Buka WebUI dan kirim pesan singkat.",
+    "summary": "Ruang kerja browser memerlukan WebSocket yang disiapkan oleh perintah auto_cut_bot webui.",
+    "steps": [
+      "Mulai auto_cut_bot dengan perintah webui.",
+      "Buka URL lokal yang ditampilkan di terminal.",
+      "Biarkan WebSocket aktif saat menggunakan ruang kerja browser."
+    ]
+  }
+}

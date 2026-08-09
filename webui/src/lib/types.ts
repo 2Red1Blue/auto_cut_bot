@@ -1021,14 +1021,14 @@ export interface ChannelConnectPayload {
   expires_at_ms?: number;
   app_id?: string;
   account?: string;
-  nanobot_features?: NanobotFeaturesPayload;
+  auto_cut_bot_features?: NanobotFeaturesPayload;
 }
 
 export interface ChannelConfigurePayload {
   name: string;
   saved: boolean;
   saved_keys?: string[];
-  nanobot_features?: NanobotFeaturesPayload;
+  auto_cut_bot_features?: NanobotFeaturesPayload;
 }
 
 export interface SettingsUpdate {

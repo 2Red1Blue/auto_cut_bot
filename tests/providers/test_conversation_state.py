@@ -6,13 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nanobot.providers.base import (
+from auto_cut_bot.providers.base import (
     LLMProvider,
     LLMResponse,
     ProviderConversationState,
     ToolCallRequest,
 )
-from nanobot.providers.conversation_state import (
+from auto_cut_bot.providers.conversation_state import (
     ProviderConversationStateController,
     allows_conversation_message_merge,
 )

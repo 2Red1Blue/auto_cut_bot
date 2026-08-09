@@ -12,7 +12,7 @@ Default thinking behavior per Xiaomi docs:
   - mimo-v2-flash: disabled
   - mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni: enabled
 
-Without an explicit reasoning_effort, nanobot must not send the
+Without an explicit reasoning_effort, auto_cut_bot must not send the
 thinking field so the provider default is preserved (issue #3585).
 """
 
@@ -20,9 +20,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot.config.schema import ProvidersConfig
-from nanobot.providers.openai_compat_provider import OpenAICompatProvider
-from nanobot.providers.registry import PROVIDERS
+from auto_cut_bot.config.schema import ProvidersConfig
+from auto_cut_bot.providers.openai_compat_provider import OpenAICompatProvider
+from auto_cut_bot.providers.registry import PROVIDERS
 
 
 def _mimo_spec():

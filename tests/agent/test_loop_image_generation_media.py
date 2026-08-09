@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.config.loader import set_config_path
-from nanobot.config.schema import ImageGenerationToolConfig, ProviderConfig, ToolsConfig
-from nanobot.providers.base import LLMResponse, ToolCallRequest
-from nanobot.providers.image_generation import GeneratedImageResponse
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.bus.events import InboundMessage
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.config.loader import set_config_path
+from auto_cut_bot.config.schema import ImageGenerationToolConfig, ProviderConfig, ToolsConfig
+from auto_cut_bot.providers.base import LLMResponse, ToolCallRequest
+from auto_cut_bot.providers.image_generation import GeneratedImageResponse
 
 PNG_DATA_URL = (
     "data:image/png;base64,"
@@ -36,7 +36,7 @@ async def test_outbound_no_longer_carries_generated_media(
     """Media delivery is now the LLM's responsibility via the message tool."""
     set_config_path(tmp_path / "config.json")
     monkeypatch.setattr(
-        "nanobot.agent.tools.image_generation.get_image_gen_provider",
+        "auto_cut_bot.agent.tools.image_generation.get_image_gen_provider",
         lambda name: FakeImageClient if name == "openrouter" else None,
     )
     provider = MagicMock()

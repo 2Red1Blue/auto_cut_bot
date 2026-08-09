@@ -40,7 +40,7 @@ export function compactActivityPath(value: string): string {
 export function safeActivityDetail(value: string, maxLength = 96): string {
   return truncateMiddle(
     compactActivityPath(redactActivityText(value))
-      .replace(/\/\.nanobot\/tool-results\/[^\s"']+/g, "/.nanobot/tool-results/…")
+      .replace(/\/\.auto_cut_bot\/tool-results\/[^\s"']+/g, "/.auto_cut_bot/tool-results/…")
       .replace(/\s+/g, " ")
       .replace(/^["']|["']$/g, "")
       .trim(),

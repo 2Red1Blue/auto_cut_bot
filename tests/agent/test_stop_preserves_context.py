@@ -4,7 +4,7 @@ When /stop cancels an active task, the runtime checkpoint (tool results,
 assistant messages accumulated so far) should be materialized into session
 history rather than silently discarded.
 
-See: https://github.com/HKUDS/nanobot/issues/2966
+See: https://github.com/HKUDS/auto_cut_bot/issues/2966
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.bus.queue import MessageBus
 
 
 def _make_provider():
@@ -34,9 +34,9 @@ def _make_loop(tmp_path: Path) -> AgentLoop:
     """Create a real AgentLoop with mocked provider — avoids patching __init__."""
     bus = MessageBus()
     provider = _make_provider()
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as mock_subagent_manager:
+    with patch("auto_cut_bot.agent.loop.ContextBuilder"), \
+         patch("auto_cut_bot.agent.loop.SessionManager"), \
+         patch("auto_cut_bot.agent.loop.SubagentManager") as mock_subagent_manager:
         mock_subagent_manager.return_value.cancel_by_session = AsyncMock(return_value=0)
         return AgentLoop(bus=bus, provider=provider, workspace=tmp_path)
 
@@ -97,8 +97,8 @@ async def test_dispatch_cancellation_restores_checkpoint():
     isolation, so a future refactor that drops the cancel-time restore is
     caught by CI instead of silently regressing.
     """
-    from nanobot.bus.events import InboundMessage
-    from nanobot.bus.queue import MessageBus
+    from auto_cut_bot.bus.events import InboundMessage
+    from auto_cut_bot.bus.queue import MessageBus
 
     bus = MessageBus()
     provider = MagicMock()
@@ -106,9 +106,9 @@ async def test_dispatch_cancellation_restores_checkpoint():
     workspace = MagicMock()
     workspace.__truediv__ = MagicMock(return_value=MagicMock())
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as mock_subagent_manager:
+    with patch("auto_cut_bot.agent.loop.ContextBuilder"), \
+         patch("auto_cut_bot.agent.loop.SessionManager"), \
+         patch("auto_cut_bot.agent.loop.SubagentManager") as mock_subagent_manager:
         mock_subagent_manager.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(bus=bus, provider=provider, workspace=workspace)
 

@@ -2,19 +2,19 @@
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
-IMAGE_NAME="nanobot-test"
+IMAGE_NAME="auto_cut_bot-test"
 
 echo "=== Building Docker image ==="
 docker build -t "$IMAGE_NAME" .
 
 echo ""
-echo "=== Running 'nanobot onboard' ==="
-docker run --name nanobot-test-run "$IMAGE_NAME" onboard
+echo "=== Running 'auto_cut_bot onboard' ==="
+docker run --name auto_cut_bot-test-run "$IMAGE_NAME" onboard
 
 echo ""
-echo "=== Running 'nanobot status' ==="
-STATUS_OUTPUT=$(docker commit nanobot-test-run nanobot-test-onboarded > /dev/null && \
-    docker run --rm nanobot-test-onboarded status 2>&1) || true
+echo "=== Running 'auto_cut_bot status' ==="
+STATUS_OUTPUT=$(docker commit auto_cut_bot-test-run auto_cut_bot-test-onboarded > /dev/null && \
+    docker run --rm auto_cut_bot-test-onboarded status 2>&1) || true
 
 echo "$STATUS_OUTPUT"
 
@@ -31,7 +31,7 @@ check() {
     fi
 }
 
-check "nanobot Status"
+check "auto_cut_bot Status"
 check "Config:"
 check "Workspace:"
 check "Model:"
@@ -50,7 +50,7 @@ fi
 # Cleanup
 echo ""
 echo "=== Cleanup ==="
-docker rm -f nanobot-test-run 2>/dev/null || true
-docker rmi -f nanobot-test-onboarded 2>/dev/null || true
+docker rm -f auto_cut_bot-test-run 2>/dev/null || true
+docker rmi -f auto_cut_bot-test-onboarded 2>/dev/null || true
 docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
 echo "Done."

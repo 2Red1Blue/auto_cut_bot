@@ -1,0 +1,15 @@
+{
+  "description": "Usa auto_cut_bot desde el entorno de trabajo del navegador local.",
+  "requirements": "Gateway local y token WebSocket",
+  "setup": {
+    "docsLabel": "Abrir guía de WebSocket",
+    "officialLabel": "Abrir WebUI local",
+    "tryIt": "Abre la WebUI y envía un mensaje corto.",
+    "summary": "El entorno del navegador necesita WebSocket, que se prepara con el comando auto_cut_bot webui.",
+    "steps": [
+      "Inicia auto_cut_bot con el comando webui.",
+      "Abre la URL local mostrada en la terminal.",
+      "Mantén WebSocket activado mientras uses el entorno del navegador."
+    ]
+  }
+}

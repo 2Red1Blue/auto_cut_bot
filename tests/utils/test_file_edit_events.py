@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nanobot.agent.tools.apply_patch import ApplyPatchTool
-from nanobot.agent.tools.filesystem import EditFileTool, WriteFileTool
-from nanobot.utils.file_edit_events import (
+from auto_cut_bot.agent.tools.apply_patch import ApplyPatchTool
+from auto_cut_bot.agent.tools.filesystem import EditFileTool, WriteFileTool
+from auto_cut_bot.utils.file_edit_events import (
     build_file_edit_end_event,
     build_file_edit_start_event,
     build_unified_diff_payload,

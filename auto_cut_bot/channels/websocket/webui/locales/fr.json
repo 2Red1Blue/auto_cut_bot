@@ -1,0 +1,15 @@
+{
+  "description": "Utilisez auto_cut_bot depuis l’espace de travail du navigateur local.",
+  "requirements": "Passerelle locale et jeton WebSocket",
+  "setup": {
+    "docsLabel": "Ouvrir le guide WebSocket",
+    "officialLabel": "Ouvrir la WebUI locale",
+    "tryIt": "Ouvrez la WebUI et envoyez un court message.",
+    "summary": "L’espace de travail du navigateur nécessite WebSocket, préparé par la commande auto_cut_bot webui.",
+    "steps": [
+      "Démarrez auto_cut_bot avec la commande webui.",
+      "Ouvrez l’URL locale affichée dans le terminal.",
+      "Gardez WebSocket activé pendant l’utilisation de l’espace de travail."
+    ]
+  }
+}

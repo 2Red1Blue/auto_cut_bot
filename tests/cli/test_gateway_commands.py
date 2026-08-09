@@ -5,10 +5,10 @@ import typer
 from rich.console import Console
 from typer.testing import CliRunner
 
-from nanobot.cli.gateway import create_gateway_app
-from nanobot.config.schema import Config
-from nanobot.gateway import GatewayStartOptions, GatewayStatus, RuntimeResult
-from nanobot.gateway.service import GatewayServiceOptions, GatewayServiceResult
+from auto_cut_bot.cli.gateway import create_gateway_app
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.gateway import GatewayStartOptions, GatewayStatus, RuntimeResult
+from auto_cut_bot.gateway.service import GatewayServiceOptions, GatewayServiceResult
 
 runner = CliRunner()
 
@@ -69,7 +69,7 @@ class FakeServiceInstaller:
             True,
             "service_install_dry_run" if dry_run else "service_installed",
             "systemd",
-            self.tmp_path / "nanobot-gateway.service",
+            self.tmp_path / "auto_cut_bot-gateway.service",
             (("systemctl", "--user", "daemon-reload"),),
             "[Unit]\nDescription=Nanobot Gateway\n",
         )
@@ -81,8 +81,8 @@ class FakeServiceInstaller:
             True,
             "service_uninstall_dry_run" if dry_run else "service_uninstalled",
             "systemd",
-            self.tmp_path / "nanobot-gateway.service",
-            (("systemctl", "--user", "disable", "--now", "nanobot-gateway.service"),),
+            self.tmp_path / "auto_cut_bot-gateway.service",
+            (("systemctl", "--user", "disable", "--now", "auto_cut_bot-gateway.service"),),
         )
 
 

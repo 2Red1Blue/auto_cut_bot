@@ -57,7 +57,7 @@ const HOST_WS_CLOSING = 2;
 const HOST_WS_CLOSED = 3;
 const LOOPBACK_HOST_PORT_PARAM = "nativeHostPort";
 const LOOPBACK_HOST_TOKEN_PARAM = "nativeHostToken";
-const LOOPBACK_HOST_STORAGE_KEY = "nanobot-webui.native-host";
+const LOOPBACK_HOST_STORAGE_KEY = "auto_cut_bot-webui.native-host";
 
 interface LoopbackHostConfig {
   port: number;
@@ -68,13 +68,13 @@ let loopbackHostApi: NanobotHostApi | null = null;
 
 declare global {
   interface Window {
-    nanobotHost?: NanobotHostApi;
+    auto_cut_botHost?: NanobotHostApi;
   }
 }
 
 function getHostApi(): NanobotHostApi | null {
   if (typeof window === "undefined") return null;
-  return window.nanobotHost ?? loopbackHostApi;
+  return window.auto_cut_botHost ?? loopbackHostApi;
 }
 
 /**

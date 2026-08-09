@@ -89,7 +89,7 @@ describe("MarkdownTextRenderer", () => {
     const onOpenFilePreview = vi.fn();
     render(
       <MarkdownTextRenderer onOpenFilePreview={onOpenFilePreview}>
-        {"Edited [hook.py](/Users/test/project/nanobot/agent/hook.py:12)"}
+        {"Edited [hook.py](/Users/test/project/auto_cut_bot/agent/hook.py:12)"}
       </MarkdownTextRenderer>,
     );
 
@@ -97,13 +97,13 @@ describe("MarkdownTextRenderer", () => {
     expect(reference).toHaveTextContent("hook.py");
     expect(reference).toHaveAttribute(
       "aria-label",
-      "/Users/test/project/nanobot/agent/hook.py",
+      "/Users/test/project/auto_cut_bot/agent/hook.py",
     );
 
     fireEvent.click(reference);
 
     expect(onOpenFilePreview).toHaveBeenCalledWith(
-      "/Users/test/project/nanobot/agent/hook.py",
+      "/Users/test/project/auto_cut_bot/agent/hook.py",
     );
   });
 
@@ -218,11 +218,11 @@ describe("MarkdownTextRenderer", () => {
   it("does not wrap complete fenced code blocks in an extra pre", () => {
     const { container } = render(
       <MarkdownTextRenderer highlightCode={false}>
-        {"当前目录:\n\n```text\n/Users/renxubin/.nanobot/workspace\n```"}
+        {"当前目录:\n\n```text\n/Users/renxubin/.auto_cut_bot/workspace\n```"}
       </MarkdownTextRenderer>,
     );
 
-    expect(screen.getByText("/Users/renxubin/.nanobot/workspace")).toBeInTheDocument();
+    expect(screen.getByText("/Users/renxubin/.auto_cut_bot/workspace")).toBeInTheDocument();
     expect(container.querySelectorAll("pre")).toHaveLength(1);
     expect(container.querySelector("pre div")).toBeNull();
   });
@@ -243,11 +243,11 @@ describe("MarkdownTextRenderer", () => {
   it("keeps streaming unfinished fenced code blocks to a single shell", () => {
     const { container } = render(
       <MarkdownTextRenderer highlightCode={false}>
-        {"当前目录:\n\n```text\n/Users/renxubin/.nanobot/workspace"}
+        {"当前目录:\n\n```text\n/Users/renxubin/.auto_cut_bot/workspace"}
       </MarkdownTextRenderer>,
     );
 
-    expect(screen.getByText("/Users/renxubin/.nanobot/workspace")).toBeInTheDocument();
+    expect(screen.getByText("/Users/renxubin/.auto_cut_bot/workspace")).toBeInTheDocument();
     expect(container.querySelectorAll("pre")).toHaveLength(1);
     expect(container.querySelector("pre div")).toBeNull();
   });
@@ -264,13 +264,13 @@ describe("MarkdownTextRenderer", () => {
   });
 
   it("renders markdown videos as inline players", () => {
-    render(<MarkdownTextRenderer>![nanobot-intro.mp4](/api/media/sig/video)</MarkdownTextRenderer>);
+    render(<MarkdownTextRenderer>![auto_cut_bot-intro.mp4](/api/media/sig/video)</MarkdownTextRenderer>);
 
-    const video = screen.getByLabelText("Video attachment: nanobot-intro.mp4");
+    const video = screen.getByLabelText("Video attachment: auto_cut_bot-intro.mp4");
     expect(video.tagName).toBe("VIDEO");
     expect(video).toHaveAttribute("src", "/api/media/sig/video");
     expect(video).toHaveAttribute("controls");
-    expect(screen.queryByRole("img", { name: "nanobot-intro.mp4" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("img", { name: "auto_cut_bot-intro.mp4" })).not.toBeInTheDocument();
   });
 
   it("renders markdown links with file-looking names as file attachments", () => {
@@ -455,7 +455,7 @@ describe("MarkdownTextRenderer", () => {
     const { container } = render(
       <MarkdownTextRenderer>
         {
-          "## Models\n\n| Model | Context | Price |\n| --- | ---: | ---: |\n| nanobot | 200k | $1 |\n\n## Notes"
+          "## Models\n\n| Model | Context | Price |\n| --- | ---: | ---: |\n| auto_cut_bot | 200k | $1 |\n\n## Notes"
         }
       </MarkdownTextRenderer>,
     );
@@ -465,7 +465,7 @@ describe("MarkdownTextRenderer", () => {
     expect(surface).toHaveAttribute("role", "region");
     expect(surface).toHaveAttribute("tabindex", "0");
     expect(surface).toHaveAccessibleName("Data table");
-    expect(screen.getByRole("table")).toHaveTextContent("nanobot");
+    expect(screen.getByRole("table")).toHaveTextContent("auto_cut_bot");
     expect(container.firstElementChild).toHaveClass("space-y-4");
     expect(container.firstElementChild).not.toHaveClass("space-y-0");
   });
@@ -500,7 +500,7 @@ describe("MarkdownTextRenderer", () => {
     );
 
     expect(container.querySelector("[data-sd-animate]")).not.toBeInTheDocument();
-    expect(container.querySelector("[data-nanobot-stream-unit]")).not.toBeInTheDocument();
+    expect(container.querySelector("[data-auto_cut_bot-stream-unit]")).not.toBeInTheDocument();
   });
 
   it("repairs incomplete streaming markdown without exposing syntax fragments", () => {

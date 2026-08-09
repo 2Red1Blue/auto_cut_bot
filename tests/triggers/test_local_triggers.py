@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent.automation_turns import AutomationTurnError
-from nanobot.bus.events import InboundMessage, OutboundMessage
-from nanobot.triggers.local_runner import run_local_trigger_queue
-from nanobot.triggers.local_store import LocalTriggerStore, TriggerDisabledError
-from nanobot.triggers.local_types import LocalTrigger, TriggerDelivery
-from nanobot.webui.metadata import WEBUI_MESSAGE_SOURCE_METADATA_KEY, WEBUI_TURN_METADATA_KEY
+from auto_cut_bot.agent.automation_turns import AutomationTurnError
+from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
+from auto_cut_bot.triggers.local_runner import run_local_trigger_queue
+from auto_cut_bot.triggers.local_store import LocalTriggerStore, TriggerDisabledError
+from auto_cut_bot.triggers.local_types import LocalTrigger, TriggerDelivery
+from auto_cut_bot.webui.metadata import WEBUI_MESSAGE_SOURCE_METADATA_KEY, WEBUI_TURN_METADATA_KEY
 
 
 def _channel_is_enabled(_name: str) -> bool:

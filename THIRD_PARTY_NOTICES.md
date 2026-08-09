@@ -1,14 +1,14 @@
 # Third-Party Notices
 
 The following third-party components are redistributed as part of the packaged
-nanobot Python distribution (`pip install nanobot-ai`).
+auto_cut_bot Python distribution (`pip install auto-cut-bot-ai`).
 
 ---
 
 ## Tabler Icons — interface icons (MIT)
 
 - **Source**: https://github.com/tabler/tabler-icons
-- **Bundled**: `nanobot/web/dist/assets/index-*.js` (inline `arrow-fork` SVG)
+- **Bundled**: `auto_cut_bot/web/dist/assets/index-*.js` (inline `arrow-fork` SVG)
 
 ```
 MIT License
@@ -39,7 +39,7 @@ SOFTWARE.
 ## KaTeX — math rendering (MIT)
 
 - **Source**: https://github.com/KaTeX/KaTeX
-- **Bundled**: `nanobot/web/dist/assets/index-*.{js,css}`
+- **Bundled**: `auto_cut_bot/web/dist/assets/index-*.{js,css}`
 
 ```
 The MIT License (MIT)
@@ -70,7 +70,7 @@ SOFTWARE.
 ## KaTeX Fonts — math typography (SIL OFL 1.1)
 
 - **Source**: https://github.com/KaTeX/KaTeX/tree/main/src/fonts
-- **Bundled**: `nanobot/web/dist/assets/KaTeX_*.{woff2,woff,ttf}`
+- **Bundled**: `auto_cut_bot/web/dist/assets/KaTeX_*.{woff2,woff,ttf}`
 
 The fonts are redistributed unmodified.
 

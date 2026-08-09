@@ -1,6 +1,6 @@
 """Tests for AnthropicProvider._merge_consecutive."""
 
-from nanobot.providers.anthropic_provider import AnthropicProvider
+from auto_cut_bot.providers.anthropic_provider import AnthropicProvider
 
 
 class TestMergeConsecutive:

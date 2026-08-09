@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { useNanobotStream } from "@/hooks/useNanobotStream";
-import type { StreamError } from "@/lib/nanobot-client";
+import type { StreamError } from "@/lib/auto_cut_bot-client";
 import type { ConnectionStatus, InboundEvent, GoalStateWsPayload } from "@/lib/types";
 import { ClientProvider } from "@/providers/ClientProvider";
 
@@ -107,7 +107,7 @@ function wrap(client: ReturnType<typeof fakeClient>["client"]) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return (
       <ClientProvider
-        client={client as unknown as import("@/lib/nanobot-client").NanobotClient}
+        client={client as unknown as import("@/lib/auto_cut_bot-client").NanobotClient}
         token="tok"
       >
         {children}
@@ -639,7 +639,7 @@ describe("useNanobotStream", () => {
           phase: "end",
           call_id: "ws-1",
           name: "web_search",
-          arguments: { query: "nanobot news" },
+          arguments: { query: "auto_cut_bot news" },
           result: { status: "completed" },
         }],
       });
@@ -647,12 +647,12 @@ describe("useNanobotStream", () => {
 
     expect(result.current.messages).toHaveLength(1);
     expect(result.current.messages[0].traces).toEqual([
-      'web_search({"query":"nanobot news"})',
+      'web_search({"query":"auto_cut_bot news"})',
     ]);
     expect(result.current.messages[0].toolEvents).toMatchObject([{
       phase: "end",
       call_id: "ws-1",
-      arguments: { query: "nanobot news" },
+      arguments: { query: "auto_cut_bot news" },
     }]);
   });
 

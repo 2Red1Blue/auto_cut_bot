@@ -4,11 +4,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.tools.context import RequestContext, request_context
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.outbound_events import GoalStatusEvent, TurnModelUpdatedEvent
-from nanobot.session import webui_turns as wth
-from nanobot.webui.metadata import WEBSOCKET_TURN_OWNER_METADATA_KEY
+from auto_cut_bot.agent.tools.context import RequestContext, request_context
+from auto_cut_bot.bus.events import InboundMessage
+from auto_cut_bot.bus.outbound_events import GoalStatusEvent, TurnModelUpdatedEvent
+from auto_cut_bot.session import webui_turns as wth
+from auto_cut_bot.webui.metadata import WEBSOCKET_TURN_OWNER_METADATA_KEY
 
 
 @pytest.fixture(autouse=True)

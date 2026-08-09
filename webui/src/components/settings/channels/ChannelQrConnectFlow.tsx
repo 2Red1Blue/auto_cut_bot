@@ -139,8 +139,8 @@ export function ChannelQrConnectFlow({
           ...payload,
           qr_url: payload.qr_url ?? current?.qr_url,
         }));
-        if (payload.nanobot_features) {
-          onFeaturesUpdate(payload.nanobot_features);
+        if (payload.auto_cut_bot_features) {
+          onFeaturesUpdate(payload.auto_cut_bot_features);
         }
         if (payload.status !== "pending") {
           setError(null);
@@ -234,8 +234,8 @@ export function ChannelQrConnectFlow({
         ...payload,
         qr_url: payload.qr_url ?? current?.qr_url,
       }));
-      if (payload.nanobot_features) {
-        onFeaturesUpdate(payload.nanobot_features);
+      if (payload.auto_cut_bot_features) {
+        onFeaturesUpdate(payload.auto_cut_bot_features);
       }
       if (payload.status !== "pending") {
         setError(null);

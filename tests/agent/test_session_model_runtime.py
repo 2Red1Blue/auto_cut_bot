@@ -2,18 +2,18 @@ import asyncio
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ModelPresetConfig
-from nanobot.nanobot import Nanobot
-from nanobot.providers.base import GenerationSettings, LLMProvider, LLMResponse
-from nanobot.providers.factory import ProviderSnapshot
-from nanobot.sdk.types import SessionSnapshot
-from nanobot.session.model_selection import (
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.config.schema import ModelPresetConfig
+from auto_cut_bot.auto_cut_bot import Nanobot
+from auto_cut_bot.providers.base import GenerationSettings, LLMProvider, LLMResponse
+from auto_cut_bot.providers.factory import ProviderSnapshot
+from auto_cut_bot.sdk.types import SessionSnapshot
+from auto_cut_bot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
 )
-from nanobot.utils.llm_runtime import LLMRuntime
+from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 
 class RecordingProvider(LLMProvider):

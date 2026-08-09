@@ -6,7 +6,7 @@ or produce text that makes the model hallucinate about unseen images.
 
 from __future__ import annotations
 
-from nanobot.providers.base import LLMProvider
+from auto_cut_bot.providers.base import LLMProvider
 
 # ---------------------------------------------------------------------------
 # _strip_image_content (returns new list)

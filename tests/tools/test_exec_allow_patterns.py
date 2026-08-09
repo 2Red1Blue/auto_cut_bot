@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nanobot.agent.tools.shell import ExecTool
+from auto_cut_bot.agent.tools.shell import ExecTool
 
 
 def test_deny_patterns_block_rm_rf():

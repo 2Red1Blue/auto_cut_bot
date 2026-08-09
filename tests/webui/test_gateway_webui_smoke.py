@@ -66,7 +66,7 @@ def _start_gateway(config_path: Path, log_path: Path) -> subprocess.Popen[bytes]
             [
                 sys.executable,
                 "-m",
-                "nanobot",
+                "auto_cut_bot",
                 "gateway",
                 "--config",
                 str(config_path),

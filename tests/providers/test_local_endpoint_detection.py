@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from nanobot.providers.openai_compat_provider import (
+from auto_cut_bot.providers.openai_compat_provider import (
     OpenAICompatProvider,
     _is_local_endpoint,
 )

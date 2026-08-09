@@ -34,7 +34,7 @@
   },
   "include": [
     "src",
-    "../nanobot/channels/*/webui/**/*.ts",
-    "../nanobot/channels/*/webui/**/*.tsx"
+    "../auto_cut_bot/channels/*/webui/**/*.ts",
+    "../auto_cut_bot/channels/*/webui/**/*.tsx"
   ]
 }

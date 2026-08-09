@@ -1,6 +1,6 @@
 import type { SkillsPayload } from "@/lib/types";
 
-export const SKILLS_CHANGED_EVENT = "nanobot:skills-changed";
+export const SKILLS_CHANGED_EVENT = "auto_cut_bot:skills-changed";
 
 export function isSkillsPayload(value: unknown): value is SkillsPayload {
   return (

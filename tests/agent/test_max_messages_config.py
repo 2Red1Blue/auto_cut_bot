@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from nanobot.agent.loop import AgentLoop
-from nanobot.bus.events import InboundMessage
-from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMResponse
-from nanobot.providers.factory import ProviderSnapshot
-from nanobot.session.manager import (
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.bus.events import InboundMessage
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.providers.base import LLMResponse
+from auto_cut_bot.providers.factory import ProviderSnapshot
+from auto_cut_bot.session.manager import (
     FILE_MAX_MESSAGES,
     Session,
     replay_max_messages_for_context,

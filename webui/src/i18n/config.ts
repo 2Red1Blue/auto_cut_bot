@@ -1,4 +1,4 @@
-export const LOCALE_STORAGE_KEY = "nanobot.locale";
+export const LOCALE_STORAGE_KEY = "auto_cut_bot.locale";
 
 export const supportedLocales = [
   { code: "en", label: "English", nativeLabel: "English" },

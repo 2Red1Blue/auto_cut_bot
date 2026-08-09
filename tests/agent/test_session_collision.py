@@ -4,13 +4,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from nanobot.session.manager import Session, SessionManager
-from nanobot.utils.helpers import safe_filename
+from auto_cut_bot.session.manager import Session, SessionManager
+from auto_cut_bot.utils.helpers import safe_filename
 
 
 def _manager(tmp_path: Path, monkeypatch) -> SessionManager:
     monkeypatch.setattr(
-        "nanobot.session.manager.get_legacy_sessions_dir",
+        "auto_cut_bot.session.manager.get_legacy_sessions_dir",
         lambda: tmp_path / "legacy_sessions",
     )
     return SessionManager(tmp_path / "workspace")

@@ -5,24 +5,24 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from nanobot.agent.memory import (
+from auto_cut_bot.agent.memory import (
     _ARCHIVE_SUMMARY_MAX_CHARS,
     Consolidator,
     MemoryStore,
 )
-from nanobot.providers.base import (
+from auto_cut_bot.providers.base import (
     GenerationSettings,
     LLMResponse,
     ProviderConversationState,
 )
-from nanobot.runtime_context import (
+from auto_cut_bot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
     RuntimeContextBlock,
     append_runtime_context,
 )
-from nanobot.session.manager import Session
-from nanobot.utils.llm_runtime import LLMRuntime
-from nanobot.utils.prompt_templates import render_template
+from auto_cut_bot.session.manager import Session
+from auto_cut_bot.utils.llm_runtime import LLMRuntime
+from auto_cut_bot.utils.prompt_templates import render_template
 
 
 @pytest.fixture
@@ -92,7 +92,7 @@ class TestConsolidatorSummarize:
     async def test_archive_prompt_includes_media_breadcrumb(
         self, consolidator, mock_provider, store, runtime
     ):
-        path = "/home/user/.nanobot/media/websocket/upload_photo.png"
+        path = "/home/user/.auto_cut_bot/media/websocket/upload_photo.png"
         summary = "User uploaded a photo."
         mock_provider.chat_with_retry.return_value = MagicMock(
             content=summary,
@@ -111,7 +111,7 @@ class TestConsolidatorSummarize:
         assert [entry["content"] for entry in entries] == [summary]
 
     def test_format_messages_keeps_media_only_user_turn(self):
-        path = "/home/user/.nanobot/media/websocket/clip.mp4"
+        path = "/home/user/.auto_cut_bot/media/websocket/clip.mp4"
 
         formatted = MemoryStore._format_messages([
             {
@@ -269,7 +269,7 @@ class TestConsolidatorPromptContract:
 class TestConsolidatorArchiveErrorHandling:
     """archive() must fall back to raw_archive when the LLM returns an error
     response (finish_reason == 'error'), e.g. overloaded / quota exceeded.
-    See https://github.com/HKUDS/nanobot/issues/3244
+    See https://github.com/HKUDS/auto_cut_bot/issues/3244
     """
 
     async def test_archive_falls_back_on_error_finish_reason(
@@ -332,7 +332,7 @@ class TestConsolidatorArchiveErrorHandling:
     ):
         consolidator.store.raw_archive = MagicMock()
         monkeypatch.setattr(
-            "nanobot.agent.memory.render_template",
+            "auto_cut_bot.agent.memory.render_template",
             MagicMock(side_effect=RuntimeError("template failed")),
         )
 
@@ -628,7 +628,7 @@ class TestCompactIdleSession:
     @pytest.fixture
     def real_consolidator(self, store, mock_provider):
         """Create a Consolidator with a real SessionManager (not a mock)."""
-        from nanobot.session.manager import SessionManager
+        from auto_cut_bot.session.manager import SessionManager
 
         sessions = SessionManager(store.workspace)
         return Consolidator(
@@ -1039,8 +1039,8 @@ class TestConsolidatorSessionRefresh:
     @pytest.mark.asyncio
     async def test_reloads_before_empty_session_guard(self, tmp_path):
         """A stale empty reference must not skip a non-empty cached session."""
-        from nanobot.agent.memory import Consolidator, MemoryStore
-        from nanobot.session.manager import Session, SessionManager
+        from auto_cut_bot.agent.memory import Consolidator, MemoryStore
+        from auto_cut_bot.session.manager import Session, SessionManager
 
         store = MemoryStore(tmp_path)
         provider = MagicMock()
@@ -1087,8 +1087,8 @@ class TestConsolidatorSessionRefresh:
         """After compact_idle_session replaces the session, a concurrent
         maybe_consolidate_by_tokens with the old reference should use the
         fresh session from cache instead of overwriting."""
-        from nanobot.agent.memory import Consolidator, MemoryStore
-        from nanobot.session.manager import SessionManager
+        from auto_cut_bot.agent.memory import Consolidator, MemoryStore
+        from auto_cut_bot.session.manager import SessionManager
 
         store = MemoryStore(tmp_path)
         provider = MagicMock()
