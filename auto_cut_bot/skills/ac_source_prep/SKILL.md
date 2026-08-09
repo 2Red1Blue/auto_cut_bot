@@ -30,6 +30,30 @@ anti_triggers:
 
 将原始短剧视频素材转换为结构化的窗口分析产物，供下游剧集理解和故事生成使用。
 
+## Agent-Native Execution
+
+你是流水线的编排器。按顺序调用以下工具：
+
+### 执行顺序
+1. `source_windows` → 扫描视频源，生成滑动窗口清单
+2. `window_analysis` → 对每个窗口进行 VLM 分析
+
+### 工具调用规范
+- 每个工具执行后，将产物路径存入 session state
+- 下游工具从 session state 读取上游产物
+- 失败时报告错误，不要静默跳过
+- 所有路径使用绝对路径
+
+### 输入
+- `job_root`: 作业根目录
+- `input_root`: 视频文件目录 (local 模式)
+- 或 `url_list`: 远程 URL 清单 (remote 模式)
+
+### 输出
+- `source_manifest.json`: 视频源清单
+- `window_manifest.json`: 窗口切片清单
+- `window_summaries.jsonl`: 窗口分析结果
+
 ## Stages
 
 | Stage | Name | Description | Status |
