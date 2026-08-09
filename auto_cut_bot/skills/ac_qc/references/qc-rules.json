@@ -1,0 +1,127 @@
+{
+  "version": "1.4",
+  "quality_gate": {
+    "policy_version": "1.0",
+    "statuses": [
+      "blocked",
+      "renderable_with_review",
+      "approved"
+    ],
+    "renderable_statuses": [
+      "renderable_with_review",
+      "approved"
+    ],
+    "hard_blocking_principles": [
+      "invalid_or_stale_evidence",
+      "missing_viewer_dependency",
+      "required_source_continuity_omitted",
+      "source_packaging_included",
+      "utterance_word_syllable_or_action_cut",
+      "local_audio_boundary_unsafe_or_missing",
+      "cold_open_mid_utterance_or_orphan_visual_tail",
+      "ending_answer_or_payoff_leaked"
+    ],
+    "review_principles": [
+      "model_review_or_uncertainty",
+      "score_below_preferred_threshold_without_hard_failure",
+      "compression_opportunity",
+      "subjective_handoff_or_orientation_risk"
+    ]
+  },
+  "opening_handoff": {
+    "body_preview_seconds": 15.0,
+    "max_identity_delay_seconds": 8.0,
+    "max_causal_delay_seconds": 15.0,
+    "min_clarity_score": 6,
+    "min_association_score": 7,
+    "min_context_kinds": 2
+  },
+  "junction": {
+    "pre_roll_seconds": 5.0,
+    "post_roll_seconds": 8.0,
+    "min_global_story_relation_score": 6,
+    "min_local_handoff_clarity_score": 7,
+    "max_connection_latency_seconds": 5.0,
+    "max_flashback_reentry_latency_seconds": 1.0,
+    "require_viewer_dependencies_preserved": true
+  },
+  "source_gap": {
+    "min_omission_safety_score": 7,
+    "require_selected_cut_self_sufficient": true,
+    "require_temporal_structure_cut_cleanly": true,
+    "require_contains_required_continuity_false": true,
+    "require_required_elements_empty": true,
+    "require_recommended_action": "omit_safe",
+    "require_viewer_dependencies_preserved": true,
+    "require_omitted_content_redundant": false,
+    "require_flashback_absent": false,
+    "require_source_native_transition_absent": false
+  },
+  "retained_span": {
+    "require_evidence_complete": true,
+    "require_current_selection_justified": true,
+    "require_no_safe_redundancy": true
+  },
+  "source_boundary": {
+    "preview_before_seconds": 4.0,
+    "preview_after_seconds": 4.0,
+    "required_confidence": "high",
+    "max_recommended_boundary_delta_seconds": 0.25,
+    "cold_open_max_orphan_tail_seconds": 0.0
+  },
+  "ending_boundary": {
+    "pre_roll_seconds": 8.0,
+    "post_roll_seconds": 4.0,
+    "min_dialogue_tail_seconds": 0.3,
+    "max_dialogue_tail_seconds": 1.5,
+    "max_visual_tail_seconds": 2.0,
+    "min_completeness_score": 8,
+    "max_recommended_cut_delta_seconds": 0.25,
+    "max_semantic_end_delta_seconds": 0.75,
+    "required_confidence": "high"
+  },
+  "audio_boundary": {
+    "policy_version": "1.4",
+    "demucs_model": "htdemucs",
+    "silero_backend": "onnx",
+    "vad_tracks": [
+      "original_mix",
+      "demucs_vocals"
+    ],
+    "speech_interval_policy": "union",
+    "sample_rate": 16000,
+    "vad_threshold": 0.5,
+    "min_speech_duration_ms": 100,
+    "min_silence_duration_ms": 350,
+    "speech_pad_ms": 120,
+    "minimum_safe_gap_seconds": 0.35,
+    "start_lead_seconds": 0.15,
+    "end_tail_seconds": 0.25,
+    "max_recommendation_shift_seconds": 12.0,
+    "source_edge_tolerance_seconds": 0.01,
+    "fade_fallback_policy": {
+      "audio_crossfade_seconds": 0.15,
+      "video_fade_seconds": 0.10,
+      "story_end_audio_fadeout_seconds": 0.5
+    },
+    "required_boundary_statuses": [
+      "safe",
+      "safe_source_edge",
+      "not_applicable_no_audio"
+    ]
+  },
+  "auto_repair": {
+    "max_rounds": 3,
+    "max_candidates_per_issue": 3,
+    "auto_apply_actions": [
+      "set_segment_start",
+      "set_segment_end"
+    ],
+    "planner_actions": [
+      "insert_bridge",
+      "remove_range",
+      "replace_segment",
+      "reanalyze_source_range"
+    ]
+  }
+}

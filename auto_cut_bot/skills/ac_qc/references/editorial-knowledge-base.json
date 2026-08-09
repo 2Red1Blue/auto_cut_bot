@@ -1,0 +1,380 @@
+{
+  "schema_version": "1.2",
+  "source_documents": {
+    "editorial": "短剧信息流剪辑知识库_编导思路版_内部对齐.md",
+    "technical": "短剧信息流剪辑知识库_技术诊断版_内部对齐.md"
+  },
+  "principles": {
+    "priority_order": [
+      "story_coherence",
+      "mainline_and_motif_clarity",
+      "hook_and_payoff",
+      "emotional_intensity",
+      "duration_as_result"
+    ],
+    "single_mainline": true,
+    "arc_nodes": ["起", "承", "转", "合"],
+    "no_functionless_duration_fill": true,
+    "short_is_preferred_to_confused": true,
+    "same_line_extension_only": true,
+    "golden_sample_is_contract": true,
+    "golden_sample_learning_mode": "transferable_rules_plus_project_instance_plus_negative_cases",
+    "editorial_discovery_order": [
+      "series_global_understanding",
+      "character_relationship_and_episode_summaries",
+      "story_arc_inventory",
+      "highlight_and_quote_candidate_inventory",
+      "highlight_scoring",
+      "opening_story_arc_joint_validation",
+      "edit_mode_selection",
+      "story_script",
+      "story_plan"
+    ],
+    "highlight_is_candidate_before_story_validation": true,
+    "opening_is_joint_selection_not_clip_first": true
+  },
+  "genre_routing": {
+    "mode": "explicit_bible_evidence_then_conditional_adapter",
+    "minimum_confidence": 0.75,
+    "unknown_route": "human_review_required",
+    "allowed_profiles": [
+      "female_rebirth_revenge",
+      "female_romance",
+      "male_identity_reversal",
+      "mystery_reveal",
+      "family_conflict",
+      "supernatural_power",
+      "revenge",
+      "project_specific",
+      "unknown"
+    ],
+    "arya_scope": "female_rebirth_revenge_only",
+    "story_scope": "each_story_has_independent_script_plan_and_hook",
+    "golden_case_rule": "load_only_bible_selected_golden_case_ids"
+  },
+  "story_contract": {
+    "primary_story_thread_required": true,
+    "primary_thread_must_be_explicit": true,
+    "secondary_thread_max_share": 0.333333,
+    "integrated_support_thread_allowed": true,
+    "integrated_support_thread_roles": ["context", "cause", "emotional_payoff", "consequence"],
+    "integrated_support_must_keep_if_state_changing": true,
+    "integrated_support_must_not_replace_primary_turn": true,
+    "max_thread_switches": 1,
+    "switches_at_or_above": 2,
+    "secondary_thread_forbidden_causal_roles": ["escalation", "reveal", "payoff"],
+    "central_question_count": 1,
+    "ending_hook_types": ["unresolved_outcome", "identity_reveal_before_cut", "unresolved_choice"],
+    "ending_hook_must_follow_primary_thread": true,
+    "same_line_extension_only": true,
+    "future_arc_injection_forbidden": true,
+    "continuity_contract": {
+      "same_primary_thread_across_opening_body_ending": true,
+      "cross_segment_bridge_required": true,
+      "allowed_bridge_types": [
+        "causal",
+        "time",
+        "same_scene",
+        "theme",
+        "source_transition",
+        "visual_transition"
+      ],
+      "lookback_allowed_only_for": [
+        "opening_cause",
+        "character_relationship",
+        "story_background",
+        "rule_or_motivation"
+      ],
+      "lookback_must_return_to_mainline": true,
+      "future_complete_arc_injection_forbidden": true,
+      "unexplained_jump_status": "blocked"
+    },
+    "ending_policy": {
+      "preferred_landing": "same_primary_thread_hook",
+      "hook_types": [
+        "unresolved_outcome",
+        "identity_reveal_before_cut",
+        "unresolved_choice"
+      ],
+      "no_hook_fallback": "current_story_line_episode_tail",
+      "no_hook_is_allowed": true,
+      "invented_hook_forbidden": true,
+      "future_arc_after_hook_forbidden": true
+    },
+    "duration_extension_policy": {
+      "trigger": "below_minimum_duration",
+      "minimum_seconds": 300,
+      "order": [
+        "continue_from_last_selected_source_point",
+        "current_episode_tail",
+        "next_episode_zero_seconds"
+      ],
+      "after_threshold": "continue_to_threshold_episode_tail",
+      "same_primary_thread_only": true,
+      "must_be_forward_chronological": true,
+      "no_cross_thread_fill": true,
+      "no_duplicate_or_functionless_fill": true,
+      "stop_without_evidence": true
+    },
+    "edit_mode_selection": {
+      "allowed": ["montage", "original_chronological"],
+      "default_when_uncertain": "original_chronological",
+      "montage_requires": [
+        "opening_highlight_materially_improves_viewer_promise",
+        "strong_causal_explanation_exists",
+        "cold_open_boundary_is_complete",
+        "golden_three_seconds_is_strong"
+      ],
+      "original_chronological_requires": [
+        "natural_opening_has_character_conflict_and_stakes",
+        "continuous_causal_arc_is_available",
+        "no_future_arc_injection_is_needed",
+        "golden_three_seconds_is_strong"
+      ],
+      "selection_must_be_written_to": ["edit_mode", "edit_mode_reason"]
+    },
+    "opening_strategy": {
+      "default": "causal_explanatory_no_reprise",
+      "allowed": [
+        "causal_explanatory_no_reprise",
+        "causal_explanatory_delayed_reprise"
+      ],
+      "future_preview_reprise_requires_explicit_opt_in": true,
+      "future_preview_reprise_legacy_compatibility_only": true,
+      "delayed_reprise_requires_explanation_first": true,
+      "delayed_reprise_minimum_progression_beats": 1,
+      "causal_explanatory_opening_requires": [
+        "opening_highlight_has_observable_conflict_or_consequence",
+        "later_beat_returns_to_earlier_cause_or_relationship_context",
+        "post_explanation_beat_adds_new_cause_state_or_question",
+        "no_mechanical_replay_of_opening_highlight"
+      ],
+      "mechanical_replay_status": "blocked",
+      "missing_causal_explanation_status": "blocked"
+    },
+    "opening_selection": {
+      "selection_basis": "full_series_understanding",
+      "candidate_is_not_final_until_story_arc_validated": true,
+      "required_candidate_comparison_fields": [
+        "mainline_centrality",
+        "event_impact",
+        "readability",
+        "sensory_impact",
+        "causal_potential",
+        "relationship_or_stakes_change",
+        "boundary_safety",
+        "repetition_risk"
+      ],
+      "primary_event_must_belong_to_story_arc": true,
+      "missing_story_arc_support_status": "blocked",
+      "expository_dialogue_cannot_replace_stronger_core_event": true
+    },
+    "integrated_support_requires_direct_evidence": true,
+    "state_change_bridge_requires_event_or_fact": true,
+    "question_payoff_requires_same_thread_evidence": true,
+    "future_arc_requires_explicit_script_beat": true,
+    "required_bridge_fields": ["required_bridge_beat_ids", "bridge_type", "causal_transition"],
+    "allowed_bridge_types": ["causal", "time", "same_scene", "theme", "source_transition", "visual_transition"]
+  },
+  "hallucination_policy": {
+    "invented_dialogue_forbidden": true,
+    "invented_action_forbidden": true,
+    "invented_motivation_forbidden": true,
+    "invented_time_card_forbidden": true,
+    "invented_episode_connection_forbidden": true,
+    "genre_template_is_not_evidence": true,
+    "model_may_only_select_input_ids": true,
+    "unknown_or_conflicting_evidence_route": "blocked_or_review",
+    "bridge_must_reference_event_fact_or_thread_beat": true,
+    "negative_example_is_never_positive_evidence": true
+  },
+  "mainline_policy": {
+    "default_male": "冲突、身份、逆袭线优先",
+    "default_female": "情感发展线优先",
+    "female_rebirth_revenge_exception": "复仇/身份对抗线优先，情感线降为支线",
+    "secondary_line_allowed_roles": ["context", "cause", "emotional_payoff", "consequence"],
+    "secondary_line_forbidden_roles": ["escalation", "reveal", "payoff"],
+    "max_thread_switches": 1,
+    "secondary_line_max_share": 0.333333,
+    "bridge_required_for_single_switch": true
+  },
+  "source_order_policy": {
+    "original_story_edit": "strict_source_order",
+    "montage": "logic_order_allowed",
+    "original_story_hook_must_be_earliest_trigger": true
+  },
+  "arc_policy": {
+    "required_roles": {
+      "起": ["orientation", "setup", "cause"],
+      "承": ["escalation"],
+      "转": ["turn_or_reveal", "reveal"],
+      "合": ["payoff", "end_hook"]
+    },
+    "end_hook_allowed_landing": ["unresolved_outcome", "identity_reveal_before_cut", "unresolved_choice"],
+    "end_hook_must_follow_mainline": true
+  },
+  "hook_policy": {
+    "primary_candidate_checks": [
+      "conflict_is_observable",
+      "relationship_and_stakes_are_understandable",
+      "open_question_remains"
+    ],
+    "minimum_strength_signals": 2,
+    "weak_hook_route": "story_script",
+    "opening_highlight_policy": {
+      "first_frame_must_have_signal": true,
+      "first_three_seconds_must_have_signal": true,
+      "minimum_visual_or_audio_signal_types": 1,
+      "preferred_signal_types": [
+        "physical_conflict",
+        "extreme_face_closeup",
+        "sexual_tension_when_genre_appropriate",
+        "high_sensory_intimacy_when_genre_appropriate",
+        "identity_or_status_contrast",
+        "physiological_sound_effect",
+        "extreme_emotional_voice",
+        "high_hook_dialogue"
+      ],
+      "visual_signal_types": [
+        "physical_conflict",
+        "extreme_face_closeup",
+        "sexual_tension_when_genre_appropriate",
+        "high_sensory_intimacy_when_genre_appropriate",
+        "identity_or_status_contrast"
+      ],
+      "audio_signal_types": [
+        "physiological_sound_effect",
+        "extreme_emotional_voice",
+        "high_hook_dialogue"
+      ],
+      "core_moment_must_be_visible_or_audible_in_first_three_seconds": true,
+      "opening_must_explain_who_is_doing_what_within_8_seconds": true,
+      "opening_must_start_from_complete_action_or_speech_boundary": true,
+      "opening_candidate_window_is_not_render_start": true,
+      "opening_boundary_scan_seconds_before_and_after": 3,
+      "opening_must_trim_non_narrative_lead_in": [
+        "black_flash",
+        "packaging",
+        "static_or_frozen",
+        "non_narrative"
+      ],
+      "opening_effective_frame_must_be_evidence_backed": true,
+      "intentional_story_black_requires_evidence": true,
+      "source_black_lead_in_must_not_be_confused_with_render_black_separator": true,
+      "strong_signal_without_story_relation_status": "blocked",
+      "weak_signal_route": "story_script",
+      "genre_adapter_controls_sexual_tension": true,
+      "high_sensory_intimacy_is_valid_opening_signal": true,
+      "high_sensory_intimacy_requires": [
+        "relationship_or_conflict_is_legible",
+        "action_and_speech_boundary_is_complete",
+        "key_reaction_or_consequence_is_retained",
+        "same_line_causal_explanation_exists"
+      ],
+      "do_not_require_physical_conflict_for_every_genre": true,
+      "do_not_cut_exact_contact_frame_if_it_breaks_action_or_speech": true
+    }
+  },
+  "transition_policy": {
+    "allowed_bridge_types": ["causal", "time", "same_scene", "theme", "source_transition", "visual_transition"],
+    "unexplained_emotion_jump_route": "story_qc_review"
+  },
+  "qc_policy": {
+    "deterministic_checks": ["primary_thread_explicit", "thread_switch_count", "secondary_line_share", "secondary_causal_role", "central_question_single", "required_bridge_coverage", "arc_node_presence", "hook_alignment", "ending_hook_type", "same_line_extension", "functionless_fill", "golden_case_regression"],
+    "video_model_checks": ["mainline_clarity", "emotional_transition", "character_and_time_orientation", "hook_effectiveness"],
+    "repair_routes": {
+      "cross_thread_contamination": "story_plan",
+      "missing_bridge": "story_plan",
+      "required_bridge_beat_missing": "story_script",
+      "causal_transition_missing": "story_plan",
+      "future_arc_injection": "story_plan",
+      "weak_hook": "story_script",
+      "cut_boundary": "boundary_repair",
+      "subjective_pacing": "human_review"
+    }
+  },
+  "genre_overrides": {
+    "male": ["冲突/身份/逆袭为主线", "关系线只保留直接驱动主线的部分"],
+    "female": ["情感递进为主线", "重生复仇题材切换为复仇/身份主线"],
+    "supernatural": ["先交代非人类身份或规则，再进入情绪高光"],
+    "billionaire_or_power_gap": ["保留身份差异与态度软化的关键节点"],
+    "rebirth_revenge": ["保留背叛/重生/反击/阶段性复仇节点"]
+  },
+  "approved_positive_case_catalog": [
+    {
+      "case_id": "1505133-reborn-dragon-queen",
+      "title": "Reborn to be the Dragon Queen",
+      "genre_profile": "female_rebirth_revenge",
+      "edit_mode": "original_chronological",
+      "opening_source_range": [0.0, 27.8],
+      "opening_core": "Arya先问男主是不是在吃醋；男主反问她是否会因Lucien变强而爱上对方，随后强调‘你属于我’；Arya再表明自己与Lucien永远不可能。",
+      "transferable_lesson": "关系型高光可以先提出反常情绪和人物关系问题，再由前世背叛、重生和主动选择解释其原因；时间层提示必须保留。",
+      "approved": true
+    },
+    {
+      "case_id": "1494347-tempest-last-mecha",
+      "title": "Tempest: The Last Mecha",
+      "genre_profile": "male_identity_reversal",
+      "edit_mode": "montage",
+      "opening_source_range": [0.0, 11.0],
+      "opening_core": "十年后巨型机甲归来，Colt迎接旧友，Freya和军官震惊质疑；必须同时保留十年信息、人物反应和身份悬念。",
+      "transferable_lesson": "大场面高光不能只展示视觉体量；要同时交代人物、关系、冲突对象和观看问题，并用真实时间卡回溯前因。",
+      "approved": true
+    },
+    {
+      "case_id": "1505124-reborn-dragon-queen-intimacy-seal",
+      "title": "Reborn to be the Dragon Queen（封印亲密开头）",
+      "genre_profile": "female_rebirth_revenge",
+      "adapter_layers": ["supernatural_power", "integrated_romance_support"],
+      "edit_mode": "original_chronological",
+      "opening_source_range": [0.0, 9.0],
+      "opening_core": "男女主亲密戏提供高感官刺激，同时通过封印台词、男主身份悬念和女主反应建立可理解的主线问题。",
+      "required_follow_through": ["古书与身份揭示", "解除封印设问", "直接情感兑现", "关系推动能力觉醒"],
+      "transferable_lesson": "亲密擦边、暧昧互动和强身体张力可以作为高光开头，但不能只截身体局部或动作结果；必须保留动作、台词、关系和反应的完整闭环。",
+      "approved": true
+    }
+  ],
+  "golden_sample": {
+    "id": "arya-rebirth-revenge-final-cut-v1",
+    "transferable_lesson": "女频重生复仇是主线；感情线可以提供必要的情感兑现和助力，但不能承担主线转折、主线结局或独立填时长。",
+    "opening_strategy": "causal_explanatory_no_reprise",
+    "opening_lesson": "高光开头用于提出结果、危机或反常选择；正文回到更早前因解释，解释后继续推进，禁止片头预览与正文机械重复。",
+    "primary_thread_label": "Arya复仇/身份对抗",
+    "secondary_thread_label": "Arya与Raegar血契感情（复仇主线的整合型情感支撑线，不是可无脑删除的独立支线）",
+    "integrated_support_thread_rule": "只要血契/感情桥段改变了两人关系、解释Raegar为何助力复仇、兑现解除封印后的设问，或提供主线行动动机，就必须保留；压缩只能删重复甜戏，不能删除状态变化和直接兑现。",
+    "approved_sequence": [
+      "前世女二/男二背叛",
+      "Arya坠崖并立下复仇誓言",
+      "today",
+      "Arya重生",
+      "选择黑龙",
+      "疗伤/化形",
+      "血契与感情升温",
+      "古籍/龙王子身份",
+      "训练场受辱",
+      "Arya挡焰",
+      "黑龙觉醒",
+      "黑龙击败红龙",
+      "黑龙化人并举爪准备杀Lucien"
+    ],
+    "must_keep_bridge_beats": [
+      "背叛台词必须明确女二与男二共同背叛",
+      "选龙后必须承接疗伤/化形、血契或身份规则，不得直接跳到后续战斗",
+      "解除封印设问后必须保留男女主感情升温/接吻等直接情感兑现",
+      "黑龙击败红龙后不得接入红龙后续获胜或国王夸赞女二的后续弧"
+    ],
+    "approved_ending": "在ep009黑龙化人、举爪准备杀Lucien处结束；不加入ep025、ep027或后三个月正式龙族试炼。",
+    "forbidden_edits": [
+      "开头删掉Cecelia公开宣告夺走Lucien的台词",
+      "把感情升温误判为可删水戏",
+      "ep009后无桥硬接ep025",
+      "为延长时长加入后三个月时间卡和正式龙战",
+      "把红龙赢其他龙的后续接到黑龙刚击败红龙之后"
+    ],
+    "negative_cases": [
+      {"id": "thread-oscillation", "failure": "情感线→复仇线→情感线→复仇线", "route": "story_script"},
+      {"id": "future-arc-injection", "failure": "ep009悬念后强接ep025/ep027", "route": "story_plan"},
+      {"id": "bridge-deletion", "failure": "选龙后直接切到试炼或战斗", "route": "story_gap_or_story_plan"}
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "agents": {
+    "defaults": {
+      "model": "anthropic/claude-opus-4-5",
+      "provider": "anthropic",
+      "workspace": "~/.auto_cut_bot/workspace",
+      "max_tool_iterations": 200,
+      "temperature": 0.1,
+      "bot_name": "AC Auto Cut Bot",
+      "timezone": "Asia/Shanghai",
+      "system_prompt": "你是一个自动短剧剪辑助手。你可以使用流水线工具完成视频分析、故事生成、剪辑计划和质量检查。收到用户请求后，按顺序执行相关工具。遇到需要人工审批的阶段，暂停并等待用户反馈。",
+      "disabled_skills": []
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "apiKey": "${ANTHROPIC_API_KEY}",
+      "apiBase": "https://api.anthropic.com"
+    }
+  },
+  "channels": {
+    "websocket": {
+      "enabled": true,
+      "port": 8765,
+      "host": "127.0.0.1"
+    }
+  },
+  "api": {
+    "host": "127.0.0.1",
+    "port": 8900,
+    "timeout": 600.0,
+    "api_key": "${AUTO_CUT_BOT_API_KEY:-}"
+  },
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8765
+  },
+  "tools": {
+    "exec": {
+      "enabled": true,
+      "restrictToWorkspace": true,
+      "sandbox": "bwrap"
+    },
+    "web": {
+      "enabled": true
+    },
+    "file": {
+      "enabled": true
+    },
+    "mcp_servers": {}
+  },
+  "pipeline": {
+    "window_seconds": 240,
+    "overlap_seconds": 12,
+    "workers": "auto",
+    "requests_per_minute": 30,
+    "backend": "qwen",
+    "mode": "auto",
+    "human_review_stages": ["story_approval", "story_qc_review"]
+  },
+  "model_presets": {}
+}

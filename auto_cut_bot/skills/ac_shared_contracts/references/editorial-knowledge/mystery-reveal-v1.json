@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "case_id": "mystery-reveal-v1",
+  "genre_profile": "mystery_reveal",
+  "purpose": "悬疑查真相/破案的可迁移正反例",
+  "transferable_contract": {
+    "primary_thread": "查真相/破案",
+    "integrated_support_thread": false,
+    "support_roles": ["感情", "人物背景", "动作阻碍"],
+    "ending_rule": "停在关键证据、嫌疑人或真相即将揭开的未完成态"
+  },
+  "positive_templates": [
+    "开头明确案件、调查者和风险",
+    "每个线索必须改变观众对真相的判断或推进调查",
+    "结尾抛出可由原片证据支持的新问题，不提前泄露答案"
+  ],
+  "approved_story_sequence": ["案件与赌注", "线索推进", "误导/反转", "关键证据悬念"],
+  "required_bridge_beats": ["线索来源和调查动机不得被剪断"],
+  "approved_cut": "按调查因果链保留最小充分线索",
+  "negative_examples": [
+    {"id": "mystery-answer-first", "expected_status": "blocked", "violations": ["先给答案再补原因且没有定位桥"]},
+    {"id": "mystery-clue-montage", "expected_status": "blocked", "violations": ["把无因果线索堆成高光"]},
+    {"id": "mystery-romance-resolution", "expected_status": "blocked", "violations": ["以完整感情收尾替代案件悬念"]}
+  ],
+  "regression_assertions": ["clue_requires_evidence", "answer_must_not_leak_before_hook", "ending_hook_returns_to_primary"]
+}
