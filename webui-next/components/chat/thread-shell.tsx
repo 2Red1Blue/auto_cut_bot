@@ -1,36 +1,24 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useRef, useEffect, useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useChatStream } from "@/hooks/use-chat-stream";
 import { useClient } from "@/providers/client-provider";
-import { useSessionStore } from "@/lib/stores/session-store";
 import { useUIStore } from "@/lib/stores/ui-store";
-import { MessageBubble } from "./message-bubble";
-import { MessageInput } from "./message-input";
-import { MarkdownText } from "./markdown-text";
-import { CodeBlock } from "./code-block";
-import { AttachmentTileList, type Attachment } from "./attachment-tile";
-import { VoiceRecorder } from "./voice-recorder";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { ConnectionBadge } from "@/components/common/connection-badge";
 import { ThemeToggle } from "@/components/common/theme-toggle";
-import { LanguageSwitcher } from "@/components/common/language-switcher";
-import { DeleteConfirm } from "@/components/common/delete-confirm";
-import { RenameChatDialog } from "@/components/common/rename-chat-dialog";
-import { SessionSearchDialog } from "@/components/sidebar/session-search-dialog";
-import { SettingsDialog } from "@/components/settings/settings-dialog";
 import {
   PanelLeftClose,
   PanelLeft,
-  LogOut,
-  Search,
-  Settings,
-  Trash2,
-  Pencil,
-  Paperclip,
+  AlertCircle,
+  RefreshCw,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { MessageBubble } from "./message-bubble";
+import { MessageInput } from "./message-input";
+import { AttachmentTileList, type Attachment } from "./attachment-tile";
+import { MarkdownText } from "./markdown-text";
+import { CodeBlock } from "./code-block";
 
 interface ThreadShellProps {
   sessionId: string;
@@ -38,198 +26,169 @@ interface ThreadShellProps {
 
 export function ThreadShell({ sessionId }: ThreadShellProps) {
   const { t } = useTranslation();
-  const { connectionStatus, logout } = useClient();
-  const { messages, sendMessage, isStreaming, isReady } = useChatStream(sessionId);
-  const sessions = useSessionStore((s) => s.sessions);
-  const currentSession = sessions.find((s) => s.id === sessionId);
+  const { connectionStatus } = useClient();
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
-  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
-
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [showRenameDialog, setShowRenameDialog] = useState(false);
-  const [showSearchDialog, setShowSearchDialog] = useState(false);
+  const { messages, sendMessage, isStreaming, isReady } =
+    useChatStream(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
 
-  const title = currentSession?.title || t("chat.untitled", "Untitled Session");
-
-  // Auto-scroll to bottom
-  useMemo(() => {
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   const handleSend = useCallback(
     async (content: string) => {
-      // Attach media if any
-      const fullContent = attachments.length > 0
-        ? content + "\n\n" + attachments.map((a) => `[${a.name}](${a.url || ""})`).join("\n")
-        : content;
-      await sendMessage(fullContent);
-      setAttachments([]);
+      setError(null);
+      try {
+        await sendMessage(content);
+        setAttachments([]);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("error.sendFailed", "Failed to send message"),
+        );
+      }
     },
-    [sendMessage, attachments]
+    [sendMessage, t],
   );
 
-  const handleFileAdd = useCallback((file: File) => {
-    const isImage = file.type.startsWith("image/");
-    const url = URL.createObjectURL(file);
-    setAttachments((prev) => [
-      ...prev,
-      {
-        id: `att-${Date.now()}`,
-        name: file.name,
-        url: isImage ? url : undefined,
-        type: isImage ? "image" : "file",
-        file,
-      },
-    ]);
+  const handleRetry = useCallback(() => {
+    setError(null);
   }, []);
 
-  const handleAttachmentRemove = useCallback((id: string) => {
+  const handleRemoveAttachment = useCallback((id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
 
-  const handleVoiceRecording = useCallback((blob: Blob) => {
-    const url = URL.createObjectURL(blob);
-    setAttachments((prev) => [
-      ...prev,
-      {
-        id: `voice-${Date.now()}`,
-        name: `recording-${Date.now()}.webm`,
-        url,
-        type: "file",
-      },
-    ]);
-  }, []);
+  const isConnected = connectionStatus === "open";
 
   return (
     <div className="flex h-full flex-col">
       {/* Thread Header */}
-      <header className="flex items-center gap-2 px-4 py-2 border-b bg-background shrink-0">
+      <header className="flex items-center gap-2 border-b px-4 py-2 bg-background shrink-0">
         <Button
           variant="ghost"
           size="icon"
           onClick={toggleSidebar}
-          title={sidebarOpen ? t("chat.closeSidebar", "Close sidebar") : t("chat.openSidebar", "Open sidebar")}
+          title={sidebarOpen ? t("sidebar.close") : t("sidebar.open")}
         >
-          {sidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeft className="h-4 w-4" />}
+          {sidebarOpen ? (
+            <PanelLeftClose className="h-4 w-4" />
+          ) : (
+            <PanelLeft className="h-4 w-4" />
+          )}
         </Button>
 
-        <h1 className="flex-1 text-sm font-medium truncate min-w-0">{title}</h1>
+        <h1 className="flex-1 text-sm font-medium truncate">
+          {t("thread.title", "Thread")}
+        </h1>
 
-        <Button variant="ghost" size="icon" onClick={() => setShowRenameDialog(true)} title={t("chat.rename", "Rename")}>
-          <Pencil className="h-4 w-4" />
-        </Button>
+        <span
+          className={cn(
+            "h-2 w-2 rounded-full",
+            isConnected ? "bg-green-500" : "bg-yellow-500",
+          )}
+          title={
+            isConnected
+              ? t("connection.connected", "Connected")
+              : t("connection.disconnected", "Disconnected")
+          }
+        />
 
-        <Button variant="ghost" size="icon" onClick={() => setShowSearchDialog(true)} title={t("chat.search", "Search")}>
-          <Search className="h-4 w-4" />
-        </Button>
-
-        <Button variant="ghost" size="icon" onClick={() => setShowDeleteConfirm(true)} title={t("chat.delete", "Delete")}>
-          <Trash2 className="h-4 w-4" />
-        </Button>
-
-        <Button variant="ghost" size="icon" onClick={() => setSettingsOpen(true)} title={t("settings.title", "Settings")}>
-          <Settings className="h-4 w-4" />
-        </Button>
-
-        <ConnectionBadge connected={connectionStatus === "open"} />
-        <LanguageSwitcher />
         <ThemeToggle />
-        <Button variant="ghost" size="icon" onClick={logout} title={t("chat.logout", "Disconnect")}>
-          <LogOut className="h-4 w-4" />
-        </Button>
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto">
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center">
-            <div className="text-center space-y-3 max-w-md px-8">
-              <h2 className="text-xl font-semibold">
-                {t("chat.welcome", "Start a Conversation")}
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Empty State */}
+        {messages.length === 0 && !error && (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center space-y-3 max-w-md">
+              <h2 className="text-xl font-semibold text-foreground">
+                {t("thread.empty.title", "Welcome")}
               </h2>
-              <p className="text-sm text-muted-foreground">
-                {isReady
-                  ? t("chat.welcomeReady", "Send a message to start chatting with the AI agent.")
-                  : t("chat.welcomeConnecting", "Connecting to the agent...")}
-              </p>
+              <MarkdownText
+                className="text-sm"
+                streaming={false}
+              >
+                {t(
+                  "thread.empty.description",
+                  "Start a conversation by sending a message below. The AI agent will respond to your queries.",
+                )}
+              </MarkdownText>
+              {!isReady && (
+                <div className="flex items-center justify-center gap-2 text-muted-foreground text-sm">
+                  <div className="animate-spin h-4 w-4 border-2 border-primary border-t-transparent rounded-full" />
+                  {t("thread.empty.connecting", "Connecting to agent...")}
+                </div>
+              )}
             </div>
           </div>
-        ) : (
-          <div className="max-w-3xl mx-auto p-4 space-y-4">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
-            ))}
-            <div ref={bottomRef} />
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+            <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-destructive-foreground">
+                {t("error.title", "Something went wrong")}
+              </p>
+              <p className="text-sm text-muted-foreground mt-1">{error}</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRetry}
+              className="shrink-0"
+            >
+              <RefreshCw className="h-3 w-3 mr-1" />
+              {t("common.retry", "Retry")}
+            </Button>
           </div>
         )}
-      </div>
 
-      {/* Attachments */}
-      <AttachmentTileList
-        attachments={attachments}
-        onRemove={handleAttachmentRemove}
-        className="px-4"
-      />
+        {/* Message Bubbles */}
+        {messages.map((msg) => (
+          <MessageBubble key={msg.id} message={msg} />
+        ))}
 
-      {/* Composer */}
-      <div className="border-t bg-background shrink-0">
-        <div className="max-w-3xl mx-auto p-4">
-          <div className="flex items-end gap-2">
-            <label className="cursor-pointer p-2 hover:bg-muted rounded-lg transition-colors" title={t("chat.attach", "Attach file")}>
-              <Paperclip className="h-4 w-4 text-muted-foreground" />
-              <input
-                type="file"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileAdd(file);
-                  e.target.value = "";
-                }}
-                accept="image/*,.pdf,.doc,.docx,.txt,.json,.csv,.md"
-              />
-            </label>
-            <VoiceRecorder onRecordingComplete={handleVoiceRecording} />
-            <MessageInput
-              sessionId={sessionId}
-              onSend={handleSend}
-              disabled={!isReady || isStreaming}
-            />
+        {/* Streaming Indicator */}
+        {isStreaming && (
+          <div className="flex items-center gap-2 text-muted-foreground text-sm pl-2">
+            <div className="flex gap-1">
+              <span className="animate-bounce h-1.5 w-1.5 rounded-full bg-primary [animation-delay:0ms]" />
+              <span className="animate-bounce h-1.5 w-1.5 rounded-full bg-primary [animation-delay:150ms]" />
+              <span className="animate-bounce h-1.5 w-1.5 rounded-full bg-primary [animation-delay:300ms]" />
+            </div>
+            <span>{t("thread.streaming", "Generating response...")}</span>
           </div>
-        </div>
+        )}
+
+        <div ref={bottomRef} />
       </div>
 
-      {/* Dialogs */}
-      <DeleteConfirm
-        open={showDeleteConfirm}
-        onOpenChange={setShowDeleteConfirm}
-        onConfirm={() => {
-          useSessionStore.getState().deleteSession(sessionId);
-        }}
-        itemName={title}
-      />
+      {/* Attachments Preview */}
+      {attachments.length > 0 && (
+        <div className="border-t px-4 pt-2">
+          <AttachmentTileList
+            attachments={attachments}
+            onRemove={handleRemoveAttachment}
+          />
+        </div>
+      )}
 
-      <RenameChatDialog
-        open={showRenameDialog}
-        onOpenChange={setShowRenameDialog}
-        currentTitle={title}
-        onRename={(newTitle) => {
-          // TODO: call API to rename session
-          console.log("Rename to:", newTitle);
-        }}
+      {/* Message Input */}
+      <MessageInput
+        sessionId={sessionId}
+        onSend={handleSend}
+        disabled={!isReady || isStreaming}
       />
-
-      <SessionSearchDialog
-        open={showSearchDialog}
-        onOpenChange={setShowSearchDialog}
-        onSelect={(id) => {
-          useSessionStore.getState().setCurrentSession(id);
-        }}
-      />
-
-      <SettingsDialog />
     </div>
   );
 }
