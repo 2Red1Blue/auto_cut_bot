@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { apiClient } from "@/lib/api-client";
 
 export interface Session {
   id: string;
@@ -18,7 +19,7 @@ interface SessionStore {
   fetchSessions: () => Promise<void>;
 }
 
-export const useSessionStore = create<SessionStore>((set, get) => ({
+export const useSessionStore = create<SessionStore>((set) => ({
   sessions: [],
   currentSessionId: null,
   isLoading: false,
@@ -35,12 +36,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
 
   createSession: async () => {
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
-    if (!res.ok) throw new Error("Failed to create session");
-    const session = await res.json();
+    const session = await apiClient.createSession();
     set((state) => ({
       sessions: [session, ...state.sessions],
       currentSessionId: session.id,
@@ -49,20 +45,17 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
 
   deleteSession: async (id) => {
-    await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+    await apiClient.deleteSession(id);
     set((state) => ({
       sessions: state.sessions.filter((s) => s.id !== id),
-      currentSessionId:
-        state.currentSessionId === id ? null : state.currentSessionId,
+      currentSessionId: state.currentSessionId === id ? null : state.currentSessionId,
     }));
   },
 
   fetchSessions: async () => {
     set({ isLoading: true });
     try {
-      const res = await fetch("/api/sessions");
-      if (!res.ok) throw new Error("Failed to fetch sessions");
-      const sessions = await res.json();
+      const sessions = await apiClient.getSessions();
       set({ sessions: Array.isArray(sessions) ? sessions : [] });
     } catch (err) {
       console.error("Failed to fetch sessions:", err);

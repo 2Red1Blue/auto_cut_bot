@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { apiClient } from "@/lib/api-client";
 
 export interface Message {
   id: string;
@@ -26,10 +27,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
     set((state) => ({
       messagesBySession: {
         ...state.messagesBySession,
-        [sessionId]: [
-          ...(state.messagesBySession[sessionId] ?? []),
-          message,
-        ],
+        [sessionId]: [...(state.messagesBySession[sessionId] ?? []), message],
       },
     }));
   },
@@ -65,19 +63,9 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
     get().addMessage(sessionId, assistantMsg);
 
     try {
-      const res = await fetch("/api/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, content }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Failed to send message");
-      }
-
-      const data = await res.json();
+      const data = await apiClient.sendMessage(sessionId, content);
       get().updateMessage(sessionId, assistantMsg.id, {
-        content: data.content ?? data.message ?? JSON.stringify(data),
+        content: (data as any).content ?? (data as any).message ?? JSON.stringify(data),
         streaming: false,
       });
     } catch (err) {
@@ -92,10 +80,7 @@ export const useMessageStore = create<MessageStore>((set, get) => ({
   fetchMessages: async (sessionId) => {
     set({ isLoading: true });
     try {
-      const res = await fetch(`/api/sessions/${sessionId}`);
-      if (!res.ok) throw new Error("Failed to fetch messages");
-      const data = await res.json();
-      const messages = data.messages ?? data;
+      const messages = await apiClient.getMessages(sessionId);
       set((state) => ({
         messagesBySession: {
           ...state.messagesBySession,
