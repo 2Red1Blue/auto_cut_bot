@@ -76,3 +76,14 @@ __all__ = [
     # Render
     "StoryRenderTool",
 ]
+
+# Convenience: list of all pipeline tool classes for registration
+ALL_PIPELINE_TOOLS = [
+    SourceWindowsTool, WindowAnalysisTool, EventCardsTool,
+    EpisodeDigestsTool, ChapterDigestsTool, SeriesRegistryTool,
+    SeriesAssignmentTool, SeriesBibleTool, StoryCatalogTool,
+    StoryPortfolioTool, StoryTreatmentsTool, StoryScriptsTool,
+    StoryPreflightTool, StoryApprovalTool, StoryEvidenceTool,
+    SpanCandidatesTool, StoryPlansTool, StoryPlansMaterializeTool,
+    StoryQCTool, StoryQCReviewTool, StoryRenderTool,
+]

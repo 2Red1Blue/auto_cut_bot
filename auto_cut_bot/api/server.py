@@ -494,7 +494,7 @@ def create_app(
 
 
 async def handle_pipeline_run(request: web.Request) -> web.Response:
-    """POST /v1/pipeline/run — trigger a pipeline run.
+    """POST /v1/pipeline/run — trigger the agent to execute the pipeline.
 
     Request JSON:
         {
@@ -505,8 +505,14 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
             "stage_to": null
         }
 
+    The agent will:
+    1. Load the pipeline automation skill
+    2. Execute pipeline tools in _PIPELINE_ORDER sequence
+    3. Pause at human_review stages (story_approval, story_qc_review)
+    4. Report progress via the session
+
     Returns:
-        {"session_id": "...", "status": "started", "message": "..."}
+        {"session_id": "...", "status": "started", "pipeline_stages": [...]}
     """
     agent_loop = request.app[_AGENT_LOOP_KEY]
     request_timeout = request.app[_REQUEST_TIMEOUT_KEY]
@@ -527,18 +533,64 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
 
     session_key = f"pipeline:{book_id}:{uuid.uuid4().hex[:8]}"
 
-    # Build the trigger message
-    parts = [f"请开始自动剪辑流水线，book_id={book_id}"]
-    if source_path:
-        parts.append(f"视频源路径: {source_path}")
-    if stage_from:
-        parts.append(f"从 {stage_from} 阶段开始")
-    if stage_to:
-        parts.append(f"到 {stage_to} 阶段结束")
-    if mode == "auto":
-        parts.append("自动模式：所有非审批阶段自动执行，审批阶段暂停等待")
+    # Load the pipeline automation skill
+    from auto_cut_bot.agent.skills import SkillsLoader
+    loader = SkillsLoader()
+    skill_names = [
+        "ac_source_prep", "ac_series_knowledge", "ac_story_generation",
+        "ac_plan_orchestration", "ac_qc", "ac_render", "ac_shared_contracts",
+    ]
+    skills_context = ""
+    for name in skill_names:
+        try:
+            skill_content = loader.load_skill(name)
+            if skill_content:
+                skills_context += f"\n### Pipeline Skill: {name}\n\n{skill_content}\n"
+        except Exception:
+            pass
 
-    content = "，".join(parts) + "。"
+    # Build the structured pipeline trigger
+    stage_list = ""
+    if stage_from or stage_to:
+        from auto_cut_bot.pipeline.core.registry import _PIPELINE_ORDER
+        stages = _PIPELINE_ORDER
+        start = stages.index(stage_from) if stage_from else 0
+        end = stages.index(stage_to) + 1 if stage_to else len(stages)
+        stage_list = " → ".join(stages[start:end])
+
+    content = (
+        f"执行自动剪辑流水线。\n\n"
+        f"book_id: {book_id}\n"
+        f"source_path: {source_path}\n"
+        f"mode: {mode}\n"
+    )
+    if stage_list:
+        content += f"stages: {stage_list}\n"
+
+    if mode == "auto":
+        content += (
+            "\n自动模式规则：\n"
+            "1. 按顺序执行所有非审批阶段\n"
+            "2. 遇到 story_approval 和 story_qc_review 阶段时暂停\n"
+            "3. 暂停后等待 WebUI 人工审批指令\n"
+            "4. 收到审批结果后继续执行\n"
+        )
+
+    # Build pipeline tools registry
+    from auto_cut_bot.agent.tools.pipeline import ALL_PIPELINE_TOOLS
+    from auto_cut_bot.agent.tools.registry import ToolRegistry
+    from auto_cut_bot.agent.tools.context import ToolContext
+
+    pipeline_tools = ToolRegistry()
+    for tool_cls in ALL_PIPELINE_TOOLS:
+        if hasattr(tool_cls, 'create'):
+            ctx = ToolContext(
+                config=None,
+                workspace=agent_loop._workspace,
+                bus=agent_loop._bus,
+            )
+            tool = tool_cls.create(ctx)
+            pipeline_tools.register(tool)
 
     try:
         response = await asyncio.wait_for(
@@ -548,6 +600,7 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
                 channel="api",
                 chat_id=book_id,
                 sender_id="api",
+                tools=pipeline_tools,
                 persist_user_message=True,
             ),
             timeout=request_timeout,
@@ -556,7 +609,7 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
         return web.json_response({
             "session_id": session_key,
             "status": "processing",
-            "message": "流水线已启动，正在处理中（超时未完成）",
+            "message": "流水线已启动，正在后台执行。通过 WebUI 或 API 查询进度。",
         })
     except Exception as e:
         logger.exception("Pipeline run failed for %s", book_id)
