@@ -1,8 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@plugin "@tailwindcss/typography";
-@plugin "tailwindcss-animate";
 
 /* ===================================================================
    Theme — neutral palette, shadcn/ui compatible (new-york style)
