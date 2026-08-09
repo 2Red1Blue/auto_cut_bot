@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8765";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   async rewrites() {
     return [
       // API proxy — route backend requests through Next.js
