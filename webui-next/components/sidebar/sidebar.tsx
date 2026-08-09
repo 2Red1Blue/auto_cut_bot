@@ -1,10 +1,13 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useSessions } from "@/hooks/use-sessions";
 import { Button } from "@/components/ui/button";
-import { Plus, Search, Trash2 } from "lucide-react";
+import { Plus, Search, MessageSquare, Film, Workflow } from "lucide-react";
 import { ChatItem } from "./chat-item";
 import { useState } from "react";
+import { cn } from "@/lib/utils";
 
 export function Sidebar() {
   const {
@@ -15,6 +18,7 @@ export function Sidebar() {
     deleteSession,
   } = useSessions();
   const [search, setSearch] = useState("");
+  const pathname = usePathname();
 
   const filtered = sessions.filter((s) =>
     (s.title || "Untitled").toLowerCase().includes(search.toLowerCase())
@@ -24,8 +28,38 @@ export function Sidebar() {
     await createSession();
   };
 
+  const navItems = [
+    { href: "/", label: "聊天", icon: MessageSquare },
+    { href: "/media", label: "素材库", icon: Film },
+    { href: "/pipeline", label: "Pipeline", icon: Workflow },
+  ];
+
   return (
     <aside className="w-64 border-r flex flex-col bg-sidebar text-sidebar-foreground h-screen shrink-0">
+      {/* Navigation */}
+      <nav className="p-3 border-b border-sidebar-border space-y-1">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const isActive = pathname === item.href;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn(
+                "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                isActive
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+              )}
+            >
+              <Icon className="h-4 w-4" />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
+
+      {/* Chat Sessions */}
       <div className="p-3 border-b border-sidebar-border flex items-center gap-2">
         <Button
           variant="outline"

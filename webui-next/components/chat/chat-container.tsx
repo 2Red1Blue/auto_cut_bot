@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { PanelLeftClose, PanelLeft, LogOut } from "lucide-react";
 import { useUIStore } from "@/lib/stores/ui-store";
 import { Sidebar } from "@/components/sidebar/sidebar";
-import { ChatView } from "@/components/chat/chat-view";
+import { ThreadShell } from "@/components/chat/thread-shell";
 import { useSessionStore } from "@/lib/stores/session-store";
 
 export function ChatContainer() {
@@ -69,7 +69,7 @@ export function ChatContainer() {
 
         {/* Chat area */}
         {currentSessionId ? (
-          <ChatView sessionId={currentSessionId} />
+          <ThreadShell sessionId={currentSessionId} />
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center space-y-3">
