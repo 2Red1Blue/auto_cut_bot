@@ -5,9 +5,6 @@ import { useClient } from "@/providers/client-provider";
 import { useMessageStore, type Message } from "@/lib/stores/message-store";
 import type {
   InboundEvent,
-  UIMessage,
-  ToolProgressEvent,
-  UIFileEdit,
 } from "@/lib/types";
 
 interface ChatStreamOptions {
