@@ -25,8 +25,10 @@ export function StreamErrorNotice({ error, onDismiss }: StreamErrorNoticeProps) 
     >
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
       <div className="flex-1 min-w-0">
-        <p className="font-medium">{error.title || t("error.streamError", "Stream Error")}</p>
-        <p className="mt-0.5 text-destructive/80">{error.message}</p>
+        <p className="font-medium">{error.kind || t("error.streamError", "Stream Error")}</p>
+        {"detail" in error && (
+          <p className="mt-0.5 text-destructive/80">{(error as any).detail || (error as any).reason}</p>
+        )}
       </div>
       <Button variant="ghost" size="icon" className="h-5 w-5 shrink-0" onClick={onDismiss}>
         <X className="h-3 w-3" />

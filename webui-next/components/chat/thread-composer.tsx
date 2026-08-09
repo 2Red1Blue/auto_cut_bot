@@ -1,16 +1,16 @@
 "use client";
 
-import { useState, useRef, useCallback, type KeyboardEvent } from "react";
-import { useTranslation } from "react-i18next";
-import { ArrowUp, Square, Paperclip, Mic, Loader2 } from "lucide-react";
+import { useState, useRef, useCallback, useEffect, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ArrowUp, Square, Paperclip, Mic, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { AttachmentTileList, type Attachment } from "./attachment-tile";
 import type { CliAppInfo, McpPresetInfo } from "@/lib/types";
 
 interface ThreadComposerProps {
   sessionId: string;
-  onSend: (content: string, attachments?: Attachment[]) => Promise<void>;
+  onSend: (content: string, attachments?: Attachment[]) => void;
   onStop?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
@@ -18,36 +18,42 @@ interface ThreadComposerProps {
   mcpPresets?: McpPresetInfo[];
 }
 
+let nextId = 0;
+function uid(prefix: string) {
+  return `${prefix}-${Date.now()}-${++nextId}`;
+}
+
 export function ThreadComposer({
-  sessionId,
   onSend,
   onStop,
-  disabled,
-  isStreaming,
-  cliApps,
-  mcpPresets,
+  disabled = false,
+  isStreaming = false,
 }: ThreadComposerProps) {
   const { t } = useTranslation();
-  const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
+  const [content, setContent] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [recording, setRecording] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
-  const handleSend = useCallback(async () => {
-    const content = input.trim();
-    if (!content || sending || disabled) return;
-    setInput("");
-    setSending(true);
-    try {
-      await onSend(content, attachments.length > 0 ? attachments : undefined);
-      setAttachments([]);
-    } finally {
-      setSending(false);
-      textareaRef.current?.focus();
-    }
-  }, [input, sending, disabled, attachments, onSend]);
+  // Auto-resize textarea to fit content, capped at 200px
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [content]);
+
+  const handleSend = useCallback(() => {
+    const trimmed = content.trim();
+    if (!trimmed && attachments.length === 0) return;
+    if (disabled || isStreaming) return;
+    onSend(trimmed, attachments.length > 0 ? attachments : undefined);
+    setContent("");
+    setAttachments([]);
+  }, [content, attachments, disabled, isStreaming, onSend]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -56,112 +62,118 @@ export function ThreadComposer({
         handleSend();
       }
     },
-    [handleSend]
+    [handleSend],
   );
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const isImage = file.type.startsWith("image/");
-    const url = isImage ? URL.createObjectURL(file) : undefined;
-    setAttachments((prev) => [
-      ...prev,
-      { id: `att-${Date.now()}`, name: file.name, url, type: isImage ? "image" : "file", file },
-    ]);
-    e.target.value = "";
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const newAttachments: Attachment[] = Array.from(files).map((file) => ({
+      id: uid("att"),
+      name: file.name,
+      type: (file.type.startsWith("image/") ? "image" : "file") as Attachment["type"],
+      url: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined,
+      file,
+    }));
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }, []);
 
-  const handleVoiceToggle = useCallback(async () => {
-    if (recording) {
-      setRecording(false);
-      return;
-    }
+  const removeAttachment = useCallback((id: string) => {
+    setAttachments((prev) => {
+      const att = prev.find((a) => a.id === id);
+      if (att?.url) URL.revokeObjectURL(att.url);
+      return prev.filter((a) => a.id !== id);
+    });
+  }, []);
+
+  // Voice recording
+  const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      recorder.ondataavailable = (e) => chunks.push(e.data);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/mp4";
+      const recorder = new MediaRecorder(stream, { mimeType });
+      chunksRef.current = [];
+      recorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) chunksRef.current.push(ev.data);
+      };
       recorder.onstop = () => {
-        const blob = new Blob(chunks, { type: recorder.mimeType });
-        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        stream.getTracks().forEach((tr) => tr.stop());
+        const ext = mimeType.includes("webm") ? "webm" : "mp4";
         setAttachments((prev) => [
           ...prev,
           {
-            id: `voice-${Date.now()}`,
-            name: `recording-${Date.now()}.webm`,
-            url: URL.createObjectURL(blob),
+            id: uid("voice"),
+            name: `recording.${ext}`,
             type: "file",
+            file: new File([blob], `recording.${ext}`, { type: mimeType }),
           },
         ]);
       };
+      mediaRecorderRef.current = recorder;
       recorder.start();
       setRecording(true);
-      setTimeout(() => recorder.stop(), 10000); // 10s max
     } catch {
-      // Permission denied
+      // Mic permission denied — silently ignore
     }
-  }, [recording]);
+  }, []);
 
-  const canSend = input.trim().length > 0 && !disabled && !sending;
+  const stopRecording = useCallback(() => {
+    mediaRecorderRef.current?.stop();
+    setRecording(false);
+  }, []);
+
+  const canSend = (content.trim() || attachments.length > 0) && !disabled && !isStreaming;
 
   return (
-    <div className="border-t bg-background shrink-0">
-      <AttachmentTileList
-        attachments={attachments}
-        onRemove={(id) => setAttachments((prev) => prev.filter((a) => a.id !== id))}
-        className="px-4 pt-2"
-      />
-
-      <div className="max-w-3xl mx-auto p-4">
-        <div className="flex items-end gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleFileChange}
-            accept="image/*,.pdf,.doc,.docx,.txt,.json,.csv,.md"
-          />
-
+    <div className="border-t bg-background p-4">
+      {attachments.length > 0 && (
+        <div className="mb-2">
+          <AttachmentTileList attachments={attachments} onRemove={removeAttachment} />
+        </div>
+      )}
+      <div className="flex items-end gap-2 max-w-3xl mx-auto">
+        <textarea
+          ref={textareaRef}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={t("chat.input.placeholder", "Type a message...")}
+          rows={1}
+          disabled={disabled}
+          className="flex-1 min-h-[44px] max-h-[200px] rounded-lg border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+        />
+        <div className="flex items-center gap-1 shrink-0">
           <Button
             variant="ghost"
             size="icon"
-            onClick={() => fileInputRef.current?.click()}
             disabled={disabled}
-            title={t("composer.attach", "Attach file")}
+            onClick={() => fileInputRef.current?.click()}
+            title={t("chat.attach", "Attach file")}
           >
             <Paperclip className="h-4 w-4" />
           </Button>
+          <input ref={fileInputRef} type="file" multiple hidden onChange={handleFileChange} />
 
           <Button
             variant="ghost"
             size="icon"
-            onClick={handleVoiceToggle}
             disabled={disabled}
-            className={cn(recording && "text-red-500")}
-            title={recording ? t("composer.stopRecording", "Stop recording") : t("composer.record", "Record audio")}
+            onClick={recording ? stopRecording : startRecording}
+            className={cn(recording && "text-red-500 animate-pulse")}
+            title={recording ? t("chat.stopRecording", "Stop recording") : t("chat.startRecording", "Start recording")}
           >
-            <Mic className="h-4 w-4" />
+            {recording ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
           </Button>
 
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={t("composer.placeholder", "Type a message... (Enter to send, Shift+Enter for new line)")}
-            className="flex-1 min-h-[44px] max-h-[200px] rounded-lg border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
-            rows={1}
-            disabled={disabled || sending}
-            autoFocus
-          />
-
           {isStreaming ? (
-            <Button variant="destructive" size="icon" onClick={onStop} title={t("composer.stop", "Stop")}>
+            <Button size="icon" onClick={onStop} variant="destructive" title={t("chat.stop", "Stop")}>
               <Square className="h-4 w-4" />
             </Button>
           ) : (
-            <Button onClick={handleSend} size="icon" disabled={!canSend}>
-              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+            <Button size="icon" onClick={handleSend} disabled={!canSend} title={t("chat.send", "Send")}>
+              <ArrowUp className="h-4 w-4" />
             </Button>
           )}
         </div>

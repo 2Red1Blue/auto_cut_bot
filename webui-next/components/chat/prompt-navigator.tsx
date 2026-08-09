@@ -32,11 +32,9 @@ export function PromptNavigator({ messages, onJumpToPrompt }: PromptNavigatorPro
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-1 text-xs" title={t("prompts.navigate", "Navigate prompts")}>
+      <PopoverTrigger render={<Button variant="ghost" size="sm" className="gap-1 text-xs" title={t("prompts.navigate", "Navigate prompts")} />}>
           <MessageCircle className="h-3 w-3" />
           {userPrompts.length}
-        </Button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-1" align="start">
         <div className="max-h-60 overflow-y-auto space-y-0.5">
