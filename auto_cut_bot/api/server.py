@@ -487,6 +487,84 @@ def create_app(
     app.middlewares.append(auth_middleware)
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
+    app.router.add_post("/v1/pipeline/run", handle_pipeline_run)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
     return app
+
+
+async def handle_pipeline_run(request: web.Request) -> web.Response:
+    """POST /v1/pipeline/run — trigger a pipeline run.
+
+    Request JSON:
+        {
+            "book_id": "test-001",
+            "mode": "auto",
+            "source_path": "/data/videos/test-001.mp4",
+            "stage_from": null,
+            "stage_to": null
+        }
+
+    Returns:
+        {"session_id": "...", "status": "started", "message": "..."}
+    """
+    agent_loop = request.app[_AGENT_LOOP_KEY]
+    request_timeout = request.app[_REQUEST_TIMEOUT_KEY]
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_json(400, "Invalid JSON body")
+
+    book_id = body.get("book_id")
+    if not book_id:
+        return _error_json(400, "book_id is required")
+
+    mode = body.get("mode", "auto")
+    source_path = body.get("source_path", "")
+    stage_from = body.get("stage_from")
+    stage_to = body.get("stage_to")
+
+    session_key = f"pipeline:{book_id}:{uuid.uuid4().hex[:8]}"
+
+    # Build the trigger message
+    parts = [f"请开始自动剪辑流水线，book_id={book_id}"]
+    if source_path:
+        parts.append(f"视频源路径: {source_path}")
+    if stage_from:
+        parts.append(f"从 {stage_from} 阶段开始")
+    if stage_to:
+        parts.append(f"到 {stage_to} 阶段结束")
+    if mode == "auto":
+        parts.append("自动模式：所有非审批阶段自动执行，审批阶段暂停等待")
+
+    content = "，".join(parts) + "。"
+
+    try:
+        response = await asyncio.wait_for(
+            agent_loop.process_direct(
+                content=content,
+                session_key=session_key,
+                channel="api",
+                chat_id=book_id,
+                sender_id="api",
+                persist_user_message=True,
+            ),
+            timeout=request_timeout,
+        )
+    except asyncio.TimeoutError:
+        return web.json_response({
+            "session_id": session_key,
+            "status": "processing",
+            "message": "流水线已启动，正在处理中（超时未完成）",
+        })
+    except Exception as e:
+        logger.exception("Pipeline run failed for %s", book_id)
+        return _error_json(500, f"Pipeline error: {e}")
+
+    result = response.content if response else ""
+    return web.json_response({
+        "session_id": session_key,
+        "status": "completed",
+        "message": str(result)[:500],
+    })
