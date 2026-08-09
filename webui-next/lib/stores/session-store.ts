@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { apiClient } from "@/lib/api-client";
+import type { ConnectionStatus, ChatSummary, UIMessage } from "@/lib/types";
 
 export interface Session {
   id: string;
@@ -28,10 +29,12 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   setCurrentSession: (id) => {
     set({ currentSessionId: id });
-    if (id) {
-      window.history.pushState(null, "", `/${id}`);
-    } else {
-      window.history.pushState(null, "", "/");
+    if (typeof window !== "undefined") {
+      if (id) {
+        window.history.pushState(null, "", `/${id}`);
+      } else {
+        window.history.pushState(null, "", "/");
+      }
     }
   },
 
