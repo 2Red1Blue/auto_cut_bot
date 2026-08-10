@@ -375,42 +375,46 @@ def merge(
         if category in (CATEGORY_AUTHOR_INTENT, CATEGORY_VIDEO_VERIFIABLE):
             severity = _conflict_severity(category)
 
-            if mode == "auto" and category == CATEGORY_AUTHOR_INTENT:
-                # AUTO mode: Agent resolves author_intent conflicts automatically.
-                # LLM is preferred, API value is logged as provenance.
+            if category == CATEGORY_AUTHOR_INTENT:
+                # Per design doc §3.3: author_intent conflicts → PENDING queue,
+                # canonical temporarily uses LLM value, pipeline NOT blocked.
+                # Agent reviews asynchronously and calls agent_resolve() to override.
                 canonical[field] = preferred_value
                 provenance.append(
                     FieldProvenance(
                         field=field, table=table, category=category,
-                        resolution=ResolutionStatus.AUTO_RESOLVED,
+                        resolution=ResolutionStatus.PENDING,
                         winner=preferred_label,
                         reason=(
-                            f"'{field}' differs but AUTO mode auto-resolves "
-                            f"author_intent with {preferred_label} preferred."
+                            f"'{field}' differs between sources. "
+                            f"Category '{category}' → pending conflict queue. "
+                            f"Tentatively using {preferred_label} value (non-blocking)."
                         ),
                     )
                 )
-                # Still log as info-level conflict for Agent review
                 conflicts.append(
                     FieldConflict(
                         field=field, table=table, category=category,
-                        severity=ConflictSeverity.INFO,
+                        severity=ConflictSeverity.WARNING,
                         value_a=value_a, value_b=value_b,
                         preferred_source=preferred,
-                        suggested_action=f"Agent auto-resolved: {preferred_label} preferred.",
+                        suggested_action=(
+                            f"Agent review: '{field}' has semantic disagreement. "
+                            f"Current: {preferred_label}={preferred_value}. "
+                            f"Alternative: {other_label}={other_value}. "
+                            f"Call agent_resolve() to override if needed."
+                        ),
                     )
                 )
-            else:
-                # MANUAL mode or VIDEO_VERIFIABLE: create pending conflict
-                resolution_status = (
-                    ResolutionStatus.HIGH_SEVERITY
-                    if severity == ConflictSeverity.HIGH
-                    else ResolutionStatus.PENDING
-                )
+            elif category == CATEGORY_VIDEO_VERIFIABLE:
+                # Per design doc §3.4: video_verifiable → VLM arbitration,
+                # severity=high, blocking if hard dependency.
+                resolution_status = ResolutionStatus.HIGH_SEVERITY
                 canonical[field] = preferred_value
                 conflict = FieldConflict(
                     field=field, table=table, category=category,
-                    severity=severity, value_a=value_a, value_b=value_b,
+                    severity=ConflictSeverity.HIGH,
+                    value_a=value_a, value_b=value_b,
                     preferred_source=preferred,
                     suggested_action=_suggested_action(category, field, table),
                 )
@@ -421,7 +425,7 @@ def merge(
                         resolution=resolution_status, winner=preferred_label,
                         reason=(
                             f"'{field}' differs between sources. "
-                            f"Category '{category}' requires review. "
+                            f"Category '{category}' requires VLM verification. "
                             f"Tentatively using {preferred_label} value."
                         ),
                     )

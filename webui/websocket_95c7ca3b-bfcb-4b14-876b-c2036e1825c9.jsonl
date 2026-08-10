@@ -1,0 +1,7 @@
+{"event":"stream_end","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","stream_id":"websocket:95c7ca3b-bfcb-4b14-876b-c2036e1825c9:1786362467550113000:0","created_at_ms":1786362467590}
+{"event":"message","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","text":"Error calling LLM: 'ascii' codec can't encode characters in position 7-12: ordinal not in range(128)","latency_ms":39,"created_at_ms":1786362467590}
+{"event":"turn_end","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","latency_ms":39,"goal_state":{"active":false},"created_at_ms":1786362467591}
+{"event":"user","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","text":"你好测试","turn_id":"user-1786362640206","turn_phase":"user","turn_seq":1,"created_at_ms":1786362640215}
+{"event":"stream_end","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","stream_id":"websocket:95c7ca3b-bfcb-4b14-876b-c2036e1825c9:1786362640217749000:0","turn_id":"user-1786362640206","turn_phase":"answer","turn_seq":2,"created_at_ms":1786362640318}
+{"event":"message","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","text":"Error calling LLM: 'ascii' codec can't encode characters in position 7-12: ordinal not in range(128)","latency_ms":99,"turn_id":"user-1786362640206","turn_phase":"answer","turn_seq":3,"created_at_ms":1786362640318}
+{"event":"turn_end","chat_id":"95c7ca3b-bfcb-4b14-876b-c2036e1825c9","latency_ms":99,"goal_state":{"active":false},"turn_id":"user-1786362640206","turn_phase":"complete","turn_seq":4,"created_at_ms":1786362640318}

@@ -144,41 +144,23 @@ python3 /absolute/skill/scripts/assemble_series_bible.py \
 
 ## Multi-Source Conflict Resolution
 
-Series Registry 在将人物数据写入 DB 后，自动运行多源冲突解决流程：
+Per design doc §3.3: merge_operator 只做**检测**，不做**裁决**。裁决交给 Agent。
 
-### 数据源
+### 合并策略 (非阻塞)
 
-| Source | ID | Description |
-|--------|----|-------------|
-| LLM    | `llm` | Series Registry 从剧集摘要中提取的人物属性 |
-| API    | `api` | 平台内容 API 提供的目录数据（人物名、角色、简介等） |
+| 字段类别 | 策略 | 冲突处理 |
+|----------|------|---------|
+| 客观可测量 (duration, timestamps) | API 值进 canonical, auto_resolved | 不阻塞 |
+| 作者意图 (persona, relationship) | LLM 值暂用 canonical, 写 pending 冲突 | **不阻塞** |
+| API 独有 (voice_timbre) | 直接并入 | 无冲突 |
+| 视频可验证 (location, characters) | VLM 仲裁, severity=high | 阻塞条件: high + hard dependency |
 
-### 合并策略 (auto_policy)
+### 关键原则
 
-| 字段类型 | 字段 | 策略 | 说明 |
-|----------|------|------|------|
-| 标量字段 | persona, traits, tone, voice_timbre, visual_features, relationship, role | LLM 优先 | LLM 值为空时回退到 API |
-| 并集字段 | personality, aliases | 取并集 | 两个来源的值合并去重 |
-| 结构字段 | first_episode, last_episode | LLM 优先 | 记录首次/最后出场集数 |
-
-### 数据流
-
-```
-series_registry subjects
-        │
-        ├─── merge_operator(llm_data, api_data)
-        │       │
-        │       ├─── canonical values ──→ UPDATE subjects
-        │       ├─── provenance records ──→ INSERT INTO source_provenance
-        │       └─── conflict records ──→ UPSERT source_conflicts
-        │
-        ▼
-  DB contains canonical row + full provenance + pending conflicts
-```
-
-### Provenance (source_provenance)
-
-每条记录追踪一个字段的每个来源提供的值：
+- **冲突不阻塞流程** — canonical 暂用首选值，下游正常消费
+- **Agent 异步审查** — pending 冲突由 Agent 事后审查
+- **Agent 覆盖** — 调用 `agent_resolve()` 覆盖任何值
+- **阻断规则** — 仅 video_verifiable + high severity + hard dependency 才阻断
 
 | Column | Description |
 |--------|-------------|

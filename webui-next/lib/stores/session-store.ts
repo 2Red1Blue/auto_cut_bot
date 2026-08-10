@@ -54,13 +54,18 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           ? ((data as Record<string, unknown>).sessions as ChatSummary[])
           : [];
       // Map API response (key-based) to Session (id-based)
-      const sessions: Session[] = (raw as unknown as Array<Record<string, unknown>>).map((s) => ({
-        id: (s.key as string) || "",
-        title: (s.title as string) || undefined,
-        preview: (s.preview as string) || undefined,
-        createdAt: (s.createdAt ?? s.created_at) as string || undefined,
-        updatedAt: (s.updatedAt ?? s.updated_at) as string || undefined,
-      }));
+      const sessions: Session[] = (raw as unknown as Array<Record<string, unknown>>).map((s) => {
+        const key = (s.key as string) || "";
+        // Strip channel prefix (e.g. "websocket:uuid" -> "uuid")
+        const id = key.includes(":") ? key.split(":").pop()! : key;
+        return {
+          id,
+          title: (s.title as string) || undefined,
+          preview: (s.preview as string) || undefined,
+          createdAt: (s.createdAt ?? s.created_at) as string || undefined,
+          updatedAt: (s.updatedAt ?? s.updated_at) as string || undefined,
+        };
+      });
       set({ sessions });
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
