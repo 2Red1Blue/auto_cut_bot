@@ -47,6 +47,7 @@ from auto_cut_bot.agent.tools.pipeline.story_qc import StoryQCTool
 from auto_cut_bot.agent.tools.pipeline.story_qc_review import StoryQCReviewTool
 from auto_cut_bot.agent.tools.pipeline.story_render import StoryRenderTool
 from auto_cut_bot.agent.tools.pipeline.database_write import DatabaseWriteTool
+from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
 
 __all__ = [
     # Source Prep
@@ -77,6 +78,8 @@ __all__ = [
     # Render
     "StoryRenderTool",
     "DatabaseWriteTool",
+    # Orchestrator
+    "PipelineOrchestratorTool",
 ]
 
 # Convenience: list of all pipeline tool classes for registration
@@ -88,5 +91,5 @@ ALL_PIPELINE_TOOLS = [
     StoryPreflightTool, StoryApprovalTool, StoryEvidenceTool,
     SpanCandidatesTool, StoryPlansTool, StoryPlansMaterializeTool,
     StoryQCTool, StoryQCReviewTool, StoryRenderTool,
-    DatabaseWriteTool,
+    DatabaseWriteTool, PipelineOrchestratorTool,
 ]

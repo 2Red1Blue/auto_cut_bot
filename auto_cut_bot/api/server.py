@@ -39,6 +39,8 @@ __all__ = (
     "_save_base64_data_url",
     "create_app",
     "handle_chat_completions",
+    "handle_pipeline_run",
+    "handle_pipeline_status",
 )
 
 
@@ -488,13 +490,17 @@ def create_app(
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/pipeline/run", handle_pipeline_run)
+    app.router.add_get("/v1/pipeline/status", handle_pipeline_status)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
     return app
 
 
 async def handle_pipeline_run(request: web.Request) -> web.Response:
-    """POST /v1/pipeline/run — trigger the agent to execute the pipeline.
+    """POST /v1/pipeline/run — trigger the pipeline orchestrator directly.
+
+    Uses the PipelineOrchestratorTool to run all 21 stages in sequence,
+    bypassing the LLM agent loop for efficiency.
 
     Request JSON:
         {
@@ -502,21 +508,15 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
             "mode": "auto",
             "source_path": "/data/videos/test-001.mp4",
             "stage_from": null,
-            "stage_to": null
+            "stage_to": null,
+            "backend": "qwen",
+            "dry_run": false,
+            "force": false
         }
 
-    The agent will:
-    1. Load the pipeline automation skill
-    2. Execute pipeline tools in _PIPELINE_ORDER sequence
-    3. Pause at human_review stages (story_approval, story_qc_review)
-    4. Report progress via the session
-
     Returns:
-        {"session_id": "...", "status": "started", "pipeline_stages": [...]}
+        {"job_root": "...", "status": "completed", "stages": {...}}
     """
-    agent_loop = request.app[_AGENT_LOOP_KEY]
-    request_timeout = request.app[_REQUEST_TIMEOUT_KEY]
-
     try:
         body = await request.json()
     except Exception:
@@ -530,94 +530,152 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
     source_path = body.get("source_path", "")
     stage_from = body.get("stage_from")
     stage_to = body.get("stage_to")
+    backend = body.get("backend")
+    dry_run = body.get("dry_run", False)
+    force = body.get("force", False)
 
-    session_key = f"pipeline:{book_id}:{uuid.uuid4().hex[:8]}"
+    # Derive job_root from book_id — use a configured workspace or cwd
+    import os as _os
+    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
+    job_root = Path(workspace) / "jobs" / book_id
 
-    # Load the pipeline automation skill
-    from auto_cut_bot.agent.skills import SkillsLoader
-    loader = SkillsLoader()
-    skill_names = [
-        "ac_source_prep", "ac_series_knowledge", "ac_story_generation",
-        "ac_plan_orchestration", "ac_qc", "ac_render", "ac_shared_contracts",
-    ]
-    skills_context = ""
-    for name in skill_names:
+    # Build orchestrator kwargs
+    orchestrator_kwargs: dict[str, Any] = {
+        "job_root": str(job_root),
+        "mode": mode,
+        "dry_run": dry_run,
+        "force": force,
+    }
+    if backend:
+        orchestrator_kwargs["backend"] = backend
+    if stage_from:
+        orchestrator_kwargs["from_stage"] = stage_from
+    if stage_to:
+        orchestrator_kwargs["to_stage"] = stage_to
+    if source_path:
+        source_p = Path(source_path)
+        if source_p.is_file():
+            orchestrator_kwargs["input_root"] = str(source_p.parent)
+        elif source_p.is_dir():
+            orchestrator_kwargs["input_root"] = str(source_p)
+        orchestrator_kwargs["source_kind"] = "local"
+
+    # Use PipelineOrchestratorTool directly — no LLM round-trips needed
+    from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
+
+    tool = PipelineOrchestratorTool()
+    result = await tool.execute(**orchestrator_kwargs)
+
+    # Read project.json for stage status
+    project_path = job_root / "project.json"
+    stages_summary: dict[str, Any] = {}
+    if project_path.is_file():
+        import json as _json
+        project = _json.loads(project_path.read_text(encoding="utf-8"))
+        stages_summary = project.get("stages", {})
+
+    response_status = "completed"
+    if "failed" in str(result):
+        response_status = "failed"
+
+    return web.json_response({
+        "job_root": str(job_root),
+        "book_id": book_id,
+        "status": response_status,
+        "message": str(result)[:1000],
+        "stages": stages_summary,
+    })
+
+
+async def handle_pipeline_status(request: web.Request) -> web.Response:
+    """GET /v1/pipeline/status?job_root=<path> — query pipeline progress.
+
+    Reads project.json from the job directory and returns:
+    - Overall status (pending / running / completed / failed)
+    - Per-stage status with timestamps
+    - Stage completion percentage
+
+    Query params:
+        job_root: Path to the pipeline job directory (required)
+
+    Returns:
+        {
+            "job_root": "...",
+            "overall_status": "completed",
+            "progress": "15/21",
+            "stages": {...}
+        }
+    """
+    import os as _os
+
+    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
+
+    # Support both job_root and book_id query params
+    job_root = request.query.get("job_root")
+    book_id = request.query.get("book_id")
+
+    if not job_root and not book_id:
+        return _error_json(400, "job_root or book_id query parameter is required")
+
+    if book_id and not job_root:
+        job_root = str(Path(workspace) / "jobs" / book_id)
+
+    project_path = Path(job_root) / "project.json"  # type: ignore[arg-type]
+    if not project_path.is_file():
+        return web.json_response({
+            "job_root": job_root,
+            "overall_status": "not_started",
+            "progress": "0/0",
+            "stages": {},
+            "message": "No project.json found — pipeline has not been started.",
+        })
+
+    try:
+        import json as _json
+        project = _json.loads(project_path.read_text(encoding="utf-8"))
+    except Exception:
+        return _error_json(500, "Failed to read project.json")
+
+    stages = project.get("stages", {})
+    if not isinstance(stages, dict):
+        stages = {}
+
+    completed = sum(
+        1 for s in stages.values()
+        if isinstance(s, dict) and s.get("status") == "completed"
+    )
+    failed = sum(
+        1 for s in stages.values()
+        if isinstance(s, dict) and s.get("status") == "failed"
+    )
+    total = len(stages)
+
+    if failed > 0:
+        overall = "failed"
+    elif completed == total and total > 0:
+        overall = "completed"
+    elif completed > 0:
+        overall = "in_progress"
+    else:
+        overall = "not_started"
+
+    # Check for failure.json
+    failure_path = Path(job_root) / "failure.json"  # type: ignore[arg-type]
+    failure_info = None
+    if failure_path.is_file():
         try:
-            skill_content = loader.load_skill(name)
-            if skill_content:
-                skills_context += f"\n### Pipeline Skill: {name}\n\n{skill_content}\n"
+            failure_info = _json.loads(failure_path.read_text(encoding="utf-8"))
         except Exception:
             pass
 
-    # Build the structured pipeline trigger
-    stage_list = ""
-    if stage_from or stage_to:
-        from auto_cut_bot.pipeline.core.registry import _PIPELINE_ORDER
-        stages = _PIPELINE_ORDER
-        start = stages.index(stage_from) if stage_from else 0
-        end = stages.index(stage_to) + 1 if stage_to else len(stages)
-        stage_list = " → ".join(stages[start:end])
-
-    content = (
-        f"执行自动剪辑流水线。\n\n"
-        f"book_id: {book_id}\n"
-        f"source_path: {source_path}\n"
-        f"mode: {mode}\n"
-    )
-    if stage_list:
-        content += f"stages: {stage_list}\n"
-
-    if mode == "auto":
-        content += (
-            "\n自动模式规则：\n"
-            "1. 按顺序执行所有非审批阶段\n"
-            "2. 遇到 story_approval 和 story_qc_review 阶段时暂停\n"
-            "3. 暂停后等待 WebUI 人工审批指令\n"
-            "4. 收到审批结果后继续执行\n"
-        )
-
-    # Build pipeline tools registry
-    from auto_cut_bot.agent.tools.pipeline import ALL_PIPELINE_TOOLS
-    from auto_cut_bot.agent.tools.registry import ToolRegistry
-    from auto_cut_bot.agent.tools.context import ToolContext
-
-    pipeline_tools = ToolRegistry()
-    for tool_cls in ALL_PIPELINE_TOOLS:
-        if hasattr(tool_cls, 'create'):
-            ctx = ToolContext(
-                config=None,
-                workspace=agent_loop._workspace,
-                bus=agent_loop._bus,
-            )
-            tool = tool_cls.create(ctx)
-            pipeline_tools.register(tool)
-
-    try:
-        response = await asyncio.wait_for(
-            agent_loop.process_direct(
-                content=content,
-                session_key=session_key,
-                channel="api",
-                chat_id=book_id,
-                sender_id="api",
-                tools=pipeline_tools,
-                persist_user_message=True,
-            ),
-            timeout=request_timeout,
-        )
-    except asyncio.TimeoutError:
-        return web.json_response({
-            "session_id": session_key,
-            "status": "processing",
-            "message": "流水线已启动，正在后台执行。通过 WebUI 或 API 查询进度。",
-        })
-    except Exception as e:
-        logger.exception("Pipeline run failed for %s", book_id)
-        return _error_json(500, f"Pipeline error: {e}")
-
-    result = response.content if response else ""
     return web.json_response({
-        "session_id": session_key,
-        "status": "completed",
-        "message": str(result)[:500],
+        "job_root": job_root,
+        "overall_status": overall,
+        "progress": f"{completed}/{total}",
+        "completed": completed,
+        "failed": failed,
+        "total": total,
+        "stages": stages,
+        "failure": failure_info,
+        "updated_at": project.get("updated_at"),
     })

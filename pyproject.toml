@@ -90,7 +90,7 @@ olostep = [
     "olostep>=0.1.0; python_version < '3.14'",
 ]
 pipeline = [
-    "autocut_core",
+    "autocut",
     "litellm>=1.80",
 ]
 dev = [
