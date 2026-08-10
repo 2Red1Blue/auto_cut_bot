@@ -38,6 +38,13 @@ anti_triggers:
 1. `source_windows` → 扫描视频源，生成滑动窗口清单
 2. `window_analysis` → 对每个窗口进行 VLM 分析
 
+### 审核 → 写入流程
+每个 Stage 执行完成后：
+1. 审核 Stage 产物是否完整、正确
+2. 审核通过 → 调用 `database_write` 写入 PostgreSQL
+3. 审核不通过 → 报告问题，不写入
+4. 降级: 如果 Agent 审查超时或失败，系统自动调用 `database_write` 写入 (auto_fallback=true)
+
 ### 工具调用规范
 - 每个工具执行后，将产物路径存入 session state
 - 下游工具从 session state 读取上游产物

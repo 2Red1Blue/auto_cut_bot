@@ -6,11 +6,14 @@ narrative summaries from event cards, window summaries, and manifests.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({

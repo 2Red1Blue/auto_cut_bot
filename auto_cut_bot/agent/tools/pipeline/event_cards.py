@@ -6,11 +6,14 @@ candidate catalog from window summaries.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -87,6 +90,47 @@ class EventCardsTool(Tool):
             tasks = stage.prepare(bus)
             artifacts = stage.execute(bus, tasks)
             paths = {a.name: str(a.path) for a in artifacts}
+
+            # DB write: insert boundaries from event cards
+            _logger = logging.getLogger(__name__)
+            try:
+                db = get_db_client(str(job_root))
+                if db is not None and db.is_available:
+                    cards_path = job_root / "event-cards.jsonl"
+                    book_id = _get_book_id(job_root)
+                    if book_id and cards_path.is_file():
+                        boundaries: list[dict[str, Any]] = []
+                        with open(cards_path, "r", encoding="utf-8") as _f:
+                            for _line in _f:
+                                _line = _line.strip()
+                                if not _line:
+                                    continue
+                                _rec = json.loads(_line)
+                                _b = _rec.get("boundary") or _rec
+                                _bid = _b.get("boundary_id") or _b.get("event_id")
+                                if _bid:
+                                    boundaries.append(
+                                        {
+                                            "boundary_id": _bid,
+                                            "episode_id": _b.get("episode_id"),
+                                            "event_type": _b.get("event_type", "event"),
+                                            "start_time": _b.get("start_time"),
+                                            "end_time": _b.get("end_time"),
+                                            "description": _b.get("description"),
+                                            "subjects": _b.get("subjects", []),
+                                            "source_table": "event_cards",
+                                            "source_id": _bid,
+                                            "confidence": _b.get("confidence", "medium"),
+                                            "precision": _b.get("precision", 2.0),
+                                        }
+                                    )
+                        if boundaries:
+                            db.insert_boundaries(book_id, boundaries)
+            except Exception as _db_err:
+                _logger.warning("DB write failed for event_cards: %s", _db_err)
+
+            mark_stage_complete(None, self.name, paths)
+
             return ToolResult(
                 "event_cards completed successfully.\n\n"
                 f"Artifacts:\n- event_cards: {paths.get('event_cards', 'N/A')}\n"
@@ -94,3 +138,16 @@ class EventCardsTool(Tool):
             )
         except Exception as exc:
             return ToolResult.error(f"event_cards failed: {exc}")
+
+
+def _get_book_id(job_root: Path) -> str | None:
+    """Extract book_id from source_manifest.json."""
+    manifest = job_root / "source_manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("book_id") or data.get("id")
+    except Exception:
+        return None
