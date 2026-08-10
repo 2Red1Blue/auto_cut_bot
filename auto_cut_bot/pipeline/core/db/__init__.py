@@ -9,6 +9,6 @@
 
 from __future__ import annotations
 
-from autocut_core.db.client import StageDBClient
+from auto_cut_bot.pipeline.core.db.client import StageDBClient
 
 __all__ = ["StageDBClient"]

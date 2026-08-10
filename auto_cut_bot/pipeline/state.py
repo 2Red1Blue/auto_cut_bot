@@ -2,6 +2,8 @@
 
 Agent-native: pipeline state is stored in the agent's session metadata,
 not in a separate ArtifactBus. Each tool reads/writes via the session.
+
+DB integration: tools can optionally write to PostgreSQL via StageDBClient.
 """
 
 from __future__ import annotations
@@ -21,6 +23,20 @@ PIPELINE_ORDER = [
 ]
 
 HUMAN_REVIEW_STAGES = {"story_approval", "story_qc_review"}
+
+
+def get_db_client(job_root: str) -> Any | None:
+    """Get a StageDBClient if DB is configured, or None."""
+    try:
+        from auto_cut_bot.pipeline.core.config import PipelineConfig
+        from auto_cut_bot.pipeline.core.db import StageDBClient
+
+        config = PipelineConfig.resolve()
+        if config.db_enabled:
+            return StageDBClient(db_url=config.db_url, schema=config.db_schema)
+    except Exception:
+        pass
+    return None
 
 
 def pipeline_state_key(stage: str) -> str:
