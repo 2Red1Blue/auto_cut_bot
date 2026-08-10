@@ -64,6 +64,8 @@ class StoryQCReviewTool(Tool):
 
     Only 'approved' stories proceed to the rendering stage.
     """
+    _scopes = {"subagent"}
+
 
     human_review = True
 

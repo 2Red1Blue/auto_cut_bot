@@ -8,6 +8,13 @@ metadata:
 version: 1.0.0
 status: active
 stages: [23, 24, 25]
+tools:
+  - story_qc
+  - story_qc_review
+data_layer_tools:
+  - filmability.filmability_check
+  - conflict_queue.ConflictQueue
+  - conflict_queue.check_and_interrupt
 triggers:
   - "Story QC"
   - "质量检查"

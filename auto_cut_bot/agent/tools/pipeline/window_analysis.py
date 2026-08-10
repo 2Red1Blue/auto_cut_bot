@@ -51,6 +51,8 @@ class WindowAnalysisTool(Tool):
     with optional source_metadata and ASR transcript data for
     cross-validation.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

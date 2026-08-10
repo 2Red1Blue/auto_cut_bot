@@ -8,6 +8,17 @@ metadata:
 version: 1.0.0
 stages: [1, 2, 3, 4, 5]
 status: active
+tools:
+  - source_windows
+  - source_metadata
+  - source_script_load
+  - source_script_save
+  - source_script_chunk_parse
+  - asr_transcript
+  - window_analysis
+data_layer_tools:
+  - artifact_cache.ArtifactCache
+  - provenance.merge_operator
 triggers:
   - "准备素材"
   - "视频切窗"

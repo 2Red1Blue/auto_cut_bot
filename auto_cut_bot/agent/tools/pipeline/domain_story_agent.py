@@ -36,6 +36,7 @@ from auto_cut_bot.agent.tools.context import (
     ToolContext,
     current_request_context,
 )
+from auto_cut_bot.pipeline import context_packer, grounded_gen, query_tools
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
@@ -100,6 +101,13 @@ def _build_task_prompt(
         "- If a primary story is rejected, activate reserve from the portfolio before",
         "  reporting final status.",
         "- When all stories are approved, report: milestone=script_approved.",
+        "",
+        "SKILL CONTEXT:",
+        "- Read the Skill file at skills/ac_story_generation/SKILL.md for detailed tool",
+        "  descriptions, data layer query tools, and writing discipline rules.",
+        "- The Skill declares which tools are available and how to use them.",
+        "- All data layer tools (query_tools, context_packer, grounded_gen) are documented",
+        "  in the Skill — use them as described there.",
     ]
     if backend:
         parts.append(f"\nBackend: {backend}")
@@ -147,7 +155,7 @@ class DomainStoryAgentTool(Tool):
     the workflow can continue.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
     read_only = False
 
     def __init__(self, subagent_manager: "SubagentManager | None" = None) -> None:

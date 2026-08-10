@@ -54,6 +54,8 @@ class StoryQCTool(Tool):
     with rule-based checks including audio boundary detection.  Produces
     story-qc/index.json with per-story QC reports.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

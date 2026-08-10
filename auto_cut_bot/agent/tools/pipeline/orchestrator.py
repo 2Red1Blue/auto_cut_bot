@@ -90,7 +90,7 @@ class PipelineOrchestratorTool(Tool):
     """
 
     human_review = False
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
 
     @property
     def name(self) -> str:

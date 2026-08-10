@@ -71,6 +71,8 @@ class SourceWindowsTool(Tool):
     with ffprobe, and slices them into overlapping windows for downstream
     semantic analysis.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

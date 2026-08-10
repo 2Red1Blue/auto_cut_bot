@@ -31,6 +31,8 @@ class StoryEvidenceTool(Tool):
     anchors, producing story-evidence/index.json.  This is a local
     assembly stage.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

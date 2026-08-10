@@ -24,6 +24,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from auto_cut_bot.pipeline.observability import MetricsCollector
+from auto_cut_bot.pipeline.planner_memory import get_next_action
+from auto_cut_bot.pipeline.conflict_queue import check_and_interrupt
+
 # ── Milestone definitions ──────────────────────────────────────────────────
 
 MILESTONES: list[str] = [
@@ -265,9 +269,12 @@ class StateGraphEngine:
         self,
         state: AgentState,
         checkpointer: CheckpointManager | None = None,
+        conflict_queue: Any = None,
     ) -> None:
         self.state = state
         self.checkpointer = checkpointer
+        self._conflict_queue = conflict_queue
+        self._metrics: Any = None
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -291,10 +298,20 @@ class StateGraphEngine:
 
         self._trace("run_start", {"milestone": self.state.current_milestone})
 
+        self._metrics = MetricsCollector(
+            session_id=self.state.session_id,
+            job_root=self.state.project_root,
+        )
+        self._metrics.record_milestone(self.state.current_milestone)
+
         # Advance through milestones whose conditions are already met.
         # This handles the case where a sub-agent's output was applied
         # before the engine was invoked.
         await self._advance_satisfied_milestones()
+
+        if self._conflict_queue and check_and_interrupt(self.state, self._conflict_queue):
+            return self.state
+        _next = get_next_action(self.state)
 
         if self.is_complete():
             self.state.status = "completed"
@@ -331,6 +348,10 @@ class StateGraphEngine:
 
         # Advance through milestones whose conditions are now met.
         await self._advance_satisfied_milestones()
+
+        if self._conflict_queue and check_and_interrupt(self.state, self._conflict_queue):
+            return self.state
+        _next = get_next_action(self.state)
 
         if self.is_complete():
             self.state.status = "completed"
@@ -373,6 +394,8 @@ class StateGraphEngine:
                 "from": current,
                 "to": next_ms,
             })
+            if self._metrics:
+                self._metrics.record_milestone(next_ms)
 
     def get_next_agent(self) -> str | None:
         """Determine which sub-agent to call next.
@@ -478,6 +501,8 @@ class StateGraphEngine:
                 "to": next_ms,
                 "auto": True,
             })
+            if self._metrics:
+                self._metrics.record_milestone(next_ms)
 
     def _trace(self, event: str, detail: dict[str, Any]) -> None:
         """Append a trace entry to the execution log."""

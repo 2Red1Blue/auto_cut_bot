@@ -26,6 +26,8 @@ from auto_cut_bot.agent.tools.context import (
     ToolContext,
     current_request_context,
 )
+from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
+from auto_cut_bot.pipeline.provenance import merge_operator
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
@@ -76,6 +78,11 @@ def _build_task_prompt(
         "  JSON episodes in your own context before calling source_script_save.",
         "- If any stage fails, report the error and do not continue to subsequent stages.",
         "- When all stages complete, report: milestone=source_ready.",
+        "",
+        "SKILL CONTEXT:",
+        "- Read the Skill file at skills/ac_source_prep/SKILL.md for detailed tool",
+        "  descriptions, data layer tools (ArtifactCache, merge_operator), and stage order.",
+        "- The Skill declares which tools are available and how to use them.",
     ]
     if source_kind:
         parts.append(f"\nSource kind: {source_kind}")
@@ -216,7 +223,7 @@ class DomainSourceAgentTool(Tool):
     a structured task description with numbered steps.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
     read_only = False
 
     def __init__(self, subagent_manager: "SubagentManager | None" = None) -> None:

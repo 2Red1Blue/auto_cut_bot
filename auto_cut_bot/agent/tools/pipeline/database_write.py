@@ -51,6 +51,8 @@ class DatabaseWriteTool(Tool):
     Pipeline Tool 执行完成后，Agent 审核结果，然后调用此工具写入。
     如果 Agent 审查失败或超时，系统自动调用此工具 (auto_fallback=true)。
     """
+    _scopes = {"subagent"}
+
 
     name = "database_write"
     description = (

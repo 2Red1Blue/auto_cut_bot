@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
+from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
+from auto_cut_bot.pipeline.provenance import merge_operator
 
 
 @tool_parameters({
@@ -42,7 +44,7 @@ class SourceScriptSaveTool(Tool):
     and persists the data the agent already produced.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
 
     @property
     def name(self) -> str:
@@ -129,8 +131,16 @@ class SourceScriptSaveTool(Tool):
         atomic_write_json(output_path, output)
 
         # ── 6. 缓存 ──────────────────────────────────────────────────
+        cache = ArtifactCache(job_root, namespace="source_script")
         if script_sha:
-            _save_cache(job_root, script_sha, output)
+            cache.put(script_sha, output)
+
+        # ── 6.5. 多源数据合并（来源追溯） ─────────────────────────
+        if script_sha:
+            api_data = cache.get(f"{script_sha}_api")
+            if api_data:
+                merge_result = merge_operator(output, api_data)
+                cache.put(f"{script_sha}_merged", merge_result.to_dict())
 
         # ── 7. 更新 project.json ─────────────────────────────────────
         _update_project(job_root, output_path)
@@ -482,16 +492,6 @@ def _merge_stats(parse_meta: dict) -> dict:
         if chunk_count is not None:
             stats["chunk_count"] = chunk_count
     return stats
-
-
-def _save_cache(root: Path, script_sha: str, data: dict) -> None:
-    """Save cache to disk."""
-    from autocut_core.io import atomic_write_json
-
-    cache_dir = root / ".sd-cache" / "source_script"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{script_sha[:16]}.json"
-    atomic_write_json(cache_path, data)
 
 
 def _update_project(job_root: Path, output_path: Path) -> None:

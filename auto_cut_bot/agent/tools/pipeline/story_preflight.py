@@ -33,6 +33,8 @@ class StoryPreflightTool(Tool):
     story-feasibility.json and story-review.md.
     Pure local computation, no LLM calls.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

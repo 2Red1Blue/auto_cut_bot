@@ -37,6 +37,8 @@ class StoryPlansMaterializeTool(Tool):
     clip definitions, block structures, and estimated durations.
     Produces story-plans/index.json and story-plan-review.md.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

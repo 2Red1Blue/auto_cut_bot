@@ -41,6 +41,8 @@ class StoryRenderTool(Tool):
     and executes local ffmpeg rendering to produce the final story videos.
     Produces story-renders/index.json.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

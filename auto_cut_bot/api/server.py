@@ -565,8 +565,10 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
 
     # Use PipelineOrchestratorTool directly — no LLM round-trips needed
     from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
+    from auto_cut_bot.pipeline.observability import MetricsCollector
 
     tool = PipelineOrchestratorTool()
+    collector = MetricsCollector(session_id=f"pipeline:{book_id}", job_root=str(job_root))
     result = await tool.execute(**orchestrator_kwargs)
 
     # Read project.json for stage status
@@ -580,6 +582,17 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
     response_status = "completed"
     if "failed" in str(result):
         response_status = "failed"
+        collector.record_error(str(result), stage="pipeline_run")
+
+    # Record stage-level metrics from project.json
+    for stage_name, stage_info in stages_summary.items():
+        if isinstance(stage_info, dict):
+            collector.record_stage(
+                stage_name,
+                duration_ms=float(stage_info.get("duration_ms", 0)),
+                tokens=int(stage_info.get("tokens", 0)),
+                status=stage_info.get("status", "completed"),
+            )
 
     return web.json_response({
         "job_root": str(job_root),
@@ -587,6 +600,7 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
         "status": response_status,
         "message": str(result)[:1000],
         "stages": stages_summary,
+        "observability": collector.get_session_summary(),
     })
 
 
@@ -671,12 +685,18 @@ async def handle_pipeline_resume(request: web.Request) -> web.Response:
     # Save a checkpoint after resume.
     await ckpt.save(result_state, result_state.status, result_state.current_milestone)
 
+    # Suggest next action based on current state
+    from auto_cut_bot.pipeline.planner_memory import get_next_action
+
+    next_action = get_next_action(result_state)
+
     return web.json_response({
         "session_id": session_id,
         "status": "resumed",
         "current_milestone": result_state.current_milestone,
         "milestone_history": result_state.milestone_history,
         "state_status": result_state.status,
+        "next_action": next_action,
     })
 
 
@@ -807,5 +827,23 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
 
     if v2_state is not None:
         response_payload["v2_state"] = v2_state
+
+    # ── Data layer status ──────────────────────────────────────────────────
+    from auto_cut_bot.pipeline.conflict_queue import ConflictQueue
+    from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
+
+    conflict_queue = ConflictQueue()
+    pending_conflicts = conflict_queue.count(status="pending")
+    response_payload["conflict_queue"] = {
+        "pending_conflicts": pending_conflicts,
+        "is_blocked": conflict_queue.is_blocked(),
+    }
+
+    artifact_cache = ArtifactCache(Path(job_root))  # type: ignore[arg-type]
+    cache_keys = artifact_cache.list_keys()
+    response_payload["cache"] = {
+        "hit_rate": f"{len(cache_keys)}/{max(1, len(cache_keys))}",
+        "cached_artifacts": len(cache_keys),
+    }
 
     return web.json_response(response_payload)

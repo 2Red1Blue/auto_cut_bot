@@ -32,6 +32,8 @@ class StoryPortfolioTool(Tool):
     them into Primary (production) and Reserve (backup) slots.  Pure local
     computation, no LLM calls.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

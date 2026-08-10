@@ -33,6 +33,8 @@ class EventCardsTool(Tool):
     and produces event-cards.jsonl and a highlight-hook-catalog.json.
     This is a pure local computation stage (no LLM calls).
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

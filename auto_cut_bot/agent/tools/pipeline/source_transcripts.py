@@ -49,6 +49,8 @@ class SourceTranscriptsTool(Tool):
     调用 FunASR HTTP 服务进行语音识别, 生成字幕数据。
     与 Platform API 字幕进行多源合并, 解决冲突。
     """
+    _scopes = {"subagent"}
+
 
     name = "source_transcripts"
     description = (

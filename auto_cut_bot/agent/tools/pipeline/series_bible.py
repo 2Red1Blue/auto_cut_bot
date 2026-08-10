@@ -34,6 +34,8 @@ class SeriesBibleTool(Tool):
     (human-readable Markdown review view).  This is a pure local assembly
     stage (no LLM calls).
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

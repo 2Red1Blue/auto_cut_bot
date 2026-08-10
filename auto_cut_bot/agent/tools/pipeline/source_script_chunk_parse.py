@@ -69,7 +69,7 @@ class SourceScriptChunkParseTool(Tool):
     and automatic retry with guardrails.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
 
     @property
     def name(self) -> str:

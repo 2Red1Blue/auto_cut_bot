@@ -49,6 +49,8 @@ class EpisodeDigestsTool(Tool):
     event_cards, and highlight_hook_catalog to produce a structured
     episode-digests.jsonl with per-episode plot summaries.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

@@ -32,6 +32,8 @@ class StoryTreatmentsTool(Tool):
     for each story in the portfolio.  Pure local computation, no LLM calls.
     Produces story-treatment-options.json.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

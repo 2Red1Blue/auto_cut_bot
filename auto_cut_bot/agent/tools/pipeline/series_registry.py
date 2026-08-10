@@ -52,6 +52,8 @@ class SeriesRegistryTool(Tool):
     relationship repair, and quarantine recovery. Produces
     series-registry.json.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

@@ -8,6 +8,29 @@ metadata:
 version: 1.0.0
 stages: [12, 13, 14, 15, 16, 17]
 status: active
+tools:
+  - episode_digests
+  - chapter_digests
+  - series_registry
+  - series_assignment
+  - series_bible
+  - story_catalog
+  - story_portfolio
+  - story_treatments
+  - story_scripts
+  - story_preflight
+  - story_approval
+data_layer_tools:
+  - search_scenes
+  - get_dialogue_samples
+  - get_character_coverage
+  - get_relation_timeline
+  - get_emotion_peaks
+  - check_fact
+  - context_packer.pack_context
+  - grounded_gen.validate_source_refs
+  - grounded_gen.validate_temporal_constraints
+  - grounded_gen.validate_voice_constraints
 triggers:
   - "生成故事"
   - "Story Catalog"
@@ -88,6 +111,50 @@ anti_triggers:
 | rule_07 | Plan 阶段不设时长下限，只保留硬上限 1200 秒 | landed |
 | rule_09 | 未经人工批准的 Story 不得进入任何后续选片或渲染流程 | landed |
 | rule_10 | 模型只生成 draft Editorial Blueprint；预检通过后才置为 awaiting_approval | landed |
+
+## Tools
+
+These are the pipeline stage tools managed by this Skill. The Agent should call them in dependency order:
+
+| Tool | Stage | Depends On | Description |
+|------|-------|-----------|-------------|
+| `episode_digests` | 8 | `event_cards` | Per-episode summaries |
+| `chapter_digests` | 9 | `episode_digests` | Chapter-level summaries |
+| `series_registry` | 10 | `chapter_digests` | Character naming + relationship inference |
+| `series_assignment` | 10 | `series_registry` | Story thread assignment |
+| `series_bible` | 11 | `series_assignment` | Global normalized character bible |
+| `story_catalog` | 12 | `series_bible` | Broad subarc option compiler |
+| `story_portfolio` | 13 | `story_catalog` | Primary/Reserve slot assignment |
+| `story_treatments` | 14 | `story_portfolio` | 3 treatment strategies per story |
+| `story_scripts` | 15 | `story_treatments` | Generate story scripts |
+| `story_preflight` | 16 | `story_scripts` | Material feasibility check |
+| `story_approval` | 17 | `story_preflight` | Human approval gate (HITL) |
+
+## Data Layer
+
+When writing story beats, use these deterministic query tools to ground generation in facts:
+
+### Query Tools (zero LLM cost)
+- `search_scenes(characters, location, episode_range, min_intensity)` — Find scenes matching criteria. Use BEFORE writing beats to understand what material exists.
+- `get_dialogue_samples(character, n=5)` — Get real dialogue samples. Use to maintain character voice consistency.
+- `get_character_coverage(character)` — Get character's total screentime, scene count, episode distribution. Use to decide if a character has enough material for a lead role.
+- `get_relation_timeline(char_a, char_b)` — Get every scene where both characters appear. Use to verify relationship arcs.
+- `get_emotion_peaks(episode_range, top_k)` — Get high-intensity scenes. Use for hook/cold-open selection.
+- `check_fact(claim)` — Verify a claim against source data. Use when unsure if a plot point exists in the source material.
+
+### Context Assembly
+- `context_packer.pack_context(task)` — Assemble context by priority (bible=0, episode_digests=1, catalog=2). Use before starting story generation.
+
+### Validation Gates (must pass before approval)
+- `grounded_gen.validate_source_refs(beat)` — Every beat must have source_refs pointing to real scenes with matching characters.
+- `grounded_gen.validate_temporal_constraints(beat)` — Beat's relationship references must be valid at the story's time point (no continuity errors).
+- `grounded_gen.validate_voice_constraints(dialogue)` — Rewritten dialogue must be similar to the character's real dialogue samples.
+
+### Writing Discipline
+1. **Retrieve first, write second**: Always query the data layer BEFORE writing beats.
+2. **Every beat carries source_refs**: A beat without source_refs is a hallucination.
+3. **Validate before approval**: Run all three validation gates. Fix violations before calling story_approval.
+4. **Reserve activation**: If a primary story is rejected, activate the next reserve from the portfolio and re-run treatments → scripts → preflight → approval.
 
 ## Quick Start
 

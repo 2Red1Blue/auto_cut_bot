@@ -34,6 +34,13 @@ export interface PipelineTriggerResponse {
   message: string;
 }
 
+export interface PipelineResumeResponse {
+  sessionId: string;
+  stage: string;
+  decision: "approved" | "rejected";
+  status: string;
+}
+
 export interface MediaAsset {
   id: string;
   type: "video" | "image" | "audio";

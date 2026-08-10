@@ -48,6 +48,8 @@ class StoryScriptsTool(Tool):
     editorial decisions) informed by the treatment options, Series Bible,
     and event cards.  Produces story-scripts/index.json.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

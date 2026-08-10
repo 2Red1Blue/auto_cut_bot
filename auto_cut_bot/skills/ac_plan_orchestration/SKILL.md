@@ -8,6 +8,16 @@ metadata:
 version: 1.0.0
 stages: [18, 19, 20, 21, 22]
 status: active
+tools:
+  - story_evidence
+  - span_candidates
+  - story_plans
+  - story_plans_materialize
+data_layer_tools:
+  - semantic_match.match_scene_to_beat
+  - semantic_match.find_best_scenes
+  - derived_assets.build_character_appearance_index
+  - derived_assets.build_emotion_curve
 triggers:
   - "生成计划"
   - "Story Plan"

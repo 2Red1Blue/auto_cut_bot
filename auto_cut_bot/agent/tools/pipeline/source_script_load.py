@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
+from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ class SourceScriptLoadTool(Tool):
     This is the agent-native approach: the agent IS the parser.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
 
     @property
     def name(self) -> str:
@@ -114,8 +115,9 @@ class SourceScriptLoadTool(Tool):
         script_sha = hashlib.sha256(script_text.encode("utf-8")).hexdigest()
 
         # Check cache
+        cache = ArtifactCache(job_root, namespace="source_script")
         if not force_reparse:
-            cached = _load_cache(job_root, script_sha)
+            cached = cache.get(script_sha)
             if cached is not None:
                 episodes = cached.get("episodes", [])
                 meta = cached.get("_parse_meta", cached.get("parse_metadata", {}))
@@ -566,18 +568,3 @@ def _build_mapreduce_instructions(
         f"source_script_save(job_root='{script_path.parent}', "
         'episodes=[...], parse_meta={...})'
     )
-
-
-# ── 缓存 ──────────────────────────────────────────────────────────────────────
-
-
-def _load_cache(root: Path, script_sha: str) -> dict[str, Any] | None:
-    """Load cached parse result."""
-    cache_path = root / ".sd-cache" / "source_script" / f"{script_sha[:16]}.json"
-    if cache_path.is_file():
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, json.JSONDecodeError):
-            pass
-    return None

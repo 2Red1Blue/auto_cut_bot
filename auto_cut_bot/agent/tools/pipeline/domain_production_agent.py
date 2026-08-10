@@ -29,6 +29,7 @@ from auto_cut_bot.agent.tools.context import (
     ToolContext,
     current_request_context,
 )
+from auto_cut_bot.pipeline import conflict_queue, derived_assets, filmability
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
@@ -82,6 +83,12 @@ def _build_task_prompt(
         "- Production is deterministic: do NOT make additional LLM calls beyond what the",
         "  individual tools already perform internally.",
         "- When all stages complete, report: milestone=rendered.",
+        "",
+        "SKILL CONTEXT:",
+        "- Read the Skill files at skills/ac_plan_orchestration/SKILL.md and",
+        "  skills/ac_qc/SKILL.md for detailed tool descriptions and data layer tools.",
+        "- The Skills declare which tools (filmability, conflict_queue, derived_assets)",
+        "  are available and how to use them.",
     ]
     if backend:
         parts.append(f"\nBackend: {backend}")
@@ -132,7 +139,7 @@ class DomainProductionAgentTool(Tool):
     individual tools already do.
     """
 
-    _scopes = {"pipeline"}
+    _scopes = {"core"}
     read_only = False
 
     def __init__(self, subagent_manager: "SubagentManager | None" = None) -> None:

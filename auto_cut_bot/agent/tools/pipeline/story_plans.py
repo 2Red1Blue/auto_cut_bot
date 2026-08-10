@@ -53,6 +53,8 @@ class StoryPlansTool(Tool):
     semantic selection.  Produces story-plan-batch.json for downstream
     materialization.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

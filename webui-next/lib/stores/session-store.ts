@@ -33,14 +33,36 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   },
 
   deleteSession: async (id) => {
-    try {
-      await apiClient.deleteSession(id);
-    } catch {
-      // ignore — API may not support DELETE
+    // Find all sessions with this UUID (might have different prefix levels)
+    const sessionsToDelete = get().sessions.filter(s => {
+      // Extract UUID from session.id (remove all websocket: prefixes)
+      let sessionId = s.id;
+      while (sessionId.startsWith("websocket:")) {
+        sessionId = sessionId.slice(10);
+      }
+      let targetId = id;
+      while (targetId.startsWith("websocket:")) {
+        targetId = targetId.slice(10);
+      }
+      return sessionId === targetId;
+    });
+    
+    // Delete all matching sessions
+    for (const session of sessionsToDelete) {
+      try {
+        await apiClient.deleteSession(session.id);
+      } catch (err) {
+        console.error(`Failed to delete session ${session.id}:`, err);
+      }
     }
+    
+    // Remove all deleted sessions from store
+    const deletedIds = new Set(sessionsToDelete.map(s => s.id));
     set((state) => ({
-      sessions: state.sessions.filter((s) => s.id !== id),
-      currentSessionId: state.currentSessionId === id ? null : state.currentSessionId,
+      sessions: state.sessions.filter((s) => !deletedIds.has(s.id)),
+      currentSessionId: state.currentSessionId && deletedIds.has(state.currentSessionId) 
+        ? null 
+        : state.currentSessionId,
     }));
   },
 

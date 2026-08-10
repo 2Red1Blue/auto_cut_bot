@@ -48,6 +48,8 @@ class StoryCatalogTool(Tool):
     Consumes the Series Bible, event cards, and highlight/hook catalog
     to produce a broad story-catalog.json listing candidate stories.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

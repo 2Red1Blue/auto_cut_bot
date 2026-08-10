@@ -64,11 +64,15 @@ class ApiClient {
   }
 
   async deleteSession(id: string) {
-    return this.request<void>("/api/sessions/" + id, { method: "DELETE" });
+    // Backend expects full key with "websocket:" prefix
+    const fullKey = id.startsWith("websocket:") ? id : `websocket:${id}`;
+    return this.request<void>(`/api/sessions/${fullKey}/delete`, { method: "POST" });
   }
 
   async renameSession(id: string, title: string) {
-    return this.request<Session>("/api/sessions/" + id, {
+    // Backend expects full key with "websocket:" prefix
+    const fullKey = id.startsWith("websocket:") ? id : `websocket:${id}`;
+    return this.request<Session>(`/api/sessions/${fullKey}`, {
       method: "PATCH",
       body: { title },
     });
@@ -124,6 +128,21 @@ class ApiClient {
 
   async cancelPipelineJob(id: string) {
     return this.request<void>(`/api/pipeline/jobs/${id}/cancel`, { method: "POST" });
+  }
+
+  async resumePipeline(sessionId: string, decision: "approved" | "rejected", reason?: string) {
+    return this.request<{ status: string; message: string }>("/api/pipeline/resume", {
+      method: "POST",
+      body: { session_id: sessionId, decision, reason },
+    });
+  }
+
+  // GraphQL
+  async graphqlRequest<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
+    return this.request<T>("/api/graphql", {
+      method: "POST",
+      body: { query, variables },
+    });
   }
 
   // Media Library
@@ -184,7 +203,7 @@ class ApiClient {
 export const apiClient = new ApiClient();
 
 // Re-export types for convenience
-export type { PipelineJob, PipelineTriggerRequest, PipelineTriggerResponse, MediaAsset, MediaFolder, MediaLibrary } from "./types/pipeline";
+export type { PipelineJob, PipelineTriggerRequest, PipelineTriggerResponse, PipelineResumeResponse, MediaAsset, MediaFolder, MediaLibrary } from "./types/pipeline";
 
 export interface Session {
   id: string;

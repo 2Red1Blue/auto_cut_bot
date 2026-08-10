@@ -52,6 +52,8 @@ class ChapterDigestsTool(Tool):
     Groups ~6 episodes per chapter and uses LLM to produce higher-level
     narrative summaries in chapter-digests.jsonl.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

@@ -31,6 +31,8 @@ class SpanCandidatesTool(Tool):
     span compilation.  Produces span-candidates/index.json and a
     human-readable span-candidate-review.md.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 

@@ -49,6 +49,8 @@ class SeriesAssignmentTool(Tool):
     event cards to produce a series-assignment-batch.json that maps each
     episode to its canonical Series.
     """
+    _scopes = {"subagent"}
+
 
     human_review = False
 
