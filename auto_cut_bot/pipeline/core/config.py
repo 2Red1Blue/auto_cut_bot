@@ -21,7 +21,7 @@ from autocut_core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 项目根 = autocut_core/ 的上一级 (material_skill_manager/)
+# 项目根 = autocut_core/ 的上一级
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ── 环境变量映射 ──────────────────────────────────────────────────────────
@@ -91,6 +91,14 @@ class PipelineConfig:
     asr_mode: str = "always"
     asr_api_coverage_threshold: float = 0.8  # validate_only / skip_if_api_complete 的阈值
     asr_endpoint: str = "http://localhost:10095/recognition"  # FunASR 自部署端点
+    # asr_language: ASR 识别语言, 传给 FunASR 的 language 参数
+    #   "zh"  — 中文 (默认, 兼容 paraformer-zh 模型)
+    #   "en"  — 英文 (需 paraformer-en 或 sensevoice 模型)
+    #   "ja"  — 日文
+    #   "ko"  — 韩文
+    #   "auto" — 自动检测 (需 sensevoice 等多语言模型)
+    #   ""    — 不传 language 参数, 使用 FunASR 服务端默认值
+    asr_language: str = ""
 
     # ── 并发 ────────────────────────────────────────────────────────
     workers: int | str = "auto"

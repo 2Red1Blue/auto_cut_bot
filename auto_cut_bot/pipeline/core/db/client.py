@@ -265,13 +265,20 @@ class StageDBClient:
     # ══════════════════════════════════════════════════════════════════════
 
     def upsert_subjects(
-        self, book_id: str, subjects: list[dict[str, Any]]
+        self, book_id: str, subjects: list[dict[str, Any]], source: str = "vlm"
     ) -> dict[str, int]:
-        """UPSERT multiple subjects. Returns ``{name: subject_id}`` mapping.
+        """UPSERT multiple subjects with multi-source evidence tracking.
+        
+        Returns ``{name: subject_id}`` mapping.
 
         Each subject dict may contain: name, aliases, persona, personality,
         traits, tone, voice_timbre, visual_features, relationship, role,
-        first_episode, last_episode, source, vlm_verified.
+        first_episode, last_episode, vlm_verified.
+        
+        Args:
+            book_id: Book identifier
+            subjects: List of subject dicts
+            source: Data source identifier ('api', 'script', 'vlm', 'asr', 'manual')
         """
         if not self.is_available or not subjects:
             return {}
@@ -284,33 +291,51 @@ class StageDBClient:
             name = subj.get("name")
             if not name:
                 continue
-            aliases_json = json.dumps(subj.get("aliases", []), ensure_ascii=False)
-            personality_json = json.dumps(
-                subj.get("personality", []), ensure_ascii=False
-            )
+            
+            # Build evidence for this source
+            evidence_data = {
+                "persona": subj.get("persona"),
+                "personality": subj.get("personality", []),
+                "traits": subj.get("traits"),
+                "tone": subj.get("tone"),
+                "voice_timbre": subj.get("voice_timbre"),
+                "visual_features": subj.get("visual_features"),
+                "relationship": subj.get("relationship"),
+                "role": subj.get("role"),
+            }
+            # Filter out None/empty values
+            evidence_data = {k: v for k, v in evidence_data.items() if v}
+            evidence_json = json.dumps({source: evidence_data}, ensure_ascii=False)
+            
+            # Only generate JSON for non-empty arrays, otherwise NULL to preserve existing values
+            aliases_val = subj.get("aliases", [])
+            aliases_json = json.dumps(aliases_val, ensure_ascii=False) if aliases_val else None
+            personality_val = subj.get("personality", [])
+            personality_json = json.dumps(personality_val, ensure_ascii=False) if personality_val else None
 
             sql = f"""
                 INSERT INTO {table} (
                     book_id, name, aliases, persona, personality, traits, tone,
                     voice_timbre, visual_features, relationship, role,
-                    first_episode, last_episode, source, vlm_verified
+                    first_episode, last_episode, source, vlm_verified, sources_evidence
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb
                 )
                 ON CONFLICT (book_id, name) DO UPDATE SET
                     aliases = COALESCE(EXCLUDED.aliases, subjects.aliases),
-                    persona = COALESCE(EXCLUDED.persona, subjects.persona),
+                    persona = COALESCE(NULLIF(EXCLUDED.persona, ''), subjects.persona),
                     personality = COALESCE(EXCLUDED.personality, subjects.personality),
-                    traits = COALESCE(EXCLUDED.traits, subjects.traits),
-                    tone = COALESCE(EXCLUDED.tone, subjects.tone),
-                    voice_timbre = COALESCE(EXCLUDED.voice_timbre, subjects.voice_timbre),
-                    visual_features = COALESCE(EXCLUDED.visual_features, subjects.visual_features),
-                    relationship = COALESCE(EXCLUDED.relationship, subjects.relationship),
-                    role = COALESCE(EXCLUDED.role, subjects.role),
+                    traits = COALESCE(NULLIF(EXCLUDED.traits, ''), subjects.traits),
+                    tone = COALESCE(NULLIF(EXCLUDED.tone, ''), subjects.tone),
+                    voice_timbre = COALESCE(NULLIF(EXCLUDED.voice_timbre, ''), subjects.voice_timbre),
+                    visual_features = COALESCE(NULLIF(EXCLUDED.visual_features, ''), subjects.visual_features),
+                    relationship = COALESCE(NULLIF(EXCLUDED.relationship, ''), subjects.relationship),
+                    role = COALESCE(NULLIF(EXCLUDED.role, ''), subjects.role),
                     first_episode = COALESCE(EXCLUDED.first_episode, subjects.first_episode),
                     last_episode = COALESCE(EXCLUDED.last_episode, subjects.last_episode),
-                    source = EXCLUDED.source,
-                    vlm_verified = COALESCE(EXCLUDED.vlm_verified, subjects.vlm_verified)
+                    source = subjects.source,
+                    vlm_verified = COALESCE(EXCLUDED.vlm_verified, subjects.vlm_verified),
+                    sources_evidence = subjects.sources_evidence || EXCLUDED.sources_evidence
                 RETURNING id, name
             """
             rows = self._execute(
@@ -329,8 +354,9 @@ class StageDBClient:
                     subj.get("role"),
                     subj.get("first_episode"),
                     subj.get("last_episode"),
-                    subj.get("source", "vlm"),
+                    source,
                     subj.get("vlm_verified", False),
+                    evidence_json,
                 ),
             )
             for row in rows:
@@ -452,16 +478,24 @@ class StageDBClient:
     # ══════════════════════════════════════════════════════════════════════
 
     def upsert_relationships(
-        self, book_id: str, relationships: list[dict[str, Any]]
+        self, book_id: str, relationships: list[dict[str, Any]], source: str = "api"
     ) -> int:
-        """UPSERT multiple relationships. Returns count of upserted rows.
+        """UPSERT multiple relationships with multi-source evidence tracking.
+        
+        Returns count of upserted rows.
 
         Each relationship dict must contain: source_subject_id, target_subject_id.
-        Optional: description, source.
+        Optional: description.
+        
+        Args:
+            book_id: Book identifier
+            relationships: List of relationship dicts
+            source: Data source identifier ('api', 'script', 'vlm', 'asr', 'manual')
         """
         if not self.is_available or not relationships:
             return 0
 
+        import json
         table = _t(self._schema, "relationships")
         count = 0
         for rel in relationships:
@@ -471,11 +505,19 @@ class StageDBClient:
                 continue
             if source_id == target_id:
                 continue  # no self-relations
+            
+            # Build evidence for this source
+            evidence_data = {
+                "description": rel.get("description"),
+            }
+            # Filter out None/empty values
+            evidence_data = {k: v for k, v in evidence_data.items() if v}
+            evidence_json = json.dumps({source: evidence_data}, ensure_ascii=False)
 
             sql = f"""
                 INSERT INTO {table} (
-                    book_id, source_subject_id, target_subject_id, description, source
-                ) VALUES (%s, %s, %s, %s, %s)
+                    book_id, source_subject_id, target_subject_id, description, source, sources_evidence
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT DO NOTHING
             """
             self._execute(
@@ -485,7 +527,8 @@ class StageDBClient:
                     source_id,
                     target_id,
                     rel.get("description"),
-                    rel.get("source", "api"),
+                    source,
+                    evidence_json,
                 ),
             )
             count += 1
@@ -527,36 +570,57 @@ class StageDBClient:
     # ══════════════════════════════════════════════════════════════════════
 
     def upsert_episodes(
-        self, book_id: str, episodes: list[dict[str, Any]]
+        self, book_id: str, episodes: list[dict[str, Any]], source: str = "vlm"
     ) -> int:
-        """UPSERT multiple episodes. Returns count of upserted rows.
+        """UPSERT multiple episodes with multi-source evidence tracking.
+        
+        Returns count of upserted rows.
 
         Each episode dict may contain: episode_id, chapter_id, title, summary,
-        is_free, scene_count, duration, source, vlm_verified.
+        is_free, scene_count, duration, vlm_verified.
+        
+        Args:
+            book_id: Book identifier
+            episodes: List of episode dicts
+            source: Data source identifier ('api', 'script', 'vlm', 'asr', 'manual')
         """
         if not self.is_available or not episodes:
             return 0
 
+        import json
         table = _t(self._schema, "episodes")
         count = 0
         for ep in episodes:
             episode_id = ep.get("episode_id")
             if episode_id is None:
                 continue
+            
+            # Build evidence for this source
+            evidence_data = {
+                "title": ep.get("title"),
+                "summary": ep.get("summary"),
+                "scene_count": ep.get("scene_count"),
+                "duration": ep.get("duration"),
+            }
+            # Filter out None/empty values
+            evidence_data = {k: v for k, v in evidence_data.items() if v is not None}
+            evidence_json = json.dumps({source: evidence_data}, ensure_ascii=False)
+            
             sql = f"""
                 INSERT INTO {table} (
                     book_id, episode_id, chapter_id, title, summary,
-                    is_free, scene_count, duration, source, vlm_verified
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    is_free, scene_count, duration, source, vlm_verified, sources_evidence
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
                 ON CONFLICT (book_id, episode_id) DO UPDATE SET
                     chapter_id = COALESCE(EXCLUDED.chapter_id, episodes.chapter_id),
-                    title = COALESCE(EXCLUDED.title, episodes.title),
-                    summary = COALESCE(EXCLUDED.summary, episodes.summary),
+                    title = COALESCE(NULLIF(EXCLUDED.title, ''), episodes.title),
+                    summary = COALESCE(NULLIF(EXCLUDED.summary, ''), episodes.summary),
                     is_free = COALESCE(EXCLUDED.is_free, episodes.is_free),
                     scene_count = COALESCE(EXCLUDED.scene_count, episodes.scene_count),
                     duration = COALESCE(EXCLUDED.duration, episodes.duration),
-                    source = EXCLUDED.source,
-                    vlm_verified = COALESCE(EXCLUDED.vlm_verified, episodes.vlm_verified)
+                    source = episodes.source,
+                    vlm_verified = COALESCE(EXCLUDED.vlm_verified, episodes.vlm_verified),
+                    sources_evidence = episodes.sources_evidence || EXCLUDED.sources_evidence
             """
             self._execute(
                 sql,
@@ -566,11 +630,12 @@ class StageDBClient:
                     ep.get("chapter_id"),
                     ep.get("title"),
                     ep.get("summary"),
-                    ep.get("is_free", False),
+                    ep.get("is_free", True),
                     ep.get("scene_count"),
                     ep.get("duration"),
-                    ep.get("source", "vlm"),
+                    source,
                     ep.get("vlm_verified", False),
+                    evidence_json,
                 ),
             )
             count += 1
@@ -603,7 +668,13 @@ class StageDBClient:
         *,
         source: str = "api",
     ) -> int:
-        """INSERT subtitle segments. Returns count of inserted rows.
+        """UPSERT subtitle segments with multi-source tracking.
+        
+        Returns count of upserted rows.
+        
+        The subtitles table has per-source text columns (asr_text, api_text, script_text).
+        This method writes to the column matching the source parameter.
+        On conflict (same book_id + episode_id + start_time), it merges rather than duplicates.
 
         Each segment dict: start_time, end_time, text (required).
         Optional: speaker, tone, emotion, group_id, group_tone, confidence, cer_estimate.
@@ -612,11 +683,46 @@ class StageDBClient:
             return 0
 
         table = _t(self._schema, "subtitles")
-        params_list: list[tuple[Any, ...]] = []
+        count = 0
         for seg in segments:
             if "start_time" not in seg or "end_time" not in seg or "text" not in seg:
                 continue
-            params_list.append(
+            
+            # Determine which source column to write to
+            asr_text = seg["text"] if source == "asr" else None
+            api_text = seg["text"] if source == "api" else None
+            script_text = seg["text"] if source == "script" else None
+
+            sql = f"""
+                INSERT INTO {table} (
+                    book_id, episode_id, start_time, end_time, speaker,
+                    text, tone, emotion, group_id, group_tone, source,
+                    confidence, cer_estimate,
+                    asr_text, api_text, script_text
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s
+                )
+                ON CONFLICT (book_id, episode_id, start_time) DO UPDATE SET
+                    end_time = COALESCE(EXCLUDED.end_time, subtitles.end_time),
+                    speaker = COALESCE(EXCLUDED.speaker, subtitles.speaker),
+                    text = CASE 
+                        WHEN subtitles.text IS NULL OR subtitles.text = '' 
+                        THEN EXCLUDED.text 
+                        ELSE subtitles.text 
+                    END,
+                    tone = COALESCE(EXCLUDED.tone, subtitles.tone),
+                    emotion = COALESCE(EXCLUDED.emotion, subtitles.emotion),
+                    group_id = COALESCE(EXCLUDED.group_id, subtitles.group_id),
+                    group_tone = COALESCE(EXCLUDED.group_tone, subtitles.group_tone),
+                    confidence = COALESCE(EXCLUDED.confidence, subtitles.confidence),
+                    cer_estimate = COALESCE(EXCLUDED.cer_estimate, subtitles.cer_estimate),
+                    asr_text = COALESCE(EXCLUDED.asr_text, subtitles.asr_text),
+                    api_text = COALESCE(EXCLUDED.api_text, subtitles.api_text),
+                    script_text = COALESCE(EXCLUDED.script_text, subtitles.script_text)
+            """
+            self._execute(
+                sql,
                 (
                     book_id,
                     episode_id,
@@ -631,21 +737,13 @@ class StageDBClient:
                     source,
                     seg.get("confidence"),
                     seg.get("cer_estimate"),
-                )
+                    asr_text,
+                    api_text,
+                    script_text,
+                ),
             )
-
-        if not params_list:
-            return 0
-
-        sql = f"""
-            INSERT INTO {table} (
-                book_id, episode_id, start_time, end_time, speaker,
-                text, tone, emotion, group_id, group_tone, source,
-                confidence, cer_estimate
-            ) VALUES %s
-        """
-        self._execute_values(sql, params_list)
-        return len(params_list)
+            count += 1
+        return count
 
     def query_subtitles(
         self,
@@ -1494,6 +1592,78 @@ class StageDBClient:
                     self.update_subject(subject_id, **update)
                     result["subjects_updated"] += 1
 
+        return result
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Reconciliation: apply multi-source fusion results
+    # ══════════════════════════════════════════════════════════════════════
+
+    def apply_reconciliation(
+        self,
+        book_id: str,
+        subject_updates: list[dict[str, Any]] | None = None,
+        episode_updates: list[dict[str, Any]] | None = None,
+        relationship_updates: list[dict[str, Any]] | None = None,
+    ) -> dict[str, int]:
+        """Apply reconciliation results to canonical fields.
+        
+        Args:
+            book_id: Book identifier
+            subject_updates: List of {id, field1, field2, ...} dicts
+            episode_updates: List of {(book_id, episode_id), field1, field2, ...} tuples
+            relationship_updates: List of {id, field1, field2, ...} dicts
+        
+        Returns:
+            Dict with counts: subjects_updated, episodes_updated, relationships_updated
+        """
+        result = {
+            "subjects_updated": 0,
+            "episodes_updated": 0,
+            "relationships_updated": 0,
+        }
+        
+        if not self.is_available:
+            return result
+        
+        # Update subjects
+        if subject_updates:
+            for update in subject_updates:
+                subject_id = update.pop("id", None)
+                if subject_id is not None:
+                    self.update_subject(subject_id, **update)
+                    result["subjects_updated"] += 1
+        
+        # Update episodes
+        if episode_updates:
+            for key, fields in episode_updates:
+                book_id, episode_id = key
+                set_clauses = [f"{k} = %s" for k in fields.keys()]
+                values = list(fields.values())
+                table = _t(self._schema, "episodes")
+                sql = f"""
+                    UPDATE {table}
+                    SET {', '.join(set_clauses)}
+                    WHERE book_id = %s AND episode_id = %s
+                """
+                self._execute(sql, tuple(values) + (book_id, episode_id))
+                result["episodes_updated"] += 1
+        
+        # Update relationships
+        if relationship_updates:
+            for update in relationship_updates:
+                rel_id = update.pop("id", None)
+                if rel_id is not None:
+                    set_clauses = [f"{k} = %s" for k in update.keys()]
+                    values = list(update.values())
+                    table = _t(self._schema, "relationships")
+                    sql = f"""
+                        UPDATE {table}
+                        SET {', '.join(set_clauses)}
+                        WHERE id = %s
+                    """
+                    self._execute(sql, tuple(values) + (rel_id,))
+                    result["relationships_updated"] += 1
+        
         return result
 
 

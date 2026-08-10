@@ -584,6 +584,38 @@ def plugins_disable(
 # ============================================================================
 
 
+@app.command(name="webui-next", help="Start Next.js WebUI (new frontend)")
+def webui_next(
+    port: int | None = typer.Option(None, "--port", "-p", help="WebUI port"),
+    gateway_port: int | None = typer.Option(
+        None,
+        "--gateway-port",
+        help="Gateway health port",
+    ),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser"),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Apply safe local WebUI defaults without prompting",
+    ),
+) -> None:
+    """Start the Next.js WebUI (modern frontend)."""
+    webui(
+        port=port,
+        gateway_port=gateway_port,
+        workspace=workspace,
+        config=config,
+        background=False,
+        dev=False,
+        next_ui=True,
+        no_open=no_open,
+        yes=yes,
+    )
+
+
 @app.command()
 def status(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),

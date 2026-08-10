@@ -96,6 +96,9 @@ class SourceScriptSaveTool(Tool):
         db = StageDBClient(db_url=cfg.db_url, schema=cfg.db_schema)
         episodes = _align_with_subtitles(episodes, book_id, db)
 
+        # ── 3.5. 指纹去重 ──────────────────────────────────────────
+        dedup_count = _deduplicate_scenes(episodes)
+
         # ── 4. 写 DB ──────────────────────────────────────────────────
         scene_count = _write_scenes(episodes, book_id, db)
         _write_derived(episodes, book_id, db)
@@ -112,8 +115,12 @@ class SourceScriptSaveTool(Tool):
             "alignment_report": _build_alignment_report(episodes),
             "parse_metadata": {
                 **parse_meta,
-                "strategy": "agent-native",
+                "strategy": parse_meta.get("strategy", "agent-native"),
                 "status": "success",
+                "dedup_count": dedup_count,
+                "total_episodes": len(episodes),
+                "total_scenes": scene_count,
+                **_merge_stats(parse_meta),
             },
             "episodes": episodes,
         }
@@ -178,6 +185,44 @@ def _validate_episodes(episodes: list[dict], meta: dict) -> list[str]:
             )
 
     return errors
+
+
+# ── 指纹去重 ────────────────────────────────────────────────────────────────────
+
+
+def _make_fingerprint(episode_number: int, scene: dict) -> str:
+    """Generate a content fingerprint for deduplication."""
+    raw = f"{episode_number}:{scene.get('scene_id', '')}:{scene.get('location', '')}:"
+    dialogues = scene.get("dialogues", [])
+    if dialogues and isinstance(dialogues, list):
+        first_text = dialogues[0].get("text", "")[:50] if isinstance(dialogues[0], dict) else ""
+        raw += first_text
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _deduplicate_scenes(episodes: list[dict]) -> int:
+    """Remove duplicate scenes within each episode using fingerprint matching.
+
+    Duplicates are identified by (episode_number, scene_id, location, first
+    dialogue text).  Only the first occurrence is kept.
+    """
+    removed = 0
+    for ep in episodes:
+        ep_num = ep.get("episode_number", 0)
+        scenes = ep.get("scenes", [])
+        if not scenes:
+            continue
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for scene in scenes:
+            fp = _make_fingerprint(ep_num, scene)
+            if fp in seen:
+                removed += 1
+                continue
+            seen.add(fp)
+            deduped.append(scene)
+        ep["scenes"] = deduped
+    return removed
 
 
 # ── 字幕对齐 ──────────────────────────────────────────────────────────────────
@@ -426,6 +471,17 @@ def _build_alignment_report(episodes: list[dict]) -> dict[str, int]:
         "total": total,
         "alignment_rate": (levels["exact"] + levels["fuzzy"]) / total if total else 0,
     }
+
+
+def _merge_stats(parse_meta: dict) -> dict:
+    """Extract merge-related statistics for the output metadata."""
+    stats: dict[str, Any] = {}
+    strategy = parse_meta.get("strategy", "")
+    if strategy == "mapreduce":
+        chunk_count = parse_meta.get("chunk_count")
+        if chunk_count is not None:
+            stats["chunk_count"] = chunk_count
+    return stats
 
 
 def _save_cache(root: Path, script_sha: str, data: dict) -> None:

@@ -752,17 +752,34 @@ def build_request(
     temperature: float,
     max_tokens: int,
     context_injection: dict[str, Any] | None = None,
+    prompt_overrides: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Any]:
     backend = get_backend(backend_name)
-    task_instructions = task_prompt(task)
-    if task == "story_catalog":
-        task_instructions += broad_catalog_prompt(context)
-    elif (
-        task == "story_script_draft"
-        and context.get("story_granularity") == BROAD
-    ):
-        task_instructions += _get_broad_script_prompt()(context)
-    skill_knowledge = load_skill_for_task(task, context)
+
+    # ── Agent-native prompt overrides ──
+    # Agent can provide custom system_prompt, task_instructions, and
+    # reference context. If not provided, fall back to programmatic defaults.
+    _overrides = prompt_overrides or job.get("_agent_prompt_overrides") or {}
+    _agent_system_prompt = _overrides.get("system_prompt")
+    _agent_task_instructions = _overrides.get("task_instructions")
+    _agent_reference_context = _overrides.get("reference_context")
+
+    if _agent_task_instructions:
+        task_instructions = _agent_task_instructions
+    else:
+        task_instructions = task_prompt(task)
+        if task == "story_catalog":
+            task_instructions += broad_catalog_prompt(context)
+        elif (
+            task == "story_script_draft"
+            and context.get("story_granularity") == BROAD
+        ):
+            task_instructions += _get_broad_script_prompt()(context)
+
+    if _agent_reference_context:
+        skill_knowledge = _agent_reference_context
+    else:
+        skill_knowledge = load_skill_for_task(task, context)
     prompt = "\n\n".join(
         [
             identity_prompt(task, job, context),
@@ -872,7 +889,7 @@ def build_request(
             else backend.model_for_task(task)
         ),
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _agent_system_prompt or SYSTEM_PROMPT},
             {"role": "user", "content": content},
         ],
         "temperature": temperature,

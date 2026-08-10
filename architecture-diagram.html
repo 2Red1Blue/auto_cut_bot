@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto Cut Bot — Agent-Native Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #020617;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', monospace;
+    padding: 32px 24px;
+    min-height: 100vh;
+  }
+  .container { max-width: 1280px; margin: 0 auto; }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+  .pulse-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #22d3ee;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(34,211,238,0.5); }
+    50% { box-shadow: 0 0 0 8px rgba(34,211,238,0); }
+  }
+  h1 { font-size: 22px; font-weight: 600; color: #f1f5f9; letter-spacing: -0.5px; }
+  .subtitle { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .diagram-card {
+    border: 1px solid #1e293b;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #0f172a;
+    margin-bottom: 24px;
+  }
+  .diagram-card svg { display: block; width: 100%; height: auto; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .card {
+    border: 1px solid #1e293b;
+    border-radius: 10px;
+    padding: 16px 18px;
+    background: #0f172a;
+  }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .card-header h3 { font-size: 13px; font-weight: 500; color: #f1f5f9; }
+  .card-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .card-dot.cyan { background: #22d3ee; }
+  .card-dot.emerald { background: #34d399; }
+  .card-dot.violet { background: #a78bfa; }
+  .card-dot.orange { background: #fb923c; }
+  .card-dot.rose { background: #fb7185; }
+  .card ul { list-style: none; }
+  .card li { font-size: 11px; color: #94a3b8; line-height: 1.9; }
+  footer {
+    text-align: center;
+    font-size: 10px;
+    color: #334155;
+    padding-top: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="pulse-dot"></div>
+    <div>
+      <h1>Auto Cut Bot — Agent-Native Re-Architecture</h1>
+      <div class="subtitle">From Rigid 26-Stage Pipeline → Dynamic Agent Orchestration with Checkpointed HITL</div>
+    </div>
+  </header>
+
+  <div class="diagram-card">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 980" width="1200" height="980">
+      <defs>
+        <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+        </pattern>
+        <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#22d3ee" stroke-width="1.2"/>
+        </marker>
+        <marker id="arrow-emerald" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#34d399" stroke-width="1.2"/>
+        </marker>
+        <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#fb923c" stroke-width="1.2"/>
+        </marker>
+        <marker id="arrow-violet" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#a78bfa" stroke-width="1.2"/>
+        </marker>
+        <marker id="arrow-rose" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#fb7185" stroke-width="1.2"/>
+        </marker>
+        <marker id="arrow-slate" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8" fill="none" stroke="#94a3b8" stroke-width="1.2"/>
+        </marker>
+        <linearGradient id="hitl-grad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#fb7185" stop-opacity="0.15"/>
+          <stop offset="100%" stop-color="#fb7185" stop-opacity="0.05"/>
+        </linearGradient>
+      </defs>
+
+      <!-- Background -->
+      <rect width="1200" height="980" fill="#020617"/>
+      <rect width="1200" height="980" fill="url(#grid)"/>
+
+      <!-- ═══════ LAYER 1: USER & INTERFACE ═══════ -->
+      <rect x="30" y="20" width="1140" height="130" rx="12" fill="none" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="8,4" opacity="0.5"/>
+      <text x="50" y="40" fill="#22d3ee" font-size="10" font-family="JetBrains Mono" font-weight="500" opacity="0.7">LAYER 1 · USER & INTERFACE</text>
+
+      <!-- Next.js WebUI -->
+      <rect x="55" y="55" width="250" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="55" y="55" width="250" height="72" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+      <text x="80" y="78" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">Next.js 15 WebUI</text>
+      <text x="80" y="95" fill="#64748b" font-size="9" font-family="JetBrains Mono">Chat · Settings · Tracing</text>
+      <text x="80" y="110" fill="#475569" font-size="8" font-family="JetBrains Mono">React 19 · shadcn · Zustand</text>
+
+      <!-- Real-time Tracing -->
+      <rect x="335" y="55" width="240" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="335" y="55" width="240" height="72" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+      <text x="360" y="78" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">Real-time Tracing</text>
+      <text x="360" y="95" fill="#64748b" font-size="9" font-family="JetBrains Mono">SSE + WebSocket streams</text>
+      <text x="360" y="110" fill="#475569" font-size="8" font-family="JetBrains Mono">Tool calls · Agent state · Logs</text>
+
+      <!-- Pipeline Observability -->
+      <rect x="605" y="55" width="240" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="605" y="55" width="240" height="72" rx="6" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+      <text x="630" y="78" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">Pipeline Observability</text>
+      <text x="630" y="95" fill="#64748b" font-size="9" font-family="JetBrains Mono">Checkpoint timeline · Diff view</text>
+      <text x="630" y="110" fill="#475569" font-size="8" font-family="JetBrains Mono">Phase progress · QC reports</text>
+
+      <!-- HITL Approval Panel -->
+      <rect x="875" y="55" width="270" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="875" y="55" width="270" height="72" rx="6" fill="rgba(136,19,55,0.25)" stroke="#fb7185" stroke-width="1.5"/>
+      <text x="900" y="78" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">HITL Approval Panel</text>
+      <text x="900" y="95" fill="#64748b" font-size="9" font-family="JetBrains Mono">Story approval · QC review gates</text>
+      <text x="900" y="110" fill="#475569" font-size="8" font-family="JetBrains Mono">Resume event → unblocks agent</text>
+
+      <!-- ═══════ ARROWS: Layer 1 → Layer 2 ═══════ -->
+      <line x1="180" y1="127" x2="180" y2="185" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrow-cyan)" opacity="0.7"/>
+      <line x1="455" y1="127" x2="455" y2="185" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrow-cyan)" opacity="0.7"/>
+      <line x1="725" y1="127" x2="725" y2="185" stroke="#22d3ee" stroke-width="1" marker-end="url(#arrow-cyan)" opacity="0.7"/>
+      <line x1="1010" y1="127" x2="1010" y2="185" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,4" marker-end="url(#arrow-rose)" opacity="0.7"/>
+
+      <!-- ═══════ LAYER 2: AGENT CONTROL PLANE ═══════ -->
+      <rect x="30" y="175" width="1140" height="175" rx="12" fill="none" stroke="#34d399" stroke-width="1.2" stroke-dasharray="8,4" opacity="0.5"/>
+      <text x="50" y="195" fill="#34d399" font-size="10" font-family="JetBrains Mono" font-weight="500" opacity="0.7">LAYER 2 · AGENT RUNTIME & CONTROL PLANE</text>
+
+      <!-- Router Agent -->
+      <rect x="55" y="210" width="220" height="80" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="55" y="210" width="220" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+      <text x="80" y="235" fill="#e2e8f0" font-size="13" font-family="JetBrains Mono" font-weight="600">Router Agent</text>
+      <text x="80" y="253" fill="#64748b" font-size="9" font-family="JetBrains Mono">Dispatch → sub-agents</text>
+      <text x="80" y="268" fill="#475569" font-size="8" font-family="JetBrains Mono">LangGraph async state machine</text>
+      <text x="80" y="280" fill="#34d399" font-size="8" font-family="JetBrains Mono">▸ Orchestrator</text>
+
+      <!-- Planner -->
+      <rect x="300" y="210" width="200" height="80" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="300" y="210" width="200" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+      <text x="325" y="235" fill="#e2e8f0" font-size="13" font-family="JetBrains Mono" font-weight="600">Planner</text>
+      <text x="325" y="253" fill="#64748b" font-size="9" font-family="JetBrains Mono">Phase Goals (not stages)</text>
+      <text x="325" y="268" fill="#475569" font-size="8" font-family="JetBrains Mono">Dynamic decomposition</text>
+      <text x="325" y="280" fill="#34d399" font-size="8" font-family="JetBrains Mono">▸ Adaptive parsing</text>
+
+      <!-- Memory Manager -->
+      <rect x="525" y="210" width="200" height="80" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="525" y="210" width="200" height="80" rx="6" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1.5"/>
+      <text x="550" y="235" fill="#e2e8f0" font-size="13" font-family="JetBrains Mono" font-weight="600">Memory Manager</text>
+      <text x="550" y="253" fill="#64748b" font-size="9" font-family="JetBrains Mono">Session · Long-term · Dream</text>
+      <text x="550" y="268" fill="#475569" font-size="8" font-family="JetBrains Mono">Context governance</text>
+      <text x="550" y="280" fill="#34d399" font-size="8" font-family="JetBrains Mono">▸ Autocompact</text>
+
+      <!-- Checkpoint Manager -->
+      <rect x="750" y="210" width="200" height="80" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="750" y="210" width="200" height="80" rx="6" fill="rgba(136,19,55,0.25)" stroke="#fb7185" stroke-width="1.5"/>
+      <text x="775" y="235" fill="#e2e8f0" font-size="13" font-family="JetBrains Mono" font-weight="600">Checkpoint Mgr</text>
+      <text x="775" y="253" fill="#64748b" font-size="9" font-family="JetBrains Mono">State → Postgres → resume</text>
+      <text x="775" y="268" fill="#475569" font-size="8" font-family="JetBrains Mono">HITL pause/resume events</text>
+      <text x="775" y="280" fill="#fb7185" font-size="8" font-family="JetBrains Mono">▸ Stateful persistence</text>
+
+      <!-- Meta-Tools Bar -->
+      <rect x="55" y="305" width="895" height="32" rx="4" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1" opacity="0.8"/>
+      <text x="70" y="326" fill="#fb923c" font-size="9" font-family="JetBrains Mono" font-weight="500">META-TOOLS:</text>
+      <text x="170" y="326" fill="#94a3b8" font-size="8" font-family="JetBrains Mono">① file_ops</text>
+      <text x="275" y="326" fill="#94a3b8" font-size="8" font-family="JetBrains Mono">② shell_exec</text>
+      <text x="390" y="326" fill="#94a3b8" font-size="8" font-family="JetBrains Mono">③ web_search</text>
+      <text x="510" y="326" fill="#94a3b8" font-size="8" font-family="JetBrains Mono">④ mcp_bridge</text>
+      <text x="640" y="326" fill="#94a3b8" font-size="8" font-family="JetBrains Mono">⑤ subagent_spawn</text>
+
+      <!-- ═══════ ARROWS: Layer 2 → Layer 3 ═══════ -->
+      <line x1="165" y1="350" x2="120" y2="415" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)" opacity="0.7"/>
+      <line x1="165" y1="350" x2="415" y2="415" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)" opacity="0.7"/>
+      <line x1="165" y1="350" x2="715" y2="415" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)" opacity="0.7"/>
+      <line x1="165" y1="350" x2="1015" y2="415" stroke="#34d399" stroke-width="1" marker-end="url(#arrow-emerald)" opacity="0.7"/>
+
+      <!-- ═══════ LAYER 3: DOMAIN SUB-AGENTS ═══════ -->
+      <rect x="30" y="400" width="1140" height="175" rx="12" fill="none" stroke="#fb923c" stroke-width="1.2" stroke-dasharray="8,4" opacity="0.5"/>
+      <text x="50" y="420" fill="#fb923c" font-size="10" font-family="JetBrains Mono" font-weight="500" opacity="0.7">LAYER 3 · DOMAIN SUB-AGENTS (TOOL CONTROLLERS)</text>
+
+      <!-- SourcePrepAgent -->
+      <rect x="55" y="435" width="250" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="55" y="435" width="250" height="95" rx="6" fill="rgba(251,146,60,0.15)" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="80" y="460" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">SourcePrepAgent</text>
+      <text x="80" y="478" fill="#64748b" font-size="9" font-family="JetBrains Mono">Video/audio ingestion</text>
+      <text x="80" y="493" fill="#64748b" font-size="9" font-family="JetBrains Mono">FunASR transcription</text>
+      <text x="80" y="508" fill="#475569" font-size="8" font-family="JetBrains Mono">FFmpeg extraction · ASR</text>
+      <text x="80" y="520" fill="#fb923c" font-size="7" font-family="JetBrains Mono">Phase 1: Source Preparation</text>
+
+      <!-- StoryGenAgent -->
+      <rect x="330" y="435" width="250" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="330" y="435" width="250" height="95" rx="6" fill="rgba(251,146,60,0.15)" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="355" y="460" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">StoryGenAgent</text>
+      <text x="355" y="478" fill="#64748b" font-size="9" font-family="JetBrains Mono">Narrative analysis</text>
+      <text x="355" y="493" fill="#64748b" font-size="9" font-family="JetBrains Mono">Script decomposition</text>
+      <text x="355" y="508" fill="#475569" font-size="8" font-family="JetBrains Mono">Chunking for long scripts</text>
+      <text x="355" y="520" fill="#fb923c" font-size="7" font-family="JetBrains Mono">Phase 2: Story Generation</text>
+
+      <!-- ProductionQCAgent -->
+      <rect x="605" y="435" width="250" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="605" y="435" width="250" height="95" rx="6" fill="rgba(251,146,60,0.15)" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="630" y="460" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">ProductionQCAgent</text>
+      <text x="630" y="478" fill="#64748b" font-size="9" font-family="JetBrains Mono">Cut plan validation</text>
+      <text x="630" y="493" fill="#64748b" font-size="9" font-family="JetBrains Mono">Quality scoring</text>
+      <text x="630" y="508" fill="#475569" font-size="8" font-family="JetBrains Mono">Cross-source verification</text>
+      <text x="630" y="520" fill="#fb923c" font-size="7" font-family="JetBrains Mono">Phase 3: QC & Approval Gate</text>
+
+      <!-- RenderEngineTool -->
+      <rect x="880" y="435" width="265" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="880" y="435" width="265" height="95" rx="6" fill="rgba(251,146,60,0.15)" stroke="#fb923c" stroke-width="1.5"/>
+      <text x="905" y="460" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">RenderEngineTool</text>
+      <text x="905" y="478" fill="#64748b" font-size="9" font-family="JetBrains Mono">Timeline assembly</text>
+      <text x="905" y="493" fill="#64748b" font-size="9" font-family="JetBrains Mono">FFmpeg batch render</text>
+      <text x="905" y="508" fill="#475569" font-size="8" font-family="JetBrains Mono">Multi-track · Subtitles · Effects</text>
+      <text x="905" y="520" fill="#fb923c" font-size="7" font-family="JetBrains Mono">Phase 4: Execution & Render</text>
+
+      <!-- ═══════ HITL FLOW (rose, dashed, cross-cutting) ═══════ -->
+      <rect x="975" y="210" width="180" height="32" rx="4" fill="url(#hitl-grad)" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="995" y="231" fill="#fb7185" font-size="9" font-family="JetBrains Mono" font-weight="500">⏸ HITL APPROVAL GATE</text>
+      <!-- Arrow from HITL gate to StoryGen (phase 2) and ProdQC (phase 3) -->
+      <path d="M1065,242 L1065,435" stroke="#fb7185" stroke-width="1" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-rose)" opacity="0.6"/>
+      <path d="M975,226 L555,210" stroke="#fb7185" stroke-width="0.8" stroke-dasharray="3,3" fill="none" opacity="0.3"/>
+
+      <!-- ═══════ ARROWS: Layer 3 → Layer 4 ═══════ -->
+      <line x1="180" y1="530" x2="145" y2="615" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <line x1="455" y1="530" x2="430" y2="615" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <line x1="730" y1="530" x2="730" y2="615" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow-orange)" opacity="0.7"/>
+      <line x1="1010" y1="530" x2="1030" y2="615" stroke="#fb923c" stroke-width="1" marker-end="url(#arrow-orange)" opacity="0.7"/>
+
+      <!-- ═══════ LAYER 4: AUTOCUT CORE / INFRASTRUCTURE ═══════ -->
+      <rect x="30" y="600" width="1140" height="175" rx="12" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="8,4" opacity="0.5"/>
+      <text x="50" y="620" fill="#a78bfa" font-size="10" font-family="JetBrains Mono" font-weight="500" opacity="0.7">LAYER 4 · AUTOCUT CORE · EXECUTION ENGINE & INFRASTRUCTURE</text>
+
+      <!-- PostgreSQL -->
+      <rect x="55" y="635" width="240" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="55" y="635" width="240" height="95" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="80" y="660" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">PostgreSQL</text>
+      <text x="80" y="678" fill="#64748b" font-size="9" font-family="JetBrains Mono">Agent checkpoints & state</text>
+      <text x="80" y="693" fill="#64748b" font-size="9" font-family="JetBrains Mono">Sessions · Subtitles · QC logs</text>
+      <text x="80" y="708" fill="#475569" font-size="8" font-family="JetBrains Mono">schema: autocut</text>
+      <text x="80" y="720" fill="#a78bfa" font-size="7" font-family="JetBrains Mono">▸ resume events stored here</text>
+
+      <!-- Artifact Storage -->
+      <rect x="320" y="635" width="230" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="320" y="635" width="230" height="95" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="345" y="660" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">Artifact Storage</text>
+      <text x="345" y="678" fill="#64748b" font-size="9" font-family="JetBrains Mono">ArtifactBus data passing</text>
+      <text x="345" y="693" fill="#64748b" font-size="9" font-family="JetBrains Mono">Video · Audio · Scripts</text>
+      <text x="345" y="708" fill="#475569" font-size="8" font-family="JetBrains Mono">StageCache · SHA-256 refs</text>
+      <text x="345" y="720" fill="#a78bfa" font-size="7" font-family="JetBrains Mono">▸ content-addressed</text>
+
+      <!-- LLM Provider Pool -->
+      <rect x="575" y="635" width="250" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="575" y="635" width="250" height="95" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="600" y="660" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">LLM Provider Pool</text>
+      <text x="600" y="678" fill="#64748b" font-size="9" font-family="JetBrains Mono">DashScope · VolcEngine · Copilot</text>
+      <text x="600" y="693" fill="#64748b" font-size="9" font-family="JetBrains Mono">Model routing · Fallback chains</text>
+      <text x="600" y="708" fill="#475569" font-size="8" font-family="JetBrains Mono">auto_cut_bot gateway :8765</text>
+      <text x="600" y="720" fill="#a78bfa" font-size="7" font-family="JetBrains Mono">▸ per-agent model selection</text>
+
+      <!-- FFmpeg Render Queue -->
+      <rect x="850" y="635" width="295" height="95" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="850" y="635" width="295" height="95" rx="6" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+      <text x="875" y="660" fill="#e2e8f0" font-size="12" font-family="JetBrains Mono" font-weight="500">FFmpeg Render Queue</text>
+      <text x="875" y="678" fill="#64748b" font-size="9" font-family="JetBrains Mono">Batch cutting · Stream copies</text>
+      <text x="875" y="693" fill="#64748b" font-size="9" font-family="JetBrains Mono">Subtitle burn · Audio normalize</text>
+      <text x="875" y="708" fill="#475569" font-size="8" font-family="JetBrains Mono">FunASR :10095 · SenseVoice</text>
+      <text x="875" y="720" fill="#a78bfa" font-size="7" font-family="JetBrains Mono">▸ one-encode all-intra pattern</text>
+
+      <!-- ═══════ MESSAGE BUS (horizontal, between Layer 3 & 4) ═══════ -->
+      <rect x="55" y="562" width="1090" height="28" rx="4" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1"/>
+      <text x="70" y="581" fill="#94a3b8" font-size="9" font-family="JetBrains Mono" font-weight="500">MESSAGE BUS · auto_cut_bot MessageQueue · Async dispatch · SSE streaming to WebUI</text>
+
+      <!-- ═══════ EXTERNAL SYSTEMS ═══════ -->
+      <rect x="30" y="810" width="1140" height="130" rx="12" fill="none" stroke="#94a3b8" stroke-width="1" stroke-dasharray="6,4" opacity="0.4"/>
+      <text x="50" y="830" fill="#94a3b8" font-size="10" font-family="JetBrains Mono" font-weight="500" opacity="0.6">EXTERNAL SYSTEMS & INTEGRATIONS</text>
+
+      <!-- Video Sources -->
+      <rect x="55" y="845" width="200" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="55" y="845" width="200" height="72" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.2"/>
+      <text x="80" y="868" fill="#e2e8f0" font-size="11" font-family="JetBrains Mono" font-weight="500">Video Sources</text>
+      <text x="80" y="886" fill="#64748b" font-size="9" font-family="JetBrains Mono">Local files · S3 · HTTP</text>
+      <text x="80" y="901" fill="#475569" font-size="8" font-family="JetBrains Mono">mp4 · mkv · mov · avi</text>
+
+      <!-- Chat Channels -->
+      <rect x="280" y="845" width="200" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="280" y="845" width="200" height="72" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.2"/>
+      <text x="305" y="868" fill="#e2e8f0" font-size="11" font-family="JetBrains Mono" font-weight="500">Chat Channels</text>
+      <text x="305" y="886" fill="#64748b" font-size="9" font-family="JetBrains Mono">WeChat · DingTalk · Telegram</text>
+      <text x="305" y="901" fill="#475569" font-size="8" font-family="JetBrains Mono">WebUI WebSocket · REST API</text>
+
+      <!-- MCP Servers -->
+      <rect x="505" y="845" width="200" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="505" y="845" width="200" height="72" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.2"/>
+      <text x="530" y="868" fill="#e2e8f0" font-size="11" font-family="JetBrains Mono" font-weight="500">MCP Servers</text>
+      <text x="530" y="886" fill="#64748b" font-size="9" font-family="JetBrains Mono">FFmpeg MCP · ASR MCP</text>
+      <text x="530" y="901" fill="#475569" font-size="8" font-family="JetBrains Mono">DB MCP · File MCP</text>
+
+      <!-- Monitoring -->
+      <rect x="730" y="845" width="200" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="730" y="845" width="200" height="72" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.2"/>
+      <text x="755" y="868" fill="#e2e8f0" font-size="11" font-family="JetBrains Mono" font-weight="500">Observability</text>
+      <text x="755" y="886" fill="#64748b" font-size="9" font-family="JetBrains Mono">Langfuse · Logs</text>
+      <text x="755" y="901" fill="#475569" font-size="8" font-family="JetBrains Mono">Trace · Metrics · Alerts</text>
+
+      <!-- Output -->
+      <rect x="955" y="845" width="190" height="72" rx="6" fill="#0f172a" stroke="none"/>
+      <rect x="955" y="845" width="190" height="72" rx="6" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1.2"/>
+      <text x="980" y="868" fill="#e2e8f0" font-size="11" font-family="JetBrains Mono" font-weight="500">Output</text>
+      <text x="980" y="886" fill="#64748b" font-size="9" font-family="JetBrains Mono">Cut episodes · Final video</text>
+      <text x="980" y="901" fill="#475569" font-size="8" font-family="JetBrains Mono">Subtitles · Metadata</text>
+
+      <!-- ═══════ KEY FLOW ANNOTATIONS ═══════ -->
+      <!-- Vertical flow labels -->
+      <text x="10" y="160" fill="#334155" font-size="7" font-family="JetBrains Mono" transform="rotate(-90 10 160)">WS/SSE</text>
+      <text x="10" y="380" fill="#334155" font-size="7" font-family="JetBrains Mono" transform="rotate(-90 10 380)">DISPATCH</text>
+      <text x="10" y="585" fill="#334155" font-size="7" font-family="JetBrains Mono" transform="rotate(-90 10 585)">BUS</text>
+      <text x="10" y="790" fill="#334155" font-size="7" font-family="JetBrains Mono" transform="rotate(-90 10 790)">I/O</text>
+
+      <!-- Legend -->
+      <rect x="30" y="952" width="1140" height="24" rx="4" fill="none"/>
+      <rect x="50" y="957" width="10" height="10" rx="2" fill="rgba(8,51,68,0.4)" stroke="#22d3ee" stroke-width="1"/>
+      <text x="65" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">Frontend</text>
+      <rect x="140" y="957" width="10" height="10" rx="2" fill="rgba(6,78,59,0.4)" stroke="#34d399" stroke-width="1"/>
+      <text x="155" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">Control Plane</text>
+      <rect x="260" y="957" width="10" height="10" rx="2" fill="rgba(251,146,60,0.15)" stroke="#fb923c" stroke-width="1"/>
+      <text x="275" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">Sub-Agents</text>
+      <rect x="370" y="957" width="10" height="10" rx="2" fill="rgba(76,29,149,0.4)" stroke="#a78bfa" stroke-width="1"/>
+      <text x="385" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">Infrastructure</text>
+      <rect x="490" y="957" width="10" height="10" rx="2" fill="rgba(136,19,55,0.25)" stroke="#fb7185" stroke-width="1"/>
+      <text x="505" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">HITL</text>
+      <rect x="560" y="957" width="10" height="10" rx="2" fill="rgba(251,146,60,0.12)" stroke="#fb923c" stroke-width="1"/>
+      <text x="575" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">Meta-Tools</text>
+      <rect x="670" y="957" width="10" height="10" rx="2" fill="rgba(30,41,59,0.5)" stroke="#94a3b8" stroke-width="1"/>
+      <text x="685" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">External</text>
+      <line x1="760" y1="962" x2="790" y2="962" stroke="#fb7185" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="795" y="966" fill="#64748b" font-size="8" font-family="JetBrains Mono">HITL Flow</text>
+    </svg>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-dot emerald"></div>
+        <h3>Architecture Principles</h3>
+      </div>
+      <ul>
+        <li>• Agent as central nervous system</li>
+        <li>• Phase Goals replace rigid 26-stage pipeline</li>
+        <li>• 4 domain sub-agents + 5 meta-tools</li>
+        <li>• Adaptive chunking for long scripts</li>
+        <li>• LangGraph async state machine</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-dot rose"></div>
+        <h3>HITL & Persistence</h3>
+      </div>
+      <ul>
+        <li>• Checkpoints stored in Postgres</li>
+        <li>• Resume events unblock paused agents</li>
+        <li>• Story approval + QC review gates</li>
+        <li>• Stateful long-running processes</li>
+        <li>• Real-time tracing via SSE/WebSocket</li>
+      </ul>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <div class="card-dot violet"></div>
+        <h3>Infrastructure</h3>
+      </div>
+      <ul>
+        <li>• PostgreSQL for state + data</li>
+        <li>• ArtifactBus content-addressed storage</li>
+        <li>• LLM Provider Pool (multi-vendor)</li>
+        <li>• FFmpeg one-encode all-intra pattern</li>
+        <li>• FunASR SenseVoice on :10095</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>Auto Cut Bot Agent-Native Architecture · Generated 2026-08-10</footer>
+</div>
+</body>
+</html>

@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:8767";
-const WEBSOCKET_URL = process.env.WEBSOCKET_URL || "ws://localhost:8768";
+const WEBSOCKET_URL = process.env.WEBSOCKET_URL || "http://localhost:8768";
 const VIZ_SERVER_URL = process.env.VIZ_SERVER_URL || "http://localhost:8787";
 
 const nextConfig: NextConfig = {

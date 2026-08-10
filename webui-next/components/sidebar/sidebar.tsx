@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useSessions } from "@/hooks/use-sessions";
 import { Button } from "@/components/ui/button";
 import { Plus, Search, MessageSquare, Film, Workflow } from "lucide-react";
@@ -19,13 +19,17 @@ export function Sidebar() {
   } = useSessions();
   const [search, setSearch] = useState("");
   const pathname = usePathname();
+  const router = useRouter();
 
   const filtered = sessions.filter((s) =>
     (s.title || "Untitled").toLowerCase().includes(search.toLowerCase())
   );
 
   const handleCreate = async () => {
-    await createSession();
+    const session = await createSession();
+    if (session?.id) {
+      router.push(`/${session.id}`);
+    }
   };
 
   const navItems = [
@@ -86,7 +90,10 @@ export function Sidebar() {
             key={session.id}
             session={session}
             isActive={session.id === currentSessionId}
-            onClick={() => setCurrentSession(session.id)}
+            onClick={() => {
+              setCurrentSession(session.id);
+              router.push(`/${session.id}`);
+            }}
             onDelete={() => deleteSession(session.id)}
           />
         ))}
