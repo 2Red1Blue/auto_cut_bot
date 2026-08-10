@@ -866,7 +866,7 @@ def _make_boundary_id(
     确定性 ID 保证重复执行幂等 (ON CONFLICT DO NOTHING)。
     """
     raw = f"{book_id}:{episode_id}:{event_type}:{start_time:.3f}:{end_time:.3f}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:16]
 
 
 def _get_int(data: dict[str, Any], key: str) -> int | None:

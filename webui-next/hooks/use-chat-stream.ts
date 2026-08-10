@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback, useMemo } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { useClient } from "@/providers/client-provider";
 import { useMessageStore, type Message } from "@/lib/stores/message-store";
 import type {
@@ -14,12 +14,15 @@ interface ChatStreamOptions {
 // Cached empty array to avoid new reference on every render (prevents infinite loop)
 const EMPTY_MESSAGES: Message[] = [];
 
+/** Maximum time to wait for an AI response before showing a timeout error. */
+const RESPONSE_TIMEOUT_MS = 120_000; // 2 minutes
+
 /**
  * Bridges NanobotClient chat events to Zustand message-store.
  * Handles real-time streaming, tool events, and message lifecycle.
  */
 export function useChatStream(sessionId: string | null, options: ChatStreamOptions = {}) {
-  const { client, status } = useClient();
+  const { client, status, connectionStatus } = useClient();
   const addMessage = useMessageStore((s) => s.addMessage);
   const updateMessage = useMessageStore((s) => s.updateMessage);
   const messages = useMessageStore(
@@ -30,6 +33,57 @@ export function useChatStream(sessionId: string | null, options: ChatStreamOptio
     content: string;
     reasoning: string;
   }>({ assistantId: null, content: "", reasoning: "" });
+  const responseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastActivityRef = useRef<number>(0);
+
+  // Clear the response timeout timer
+  const clearResponseTimer = useCallback(() => {
+    if (responseTimerRef.current) {
+      clearTimeout(responseTimerRef.current);
+      responseTimerRef.current = null;
+    }
+  }, []);
+
+  // Start a response timeout timer — if no activity within RESPONSE_TIMEOUT_MS,
+  // mark the current streaming message as failed.
+  const startResponseTimer = useCallback(() => {
+    if (!sessionId) return;
+    clearResponseTimer();
+    lastActivityRef.current = Date.now();
+    responseTimerRef.current = setTimeout(() => {
+      const buf = bufferRef.current;
+      if (buf.assistantId) {
+        const msgs = useMessageStore.getState().messagesBySession[sessionId];
+        const msg = msgs?.find((m) => m.id === buf.assistantId);
+        if (msg?.streaming) {
+          const elapsed = Math.round((Date.now() - lastActivityRef.current) / 1000);
+          updateMessage(sessionId, buf.assistantId, {
+            content: buf.content || `⏱️ No response received after ${elapsed}s. The AI provider may be unavailable. Check your API key configuration.`,
+            streaming: false,
+          });
+        }
+      }
+      flushBuffer(sessionId, bufferRef, updateMessage);
+    }, RESPONSE_TIMEOUT_MS);
+  }, [sessionId, clearResponseTimer, updateMessage]);
+
+  // Reset streaming state when connection drops
+  useEffect(() => {
+    if (!sessionId) return;
+    if (connectionStatus === "reconnecting" || connectionStatus === "closed") {
+      clearResponseTimer();
+      // Flush the buffer and mark streaming messages as done
+      const msgs = useMessageStore.getState().messagesBySession[sessionId];
+      if (msgs) {
+        for (const msg of msgs) {
+          if (msg.streaming) {
+            updateMessage(sessionId, msg.id, { streaming: false });
+          }
+        }
+      }
+      bufferRef.current = { assistantId: null, content: "", reasoning: "" };
+    }
+  }, [connectionStatus, sessionId, updateMessage, clearResponseTimer]);
 
   // Subscribe to chat events from NanobotClient
   useEffect(() => {
@@ -38,16 +92,21 @@ export function useChatStream(sessionId: string | null, options: ChatStreamOptio
     // Attach to the chat session
     client.attach(sessionId);
 
-    const unsub = client.onChat(sessionId, (event: InboundEvent) => {
+    const wrappedHandler = (event: InboundEvent) => {
+      // Update last activity timestamp on any event
+      lastActivityRef.current = Date.now();
       processInboundEvent(event, sessionId, bufferRef, addMessage, updateMessage);
-    });
+    };
+
+    const unsub = client.onChat(sessionId, wrappedHandler);
 
     return () => {
       unsub();
+      clearResponseTimer();
       // Flush any buffered content
       flushBuffer(sessionId, bufferRef, updateMessage);
     };
-  }, [client, sessionId, status, addMessage, updateMessage]);
+  }, [client, sessionId, status, addMessage, updateMessage, clearResponseTimer]);
 
   // Send a message via NanobotClient
   const sendMessage = useCallback(
@@ -80,7 +139,10 @@ export function useChatStream(sessionId: string | null, options: ChatStreamOptio
         client.sendMessage(sessionId, content, undefined, {
           turnId: userMsgId,
         });
+        // Start the response timeout timer
+        startResponseTimer();
       } catch (err) {
+        clearResponseTimer();
         updateMessage(sessionId, assistantMsgId, {
           content: "Error sending message. Please try again.",
           streaming: false,
@@ -88,14 +150,14 @@ export function useChatStream(sessionId: string | null, options: ChatStreamOptio
         options.onError?.(err instanceof Error ? err : new Error(String(err)));
       }
     },
-    [client, sessionId, addMessage, updateMessage, options]
+    [client, sessionId, addMessage, updateMessage, options, startResponseTimer, clearResponseTimer]
   );
 
   return {
     messages,
     sendMessage,
     isStreaming: messages.some((m) => m.streaming),
-    isReady: status === "ready" && client !== null,
+    isReady: status === "ready" && client !== null && connectionStatus === "open",
   };
 }
 

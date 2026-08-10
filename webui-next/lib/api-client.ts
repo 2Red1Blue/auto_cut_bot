@@ -67,6 +67,13 @@ class ApiClient {
     return this.request<void>("/api/sessions/" + id, { method: "DELETE" });
   }
 
+  async renameSession(id: string, title: string) {
+    return this.request<Session>("/api/sessions/" + id, {
+      method: "PATCH",
+      body: { title },
+    });
+  }
+
   // Messages
   async getMessages(sessionId: string) {
     return this.request<Message[]>("/api/sessions/" + sessionId + "/messages");

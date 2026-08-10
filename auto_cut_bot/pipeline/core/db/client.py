@@ -59,10 +59,33 @@ class StageDBClient:
     sensible defaults (empty lists, 0 rows affected, None) without raising.
     """
 
-    def __init__(self, db_url: str | None = None, schema: str = "autocut") -> None:
+    def __init__(
+        self,
+        db_url: str | None = None,
+        schema: str = "autocut",
+        auto_migrate: bool = True,
+    ) -> None:
         self._db_url = db_url
         self._schema = schema
         self._conn: Any = None
+        if auto_migrate:
+            self._auto_migrate()
+
+    def _auto_migrate(self) -> None:
+        """Best-effort apply pending migrations on first use.
+
+        Ensures the schema (tables/columns) is present and up-to-date so the
+        pipeline never fails because the DB is missing tables. No-ops when DB
+        is unavailable (mirrors the client's graceful degradation).
+        """
+        if not self.is_available:
+            return
+        try:
+            from auto_cut_bot.pipeline.core.db.migrate import ensure_schema
+
+            ensure_schema(self._db_url, schema=self._schema)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Auto-migration skipped: %s", exc)
 
     # ── properties ────────────────────────────────────────────────────────
 

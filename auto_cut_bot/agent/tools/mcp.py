@@ -382,7 +382,7 @@ def _rewrite_local_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
                 except (KeyError, IndexError, TypeError, UnicodeDecodeError, ValueError):
                     logger.warning("MCP tool schema contains an unresolved local $ref: {}", ref)
                 else:
-                    name = f"ref_{hashlib.sha256(ref.encode()).hexdigest()[:12]}"
+                    name = f"ref_{hashlib.sha256(ref.encode('utf-8')).hexdigest()[:12]}"
                     existing_defs = schema.get("$defs")
                     while isinstance(existing_defs, dict) and name in existing_defs:
                         name += "_"

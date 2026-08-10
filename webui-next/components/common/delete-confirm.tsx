@@ -1,7 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { useTranslation } from "react-i18next";
+import { Trash2 } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,33 +25,36 @@ export function DeleteConfirm({
   open,
   onOpenChange,
   onConfirm,
-  title,
-  description,
+  title = "Delete session?",
+  description = "This action cannot be undone.",
   itemName,
 }: DeleteConfirmProps) {
-  const { t } = useTranslation();
+  const displayTitle = itemName ? `Delete "${itemName}"?` : title;
+  const displayDescription = itemName
+    ? `Are you sure you want to delete "${itemName}"? This action cannot be undone.`
+    : description;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>
-            {title || t("delete.title", "Delete Confirmation")}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {description ||
-              (itemName
-                ? t("delete.descriptionWithName", { name: itemName })
-                : t("delete.description", "Are you sure you want to delete this? This action cannot be undone."))}
-          </AlertDialogDescription>
+          <div className="mb-3 flex items-center justify-center">
+            <div className="grid h-12 w-12 place-items-center rounded-full bg-destructive/10">
+              <Trash2 className="h-5 w-5 text-destructive" strokeWidth={2} />
+            </div>
+          </div>
+          <AlertDialogTitle>{displayTitle}</AlertDialogTitle>
+          <AlertDialogDescription>{displayDescription}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>{t("common.cancel", "Cancel")}</AlertDialogCancel>
+          <AlertDialogCancel onClick={() => onOpenChange(false)}>
+            Cancel
+          </AlertDialogCancel>
           <AlertDialogAction
             onClick={onConfirm}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {t("common.delete", "Delete")}
+            Delete
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

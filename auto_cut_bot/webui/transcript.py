@@ -1170,7 +1170,7 @@ def _ensure_replay_identities(lines: list[dict[str, Any]]) -> list[dict[str, Any
             turn_identity = anchor.rsplit(":record:", 1)[0]
         else:
             turn_digest = hashlib.sha256(
-                "\n".join(_stable_record_digest(record) for record in turn).encode("ascii")
+                "\n".join(_stable_record_digest(record) for record in turn).encode("utf-8")
             ).hexdigest()[:16]
             turn_identity = f"legacy:{fallback_turn_index}:{turn_digest}"
         synthetic_occurrences: dict[str, int] = {}

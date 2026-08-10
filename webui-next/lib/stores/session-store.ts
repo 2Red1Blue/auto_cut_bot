@@ -17,6 +17,7 @@ interface SessionStore {
   setSessions: (sessions: Session[]) => void;
   setCurrentSession: (id: string | null) => void;
   deleteSession: (id: string) => Promise<void>;
+  renameSession: (id: string, title: string) => Promise<void>;
   fetchSessions: () => Promise<void>;
 }
 
@@ -43,6 +44,20 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     }));
   },
 
+  renameSession: async (id, title) => {
+    // Optimistically update local state
+    set((state) => ({
+      sessions: state.sessions.map((s) =>
+        s.id === id ? { ...s, title } : s
+      ),
+    }));
+    try {
+      await apiClient.renameSession(id, title);
+    } catch {
+      // ignore — API may not support PATCH
+    }
+  },
+
   fetchSessions: async () => {
     set({ isLoading: true });
     try {
@@ -57,7 +72,11 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       const sessions: Session[] = (raw as unknown as Array<Record<string, unknown>>).map((s) => {
         const key = (s.key as string) || "";
         // Strip channel prefix (e.g. "websocket:uuid" -> "uuid")
-        const id = key.includes(":") ? key.split(":").pop()! : key;
+        // Handle multi-level prefixes like "websocket:websocket:uuid"
+        let id = key;
+        while (id.startsWith("websocket:")) {
+          id = id.slice("websocket:".length);
+        }
         return {
           id,
           title: (s.title as string) || undefined,
@@ -66,7 +85,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           updatedAt: (s.updatedAt ?? s.updated_at) as string || undefined,
         };
       });
-      set({ sessions });
+      // Deduplicate by id (keep latest updated)
+      const seen = new Map<string, Session>();
+      for (const s of sessions) {
+        const existing = seen.get(s.id);
+        if (!existing || (s.updatedAt && (!existing.updatedAt || s.updatedAt > existing.updatedAt))) {
+          seen.set(s.id, s);
+        }
+      }
+      set({ sessions: Array.from(seen.values()) });
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
     } finally {

@@ -11,9 +11,16 @@ interface WsMessage {
 class WsClient {
   private ws: WebSocket | null = null;
   private handlers: Map<string, Set<MessageHandler>> = new Map();
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private url: string = "";
   private shouldReconnect = true;
+
+  /** Emit an internal event to all registered handlers. */
+  private emit(type: string, data?: unknown): void {
+    const handlers = this.handlers.get(type);
+    if (handlers) {
+      handlers.forEach((fn) => fn(data));
+    }
+  }
 
   connect(url: string = WS_URL): void {
     this.url = url;
@@ -22,12 +29,19 @@ class WsClient {
   }
 
   private _connect(): void {
+    // Close any existing connection before opening a new one
+    if (this.ws) {
+      this.ws.onclose = null; // prevent triggering reconnect on explicit close
+      this.ws.close();
+      this.ws = null;
+    }
+
     if (this.ws?.readyState === WebSocket.OPEN) return;
 
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.log("[WS] Connected:", this.url);
+      this.emit("ws:open");
     };
 
     this.ws.onmessage = (event) => {
@@ -48,14 +62,11 @@ class WsClient {
     };
 
     this.ws.onclose = () => {
-      console.log("[WS] Disconnected");
-      if (this.shouldReconnect) {
-        this.reconnectTimer = setTimeout(() => this._connect(), 3000);
-      }
+      this.emit("ws:close");
     };
 
-    this.ws.onerror = (err) => {
-      console.error("[WS] Error:", err);
+    this.ws.onerror = () => {
+      // Error events are followed by onclose, so no need to emit separately
     };
   }
 
@@ -77,12 +88,12 @@ class WsClient {
 
   disconnect(): void {
     this.shouldReconnect = false;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    if (this.ws) {
+      this.ws.onclose = null; // prevent auto-reconnect
+      this.ws.close();
+      this.ws = null;
+      this.emit("ws:close");
     }
-    this.ws?.close();
-    this.ws = null;
   }
 
   get readyState(): number {

@@ -1,0 +1,22 @@
+# auto_cut_bot 统一配置
+# 优先级: CLI > 环境变量 > config.yaml > 默认值
+# 搜索路径: job_root/config.yaml > 项目根 config.yaml
+
+# ── Job 工作目录 ─────────────────────────────────────────────────────────
+# 放在项目路径下（新建时如不存在，pipeline 启动会自动创建）
+job_root: "auto_cut_bot/jobs"
+
+# ── 数据库（隔离库）─────────────────────────────────────────────────────
+# 独立于 ac_auto_cut 项目使用的 auto_cut 库
+# 连接: podman 容器 ac_postgres (localhost:5433) 内数据库 auto_cut_bot
+db_url: "postgresql://ac_user:ac_user_2024@localhost:5433/auto_cut_bot"
+db_schema: "autocut"
+
+# ── 模型 / API ──────────────────────────────────────────────────────────
+# model: ""
+# workers: 4
+
+# ── 预构建 / 跳过开关 ───────────────────────────────────────────────────
+# pre_build_enabled: false
+# skip_source_prep: false
+# vlm_multisource_arbitration: true

@@ -191,7 +191,16 @@ export function MediaLibraryPanel() {
       {error && (
         <Card>
           <CardContent className="pt-6">
-            <div className="text-sm text-red-500">加载素材库失败</div>
+            <div className="space-y-2">
+              <div className="text-sm text-red-500 font-medium">加载素材库失败</div>
+              <div className="text-xs text-muted-foreground">
+                {error instanceof Error ? error.message : String(error)}
+              </div>
+              <Button variant="outline" size="sm" onClick={() => mutate()}>
+                <RefreshCw className="h-3 w-3 mr-1" />
+                重试
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}

@@ -2,11 +2,14 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useState, useCallback } from "react";
 import { useSessions } from "@/hooks/use-sessions";
+import { useSessionStore } from "@/lib/stores/session-store";
 import { Button } from "@/components/ui/button";
 import { Plus, Search, MessageSquare, Film, Workflow } from "lucide-react";
 import { ChatItem } from "./chat-item";
-import { useState } from "react";
+import { DeleteConfirm } from "@/components/common/delete-confirm";
+import { SessionSearchDialog } from "./session-search-dialog";
 import { cn } from "@/lib/utils";
 
 export function Sidebar() {
@@ -17,24 +20,47 @@ export function Sidebar() {
     createSession,
     deleteSession,
   } = useSessions();
-  const [search, setSearch] = useState("");
+  const renameSession = useSessionStore((s) => s.renameSession);
   const pathname = usePathname();
   const router = useRouter();
 
-  const filtered = sessions.filter((s) =>
-    (s.title || "Untitled").toLowerCase().includes(search.toLowerCase())
-  );
+  // Search dialog state
+  const [searchOpen, setSearchOpen] = useState(false);
 
-  const handleCreate = async () => {
+  // Delete confirmation state
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+
+  const handleCreate = useCallback(async () => {
     const session = await createSession();
     if (session?.id) {
       router.push(`/${session.id}`);
     }
-  };
+  }, [createSession, router]);
+
+  const handleDeleteRequest = useCallback((id: string, title: string) => {
+    setDeleteTarget({ id, title });
+  }, []);
+
+  const handleDeleteConfirm = useCallback(() => {
+    if (deleteTarget) {
+      deleteSession(deleteTarget.id);
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, deleteSession]);
+
+  const handleRename = useCallback(
+    (id: string, title: string) => {
+      renameSession(id, title);
+    },
+    [renameSession],
+  );
 
   const navItems = [
-    { href: "/", label: "聊天", icon: MessageSquare },
-    { href: "/media", label: "素材库", icon: Film },
+    { href: "/", label: "Chat", icon: MessageSquare },
+    { href: "/media", label: "Media", icon: Film },
     { href: "/pipeline", label: "Pipeline", icon: Workflow },
   ];
 
@@ -63,7 +89,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      {/* Chat Sessions */}
+      {/* Chat Sessions Header */}
       <div className="p-3 border-b border-sidebar-border flex items-center gap-2">
         <Button
           variant="outline"
@@ -73,19 +99,20 @@ export function Sidebar() {
         >
           <Plus className="h-4 w-4" />
         </Button>
-        <div className="relative flex-1">
-          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search..."
-            className="w-full pl-8 pr-2 py-1.5 text-sm rounded-md border border-sidebar-border bg-sidebar-accent focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
+        <Button
+          variant="outline"
+          size="default"
+          onClick={() => setSearchOpen(true)}
+          className="flex-1 justify-start gap-2 h-9 px-3 text-sm text-muted-foreground font-normal"
+        >
+          <Search className="h-4 w-4 shrink-0" />
+          <span className="truncate">Search sessions...</span>
+        </Button>
       </div>
+
+      {/* Session List */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {filtered.map((session) => (
+        {sessions.map((session) => (
           <ChatItem
             key={session.id}
             session={session}
@@ -94,15 +121,36 @@ export function Sidebar() {
               setCurrentSession(session.id);
               router.push(`/${session.id}`);
             }}
-            onDelete={() => deleteSession(session.id)}
+            onDelete={() =>
+              handleDeleteRequest(session.id, session.title || "Untitled")
+            }
+            onRename={handleRename}
           />
         ))}
-        {filtered.length === 0 && (
+        {sessions.length === 0 && (
           <p className="text-sm text-muted-foreground text-center py-4">
             No sessions found.
           </p>
         )}
       </div>
+
+      {/* Session Search Dialog */}
+      <SessionSearchDialog
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <DeleteConfirm
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+        onConfirm={handleDeleteConfirm}
+        title="Delete session?"
+        description="This action cannot be undone."
+        itemName={deleteTarget?.title}
+      />
     </aside>
   );
 }

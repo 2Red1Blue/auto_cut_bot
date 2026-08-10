@@ -92,6 +92,7 @@ olostep = [
 pipeline = [
     "autocut",
     "litellm>=1.80",
+    "psycopg2-binary>=2.9.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",

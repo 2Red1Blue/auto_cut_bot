@@ -1,0 +1,4 @@
+{"event":"user","chat_id":"4c9c4675-8daa-421a-bd2d-b42a1616909a","text":"1","turn_id":"user-1786364645922","turn_phase":"user","turn_seq":1,"created_at_ms":1786364645928}
+{"event":"stream_end","chat_id":"4c9c4675-8daa-421a-bd2d-b42a1616909a","stream_id":"websocket:4c9c4675-8daa-421a-bd2d-b42a1616909a:1786364645929814000:0","turn_id":"user-1786364645922","turn_phase":"answer","turn_seq":2,"created_at_ms":1786364646006}
+{"event":"message","chat_id":"4c9c4675-8daa-421a-bd2d-b42a1616909a","text":"Error calling LLM: 'ascii' codec can't encode characters in position 7-12: ordinal not in range(128)","latency_ms":76,"turn_id":"user-1786364645922","turn_phase":"answer","turn_seq":3,"created_at_ms":1786364646006}
+{"event":"turn_end","chat_id":"4c9c4675-8daa-421a-bd2d-b42a1616909a","latency_ms":76,"goal_state":{"active":false},"turn_id":"user-1786364645922","turn_phase":"complete","turn_seq":4,"created_at_ms":1786364646007}
