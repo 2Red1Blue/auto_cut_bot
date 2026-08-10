@@ -666,9 +666,3 @@ export function ConflictsPanel({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Re-export types
-// ---------------------------------------------------------------------------
-
-export type { ConflictResolution, SourceConflict, ConflictSource, ConflictSeverity };
