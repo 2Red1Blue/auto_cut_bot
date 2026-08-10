@@ -14,6 +14,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -149,6 +150,9 @@ class StoryApprovalTool(Tool):
             tasks = stage.prepare(bus)
             artifacts = stage.execute(bus, tasks)
             paths = {a.name: str(a.path) for a in artifacts}
+
+            mark_stage_complete(None, self.name, paths)
+
             accepted_count = len([d for d in decisions if d.get("decision") == "accepted"])
             return ToolResult(
                 "story_approval completed successfully.\n\n"

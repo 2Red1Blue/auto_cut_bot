@@ -6,11 +6,14 @@ Series based on the registry, episode/chapter digests, and event cards.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -119,9 +122,53 @@ class SeriesAssignmentTool(Tool):
             tasks = stage.prepare(bus)
             artifacts = stage.execute(bus, tasks)
             paths = {a.name: str(a.path) for a in artifacts}
+
+            # DB write: update subjects per assignment
+            _logger = logging.getLogger(__name__)
+            try:
+                db = get_db_client(str(job_root))
+                if db is not None and db.is_available:
+                    batch_path = job_root / "series-assignment-batch.json"
+                    book_id = _get_book_id(job_root)
+                    if book_id and batch_path.is_file():
+                        with open(batch_path, "r", encoding="utf-8") as _f:
+                            _data = json.load(_f)
+                        assignments = _data.get("assignments") or _data.get("results", [])
+                        for _assign in assignments:
+                            _subject_name = _assign.get("subject_name") or _assign.get("name")
+                            _subject_id = _assign.get("subject_id")
+                            _episode_id = _assign.get("episode_id")
+                            _updates: dict[str, Any] = {}
+                            if _episode_id is not None:
+                                _updates["first_episode"] = _assign.get("first_episode", _episode_id)
+                                _updates["last_episode"] = _assign.get("last_episode", _episode_id)
+                            if _subject_id is not None and _updates:
+                                db.update_subject(_subject_id, **_updates)
+                            elif _subject_name:
+                                _resolved_id = db.resolve_subject_id(book_id, _subject_name)
+                                if _resolved_id is not None and _updates:
+                                    db.update_subject(_resolved_id, **_updates)
+            except Exception as _db_err:
+                _logger.warning("DB write failed for series_assignment: %s", _db_err)
+
+            mark_stage_complete(None, self.name, paths)
+
             return ToolResult(
                 "series_assignment completed successfully.\n\n"
                 f"Artifacts:\n- series_assignment: {paths.get('series_assignment', 'N/A')}"
             )
         except Exception as exc:
             return ToolResult.error(f"series_assignment failed: {exc}")
+
+
+def _get_book_id(job_root: Path) -> str | None:
+    """Extract book_id from source_manifest.json."""
+    manifest = job_root / "source_manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("book_id") or data.get("id")
+    except Exception:
+        return None

@@ -11,6 +11,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -87,6 +88,9 @@ class StoryEvidenceTool(Tool):
             tasks = stage.prepare(bus)
             artifacts = stage.execute(bus, tasks)
             paths = {a.name: str(a.path) for a in artifacts}
+
+            mark_stage_complete(None, self.name, paths)
+
             return ToolResult(
                 "story_evidence completed successfully.\n\n"
                 f"Artifacts:\n- story_evidence: {paths.get('story_evidence', 'N/A')}"

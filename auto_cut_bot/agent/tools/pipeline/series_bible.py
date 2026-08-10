@@ -7,11 +7,14 @@ structured JSON and a human-readable Markdown review view.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -97,6 +100,40 @@ class SeriesBibleTool(Tool):
             tasks = stage.prepare(bus)
             artifacts = stage.execute(bus, tasks)
             paths = {a.name: str(a.path) for a in artifacts}
+
+            # DB write: update book with bible summary
+            _logger = logging.getLogger(__name__)
+            try:
+                db = get_db_client(str(job_root))
+                if db is not None and db.is_available:
+                    bible_path = job_root / "series-bible.json"
+                    book_id = _get_book_id(job_root)
+                    if book_id and bible_path.is_file():
+                        with open(bible_path, "r", encoding="utf-8") as _f:
+                            _data = json.load(_f)
+                        _summary = _data.get("summary") or _data.get("bible_summary")
+                        _genre = _data.get("genre")
+                        _sub_genre = _data.get("sub_genre")
+                        _mood = _data.get("mood")
+                        _era = _data.get("era")
+                        _updates: dict[str, Any] = {}
+                        if _summary:
+                            _updates["overall_synopsis"] = _summary
+                        if _genre:
+                            _updates["genre"] = _genre
+                        if _sub_genre:
+                            _updates["sub_genre"] = _sub_genre
+                        if _mood:
+                            _updates["mood"] = _mood
+                        if _era:
+                            _updates["era"] = _era
+                        if _updates:
+                            db.update_book(book_id, **_updates)
+            except Exception as _db_err:
+                _logger.warning("DB write failed for series_bible: %s", _db_err)
+
+            mark_stage_complete(None, self.name, paths)
+
             return ToolResult(
                 "series_bible completed successfully.\n\n"
                 f"Artifacts:\n- series_bible: {paths.get('series_bible', 'N/A')}\n"
@@ -104,3 +141,16 @@ class SeriesBibleTool(Tool):
             )
         except Exception as exc:
             return ToolResult.error(f"series_bible failed: {exc}")
+
+
+def _get_book_id(job_root: Path) -> str | None:
+    """Extract book_id from source_manifest.json."""
+    manifest = job_root / "source_manifest.json"
+    if not manifest.is_file():
+        return None
+    try:
+        with open(manifest, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("book_id") or data.get("id")
+    except Exception:
+        return None
