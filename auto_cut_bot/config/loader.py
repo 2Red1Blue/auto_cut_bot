@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, cast, overload
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import SettingsError
 
@@ -19,6 +20,13 @@ from auto_cut_bot.utils.helpers import _write_text_atomic  # pyright: ignore[rep
 # Global variable to store current config path (for multi-instance support)
 _current_config_path: Path | None = None
 _schema_refs_ready = False
+
+
+def _load_dotenv_from_project(config_path: Path) -> None:
+    """Load .env file from the project directory (next to config file)."""
+    env_path = config_path.parent / ".env"
+    if env_path.is_file():
+        load_dotenv(env_path, override=False)
 
 
 def _as_config_object(value: object) -> dict[str, Any] | None:
@@ -65,6 +73,9 @@ def load_config(config_path: Path | None = None) -> Config:
         _schema_refs_ready = True
 
     path = config_path or get_config_path()
+
+    # Load .env from project directory (if exists) before parsing config
+    _load_dotenv_from_project(path)
 
     if not path.exists():
         try:

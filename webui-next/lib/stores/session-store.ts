@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { apiClient } from "@/lib/api-client";
-import type { ConnectionStatus, ChatSummary, UIMessage } from "@/lib/types";
+import type { ChatSummary } from "@/lib/types";
 
 export interface Session {
-  id: string;
+  id: string;       // mapped from API's "key"
   title?: string;
+  preview?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -15,12 +16,11 @@ interface SessionStore {
   isLoading: boolean;
   setSessions: (sessions: Session[]) => void;
   setCurrentSession: (id: string | null) => void;
-  createSession: () => Promise<Session>;
   deleteSession: (id: string) => Promise<void>;
   fetchSessions: () => Promise<void>;
 }
 
-export const useSessionStore = create<SessionStore>((set) => ({
+export const useSessionStore = create<SessionStore>((set, get) => ({
   sessions: [],
   currentSessionId: null,
   isLoading: false,
@@ -29,26 +29,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   setCurrentSession: (id) => {
     set({ currentSessionId: id });
-    if (typeof window !== "undefined") {
-      if (id) {
-        window.history.pushState(null, "", `/${id}`);
-      } else {
-        window.history.pushState(null, "", "/");
-      }
-    }
-  },
-
-  createSession: async () => {
-    const session = await apiClient.createSession();
-    set((state) => ({
-      sessions: [session, ...state.sessions],
-      currentSessionId: session.id,
-    }));
-    return session;
   },
 
   deleteSession: async (id) => {
-    await apiClient.deleteSession(id);
+    try {
+      await apiClient.deleteSession(id);
+    } catch {
+      // ignore — API may not support DELETE
+    }
     set((state) => ({
       sessions: state.sessions.filter((s) => s.id !== id),
       currentSessionId: state.currentSessionId === id ? null : state.currentSessionId,
@@ -58,8 +46,22 @@ export const useSessionStore = create<SessionStore>((set) => ({
   fetchSessions: async () => {
     set({ isLoading: true });
     try {
-      const sessions = await apiClient.getSessions();
-      set({ sessions: Array.isArray(sessions) ? sessions : [] });
+      const data = await apiClient.getSessions();
+      // API returns { sessions: [...] } or an array directly
+      const raw = Array.isArray(data)
+        ? data
+        : (data as Record<string, unknown>).sessions
+          ? ((data as Record<string, unknown>).sessions as ChatSummary[])
+          : [];
+      // Map API response (key-based) to Session (id-based)
+      const sessions: Session[] = (raw as unknown as Array<Record<string, unknown>>).map((s) => ({
+        id: (s.key as string) || "",
+        title: (s.title as string) || undefined,
+        preview: (s.preview as string) || undefined,
+        createdAt: (s.createdAt ?? s.created_at) as string || undefined,
+        updatedAt: (s.updatedAt ?? s.updated_at) as string || undefined,
+      }));
+      set({ sessions });
     } catch (err) {
       console.error("Failed to fetch sessions:", err);
     } finally {

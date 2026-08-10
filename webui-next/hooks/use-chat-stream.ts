@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useClient } from "@/providers/client-provider";
 import { useMessageStore, type Message } from "@/lib/stores/message-store";
 import type {
@@ -11,6 +11,9 @@ interface ChatStreamOptions {
   onError?: (error: Error) => void;
 }
 
+// Cached empty array to avoid new reference on every render (prevents infinite loop)
+const EMPTY_MESSAGES: Message[] = [];
+
 /**
  * Bridges NanobotClient chat events to Zustand message-store.
  * Handles real-time streaming, tool events, and message lifecycle.
@@ -20,7 +23,7 @@ export function useChatStream(sessionId: string | null, options: ChatStreamOptio
   const addMessage = useMessageStore((s) => s.addMessage);
   const updateMessage = useMessageStore((s) => s.updateMessage);
   const messages = useMessageStore(
-    (s) => (sessionId ? s.messagesBySession[sessionId] : undefined) ?? []
+    (s) => (sessionId ? s.messagesBySession[sessionId] : undefined) ?? EMPTY_MESSAGES
   );
   const bufferRef = useRef<{
     assistantId: string | null;

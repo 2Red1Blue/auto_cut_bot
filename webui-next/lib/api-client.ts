@@ -1,6 +1,7 @@
 import type { PipelineJob, PipelineTriggerRequest, PipelineTriggerResponse, MediaAsset, MediaFolder, MediaLibrary } from "./types/pipeline";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8765";
+// Use empty string for client-side requests - Next.js rewrites will proxy to backend
+const BACKEND_URL = "";
 
 interface RequestOptions {
   method?: string;
@@ -11,9 +12,14 @@ interface RequestOptions {
 
 class ApiClient {
   private baseUrl: string;
+  private token: string | null = null;
 
   constructor(baseUrl: string = BACKEND_URL) {
     this.baseUrl = baseUrl;
+  }
+
+  setToken(token: string | null) {
+    this.token = token;
   }
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -24,6 +30,7 @@ class ApiClient {
       method,
       headers: {
         "Content-Type": "application/json",
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
         ...headers,
       },
       signal,

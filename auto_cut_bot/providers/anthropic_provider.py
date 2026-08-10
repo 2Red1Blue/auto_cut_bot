@@ -73,7 +73,7 @@ def _sanitize_tool_id(tid: str) -> str:
     if not tid or _VALID_TOOL_ID.match(tid):
         return tid
     safe_prefix = re.sub(r"[^a-zA-Z0-9_-]", "_", tid)[:48].strip("_") or "toolu"
-    digest = hashlib.sha1(tid.encode()).hexdigest()[:8]
+    digest = hashlib.sha1(tid.encode('utf-8')).hexdigest()[:8]
     return f"{safe_prefix}_{digest}"
 
 

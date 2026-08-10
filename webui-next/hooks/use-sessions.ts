@@ -3,7 +3,7 @@
 import { useEffect, useCallback, useRef } from "react";
 import { useClient } from "@/providers/client-provider";
 import { useSessionStore } from "@/lib/stores/session-store";
-import type { ChatSummary, WorkspaceScopePayload } from "@/lib/types";
+import type { WorkspaceScopePayload } from "@/lib/types";
 
 /**
  * Bridges NanobotClient session events to Zustand session-store.
@@ -14,10 +14,8 @@ export function useSessions() {
   const sessions = useSessionStore((s) => s.sessions);
   const isLoading = useSessionStore((s) => s.isLoading);
   const fetchSessions = useSessionStore((s) => s.fetchSessions);
-  const setSessions = useSessionStore((s) => s.setSessions);
   const setCurrentSession = useSessionStore((s) => s.setCurrentSession);
   const currentSessionId = useSessionStore((s) => s.currentSessionId);
-  const syncedRef = useRef(false);
 
   // Fetch sessions from REST API on mount
   useEffect(() => {
@@ -33,7 +31,6 @@ export function useSessions() {
     const unsub = client.onSessionUpdate(
       (chatId: string, scope?: string, workspaceScope?: WorkspaceScopePayload) => {
         if (scope === "metadata") {
-          // Refresh session list when metadata changes
           fetchSessions();
         }
       }
@@ -42,21 +39,22 @@ export function useSessions() {
     return () => unsub();
   }, [client, status, fetchSessions]);
 
-  // Create a new chat session via NanobotClient
+  // Create a new chat session via WebSocket new_chat message
   const createSession = useCallback(async () => {
     if (!client) return null;
 
     try {
-      // Use the REST API to create a session
-      const session = await useSessionStore.getState().createSession();
-      // Attach the NanobotClient to this chat
-      client.attach(session.id);
-      return session;
+      const chatId = await client.newChat();
+      // Refresh session list from backend
+      await fetchSessions();
+      // Select the new session
+      setCurrentSession(chatId);
+      return { id: chatId };
     } catch (err) {
       console.error("Failed to create session:", err);
       return null;
     }
-  }, [client]);
+  }, [client, fetchSessions, setCurrentSession]);
 
   // Delete a session
   const deleteSession = useCallback(

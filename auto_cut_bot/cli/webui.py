@@ -1,5 +1,10 @@
 """WebUI CLI command."""
 
+import os
+import subprocess
+import sys
+import time
+import webbrowser
 from pathlib import Path
 
 import typer
@@ -91,6 +96,11 @@ def webui(
         "--dev",
         help="Run the Vite development server with live frontend updates",
     ),
+    next_ui: bool = typer.Option(
+        False,
+        "--next",
+        help="Use Next.js WebUI instead of Vite",
+    ),
     no_open: bool = typer.Option(False, "--no-open", help="Do not open a browser"),
     yes: bool = typer.Option(
         False,
@@ -106,6 +116,9 @@ def webui(
     cli_terminal._ensure_interactive_tty_mode()
     if dev and background:
         console.print("[red]Error: --dev cannot be combined with --background.[/red]")
+        raise typer.Exit(1)
+    if next_ui and background:
+        console.print("[red]Error: --next cannot be combined with --background.[/red]")
         raise typer.Exit(1)
     config_path = _resolve_webui_config_path(config)
     created_config = not config_path.exists()
@@ -320,6 +333,61 @@ def webui(
         raise typer.Exit(1)
 
     _print_webui_foreground_lifecycle(attached=False)
+
+    # Next.js WebUI mode
+    if next_ui:
+        next_dir = config_path.parent / "webui-next"
+        if not next_dir.is_dir():
+            console.print(f"[red]Error: webui-next directory not found at {next_dir}[/red]")
+            raise typer.Exit(1)
+
+        console.print(f"[green]Starting Next.js WebUI...[/green]")
+        console.print(f"  Backend: http://{runtime_config.gateway.host}:{effective_gateway_port}")
+
+        # Start gateway in background subprocess
+        console.print("[green]Starting gateway...[/green]")
+        gateway_env = {**os.environ}
+        gateway_proc = subprocess.Popen(
+            [
+                sys.executable, "-m", "auto_cut_bot.cli.commands",
+                "gateway",
+                "--port", str(effective_gateway_port),
+                "--config", str(config_path),
+            ],
+            env=gateway_env,
+        )
+
+        # Wait for gateway to be ready
+        for _ in range(30):
+            if _gateway_health_ready(runtime_config.gateway.host, effective_gateway_port):
+                break
+            time.sleep(0.5)
+
+        # Start Next.js dev server
+        env = {**os.environ, "BACKEND_URL": f"http://{runtime_config.gateway.host}:{effective_gateway_port}"}
+        console.print("[green]Starting Next.js dev server...[/green]")
+        next_proc = subprocess.Popen(
+            ["npm", "run", "dev"],
+            cwd=str(next_dir),
+            env=env,
+        )
+
+        next_url = "http://localhost:3000"
+        console.print(f"\n[green]✓[/green] Next.js WebUI: [cyan]{next_url}[/cyan]")
+        console.print(f"[green]✓[/green] Gateway API: [cyan]http://{runtime_config.gateway.host}:{effective_gateway_port}[/cyan]")
+
+        if not no_open:
+            time.sleep(2)  # Wait for Next.js to start
+            webbrowser.open(next_url)
+
+        try:
+            next_proc.wait()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Stopping Next.js and gateway...[/yellow]")
+            next_proc.terminate()
+            gateway_proc.terminate()
+        return
+
     if dev_browser_url:
         dev_proxy_target = webui_dev_proxy_target(webui_url)
         try:

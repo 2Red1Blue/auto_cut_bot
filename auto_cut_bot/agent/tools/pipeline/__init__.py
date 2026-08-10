@@ -48,6 +48,8 @@ from auto_cut_bot.agent.tools.pipeline.story_qc_review import StoryQCReviewTool
 from auto_cut_bot.agent.tools.pipeline.story_render import StoryRenderTool
 from auto_cut_bot.agent.tools.pipeline.database_write import DatabaseWriteTool
 from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
+from auto_cut_bot.agent.tools.pipeline.source_script_load import SourceScriptLoadTool
+from auto_cut_bot.agent.tools.pipeline.source_script_save import SourceScriptSaveTool
 
 __all__ = [
     # Source Prep
@@ -80,6 +82,9 @@ __all__ = [
     "DatabaseWriteTool",
     # Orchestrator
     "PipelineOrchestratorTool",
+    # Agent-Native Script Parsing
+    "SourceScriptLoadTool",
+    "SourceScriptSaveTool",
 ]
 
 # Convenience: list of all pipeline tool classes for registration
@@ -92,4 +97,5 @@ ALL_PIPELINE_TOOLS = [
     SpanCandidatesTool, StoryPlansTool, StoryPlansMaterializeTool,
     StoryQCTool, StoryQCReviewTool, StoryRenderTool,
     DatabaseWriteTool, PipelineOrchestratorTool,
+    SourceScriptLoadTool, SourceScriptSaveTool,
 ]

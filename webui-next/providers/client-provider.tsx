@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { NanobotClient } from "@/lib/auto_cut_bot-client";
+import { apiClient } from "@/lib/api-client";
 import {
   fetchBootstrap,
   loadSavedSecret,
@@ -79,6 +80,9 @@ export function ClientProvider({ children }: { children: ReactNode }) {
       setBootstrap(result);
       setToken(result.token ?? null);
       setModelName(result.model_name ?? null);
+      
+      // Set api_token for HTTP API client (token is for WebSocket)
+      apiClient.setToken(result.api_token ?? result.token ?? null);
 
       const runtimeHost = createRuntimeHost(
         result.runtime_surface ?? "browser",
@@ -94,6 +98,7 @@ export function ClientProvider({ children }: { children: ReactNode }) {
 
       client.onStatus((s) => setConnectionStatus(s));
       client.onRuntimeModelUpdate((m) => setModelName(m));
+      client.connect();
 
       clientRef.current = client;
       setStatus("ready");

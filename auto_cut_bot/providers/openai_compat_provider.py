@@ -651,7 +651,7 @@ class OpenAICompatProvider(LLMProvider):
             return tool_call_id
         if len(tool_call_id) == 9 and tool_call_id.isalnum():
             return tool_call_id
-        return hashlib.sha1(tool_call_id.encode()).hexdigest()[:9]
+        return hashlib.sha1(tool_call_id.encode('utf-8')).hexdigest()[:9]
 
     def _should_normalize_tool_call_ids(self) -> bool:
         """Return True for providers that reject normal OpenAI tool call IDs."""
