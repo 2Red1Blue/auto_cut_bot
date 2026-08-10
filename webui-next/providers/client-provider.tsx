@@ -50,7 +50,7 @@ export function ClientProvider({ children }: { children: ReactNode }) {
   const [modelName, setModelName] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState<BootstrapResponse | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
-  const clientRef = useRef<NanobotClient | null>(null);
+  const [client, setClient] = useState<NanobotClient | null>(null);
 
   // Initialize loopback host bridge
   useEffect(() => {
@@ -100,7 +100,7 @@ export function ClientProvider({ children }: { children: ReactNode }) {
       client.onRuntimeModelUpdate((m) => setModelName(m));
       client.connect();
 
-      clientRef.current = client;
+      setClient(client);
       setStatus("ready");
     } catch (err) {
       if (err instanceof BootstrapAuthRequiredError) {
@@ -120,8 +120,8 @@ export function ClientProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     clearSavedSecret();
-    clientRef.current?.close();
-    clientRef.current = null;
+    client?.close();
+    setClient(null);
     setToken(null);
     setModelName(null);
     setBootstrap(null);
@@ -132,7 +132,7 @@ export function ClientProvider({ children }: { children: ReactNode }) {
   return (
     <ClientContext.Provider
       value={{
-        client: clientRef.current,
+        client,
         status,
         error,
         token,

@@ -26,6 +26,7 @@ Render:
 """
 
 from auto_cut_bot.agent.tools.pipeline.source_windows import SourceWindowsTool
+from auto_cut_bot.agent.tools.pipeline.source_transcripts import SourceTranscriptsTool
 from auto_cut_bot.agent.tools.pipeline.window_analysis import WindowAnalysisTool
 from auto_cut_bot.agent.tools.pipeline.event_cards import EventCardsTool
 from auto_cut_bot.agent.tools.pipeline.episode_digests import EpisodeDigestsTool
@@ -58,6 +59,7 @@ from auto_cut_bot.agent.tools.pipeline.domain_production_agent import DomainProd
 __all__ = [
     # Source Prep
     "SourceWindowsTool",
+    "SourceTranscriptsTool",
     "WindowAnalysisTool",
     "EventCardsTool",
     # Series Knowledge
@@ -98,7 +100,7 @@ __all__ = [
 
 # Convenience: list of all pipeline tool classes for registration
 ALL_PIPELINE_TOOLS = [
-    SourceWindowsTool, WindowAnalysisTool, EventCardsTool,
+    SourceWindowsTool, SourceTranscriptsTool, WindowAnalysisTool, EventCardsTool,
     EpisodeDigestsTool, ChapterDigestsTool, SeriesRegistryTool,
     SeriesAssignmentTool, SeriesBibleTool, StoryCatalogTool,
     StoryPortfolioTool, StoryTreatmentsTool, StoryScriptsTool,

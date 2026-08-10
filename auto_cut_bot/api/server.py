@@ -12,6 +12,7 @@ import hmac
 import json as _json
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from aiohttp import web

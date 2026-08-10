@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 PIPELINE_ORDER = [
-    "source_windows", "window_analysis", "event_cards",
+    "source_windows", "source_transcripts", "window_analysis", "event_cards",
     "episode_digests", "chapter_digests", "series_registry",
     "series_assignment", "series_bible", "story_catalog",
     "story_portfolio", "story_treatments", "story_scripts",

@@ -15,7 +15,6 @@ const nextConfig: NextConfig = {
       { source: "/webui/:path*", destination: `${WEBSOCKET_URL}/webui/:path*` },
       // Auto Cut Bot API proxy (on WebSocket server)
       { source: "/api/sessions", destination: `${WEBSOCKET_URL}/api/sessions` },
-      { source: "/api/sessions/:id", destination: `${WEBSOCKET_URL}/api/sessions/:id` },
       { source: "/api/messages", destination: `${WEBSOCKET_URL}/api/messages` },
       { source: "/api/config", destination: `${WEBSOCKET_URL}/api/config` },
       { source: "/api/channels", destination: `${WEBSOCKET_URL}/api/channels` },
