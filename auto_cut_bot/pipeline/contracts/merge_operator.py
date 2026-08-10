@@ -255,6 +255,8 @@ def merge(
     source_a_label: str,
     source_b_label: str,
     table: str,
+    *,
+    mode: str = "auto",
 ) -> MergeResult:
     """Merge two source dictionaries into a canonical record.
 
@@ -269,9 +271,12 @@ def merge(
     source_b_label : str
         Label for the second source, e.g. "api", "llm", "vlm".
     table : str
-        The table name this record belongs to (books, subjects, episodes,
-        scenes, subtitles, shots, boundaries, relationships,
-        speaker_mappings, subject_episodes).
+        The table name.
+    mode : str
+        "auto" — Agent resolves conflicts (default). Only video_verifiable
+        conflicts are flagged for review; author_intent conflicts are
+        auto-resolved with LLM preferred.
+        "manual" — All conflicts pause for human review.
 
     Returns
     -------
@@ -368,42 +373,59 @@ def merge(
             other_label = source_b_label
 
         if category in (CATEGORY_AUTHOR_INTENT, CATEGORY_VIDEO_VERIFIABLE):
-            # These categories create conflicts that need review
             severity = _conflict_severity(category)
-            resolution_status = (
-                ResolutionStatus.HIGH_SEVERITY
-                if severity == ConflictSeverity.HIGH
-                else ResolutionStatus.PENDING
-            )
 
-            canonical[field] = preferred_value
-
-            conflict = FieldConflict(
-                field=field,
-                table=table,
-                category=category,
-                severity=severity,
-                value_a=value_a,
-                value_b=value_b,
-                preferred_source=preferred,
-                suggested_action=_suggested_action(category, field, table),
-            )
-            conflicts.append(conflict)
-
-            provenance.append(
-                FieldProvenance(
-                    field=field,
-                    table=table,
-                    category=category,
-                    resolution=resolution_status,
-                    winner=preferred_label,
-                    reason=(
-                        f"'{field}' differs between sources. "
-                        f"Category '{category}' requires review. "
-                        f"Tentatively using {preferred_label} value."
-                    ),
+            if mode == "auto" and category == CATEGORY_AUTHOR_INTENT:
+                # AUTO mode: Agent resolves author_intent conflicts automatically.
+                # LLM is preferred, API value is logged as provenance.
+                canonical[field] = preferred_value
+                provenance.append(
+                    FieldProvenance(
+                        field=field, table=table, category=category,
+                        resolution=ResolutionStatus.AUTO_RESOLVED,
+                        winner=preferred_label,
+                        reason=(
+                            f"'{field}' differs but AUTO mode auto-resolves "
+                            f"author_intent with {preferred_label} preferred."
+                        ),
+                    )
                 )
-            )
+                # Still log as info-level conflict for Agent review
+                conflicts.append(
+                    FieldConflict(
+                        field=field, table=table, category=category,
+                        severity=ConflictSeverity.INFO,
+                        value_a=value_a, value_b=value_b,
+                        preferred_source=preferred,
+                        suggested_action=f"Agent auto-resolved: {preferred_label} preferred.",
+                    )
+                )
+            else:
+                # MANUAL mode or VIDEO_VERIFIABLE: create pending conflict
+                resolution_status = (
+                    ResolutionStatus.HIGH_SEVERITY
+                    if severity == ConflictSeverity.HIGH
+                    else ResolutionStatus.PENDING
+                )
+                canonical[field] = preferred_value
+                conflict = FieldConflict(
+                    field=field, table=table, category=category,
+                    severity=severity, value_a=value_a, value_b=value_b,
+                    preferred_source=preferred,
+                    suggested_action=_suggested_action(category, field, table),
+                )
+                conflicts.append(conflict)
+                provenance.append(
+                    FieldProvenance(
+                        field=field, table=table, category=category,
+                        resolution=resolution_status, winner=preferred_label,
+                        reason=(
+                            f"'{field}' differs between sources. "
+                            f"Category '{category}' requires review. "
+                            f"Tentatively using {preferred_label} value."
+                        ),
+                    )
+                )
         else:
             # measurable and api_unique: auto-resolve with preferred source
             canonical[field] = preferred_value
@@ -501,4 +523,59 @@ __all__ = [
     "merge",
     "merge_batch",
     "merge_summary",
+    "agent_resolve",
 ]
+
+
+def agent_resolve(
+    result: MergeResult,
+    field: str,
+    decision: str,
+    *,
+    reason: str = "",
+) -> MergeResult:
+    """Agent resolves a specific conflict by overriding the canonical value.
+
+    Called by the Agent when it wants to override the auto-resolved value.
+    This is the agent-native resolution path — Agent reviews conflicts
+    and makes decisions, rather than blocking for human input.
+
+    Parameters
+    ----------
+    result : MergeResult
+        The merge result containing conflicts.
+    field : str
+        The field name to resolve.
+    decision : str
+        "source_a" or "source_b" — which source's value to use.
+    reason : str
+        Agent's reasoning for the decision.
+
+    Returns
+    -------
+    MergeResult
+        Updated result with the conflict resolved.
+    """
+    # Update canonical value
+    for conflict in result.conflicts:
+        if conflict.field == field:
+            if decision == "source_a":
+                result.canonical[field] = conflict.value_a
+            elif decision == "source_b":
+                result.canonical[field] = conflict.value_b
+            # Update provenance
+            result.provenance.append(
+                FieldProvenance(
+                    field=field,
+                    table=result.table,
+                    category=conflict.category,
+                    resolution=ResolutionStatus.AUTO_RESOLVED,
+                    winner=f"agent_resolved:{decision}",
+                    reason=f"Agent resolved: {reason}",
+                )
+            )
+            break
+
+    # Remove resolved conflict from list
+    result.conflicts = [c for c in result.conflicts if c.field != field]
+    return result

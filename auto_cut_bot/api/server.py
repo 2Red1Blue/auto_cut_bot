@@ -40,6 +40,7 @@ __all__ = (
     "create_app",
     "handle_chat_completions",
     "handle_pipeline_run",
+    "handle_pipeline_resume",
     "handle_pipeline_status",
 )
 
@@ -490,6 +491,7 @@ def create_app(
 
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_post("/v1/pipeline/run", handle_pipeline_run)
+    app.router.add_post("/v1/pipeline/resume", handle_pipeline_resume)
     app.router.add_get("/v1/pipeline/status", handle_pipeline_status)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/health", handle_health)
@@ -587,6 +589,96 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
     })
 
 
+async def handle_pipeline_resume(request: web.Request) -> web.Response:
+    """POST /v1/pipeline/resume — resume a HITL-interrupted session.
+
+    Request JSON:
+        {
+            "session_id": "pipeline:book-001:abc123",
+            "decision": {
+                "action": "approved",
+                "notes": "Looks good, proceed"
+            }
+        }
+
+    Returns:
+        {"session_id": "...", "status": "resumed", "current_milestone": "..."}
+    """
+    import os as _os
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_json(400, "Invalid JSON body")
+
+    session_id = body.get("session_id")
+    if not session_id:
+        return _error_json(400, "session_id is required")
+
+    decision = body.get("decision")
+    if not isinstance(decision, dict):
+        return _error_json(400, "decision must be an object")
+    if "action" not in decision:
+        return _error_json(400, "decision.action is required")
+
+    # Derive project_root from session_id.
+    # Session IDs follow the format: "pipeline:{book_id}:{run_id}"
+    # Extract book_id from the session_id and construct the job root.
+    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
+    parts = session_id.split(":", 2)
+    if len(parts) >= 2:
+        book_id = parts[1]
+    else:
+        book_id = session_id
+
+    project_root = Path(workspace) / "jobs" / book_id
+
+    # Create CheckpointManager and load latest checkpoint.
+    from auto_cut_bot.pipeline.stategraph import (
+        AgentState,
+        CheckpointManager as FileCheckpointManager,
+        StateGraphEngine,
+    )
+    from auto_cut_bot.pipeline.checkpoint import CheckpointManager
+
+    # Determine which checkpoint backend to use.
+    db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
+    if db_url:
+        ckpt = CheckpointManager(db_url=db_url)
+    else:
+        ckpt = FileCheckpointManager(project_root=project_root)
+
+    # Load latest checkpoint for this session.
+    state = await ckpt.load(session_id)
+    if state is None:
+        return web.json_response({
+            "session_id": session_id,
+            "status": "not_found",
+            "error": "No checkpoint found for this session",
+        }, status=404)
+
+    if not isinstance(state, AgentState):
+        return _error_json(500, "Checkpoint deserialization failed: unexpected type")
+
+    # Set the human decision on the state.
+    state.human_decision = decision
+
+    # Create engine with loaded state and resume.
+    engine = StateGraphEngine(state, checkpointer=ckpt)
+    result_state = await engine.resume(decision)
+
+    # Save a checkpoint after resume.
+    await ckpt.save(result_state, result_state.status, result_state.current_milestone)
+
+    return web.json_response({
+        "session_id": session_id,
+        "status": "resumed",
+        "current_milestone": result_state.current_milestone,
+        "milestone_history": result_state.milestone_history,
+        "state_status": result_state.status,
+    })
+
+
 async def handle_pipeline_status(request: web.Request) -> web.Response:
     """GET /v1/pipeline/status?job_root=<path> — query pipeline progress.
 
@@ -668,7 +760,39 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
         except Exception:
             pass
 
-    return web.json_response({
+    # ── Agent-native V2: stategraph checkpoint status ──────────────────
+    v2_state: dict[str, Any] | None = None
+    try:
+        # Derive session_id from book_id to match checkpoint scope.
+        session_id = f"pipeline:{book_id or ''}:latest"
+
+        from auto_cut_bot.pipeline.stategraph import (
+            CheckpointManager as FileCheckpointManager,
+        )
+        from auto_cut_bot.pipeline.checkpoint import CheckpointManager
+
+        db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
+        if db_url:
+            ckpt = CheckpointManager(db_url=db_url)
+        else:
+            ckpt = FileCheckpointManager(project_root=job_root)
+
+        state = await ckpt.load(session_id)
+        if state is not None:
+            v2_state = {
+                "current_milestone": getattr(state, "current_milestone", None),
+                "milestone_history": getattr(state, "milestone_history", []),
+                "status": getattr(state, "status", None),
+                "interrupt_reason": getattr(state, "interrupt_reason", None),
+                "human_decision": getattr(state, "human_decision", None),
+                "retry_count": getattr(state, "retry_count", 0),
+                "errors": getattr(state, "errors", []),
+            }
+    except Exception:
+        # V2 state is best-effort; never fail the status endpoint.
+        pass
+
+    response_payload: dict[str, Any] = {
         "job_root": job_root,
         "overall_status": overall,
         "progress": f"{completed}/{total}",
@@ -678,4 +802,9 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
         "stages": stages,
         "failure": failure_info,
         "updated_at": project.get("updated_at"),
-    })
+    }
+
+    if v2_state is not None:
+        response_payload["v2_state"] = v2_state
+
+    return web.json_response(response_payload)
