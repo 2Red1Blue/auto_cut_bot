@@ -52,6 +52,8 @@ from auto_cut_bot.agent.tools.pipeline.source_script_load import SourceScriptLoa
 from auto_cut_bot.agent.tools.pipeline.source_script_save import SourceScriptSaveTool
 from auto_cut_bot.agent.tools.pipeline.source_script_chunk_parse import SourceScriptChunkParseTool
 from auto_cut_bot.agent.tools.pipeline.domain_source_agent import DomainSourceAgentTool
+from auto_cut_bot.agent.tools.pipeline.domain_story_agent import DomainStoryAgentTool
+from auto_cut_bot.agent.tools.pipeline.domain_production_agent import DomainProductionAgentTool
 
 __all__ = [
     # Source Prep
@@ -88,8 +90,10 @@ __all__ = [
     "SourceScriptLoadTool",
     "SourceScriptSaveTool",
     "SourceScriptChunkParseTool",
-    # Domain Sub-Agent
+    # Domain Sub-Agents
     "DomainSourceAgentTool",
+    "DomainStoryAgentTool",
+    "DomainProductionAgentTool",
 ]
 
 # Convenience: list of all pipeline tool classes for registration
@@ -104,4 +108,5 @@ ALL_PIPELINE_TOOLS = [
     DatabaseWriteTool, PipelineOrchestratorTool,
     SourceScriptLoadTool, SourceScriptSaveTool, SourceScriptChunkParseTool,
     DomainSourceAgentTool,
+    DomainStoryAgentTool, DomainProductionAgentTool,
 ]

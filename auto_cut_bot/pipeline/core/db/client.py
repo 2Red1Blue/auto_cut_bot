@@ -1667,6 +1667,214 @@ class StageDBClient:
         return result
 
 
+# ══════════════════════════════════════════════════════════════════════
+    # 11. source_provenance
+    # ══════════════════════════════════════════════════════════════════════
+
+    def insert_provenance(self, records: list[dict[str, Any]]) -> int:
+        """Insert provenance records using ON CONFLICT upsert.
+
+        Each record dict must contain: entity_table, entity_id, field_path.
+        Optional: values, canonical_source, resolved_at, resolved_by.
+
+        Returns the number of records upserted (0 if unavailable).
+        """
+        if not self.is_available or not records:
+            return 0
+
+        table = _t(self._schema, "source_provenance")
+        import json as _json
+
+        count = 0
+        for rec in records:
+            entity_table = rec.get("entity_table")
+            entity_id = rec.get("entity_id")
+            field_path = rec.get("field_path")
+            if not entity_table or not entity_id or not field_path:
+                continue
+
+            values_val = rec.get("values")
+            if isinstance(values_val, (dict, list)):
+                values_val = _json.dumps(values_val, ensure_ascii=False, default=str)
+            elif isinstance(values_val, str):
+                pass  # already JSON string
+            else:
+                values_val = "{}"
+
+            sql = f"""
+                INSERT INTO {table} (
+                    entity_table, entity_id, field_path,
+                    values, canonical_source, resolved_at, resolved_by
+                ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
+                ON CONFLICT (entity_table, entity_id, field_path) DO UPDATE SET
+                    values = EXCLUDED.values,
+                    canonical_source = EXCLUDED.canonical_source,
+                    resolved_at = EXCLUDED.resolved_at,
+                    resolved_by = EXCLUDED.resolved_by
+            """
+            self._execute(
+                sql,
+                (
+                    entity_table,
+                    entity_id,
+                    field_path,
+                    values_val,
+                    rec.get("canonical_source", ""),
+                    rec.get("resolved_at"),
+                    rec.get("resolved_by", "auto_policy"),
+                ),
+            )
+            count += 1
+
+        return count
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 12. source_conflicts
+    # ══════════════════════════════════════════════════════════════════════
+
+    def upsert_conflicts(self, conflicts: list[dict[str, Any]]) -> int:
+        """UPSERT conflict records.
+
+        Each conflict dict must contain: entity_table, entity_id, field_path.
+        Optional: candidates, severity, status, resolution, created_at, resolved_at.
+
+        On conflict, updates candidates, severity, and status (preserving any
+        existing resolution).
+
+        Returns the number of conflicts upserted (0 if unavailable).
+        """
+        if not self.is_available or not conflicts:
+            return 0
+
+        table = _t(self._schema, "source_conflicts")
+        import json as _json
+
+        count = 0
+        for conf in conflicts:
+            entity_table = conf.get("entity_table")
+            entity_id = conf.get("entity_id")
+            field_path = conf.get("field_path")
+            if not entity_table or not entity_id or not field_path:
+                continue
+
+            candidates_val = conf.get("candidates")
+            if isinstance(candidates_val, (dict, list)):
+                candidates_val = _json.dumps(candidates_val, ensure_ascii=False, default=str)
+            elif isinstance(candidates_val, str):
+                pass
+            else:
+                candidates_val = "{}"
+
+            resolution_val = conf.get("resolution")
+            if isinstance(resolution_val, (dict, list)):
+                resolution_val = _json.dumps(resolution_val, ensure_ascii=False, default=str)
+            elif isinstance(resolution_val, str):
+                pass
+            else:
+                resolution_val = None
+
+            sql = f"""
+                INSERT INTO {table} (
+                    entity_table, entity_id, field_path,
+                    candidates, severity, status, resolution,
+                    created_at, resolved_at
+                ) VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (entity_table, entity_id, field_path) DO UPDATE SET
+                    candidates = EXCLUDED.candidates,
+                    severity = EXCLUDED.severity,
+                    status = EXCLUDED.status,
+                    created_at = EXCLUDED.created_at
+            """
+            self._execute(
+                sql,
+                (
+                    entity_table,
+                    entity_id,
+                    field_path,
+                    candidates_val,
+                    conf.get("severity", "low"),
+                    conf.get("status", "pending"),
+                    resolution_val,
+                    conf.get("created_at"),
+                    conf.get("resolved_at"),
+                ),
+            )
+            count += 1
+
+        return count
+
+    def get_pending_conflicts(self, book_id: str) -> list[dict[str, Any]]:
+        """Query all pending conflicts for a given book.
+
+        Matches against entity_id in source_conflicts (which is the subject name
+        for subject-level conflicts).  Returns rows ordered by severity (high
+        first) and then by creation time.
+
+        Args:
+            book_id: Used to filter conflicts — entity_id is matched against
+                     subject names belonging to this book via a subquery on
+                     the subjects table.
+
+        Returns:
+            List of conflict dicts; empty list when DB is unavailable.
+        """
+        if not self.is_available:
+            return []
+
+        s = self._schema
+        sql = f"""
+            SELECT sc.*
+            FROM {_t(s, 'source_conflicts')} sc
+            WHERE sc.entity_table = 'subjects'
+              AND sc.status = 'pending'
+              AND sc.entity_id IN (
+                  SELECT name FROM {_t(s, 'subjects')} WHERE book_id = %s
+              )
+            ORDER BY
+              CASE sc.severity
+                  WHEN 'high' THEN 1
+                  WHEN 'medium' THEN 2
+                  WHEN 'low' THEN 3
+                  ELSE 4
+              END,
+              sc.created_at ASC
+        """
+        rows = self._execute(sql, (book_id,))
+        return [dict(r) for r in rows]
+
+    def resolve_conflict(self, conflict_id: int, resolution: dict[str, Any]) -> int:
+        """Mark a conflict as resolved with a resolution payload.
+
+        Sets status to 'resolved', records the resolution JSONB, and sets
+        resolved_at to now().
+
+        Args:
+            conflict_id: The integer primary key of the conflict.
+            resolution: Dict with at least a 'chosen_value' key and optionally
+                        'chosen_source', 'reason', 'resolved_by'.
+
+        Returns:
+            1 on success, 0 on failure or if DB is unavailable.
+        """
+        if not self.is_available:
+            return 0
+
+        import json as _json
+
+        resolution_json = _json.dumps(resolution, ensure_ascii=False, default=str)
+
+        table = _t(self._schema, "source_conflicts")
+        sql = f"""
+            UPDATE {table}
+            SET status = 'resolved',
+                resolution = %s::jsonb,
+                resolved_at = now()
+            WHERE id = %s
+        """
+        self._execute(sql, (resolution_json, conflict_id))
+        return 1
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 

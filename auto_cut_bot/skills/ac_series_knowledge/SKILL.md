@@ -142,5 +142,88 @@ python3 /absolute/skill/scripts/assemble_series_bible.py \
 - 上游 Window Summaries 或 Event Cards 变更后，Registry 和 Bible 必须重新生成。
 - Partial Admission 将无法闭合的人物/事件写入 quarantine，只发布 admitted 核心图；下游不得引用 quarantined ID。
 
+## Multi-Source Conflict Resolution
+
+Series Registry 在将人物数据写入 DB 后，自动运行多源冲突解决流程：
+
+### 数据源
+
+| Source | ID | Description |
+|--------|----|-------------|
+| LLM    | `llm` | Series Registry 从剧集摘要中提取的人物属性 |
+| API    | `api` | 平台内容 API 提供的目录数据（人物名、角色、简介等） |
+
+### 合并策略 (auto_policy)
+
+| 字段类型 | 字段 | 策略 | 说明 |
+|----------|------|------|------|
+| 标量字段 | persona, traits, tone, voice_timbre, visual_features, relationship, role | LLM 优先 | LLM 值为空时回退到 API |
+| 并集字段 | personality, aliases | 取并集 | 两个来源的值合并去重 |
+| 结构字段 | first_episode, last_episode | LLM 优先 | 记录首次/最后出场集数 |
+
+### 数据流
+
+```
+series_registry subjects
+        │
+        ├─── merge_operator(llm_data, api_data)
+        │       │
+        │       ├─── canonical values ──→ UPDATE subjects
+        │       ├─── provenance records ──→ INSERT INTO source_provenance
+        │       └─── conflict records ──→ UPSERT source_conflicts
+        │
+        ▼
+  DB contains canonical row + full provenance + pending conflicts
+```
+
+### Provenance (source_provenance)
+
+每条记录追踪一个字段的每个来源提供的值：
+
+| Column | Description |
+|--------|-------------|
+| entity_table | 目标表名（如 `subjects`） |
+| entity_id | 实体标识（人物名） |
+| field_path | 字段名（如 `persona`） |
+| values | JSONB: `{"llm": "...", "api": "..."}` |
+| canonical_source | 被选为 canonical 的来源 (`llm` / `api` / `union`) |
+| resolved_by | 策略名称（`auto_policy`） |
+
+### Conflicts (source_conflicts)
+
+当两个来源对同一字段提供不同的非空值时，生成冲突记录：
+
+| Column | Description |
+|--------|-------------|
+| candidates | JSONB: `{"llm": "...", "api": "..."}` |
+| severity | `low` / `medium` / `high` |
+| status | `pending` / `resolved` |
+| resolution | JSONB: 人工或自动裁决结果 |
+
+### 查询待处理冲突
+
+```sql
+-- 按 book 查询所有待处理冲突
+SELECT sc.*
+FROM autocut.source_conflicts sc
+JOIN autocut.subjects s ON s.name = sc.entity_id
+WHERE s.book_id = '42000023011'
+  AND sc.status = 'pending'
+ORDER BY
+  CASE sc.severity WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
+  sc.created_at;
+```
+
+### 解决冲突
+
+```python
+db.resolve_conflict(conflict_id=42, resolution={
+    "chosen_value": "...",
+    "chosen_source": "llm",
+    "reason": "LLM extraction is more detailed than API catalogue",
+    "resolved_by": "manual_review",
+})
+```
+
 ## Version History
 
