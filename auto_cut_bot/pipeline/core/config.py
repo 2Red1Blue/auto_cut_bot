@@ -221,6 +221,51 @@ class PipelineConfig:
         return None
 
     @classmethod
+    def from_agent_config(cls, config_path: Path | str | None = None) -> "PipelineConfig":
+        """从 agent 的 config.json 读取 pipeline 配置段。
+
+        搜索路径:
+        1. 显式传入路径
+        2. 项目根 auto_cut_bot.config.json
+        3. ~/.auto_cut_bot/config.json
+        """
+        candidates: list[Path] = []
+        if config_path is not None:
+            candidates.append(Path(config_path).expanduser().resolve())
+        # 项目根 (auto_cut_bot 仓库根目录)
+        candidates.append(_PROJECT_ROOT.parent.parent / "auto_cut_bot.config.json")
+        candidates.append(Path.home() / ".auto_cut_bot" / "config.json")
+
+        for path in candidates:
+            if not path.is_file():
+                continue
+            try:
+                import json
+                with path.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            pipeline_data = data.get("pipeline")
+            if not isinstance(pipeline_data, dict):
+                continue
+
+            field_names = {f.name for f in fields(cls) if f.init}
+            kwargs: dict[str, Any] = {}
+            for key, value in pipeline_data.items():
+                if value is None:
+                    continue
+                if key in field_names:
+                    if key == "workers":
+                        kwargs[key] = _parse_workers(value)
+                    else:
+                        kwargs[key] = value
+            if kwargs:
+                return cls(**kwargs)
+            break  # pipeline section found but empty — stop searching
+
+        return cls()
+
+    @classmethod
     def resolve(
         cls,
         cli_args: Any = None,
@@ -229,7 +274,7 @@ class PipelineConfig:
         yaml_path: Path | str | None = None,
     ) -> "PipelineConfig":
         """按优先级合并全部配置层:
-        ``from_cli() > from_env() > from_yaml() > 默认值``。
+        ``from_cli() > from_env() > from_agent_config() > from_yaml() > 默认值``。
 
         - cli_args: argparse 命名空间（None 表示无 CLI 层）
         - env: 是否读取环境变量层
@@ -244,11 +289,14 @@ class PipelineConfig:
             yaml_file = cls.find_yaml(job_root)
         base = cls.from_yaml(yaml_file) if yaml_file is not None else cls()
 
-        # 2. env 层覆盖 yaml
+        # 2. agent config.json 层覆盖 yaml
+        base = _merge(base, cls.from_agent_config())
+
+        # 3. env 层覆盖 agent config
         if env:
             base = _merge(base, cls.from_env())
 
-        # 3. CLI 层覆盖一切
+        # 4. CLI 层覆盖一切
         if cli_args is not None:
             base = _merge(base, cls.from_cli(cli_args))
 

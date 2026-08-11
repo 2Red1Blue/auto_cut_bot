@@ -3,7 +3,7 @@
     "defaults": {
       "workspace": "~/.auto_cut_bot/workspace",
       "modelPreset": null,
-      "model": "deepseek-v4-pro-260425",
+      "model": "doubao-seed-2-1-pro-260628",
       "provider": "volcengine",
       "maxTokens": 8192,
       "contextWindowTokens": 200000,
@@ -568,5 +568,15 @@
     "mcpServers": {},
     "ssrfWhitelist": []
   },
-  "modelPresets": {}
+  "modelPresets": {},
+  "pipeline": {
+    "backend": "doubao",
+    "backend_multimodal_model": "doubao-seed-2-1-pro-260628",
+    "backend_text_model": "doubao-seed-2-1-pro-260628",
+    "ark_api_key": "",
+    "qwen_api_key": "",
+    "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+    "requests_per_minute": 200,
+    "semantic_retries": 3
+  }
 }
