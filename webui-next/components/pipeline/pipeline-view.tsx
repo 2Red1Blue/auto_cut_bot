@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PipelinePanel } from "./pipeline-panel";
 import { PipelineTrigger } from "./pipeline-trigger";
+import { ConflictsPanel } from "./conflicts-panel";
 
 export function PipelineView() {
   return (
@@ -19,14 +20,19 @@ export function PipelineView() {
         <TabsList>
           <TabsTrigger value="jobs">任务列表</TabsTrigger>
           <TabsTrigger value="trigger">触发新任务</TabsTrigger>
+          <TabsTrigger value="conflicts">冲突解决</TabsTrigger>
         </TabsList>
-        
+
         <TabsContent value="jobs" className="space-y-4">
           <PipelinePanel />
         </TabsContent>
-        
+
         <TabsContent value="trigger">
           <PipelineTrigger />
+        </TabsContent>
+
+        <TabsContent value="conflicts">
+          <ConflictsPanel />
         </TabsContent>
       </Tabs>
     </div>
