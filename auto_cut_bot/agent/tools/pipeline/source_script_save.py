@@ -13,8 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
-from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
-from auto_cut_bot.pipeline.provenance import merge_operator
+from auto_cut_bot.pipeline.contracts.merge_operator import merge, merge_summary
 
 
 @tool_parameters({
@@ -130,17 +129,21 @@ class SourceScriptSaveTool(Tool):
         output_path = job_root / "source_script.json"
         atomic_write_json(output_path, output)
 
-        # ── 6. 缓存 ──────────────────────────────────────────────────
-        cache = ArtifactCache(job_root, namespace="source_script")
+        # ── 6. 缓存 (file-based, agent-native) ──────────────────────────────
+        cache_dir = job_root / ".cache" / "source_script"
+        cache_dir.mkdir(parents=True, exist_ok=True)
         if script_sha:
-            cache.put(script_sha, output)
+            cache_file = cache_dir / f"{script_sha[:16]}.json"
+            cache_file.write_text(json.dumps(output, ensure_ascii=False))
 
-        # ── 6.5. 多源数据合并（来源追溯） ─────────────────────────
+        # ── 6.5. 多源数据合并（来源追溯） ─────────────────────────────
         if script_sha:
-            api_data = cache.get(f"{script_sha}_api")
-            if api_data:
-                merge_result = merge_operator(output, api_data)
-                cache.put(f"{script_sha}_merged", merge_result.to_dict())
+            api_cache_file = cache_dir / f"{script_sha[:16]}_api.json"
+            if api_cache_file.exists():
+                api_data = json.loads(api_cache_file.read_text())
+                merge_result = merge(output, api_data, "script", "api", "source_script")
+                merged_file = cache_dir / f"{script_sha[:16]}_merged.json"
+                merged_file.write_text(json.dumps(merge_summary(merge_result), ensure_ascii=False))
 
         # ── 7. 更新 project.json ─────────────────────────────────────
         _update_project(job_root, output_path)

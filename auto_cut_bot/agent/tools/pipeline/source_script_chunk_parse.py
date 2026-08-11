@@ -9,6 +9,7 @@ Agent 将剧本切分为多个 chunk，对每个 chunk 调用此 tool 进行 LLM
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -255,8 +256,11 @@ class SourceScriptChunkParseTool(Tool):
         }
 
         return ToolResult(
+            f"CHUNK_PARSED\n\n"
             f"chunk_id={chunk_id}: Parsed {len(episodes)} episodes, "
             f"{total_scenes} scenes. "
             f"Episodes: {start_ep}-{end_ep}. "
-            f"Attempts: {parse_meta.get('attempts', '?')}."
+            f"Attempts: {parse_meta.get('attempts', '?')}.\n\n"
+            "--- CHUNK RESULT DATA ---\n\n"
+            f"{json.dumps(response, ensure_ascii=False, indent=2)}"
         )

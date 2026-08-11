@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
-from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 
@@ -86,7 +85,7 @@ class SourceScriptLoadTool(Tool):
         3. Validate each segment (episode count, continuity, scene distribution)
         4. Call source_script_save with the complete parsed episodes
         """
-        from autocut_core import PipelineConfig
+        from auto_cut_bot.pipeline.core.config import PipelineConfig
 
         job_root = Path(kwargs["job_root"]).expanduser().resolve()
         if not job_root.is_dir():
@@ -114,22 +113,23 @@ class SourceScriptLoadTool(Tool):
         script_text = _read_script(script_path)
         script_sha = hashlib.sha256(script_text.encode("utf-8")).hexdigest()
 
-        # Check cache
-        cache = ArtifactCache(job_root, namespace="source_script")
-        if not force_reparse:
-            cached = cache.get(script_sha)
-            if cached is not None:
-                episodes = cached.get("episodes", [])
-                meta = cached.get("_parse_meta", cached.get("parse_metadata", {}))
-                return ToolResult(
-                    "CACHE_HIT\n\n"
-                    f"Script already parsed: {len(episodes)} episodes, "
-                    f"{sum(len(e.get('scenes', [])) for e in episodes)} scenes.\n"
-                    f"Cache key: {script_sha[:16]}\n"
-                    f"Parse metadata: {json.dumps(meta, ensure_ascii=False)}\n\n"
-                    "If this result is incorrect (e.g., truncated), re-call "
-                    "with force_reparse=true."
-                )
+        # Check cache (file-based, agent-native — no ArtifactBus dependency)
+        cache_dir = job_root / ".cache" / "source_script"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"{script_sha[:16]}.json"
+        if not force_reparse and cache_file.exists():
+            cached = json.loads(cache_file.read_text())
+            episodes = cached.get("episodes", [])
+            meta = cached.get("_parse_meta", cached.get("parse_metadata", {}))
+            return ToolResult(
+                "CACHE_HIT\n\n"
+                f"Script already parsed: {len(episodes)} episodes, "
+                f"{sum(len(e.get('scenes', [])) for e in episodes)} scenes.\n"
+                f"Cache key: {script_sha[:16]}\n"
+                f"Parse metadata: {json.dumps(meta, ensure_ascii=False)}\n\n"
+                "If this result is incorrect (e.g., truncated), re-call "
+                "with force_reparse=true."
+            )
 
         # Detect format
         format_hint = _detect_format(script_text)
