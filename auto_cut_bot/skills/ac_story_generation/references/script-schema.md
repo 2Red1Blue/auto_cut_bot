@@ -51,7 +51,6 @@ Story 是软目标；覆盖硬合同优先，不得按数量配额复制、裁�
 按故事完整性、独立清晰度、高光相关性、素材充足度、因果清晰度、
 Hook 同线性和背景成本评分。不要让高光强度单独决定排序。
 
-在生成完整脚本前运行 `build_story_portfolio.py`：
 
 - 为合格候选分配 `primary_story_ids` 和 `reserve_story_ids`。
 - 为每个 Primary 分配从 1 开始的稳定 `production_slot`。
@@ -315,7 +314,6 @@ Teaser 直接证据必须同源、相邻 stitch，硬上限 15 秒。`no_reprise
 
 ## 7. 素材可行性预检
 
-运行 `preflight_story_scripts.py`，不要依赖模型自报可行性。
 
 预检执行：
 
@@ -362,16 +360,13 @@ Teaser 直接证据必须同源、相邻 stitch，硬上限 15 秒。`no_reprise
    观测输出（v4.13+ 时长下限已撤除，成片时长兜底由 Render 阶段 filler tail
    处理，详见 SKILL.md rule 36）。
 11. 生成 `story-feasibility.json` 与 `story-script-preflight.json`
-   （Plan preflight 兼容 shape，供 `expand_story_scope.py --source
    script_preflight` 直接消费）。
 12. 将脚本状态从 `draft` 改为 `awaiting_approval`。
 
 Feasibility method 为
 `functional-evidence-duration-v4-direct-atomic-compaction`，并在顶层保存
 `split_regeneration_beat_ids`、`continuity_required_beat_ids` 与
-`continuity_fallback_beat_ids`。Script stage 为
 `story-first-story-script-v18-broad-contract-guided-authoring`；旧 Script cache 因
-stage 和请求签名变化不得复用。Semantic retry policy 为
 `story-script-treatment-retry-v5-contract-checklists`，该 policy 进入
 请求签名；Treatment attempt audit 为 `1.4`，Script context schema 为 `1.6`，
 正式 Script schema 仍为 `1.6`。

@@ -21,6 +21,7 @@ tools:
   - story_preflight
   - story_approval
 data_layer_tools:
+  - db_query.DBQueryTool  # schema discovery + raw SQL for any table
   - search_scenes
   - get_dialogue_samples
   - get_character_coverage
@@ -227,3 +228,12 @@ python3 /absolute/skill/scripts/story_approval.py init \
 
 ## Version History
 
+## Agent-Native Execution
+
+使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
+
+1. db_query(operation="schema") → 发现可用数据
+2. db_query(operation="raw", sql="...") → 按需查询
+3. 在上下文中处理数据（LLM 推理或编译）
+4. database_write → 写回 DB
+5. 上下文已有数据 → 不重复查询

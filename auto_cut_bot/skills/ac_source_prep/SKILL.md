@@ -17,6 +17,7 @@ tools:
   - asr_transcript
   - window_analysis
 data_layer_tools:
+  - db_query.DBQueryTool  # schema discovery + raw SQL for any table
   - artifact_cache.ArtifactCache
   - provenance.merge_operator
 triggers:
@@ -168,3 +169,38 @@ python3 /absolute/skill/scripts/assemble_story_artifacts.py windows \
 
 ## Version History
 
+
+## 数据查询策略
+
+不要直接读 ArtifactBus JSON 文件。使用 `db_query` 按需查询：
+
+### 第一步：发现数据结构
+```
+db_query(operation="schema", job_root="...")
+```
+返回所有表、字段类型、关系。每个 job 只需调用一次。
+
+### 第二步：按需查询
+```
+# 查某集的场景
+db_query(operation="raw", job_root="...",
+  sql="SELECT scene_id, location, characters_present FROM scenes WHERE book_id=$1 AND episode_id=$2",
+  params=["42000023011", "5"])
+
+# 查某角色的所有出场
+db_query(operation="raw", job_root="...",
+  sql="SELECT scene_id, episode_id FROM scenes WHERE book_id=$1 AND characters_present @> ARRAY[$2]",
+  params=["42000023011", "Alice"])
+
+# 查时间范围内的场景
+db_query(operation="raw", job_root="...",
+  sql="SELECT scene_id, location FROM scenes WHERE book_id=$1 AND episode_id=$2 AND start_ts >= $3 AND end_ts <= $4 ORDER BY start_ts",
+  params=["42000023011", "5", "240", "310"])
+```
+
+### 规则
+- 先 `schema` 了解表结构，再 `raw` 查询
+- 返回 >20 行时自动用列式压缩，节省 token
+- 用 `LIMIT` 和 `OFFSET` 分页，不要一次查全部
+- 用 `$1, $2` 参数化，不要拼接 SQL 字符串
+- 大结果集只查需要的字段，不要 `SELECT *`

@@ -26,6 +26,8 @@ anti_triggers:
   - "准备素材" → 使用 ac_source_prep
   - "生成故事" → 使用 ac_story_generation
   - "渲染视频" → 使用 ac_render
+tools:
+  - db_query  # schema discovery + raw SQL
 ---
 
 # 剧集知识 (ac_series_knowledge) — Stage 6-11
@@ -209,3 +211,12 @@ db.resolve_conflict(conflict_id=42, resolution={
 
 ## Version History
 
+## Agent-Native Execution
+
+使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
+
+1. db_query(operation="schema") → 发现可用数据
+2. db_query(operation="raw", sql="...") → 按需查询
+3. 在上下文中处理数据（LLM 推理或编译）
+4. database_write → 写回 DB
+5. 上下文已有数据 → 不重复查询

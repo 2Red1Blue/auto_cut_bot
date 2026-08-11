@@ -46,7 +46,6 @@
 - `remote-download-report.json`：逐 Source 下载、探测和哈希结果。
 - `remote-download-launch.json`：独立进程身份和启动状态。
 
-首批 Window Analysis VLM 任务开始前，由 `run_semantic_batch.py` 使用独立进程并行
 下载全部 Source。VLM 继续直接引用远程 URL，不等待下载；下载支持 `.part` 续传、
 完成后的原子改名、FFprobe 验证和 SHA-256。进入本地 VAD、QC Proxy 或正式渲染前，
 相关 Source 必须全部下载成功；失败时按 Source ID 报错，不回显签名 URL。

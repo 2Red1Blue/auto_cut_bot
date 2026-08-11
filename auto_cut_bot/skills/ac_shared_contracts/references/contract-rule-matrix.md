@@ -40,7 +40,6 @@
 | `va_abstract_beat_content` | `is_abstract_only()` beat 循环 | Beat 内容不得只有抽象描述 |
 | `va_script_role_structure` | validate() 内联 role 检查 | beat role 结构 (teaser mode 分支) |
 
-等价性证明: `tests/unit/test_validate_rule_equivalence.py` —
 先以快照固化旧实现行为 (输入→违规输出), 再对新规则做同输入 diff。
 
 ## 逐条状态 (SKILL.md 固定合同 1–36)
@@ -70,9 +69,7 @@
 | rule 21 | Teaser 单 Clip; 同 Block 不复用; repeat_ratio ≤10% | 已落地 | `rule_21_teaser_single_clip`, `rule_21_repeat_ratio_cap` |
 | rule 22 | must-have 覆盖; 1200s; 整集率; continuity | 部分落地 | `rule_22_plan_duration_cap`, `rule_22_full_episode_guard` |
 | rule 23 | QC Admission 门禁; 永不放行名单 | 已落地 (名单部分) | `rule_23_qc_admission_never` |
-| rule 24 | QC 职责划分; 双路 VAD 并集; 动态 strict Schema | 部分落地 (策略源) | `AudioBoundaryPolicy` (contracts/audio_boundary.py) |
 | rule 25 | Junction Edit 受控例外 (reviewed_bridge / right_av_overlap) | 文字约定 | — |
-| rule 26 | 双路 VAD 判决; 12s 扩边; fade_fallback | 部分落地 (策略源) | `AudioBoundaryPolicy` (contracts/audio_boundary.py) |
 | rule 27 | 每 Story 一份正式 story-qc 报告 | 文字约定 | — |
 | rule 28 | Span/基础 Plan 不可变; 派生 Plan 哈希链 | 文字约定 | — |
 | rule 29 | Boundary Repair 只一轮; 只向外扩 | 文字约定 | — |

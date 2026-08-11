@@ -1,0 +1,17 @@
+{
+  "api_version": "v2",
+  "cloud_skill_id": "bc4a209d-a5ea-4b8f-9427-57ef1f6041ec",
+  "current_package_id": "6c8fe337-8698-56a5-8a3d-8acc70b921c6",
+  "current_package_path": "technology/computing/multimedia/video processing",
+  "last_pulled_at": "2026-08-11T09:52:35.976745Z",
+  "last_pushed_at": null,
+  "local_content_hash": "sha256:68664497c7adab525281c37ae3a865171ad3f442ec47f82d79bad2983bcf07f1",
+  "local_skill_id": "FFmpeg Video Editor__imp_8db26332",
+  "manifest_hash": "807f74815047c9bb7c743101da3b30ad0dbea7900436ab5d0e1d8b20c17a500d",
+  "package_id_at_pull": "6c8fe337-8698-56a5-8a3d-8acc70b921c6",
+  "package_path_at_pull": "technology/computing/multimedia/video processing",
+  "package_snapshot_version_at_pull": null,
+  "schema_version": 1,
+  "source_cloud_skill_id": null,
+  "sync_state": "clean"
+}

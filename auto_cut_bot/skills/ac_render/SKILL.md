@@ -23,6 +23,9 @@ anti_triggers:
   - "Story QC" → ac_qc
   - "Story Plan 生成" → ac_plan_orchestration
   - "故事脚本" → ac_story_generation
+tools:
+  - ffmpeg_video_editor  # FFmpeg command generation from natural language
+  - db_query  # schema discovery + raw SQL
 ---
 
 # ac_render — 渲染输出
@@ -100,6 +103,12 @@ python3 /absolute/skill/scripts/build_story_annotations.py /absolute/job \
 
 ## 修改记录
 
-| 版本 | 日期 | 变更 |
-|------|------|------|
-| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化 Stage 26 |
+## Agent-Native Execution
+
+使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
+
+1. db_query(operation="schema") → 发现可用数据
+2. db_query(operation="raw", sql="...") → 按需查询
+3. 在上下文中处理数据（LLM 推理或编译）
+4. database_write → 写回 DB
+5. 上下文已有数据 → 不重复查询

@@ -26,6 +26,8 @@ anti_triggers:
   - "视频切窗" → 使用 ac_source_prep
   - "生成 Story Script" → 使用 ac_story_generation
   - "QC 检查" → 使用 ac_qc
+tools:
+  - db_query  # schema discovery + raw SQL
 ---
 
 # shared_contracts — 共享合同
@@ -81,4 +83,3 @@ anti_triggers:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化共享合同文档 |

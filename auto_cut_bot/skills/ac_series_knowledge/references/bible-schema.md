@@ -33,7 +33,6 @@
   限定词不得被静默吸收到 canonical individual。
 - Registry prompt 禁止把“白衣女子”“黑衣人”等可变化的服装、外观或镜头内临时
   描述当作跨人物共享 alias；这类描述只能出现在身份说明或证据文本中。
-- 当前 Series Registry cache stage 为
   `story-first-series-registry-v9-typed-coda-v1`。旧 Registry cache/recovery
   signature 不得跨该门禁复用；可从 Registry 重跑并复用已通过当前哈希与 Schema
   验证的 Window Analysis、Event Cards、Episode Digests 和 Chapter Digests。
@@ -77,7 +76,6 @@
   Quarantine；只要该集仍有一个 admitted Event 就不得自动排除。
 - Assignment Thread Beat、普通 exclusion 与正式 Bible 引用任一 quarantined ID
   均硬失败。动态 Assignment Schema 从合法 Event enum 中剔除 quarantined Event。
-- Series Assignment stage 为 `story-first-series-assignment-v6-typed-coda`，
   动态 response schema revision 为 `v5_typed_coda`；请求签名绑定 Registry
   Admission、Quarantine 摘要和 Thread 类型，正式 Bible `schema_version` 为 1.4。
 
@@ -93,7 +91,6 @@
   可以包含 reveal 细节，但结构 phase 不得因此改成 reveal。
 - Bible 原样保留 `story_threads[].thread_kind`，Broad Subarc Compiler 只允许显式
   typed coda 生成 coda Option。Registry、Assignment 和 Broad Catalog 的动态 schema、
-  stage version 与请求签名全部变化，旧模型缓存不得跨版本复用。
 
 ## v1.3 变更摘要（2026-07-29 稳定性审计）
 
@@ -116,7 +113,6 @@
   `Lucien` 被列成 Raegar 别名两类历史 bug。
 - **`metadata` 必填**（Bible 顶层）：
   ```
-  {pipeline_version, skill_version, generated_at, model_id, seed,
    prompt_template_hash, input_manifest_hash, output_language,
    determinism_class}
   ```
@@ -128,7 +124,6 @@
 - **关系闭合 lint**：进入正式 Story Thread 且具备持续证据的 `individual` 必须至少
   出现在一条 relationship 中；同场 Event 数量不能单独触发。无法闭合时只隔离该
   人物及依赖 Thread，除非已经没有任何可用核心 Thread。
-- **确定性 CI**：`test_series_bible_determinism.py` 用 `references/fixtures/*`
   连续跑 5 次 assemble，byte-identical 才通过；改动 event 时
   `input_manifest_hash` 必须变。
 
@@ -227,9 +222,7 @@ Assignment 必须服从 Registry 的 `thread_kind`。arc 按普通因果线恢�
 ## 本地确定性装配
 
 语义模型不直接生成正式 `series-bible.json`。运行
-`assemble_series_bible.py` 合并 Registry 与全部 Chapter Assignment，本地派生：
 
-- `metadata`（v1.4 审计栏：pipeline_version / prompt_template_hash / input_manifest_hash / … ）
 - `main_characters`（由客观打分排序取前 N，只含 `entity_type=individual`）
 - `entity_importance`（每个角色的 score + 事件/关系/故事线引用数分解）
 - `story_threads[].thread_kind`
@@ -242,7 +235,6 @@ Assignment 必须服从 Registry 的 `thread_kind`。arc 按普通因果线恢�
 - `episode_ids`
 - 摄取覆盖和叙事覆盖
 
-正式 Bible 使用 schema `1.4`，pipeline version 为 `series-bible-v1.4`。CLI 支持
 `--model-id / --seed / --generated-at`
 把审计信息透传进 metadata（缺省从 registry 的 `_backend_meta` 回读）。
 
@@ -318,7 +310,6 @@ Event Card 都进入故事线。
     `payoff|consequence|coda`，并且至少包含一个 `phase=coda`。
 
 正式 Series Bible `schema_version=1.4`；Series Registry `schema_version=1.3`；
-Series Assignment cache stage 为
 `story-first-series-assignment-v6-typed-coda`，per-job response schema revision
 为 `v5_typed_coda`；Assignment JSON 的业务 `schema_version` 仍为 1.0。
 旧 Assignment cache 不跨新的 Registry Admission 请求签名复用；本次变更不新增模型
