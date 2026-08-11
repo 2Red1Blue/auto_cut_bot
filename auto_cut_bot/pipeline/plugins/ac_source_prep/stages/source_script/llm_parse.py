@@ -18,10 +18,13 @@ logger = get_logger(__name__)
 # ── 配置常量 ──────────────────────────────────────────────────────────────────
 
 DEFAULT_SCRIPT_MODEL = "qwen3.7-max"
+DEFAULT_MAX_TOKENS = 131072  # 适配大剧本结构化输出 (ac_auto_cut sync)
 CHUNK_SIZE = 60000         # 字符 (~64K tokens for Chinese text)
 CHUNK_OVERLAP = 4000       # 字符 (~4K tokens, ~2-3 scenes)
 MAX_RETRIES = 3
 BASE_DELAY_SECONDS = 2.0
+CONFIDENCE_THRESHOLD = 0.7  # 低于此分数的段落触发二次解析
+REPARSE_CONTEXT_LINES = 5   # 重解析时额外提供的上下文行数
 
 # ── LLM System Prompt ─────────────────────────────────────────────────────────
 
@@ -54,6 +57,11 @@ For each scene, output a JSON object with:
 - dialogues: array of {character: string, text: string, sequence: integer}
 - raw_description: narrative/action text between dialogues
 - meta_tags: object with extra metadata (genre hints, mood, etc.)
+- confidence: float between 0.0 and 1.0 indicating your confidence in the parse quality of this scene.
+  Use 0.9-1.0 for clear, unambiguous scenes with standard formatting.
+  Use 0.7-0.89 for scenes with some ambiguity (e.g., unusual formatting, missing headers).
+  Use 0.5-0.69 for scenes where you are uncertain about boundaries or content.
+  Use below 0.5 for scenes you are guessing at.
 
 Output MUST be valid JSON matching this schema:
 {
@@ -70,7 +78,8 @@ Output MUST be valid JSON matching this schema:
       "characters_present": ["Lucifer"],
       "dialogues": [{"character": "Lucifer", "text": "...", "sequence": 1}],
       "raw_description": "Lucifer walks through the graveyard...",
-      "meta_tags": {}
+      "meta_tags": {},
+      "confidence": 0.95
     }]
   }]
 }"""
@@ -79,8 +88,16 @@ Output MUST be valid JSON matching this schema:
 # ── LLM 调用 ──────────────────────────────────────────────────────────────────
 
 
-def _call_llm(prompt: str, model: str, cfg: PipelineConfig) -> dict[str, Any]:
-    """调用 LLM API 并解析 JSON 响应。"""
+def _call_llm(prompt: str, model: str, cfg: PipelineConfig, *, messages: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    """调用 LLM API 并解析 JSON 响应。
+
+    Args:
+        prompt: User prompt text (used when messages is None).
+        model: Model name.
+        cfg: Pipeline configuration.
+        messages: Optional pre-built messages list. If provided, used directly
+                  instead of building from SYSTEM_PROMPT + prompt.
+    """
     from autocut_core.backends._base import get_backend
     from autocut_core.semantic.engine.provider import call_provider
     from autocut_core.semantic.engine.provider import parse_model_json
@@ -94,15 +111,18 @@ def _call_llm(prompt: str, model: str, cfg: PipelineConfig) -> dict[str, Any]:
         def release(self, **_: Any) -> None: pass
 
     concurrency = _NoopConcurrency()
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    if messages is not None:
+        msg_list = messages
+    else:
+        msg_list = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
     payload = {
         "model": model,
-        "messages": messages,
-        "temperature": 0.0,
-        "max_tokens": 65536,
+        "messages": msg_list,
+        "temperature": 0.1,  # 避免大JSON输出时卡在token采样 (ac_auto_cut sync)
+        "max_tokens": DEFAULT_MAX_TOKENS,
         "response_format": {"type": "json_object"},
     }
     response = call_provider(
@@ -179,9 +199,10 @@ def _build_prompt(
 
 
 def _parse_single_chunk(chunk_text: str, cfg: PipelineConfig) -> dict[str, Any]:
-    """调用 LLM 解析单个 chunk, 带验证 + 重试。"""
+    """调用 LLM 解析单个 chunk, 带验证 + 重试 + 置信度评分 + 自适应重解析。"""
     model = cfg.extra.get("script_model", DEFAULT_SCRIPT_MODEL)
     expected_count = cfg.extra.get("expected_episode_count")
+    confidence_threshold = cfg.extra.get("confidence_threshold", CONFIDENCE_THRESHOLD)
 
     last_errors: list[str] = []
     retry_guardrails = ""
@@ -192,8 +213,22 @@ def _parse_single_chunk(chunk_text: str, cfg: PipelineConfig) -> dict[str, Any]:
             prompt = _build_prompt(chunk_text, format_type, retry_guardrails)
             result = _call_llm(prompt, model, cfg)
 
+            # ── 置信度评分: 确保每个场景都有 confidence 字段 ──────
+            result = _ensure_confidence_scores(result)
+
             errors = _validate_episode_boundaries(result, expected_count)
             if not errors:
+                # ── 自适应重解析: 低置信度段落二次解析 ──────
+                low_conf = _find_low_confidence_scenes(result, confidence_threshold)
+                if low_conf:
+                    logger.info(
+                        "发现 %d 个低置信度场景 (threshold=%.1f), 触发重解析",
+                        len(low_conf), confidence_threshold,
+                    )
+                    result = _reparse_low_confidence_scenes(
+                        result, low_conf, chunk_text, cfg,
+                    )
+
                 result["_parse_meta"] = {"attempts": attempt + 1, "status": "success"}
                 return result
 
@@ -317,3 +352,185 @@ def _build_guardrails(expected_count: int, errors: list[str]) -> str:
     for err in errors:
         parts.append(f"Previous error: {err}")
     return "\n".join(parts)
+
+
+# ── 置信度评分与自适应重解析 ──────────────────────────────────────────────────
+
+
+def _ensure_confidence_scores(result: dict[str, Any]) -> dict[str, Any]:
+    """确保每个场景都有 confidence 字段。
+
+    如果模型未返回 confidence，默认为 1.0（向后兼容）。
+    """
+    for ep in result.get("episodes", []):
+        for scene in ep.get("scenes", []):
+            if "confidence" not in scene:
+                scene["confidence"] = 1.0
+    return result
+
+
+def _find_low_confidence_scenes(
+    result: dict[str, Any],
+    threshold: float = CONFIDENCE_THRESHOLD,
+) -> list[dict[str, Any]]:
+    """找出所有置信度低于阈值的场景。
+
+    返回列表，每项包含: episode_number, scene_index, scene, confidence
+    """
+    low_conf: list[dict[str, Any]] = []
+    for ep in result.get("episodes", []):
+        ep_num = ep.get("episode_number", 0)
+        for idx, scene in enumerate(ep.get("scenes", [])):
+            conf = scene.get("confidence", 1.0)
+            if conf < threshold:
+                low_conf.append({
+                    "episode_number": ep_num,
+                    "scene_index": idx,
+                    "scene": scene,
+                    "confidence": conf,
+                })
+    return low_conf
+
+
+def _reparse_low_confidence_scenes(
+    result: dict[str, Any],
+    low_conf: list[dict[str, Any]],
+    original_text: str,
+    cfg: PipelineConfig,
+) -> dict[str, Any]:
+    """对低置信度段落进行二次解析，附加周围上下文。
+
+    策略:
+    - 对每个低置信度场景，提取原文中对应区域 + 前后 N 行上下文
+    - 提交给 LLM 重新解析
+    - 如果二次解析仍低于阈值，标记 review_required: true
+    - 替换原结果中对应场景
+    """
+    model = cfg.extra.get("script_model", DEFAULT_SCRIPT_MODEL)
+    confidence_threshold = cfg.extra.get("confidence_threshold", CONFIDENCE_THRESHOLD)
+    lines = original_text.split("\n")
+
+    reparse_prompt = (
+        "You are re-parsing a scene that was previously parsed with low confidence. "
+        "Focus carefully on this specific scene. "
+        "Additional context from surrounding text is provided to help you. "
+        "Output ONLY the corrected scene JSON object (not a full episode list):\n"
+        "{\n"
+        '  "scene_id": "...",\n'
+        '  "scene_order": <int>,\n'
+        '  "heading": "...",\n'
+        '  "location": "...",\n'
+        '  "time_of_day": "...",\n'
+        '  "is_flashback": <bool>,\n'
+        '  "characters_present": ["..."],\n'
+        '  "dialogues": [{"character": "...", "text": "...", "sequence": <int>}],\n'
+        '  "raw_description": "...",\n'
+        '  "meta_tags": {},\n'
+        '  "confidence": <0.0-1.0>\n'
+        "}"
+    )
+
+    for item in low_conf:
+        scene = item["scene"]
+        ep_num = item["episode_number"]
+        scene_id = scene.get("scene_id", "unknown")
+        original_confidence = item["confidence"]
+
+        # 尝试从原文定位该场景的文本区域
+        context_text = _extract_scene_context(
+            lines, scene, context_lines=REPARSE_CONTEXT_LINES,
+        )
+
+        messages = [
+            {"role": "system", "content": reparse_prompt},
+            {"role": "user", "content": (
+                f"Scene '{scene_id}' from episode {ep_num} was parsed with "
+                f"confidence {original_confidence:.2f}.\n\n"
+                "The original parse was:\n"
+                f"{json.dumps(scene, ensure_ascii=False, indent=2)}\n\n"
+                "Context from the original script:\n"
+                f"{context_text}\n\n"
+                "Please re-parse this scene with higher accuracy. "
+                "Focus on scene boundaries, character names, and dialogue attribution."
+            )},
+        ]
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": 8192,
+            "response_format": {"type": "json_object"},
+        }
+
+        try:
+            parsed = _call_llm(
+                prompt="", model=model, cfg=cfg,
+                messages=messages,
+            )
+
+            new_confidence = parsed.get("confidence", 0.0)
+
+            if new_confidence >= confidence_threshold:
+                # 二次解析成功 — 替换原场景
+                parsed["_reparsed"] = True
+                parsed["_original_confidence"] = original_confidence
+                scene.clear()
+                scene.update(parsed)
+                logger.info(
+                    "场景 %s 重解析成功: confidence %.2f -> %.2f",
+                    scene_id, original_confidence, new_confidence,
+                )
+            else:
+                # 二次解析仍然低置信度 — 标记为需人工审核
+                scene["review_required"] = True
+                scene["review_reason"] = (
+                    f"Two parse attempts both scored below threshold "
+                    f"({original_confidence:.2f}, {new_confidence:.2f}). "
+                    f"Manual review recommended."
+                )
+                scene["_reparsed"] = True
+                scene["_reparse_confidence"] = new_confidence
+                logger.warning(
+                    "场景 %s 二次解析仍低于阈值: %.2f -> %.2f, 标记 review_required",
+                    scene_id, original_confidence, new_confidence,
+                )
+
+        except Exception as exc:
+            # 重解析失败 — 标记为需人工审核
+            scene["review_required"] = True
+            scene["review_reason"] = (
+                f"Re-parse failed with error: {exc}. "
+                f"Original confidence: {original_confidence:.2f}. "
+                f"Manual review recommended."
+            )
+            scene["_reparse_error"] = str(exc)
+            logger.error("场景 %s 重解析异常: %s", scene_id, exc)
+
+    return result
+
+
+def _extract_scene_context(
+    lines: list[str],
+    scene: dict[str, Any],
+    context_lines: int = REPARSE_CONTEXT_LINES,
+) -> str:
+    """尝试从原始文本中提取场景的上下文区域。
+
+    使用场景 heading 或 location 进行模糊匹配，
+    找到后在前后各取 context_lines 行。
+    如果匹配失败，返回空字符串。
+    """
+    heading = scene.get("heading", "")
+    location = scene.get("location", "")
+    search_terms = [heading, location] if heading else [location]
+
+    for term in search_terms:
+        if not term or len(term) < 2:
+            continue
+        for i, line in enumerate(lines):
+            if term[:8] in line or line[:8] in term:
+                start = max(0, i - context_lines)
+                end = min(len(lines), i + context_lines + 1)
+                return "\n".join(lines[start:end])
+
+    return ""

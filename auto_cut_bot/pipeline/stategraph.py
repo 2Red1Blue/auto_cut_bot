@@ -54,7 +54,42 @@ MILESTONE_AGENTS: dict[str, str] = {
 }
 
 # Milestones that require human review before advancing.
+# Populated by register_hitl_milestone() from pipeline tool registration.
 HITL_MILESTONES: set[str] = {"script_approved", "story_qc_review"}
+
+
+def register_hitl_milestone(milestone: str) -> None:
+    """Register a milestone as requiring human review (HITL gate).
+
+    Called during pipeline tool registration when a tool declares
+    ``human_review = True``. The engine checks HITL_MILESTONES before
+    advancing past a milestone without human input.
+    """
+    HITL_MILESTONES.add(milestone)
+
+
+def auto_discover_hitl_milestones(tool_registry: Any = None) -> int:
+    """Scan registered pipeline tools for human_review=True and register them.
+
+    Returns the number of newly registered HITL milestones.
+    """
+    count = 0
+    try:
+        from auto_cut_bot.agent.tools.registry import ToolRegistry
+        from auto_cut_bot.pipeline.state import PIPELINE_ORDER
+
+        if tool_registry is None:
+            return count
+
+        for stage_name in PIPELINE_ORDER:
+            tool = tool_registry.get(stage_name)
+            if tool is not None and getattr(tool, "human_review", False):
+                if stage_name not in HITL_MILESTONES:
+                    HITL_MILESTONES.add(stage_name)
+                    count += 1
+    except Exception:
+        pass
+    return count
 
 
 # ── AgentState dataclass ──────────────────────────────────────────────────
@@ -419,8 +454,34 @@ class StateGraphEngine:
         )
 
     def is_hitl_node(self) -> bool:
-        """Check if the current milestone is a HITL (human-in-the-loop) gate."""
+        """Check if the current milestone is a HITL (human-in-the-loop) gate.
+
+        Dynamically discovers HITL milestones from pipeline tool class attributes
+        on first call, so tools that declare ``human_review = True`` are
+        automatically treated as HITL gates.
+        """
+        self._ensure_hitl_discovered()
         return self.state.current_milestone in HITL_MILESTONES
+
+    @staticmethod
+    def _ensure_hitl_discovered() -> None:
+        """Lazily scan pipeline tools for human_review=True on first use."""
+        if StateGraphEngine._hitl_discovered:
+            return
+        StateGraphEngine._hitl_discovered = True
+        try:
+            from auto_cut_bot.agent.tools.loader import ToolLoader
+
+            loader = ToolLoader()
+            for tool_cls in loader.discover():
+                if getattr(tool_cls, "human_review", False):
+                    name = getattr(tool_cls, "name", "")
+                    if name and name not in HITL_MILESTONES:
+                        HITL_MILESTONES.add(name)
+        except Exception:
+            pass
+
+    _hitl_discovered: bool = False
 
     # ── HITL (Human-in-the-Loop) ────────────────────────────────────────
 

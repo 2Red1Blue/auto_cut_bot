@@ -39,16 +39,27 @@ _CACHE_ROOT = ".sd-cache"
 _TRUNCATION_THRESHOLD = 0.5  # cached episodes < expected * threshold → invalid
 
 
-def compute_cache_key(content: str, strategy_params: dict[str, Any] | None = None) -> str:
+def compute_cache_key(
+    content: str,
+    strategy_params: dict[str, Any] | None = None,
+    *,
+    prompt_version: str | None = None,
+    chunk_id: int | None = None,
+) -> str:
     """Compute a content-addressed cache key.
 
-    The key is the first 16 hex chars of sha256(content + serialized strategy_params).
-    When strategy_params differ (e.g. different chunking strategy), the key changes.
+    key = sha256(content + strategy_params + prompt_version + chunk_id)[:16]
+
+    When prompt_version changes, old caches are automatically invalidated.
+    When chunk_id is set, the key is scoped to a single chunk (MapReduce).
     """
     payload = content
     if strategy_params:
-        # Sort keys for deterministic serialization
         payload += json.dumps(strategy_params, sort_keys=True, ensure_ascii=False)
+    if prompt_version:
+        payload += f"::pv={prompt_version}"
+    if chunk_id is not None:
+        payload += f"::chunk={chunk_id}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -85,35 +96,57 @@ class ArtifactCache:
     ) -> dict[str, Any] | None:
         """Load cached data. Returns None on miss, corruption, or truncation.
 
-        Parameters
-        ----------
-        key : str
-            Cache key (typically from ``compute_cache_key``).
-        expected_count : int | None
-            If set, the cached ``episodes`` list must have at least
-            ``expected_count * TRUNCATION_THRESHOLD`` entries.  Otherwise
-            the entry is treated as truncated and automatically invalidated.
-        force_reparse : bool
-            If True, always returns None (bypasses cache).
-
-        Returns
-        -------
-        dict | None
-            The cached data, or None if not found / invalid.
+        When expected_count is None, cached data is returned but marked
+        ``incomplete`` — callers should verify completeness themselves.
+        Use ``get_with_meta`` if you need the incomplete flag.
         """
+        result, _meta = self.get_with_meta(
+            key, expected_count=expected_count, force_reparse=force_reparse,
+        )
+        return result
+
+    def get_with_meta(
+        self,
+        key: str,
+        *,
+        expected_count: int | None = None,
+        force_reparse: bool = False,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Load cached data with metadata.
+
+        Returns (data, meta) where meta includes:
+        - ``incomplete``: True when expected_count was None and cache exists
+        - ``truncated``: True when cache was truncated and auto-invalidated
+        - ``from_cache``: True when data was served from cache
+
+        Callers should check meta['incomplete'] before trusting the result
+        when expected_count was not known.
+        """
+        meta: dict[str, Any] = {"incomplete": False, "truncated": False, "from_cache": False}
+
         if force_reparse:
-            return None
+            return None, meta
 
         if not self.is_valid(key, expected_count=expected_count):
-            return None
+            return None, meta
 
         cache_path = self._cache_path(key)
         try:
-            return load_json(cache_path)
+            data = load_json(cache_path)
         except (OSError, json.JSONDecodeError):
             logger.warning("Cache read failed, invalidating: %s", cache_path)
             self.invalidate(key)
-            return None
+            return None, meta
+
+        # Mark incomplete when expected_count was not provided
+        if expected_count is None:
+            meta["incomplete"] = True
+            logger.debug(
+                "Cache hit but expected_count unknown — marking incomplete: key=%s", key,
+            )
+
+        meta["from_cache"] = True
+        return data, meta
 
     def put(self, key: str, data: dict[str, Any]) -> None:
         """Persist data to the cache.
@@ -166,9 +199,9 @@ class ArtifactCache:
         if not isinstance(cached, dict):
             return False
 
-        # Check parse status — explicit failure markers always invalidate
+        # Check parse status — explicit failure/degraded markers always invalidate
         meta = cached.get("_parse_meta") or cached.get("parse_metadata") or {}
-        if meta.get("status") in ("parse_error", "failed"):
+        if meta.get("status") in ("parse_error", "failed", "unavailable", "error"):
             return False
 
         # Truncation detection
@@ -206,6 +239,32 @@ class ArtifactCache:
             count += 1
         if count:
             logger.info("Cache cleared: namespace=%s count=%d", self._namespace, count)
+        return count
+
+    def cleanup_expired(self, max_age_seconds: int = 86400 * 7) -> int:
+        """Remove cache entries older than max_age_seconds.
+
+        Default TTL is 7 days. Returns count of removed entries.
+        Used by periodic cleanup to control storage growth (R-AB.3.3).
+        """
+        import time
+
+        if not self._cache_dir.is_dir():
+            return 0
+        count = 0
+        cutoff = time.time() - max_age_seconds
+        for cache_file in self._cache_dir.glob("*.json"):
+            try:
+                if cache_file.stat().st_mtime < cutoff:
+                    cache_file.unlink()
+                    count += 1
+            except OSError:
+                pass
+        if count:
+            logger.info(
+                "Cache cleanup: namespace=%s removed=%d max_age=%ds",
+                self._namespace, count, max_age_seconds,
+            )
         return count
 
     # ── Internal helpers ─────────────────────────────────────────────────────

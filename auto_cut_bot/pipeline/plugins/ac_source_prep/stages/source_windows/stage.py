@@ -49,10 +49,10 @@ class SourceWindowsStage(Stage):
     def contract(self) -> StageContract:
         return StageContract(
             stage_name="source_windows",
-            output_artifacts=["source_manifest", "window_manifest", "window_batch"],
-            description="Scan video sources and generate sliding-window manifest",
+            output_artifacts=["source_manifest", "window_manifest", "window_batch", "scene_boundaries"],
+            description="Scan video sources, detect scene cuts, and generate sliding-window manifest",
             db_reads=[],
-            db_writes=[],
+            db_writes=["boundaries"],
         )
 
     def prepare(self, bus: ArtifactBus) -> list[Task]:
@@ -80,6 +80,20 @@ class SourceWindowsStage(Stage):
             overwrite=cfg.extra.get("overwrite", False),
         )
 
+        # ── 场景检测: PySceneDetect 逐帧检测镜头切换点 ──
+        # 复用已有场景边界 — 场景检测是确定性算法，结果不会变
+        existing_scene_path = job_root / "scene_boundaries.json"
+        if existing_scene_path.is_file():
+            import json as _json
+            scene_boundaries = _json.loads(existing_scene_path.read_text())
+        else:
+            scene_boundaries = _detect_all_scenes(
+                sources,
+                job_root=job_root,
+                threshold=cfg.extra.get("scene_threshold", 27.0),
+                min_scene_len=cfg.extra.get("scene_min_length", 1.0),
+            )
+
         # 先记录产物 SHA — project.json 输出语义统一为 {名称: sha256}
         outputs = {ref.name: ref.sha256 for ref in refs}
 
@@ -92,6 +106,11 @@ class SourceWindowsStage(Stage):
                 # 嵌套键兼容下游 prepare() 按 artifacts["window_batch"]["path"] 解析
                 data["window_batch"] = {"path": str(ref.path)}
             published.append(bus.put(ref.name, data, stage="source_windows"))
+
+        # 发布场景边界产物
+        scene_ref = bus.put("scene_boundaries", scene_boundaries, stage="source_windows")
+        published.append(scene_ref)
+        outputs["scene_boundaries"] = scene_ref.sha256
 
         # 状态写入枚举合法值 "completed" — 断点续传时
         # _build_checkpoint 需要能用 StageStatus 解析该值
@@ -276,7 +295,7 @@ def _cut_window(
         "-i", str(source),
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", "scale='min(720,iw)':-2,format=yuv420p",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
         "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart",
         str(destination),
@@ -448,3 +467,167 @@ def _build_manifests(
             sha256=_sf(batch_path), path=batch_path,
         ),
     ]
+
+
+# ── 场景检测: PySceneDetect ──────────────────────────────────────────────────
+
+
+def _detect_all_scenes(
+    sources: list[dict[str, Any]],
+    *,
+    job_root: Path,
+    threshold: float = 27.0,
+    min_scene_len: float = 1.0,
+) -> dict[str, Any]:
+    """对每个视频源运行 PySceneDetect 检测镜头切换点。
+
+    PySceneDetect 逐帧计算相邻帧的视觉差异（直方图/亮度/内容变化），
+    当差异超过阈值时判定为镜头切换。确定性算法，不依赖 AI 模型，
+    时间戳精度为帧级（~40ms）。
+    """
+    import scenedetect
+    from autocut_core.io import atomic_write_json
+
+    episodes: dict[str, list[float]] = {}
+    total_cuts = 0
+
+    for source in sources:
+        video_path = source.get("path")
+        if not video_path or not Path(video_path).is_file():
+            continue
+
+        episode = str(source.get("episode", source.get("id", "?")))
+        cuts = _detect_scene_cuts(
+            video_path,
+            threshold=threshold,
+            min_scene_len=min_scene_len,
+        )
+        episodes[episode] = cuts
+        total_cuts += len(cuts)
+
+    result = {
+        "schema_version": "1.0",
+        "detector": "PySceneDetect",
+        "threshold": threshold,
+        "min_scene_len": min_scene_len,
+        "total_cuts": total_cuts,
+        "episodes": episodes,
+    }
+
+    output_path = job_root / "scene_boundaries.json"
+    atomic_write_json(output_path, result)
+
+    return result
+
+
+def _detect_scene_cuts(
+    video_path: str,
+    *,
+    threshold: float = 27.0,
+    min_scene_len: float = 1.0,
+) -> list[float]:
+    """对单个视频文件运行 PySceneDetect，返回镜头切换时间戳列表。
+
+    使用 ContentDetector (基于 HSV 直方图差异) 检测画面内容突变。
+    返回每个镜头切换点的时间戳 (秒)，按时间升序排列。
+    第一个切点总是 0.0 (视频开始)。
+    """
+    from scenedetect import open_video, SceneManager, ContentDetector
+
+    video = open_video(video_path)
+    scene_manager = SceneManager()
+    scene_manager.add_detector(
+        ContentDetector(threshold=threshold, min_scene_len=min_scene_len)
+    )
+    scene_manager.detect_scenes(video)
+
+    scene_list = scene_manager.get_scene_list()
+    if not scene_list:
+        return [0.0]
+
+    cuts = [round(s[0].seconds, 3) for s in scene_list]
+    # 后处理: 过滤闪白和快速运镜造成的误检
+    cuts = _filter_false_cuts(cuts, video_path, min_scene_len=1.5)
+    return cuts
+
+
+# ── PySceneDetect 后处理: 过滤闪白/运镜误检 ──────────────────────────────────
+
+
+def _filter_false_cuts(
+    cuts: list[float],
+    video_path: str,
+    *,
+    min_scene_len: float = 1.5,
+    flash_window: float = 0.5,
+) -> list[float]:
+    """过滤 PySceneDetect 的误检切点。
+
+    闪白特征: 切点前后 flash_window 秒内亮度异常飙升 → 跳过
+    运镜特征: 相邻切点间隔 < min_scene_len 且画面相似 → 合并
+
+    这是确定性后处理，不改 PySceneDetect 本身。
+    """
+    if len(cuts) <= 1:
+        return cuts
+
+    import cv2
+    import numpy as np
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0:
+        fps = 30.0
+
+    filtered: list[float] = [cuts[0]]  # 始终保留第一个切点
+
+    for i in range(1, len(cuts)):
+        current = cuts[i]
+        prev = filtered[-1]
+        gap = current - prev
+
+        # 1. min_scene_len 过滤: 间隔太短 → 合并
+        if gap < min_scene_len:
+            continue
+
+        # 2. 闪白检测: 切点帧亮度异常
+        if _is_flash_frame(cap, current, fps, flash_window):
+            continue
+
+        filtered.append(current)
+
+    cap.release()
+    return filtered
+
+
+def _is_flash_frame(
+    cap: "cv2.VideoCapture",
+    ts: float,
+    fps: float,
+    window: float,
+) -> bool:
+    """检测时间戳 ts 处的帧是否为闪白帧。
+
+    判断: 当前帧亮度 > 相邻帧平均亮度 × 3.0
+    """
+    import cv2
+
+    frame_idx = int(ts * fps)
+    frames: list[float] = []
+
+    for offset in (-int(window * fps), 0, int(window * fps)):
+        idx = max(0, frame_idx + offset)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frames.append(float(gray.mean()))
+
+    if len(frames) < 3:
+        return False
+
+    before, current, after = frames[0], frames[1], frames[2]
+    neighbor_avg = (before + after) / 2.0
+
+    # 当前帧亮度 > 相邻帧 3 倍 → 闪白
+    return current > neighbor_avg * 3.0

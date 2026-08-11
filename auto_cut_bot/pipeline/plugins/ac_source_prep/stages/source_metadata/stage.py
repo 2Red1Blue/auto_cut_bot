@@ -91,6 +91,16 @@ class SourceMetadataStage(Stage):
                 "请确认 source_windows Stage 已成功执行"
             )
         data = bus.get(manifest)
+        # bus.get() 可能返回 {"path": "..."} 引用而非实际数据
+        if "sources" not in data and "path" in data:
+            from pathlib import Path as _Path
+            from autocut_core.io import load_json as _load
+            actual_path = _Path(data["path"]).expanduser().resolve()
+            if not actual_path.is_file():
+                actual_path = (bus._root.parent / data["path"]).expanduser().resolve()
+            if not actual_path.is_file():
+                actual_path = (bus._root / data["path"]).expanduser().resolve()
+            data = _load(actual_path)
         return [Task(type="fetch_metadata", payload={"source_manifest": data})]
 
     # ── execute ─────────────────────────────────────────────────────────
@@ -307,13 +317,14 @@ def _write_all_tables(
     all_shots: dict[int, list[dict[str, Any]]] = {}
     all_subject_episodes: list[dict[str, Any]] = []
 
-    # Build an episode_id lookup from the raw list
+    # API returns episodes in order with chapterId (e.g. 701432748),
+    # but episode_ids uses sequential 1-based IDs (1, 2, 3... 45).
+    # Map by position (index), not by chapterId.
     raw_episodes_by_id: dict[int, dict[str, Any]] = {}
-    for ep in episodes_raw:
+    for idx, ep in enumerate(episodes_raw):
         if isinstance(ep, dict):
-            eid = _get_int(ep, "episodeId") or _get_int(ep, "episode_id")
-            if eid is not None:
-                raw_episodes_by_id[eid] = ep
+            eid = idx + 1  # 1-based index matching source_manifest order
+            raw_episodes_by_id[eid] = ep
 
     for ep_id in episode_ids:
         ep_data = raw_episodes_by_id.get(ep_id, {})
@@ -358,11 +369,11 @@ def _write_all_tables(
     name_to_id: dict[str, int] = {}
     if all_characters:
         deduped = _dedup_characters(all_characters)
-        name_to_id = db.upsert_subjects(book_id, deduped)
+        name_to_id = db.upsert_subjects(book_id, deduped, source="api")
         stats["subjects_upserted"] = len(name_to_id)
 
     # ── 3. UPSERT episodes ──
-    stats["episodes_upserted"] = db.upsert_episodes(book_id, all_episodes)
+    stats["episodes_upserted"] = db.upsert_episodes(book_id, all_episodes, source="api")
 
     # ── 4. INSERT subtitles ──
     for ep_id, segments in all_subtitles.items():
@@ -380,7 +391,7 @@ def _write_all_tables(
         normalized_rels = _normalize_relationships(raw_rels)
         resolved_rels = _resolve_relationships(normalized_rels, name_to_id)
         stats["relationships_upserted"] = db.upsert_relationships(
-            book_id, resolved_rels
+            book_id, resolved_rels, source="api"
         )
 
     # ── 7. UPSERT subject_episodes ──
