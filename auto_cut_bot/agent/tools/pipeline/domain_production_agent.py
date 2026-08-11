@@ -29,73 +29,17 @@ from auto_cut_bot.agent.tools.context import (
     ToolContext,
     current_request_context,
 )
+from auto_cut_bot.agent.tools.pipeline._domain_agent_base import DomainAgent
+from auto_cut_bot.agent.tools.pipeline._domain_contract import (
+    PRODUCTION_AGENT_CONTRACT,
+    DomainAgentContract,
+)
+from auto_cut_bot.agent.tools.pipeline._skill_context import inject_skill_context
 from auto_cut_bot.pipeline import conflict_queue, derived_assets, filmability
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
     from auto_cut_bot.agent.subagent import SubagentManager
-
-
-# ── Task prompt template ────────────────────────────────────────────────────────
-
-
-def _build_task_prompt(
-    job_root: str,
-    backend: str,
-    mode: str | None = None,
-) -> str:
-    """Build the task description the sub-agent will receive."""
-    parts: list[str] = [
-        f"Complete production for job_root={job_root}.",
-        "",
-        "You have access to the following pipeline tools. Work through the steps in order:",
-        "",
-        "**Phase 1 — Evidence & Span Candidates:**",
-        "1. **story_evidence** — Retrieve evidence from the source material for story plans.",
-        "   Call with job_root.",
-        "2. **span_candidates** — Find candidate spans from the retrieved evidence.",
-        "   Call with job_root.",
-        "",
-        "**Phase 2 — Plan Generation & Materialization:**",
-        "3. **story_plans** — Generate story plans from the evidence and span candidates.",
-        "   Call with job_root and backend.",
-        "4. **story_plans_materialize** — Materialize plans into concrete assets.",
-        "   Call with job_root. This produces the materialized plan artifacts.",
-        "",
-        "**Phase 3 — Quality Check & Human Review:**",
-        "5. **story_qc** — Run quality checks on the materialized plans.",
-        "   Call with job_root. This produces QC results.",
-        "6. **story_qc_review** — HUMAN REVIEW NODE.",
-        "   This is a human-in-the-loop gate. Call story_qc_review with job_root.",
-        "   In interactive mode: if no decisions are provided, the tool returns a prompt",
-        "   asking for human review. You MUST report \"awaiting review\" and pause.",
-        "   In auto mode: decisions are generated automatically.",
-        "",
-        "**Phase 4 — Final Rendering:**",
-        "7. **story_render** — Perform final video rendering from the approved plans.",
-        "   Call with job_root and backend.",
-        "",
-        "IMPORTANT RULES:",
-        "- Run stages in order. Each stage depends on the previous one completing.",
-        "- If any stage fails, report the error and do not continue to subsequent stages.",
-        "- At story_qc_review: in interactive mode, if human input is required, pause and",
-        "  report \"awaiting review\" with the QC results summary.",
-        "- Production is deterministic: do NOT make additional LLM calls beyond what the",
-        "  individual tools already perform internally.",
-        "- When all stages complete, report: milestone=rendered.",
-        "",
-        "SKILL CONTEXT:",
-        "- Read the Skill files at skills/ac_plan_orchestration/SKILL.md and",
-        "  skills/ac_qc/SKILL.md for detailed tool descriptions and data layer tools.",
-        "- The Skills declare which tools (filmability, conflict_queue, derived_assets)",
-        "  are available and how to use them.",
-    ]
-    if backend:
-        parts.append(f"\nBackend: {backend}")
-    if mode:
-        parts.append(f"Mode: {mode}")
-
-    return "\n".join(parts)
 
 
 # ── Tool ────────────────────────────────────────────────────────────────────────
@@ -120,7 +64,7 @@ def _build_task_prompt(
     },
     "required": ["job_root", "backend"],
 })
-class DomainProductionAgentTool(Tool):
+class DomainProductionAgentTool(Tool, DomainAgent):
     """Domain sub-agent that orchestrates the 7 production pipeline stages.
 
     Instead of the main agent calling each production tool individually
@@ -149,6 +93,58 @@ class DomainProductionAgentTool(Tool):
     def create(cls, ctx: ToolContext) -> "DomainProductionAgentTool":
         return cls(subagent_manager=ctx.subagent_manager)
 
+    # ── DomainAgent ABC interface ──────────────────────────────────────────────
+
+    @property
+    def contract(self) -> DomainAgentContract:
+        """The immutable contract declaring this agent's responsibilities.
+
+        Production agent depends on the contract for skill_names, stage_names,
+        and milestone — never on hardcoded stage names.
+        """
+        return PRODUCTION_AGENT_CONTRACT
+
+    def _build_task_prompt(
+        self,
+        job_root: str,
+        backend: str | None = None,
+        mode: str | None = None,
+        **extra: Any,
+    ) -> str:
+        """Build the task description the sub-agent will receive.
+
+        Skill content is injected from the contract's skill_names —
+        the contract is the single source of truth for which skills
+        this agent requires.  Production-specific rules (HITL gate,
+        deterministic execution) are added on top of the contract-driven
+        base.
+        """
+        parts: list[str] = [
+            inject_skill_context(list(self.contract.skill_names)),
+            "",
+            f"Goal: Complete production for job_root={job_root}.",
+            "",
+            "IMPORTANT RULES:",
+            "- Run stages in the order described in the Skills above.",
+            "- If any stage fails, report the error and do not continue to subsequent stages.",
+            "- At story_qc_review: in interactive mode, if human input is required, pause and",
+            "  report \"awaiting review\" with the QC results summary.",
+            "- Production is deterministic: do NOT make additional LLM calls beyond what the",
+            "  individual tools already perform internally.",
+            "- When all stages complete, report: milestone=rendered.",
+        ]
+        if backend:
+            parts.append(f"\nBackend: {backend}")
+        if mode:
+            parts.append(f"Mode: {mode}")
+        for key, value in extra.items():
+            if value:
+                parts.append(f"{key}: {value}")
+
+        return "\n".join(parts)
+
+    # ── Tool interface ────────────────────────────────────────────────────────
+
     @property
     def name(self) -> str:
         return "production_agent"
@@ -166,8 +162,8 @@ class DomainProductionAgentTool(Tool):
     async def execute(self, **kwargs: Any) -> Any:
         """Delegate production to a sub-agent.
 
-        Validates inputs, builds a task prompt, and spawns a sub-agent
-        via SubagentManager.run_inline().
+        Validates inputs, builds a task prompt from the contract, and
+        spawns a sub-agent via SubagentManager.run_inline().
         """
         job_root = Path(kwargs["job_root"]).expanduser().resolve()
         if not job_root.is_dir():
@@ -176,7 +172,7 @@ class DomainProductionAgentTool(Tool):
         backend = kwargs["backend"]
         mode = kwargs.get("mode")
 
-        task_prompt = _build_task_prompt(
+        task_prompt = self._build_task_prompt(
             job_root=str(job_root),
             backend=backend,
             mode=mode,
@@ -202,32 +198,3 @@ class DomainProductionAgentTool(Tool):
             request_ctx=request_ctx,
             task_prompt=task_prompt,
         )
-
-    async def _run_via_subagent(
-        self,
-        manager: "SubagentManager",
-        request_ctx: "RequestContext",
-        task_prompt: str,
-    ) -> str:
-        """Run the production task via SubagentManager.run_inline()."""
-        origin_channel = request_ctx.channel
-        origin_chat_id = request_ctx.chat_id
-        session_key = request_ctx.session_key or f"{origin_channel}:{origin_chat_id}"
-
-        try:
-            result = await manager.run_inline(
-                task=task_prompt,
-                label="production-agent",
-                runtime=request_ctx.runtime,
-                origin_channel=origin_channel,
-                origin_chat_id=origin_chat_id,
-                session_key=session_key,
-                origin_message_id=request_ctx.message_id,
-                workspace_scope=current_workspace_scope(),
-            )
-            return result
-        except Exception as exc:
-            return ToolResult.error(
-                f"production_agent sub-agent failed: {exc}\n\n"
-                "The sub-agent encountered an error. Check the job log for details."
-            )

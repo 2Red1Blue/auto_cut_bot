@@ -1,25 +1,12 @@
 """StoryAgent — Domain Sub-Agent for story generation.
 
-Wraps 11 story generation pipeline tools into a single coarse-grained tool.
+Wraps story generation pipeline tools into a single coarse-grained tool.
 The main agent delegates "generate story content" to this sub-agent,
-which internally orchestrates the pipeline stages:
+which internally orchestrates the pipeline stages.
 
-  Series Bible:
-    1. episode_digests    — generate episode-level summaries
-    2. chapter_digests    — generate chapter-level summaries
-    3. series_registry    — register series metadata
-    4. series_assignment  — assign episodes to series
-    5. series_bible       — build the Series Bible
-
-  Story Discovery & Planning:
-    6. story_catalog      — discover and catalog story candidates
-    7. story_portfolio    — compile story portfolio
-    8. story_treatments   — write story treatments
-
-  Script Generation & Approval:
-    9. story_scripts      — generate full scripts
-   10. story_preflight    — preflight feasibility check
-   11. story_approval     — HUMAN REVIEW NODE (HITL gate)
+Stage ordering and skill injection are declared by STORY_AGENT_CONTRACT,
+not hardcoded.  The contract is the single source of truth for which
+stages this agent owns and in what order they execute.
 
 Output milestone: script_approved.
 HITL: pauses at story_approval for human review.
@@ -32,89 +19,18 @@ from typing import TYPE_CHECKING, Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import (
-    RequestContext,
     ToolContext,
     current_request_context,
 )
-from auto_cut_bot.pipeline import context_packer, grounded_gen, query_tools
+from auto_cut_bot.agent.tools.pipeline._domain_agent_base import DomainAgent
+from auto_cut_bot.agent.tools.pipeline._domain_contract import (
+    STORY_AGENT_CONTRACT,
+    DomainAgentContract,
+)
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:
     from auto_cut_bot.agent.subagent import SubagentManager
-
-
-# ── Task prompt template ────────────────────────────────────────────────────────
-
-
-def _build_task_prompt(
-    job_root: str,
-    backend: str,
-    mode: str | None = None,
-) -> str:
-    """Build the task description the sub-agent will receive."""
-    parts: list[str] = [
-        f"Complete story generation for job_root={job_root}.",
-        "",
-        "You have access to the following pipeline tools. Work through the steps in order:",
-        "",
-        "**Phase 1 — Build Series Bible:**",
-        "1. **episode_digests** — Generate episode-level summaries from the source material.",
-        "   Call with job_root.",
-        "2. **chapter_digests** — Generate chapter-level summaries from the source material.",
-        "   Call with job_root.",
-        "3. **series_registry** — Register series metadata (title, genre, synopsis, etc.).",
-        "   Call with job_root.",
-        "4. **series_assignment** — Assign episodes to series.",
-        "   Call with job_root.",
-        "5. **series_bible** — Build the complete Series Bible.",
-        "   Call with job_root and backend.",
-        "",
-        "**Phase 2 — Discover and Plan Stories:**",
-        "6. **story_catalog** — Discover and catalog all story candidates.",
-        "   Call with job_root and backend.",
-        "7. **story_portfolio** — Compile the story portfolio (primary + reserve stories).",
-        "   Call with job_root.",
-        "8. **story_treatments** — Write detailed story treatments.",
-        "   Call with job_root and backend.",
-        "",
-        "**Phase 3 — Generate Scripts, Preflight, and Approval:**",
-        "9. **story_scripts** — Generate full scripts from treatments.",
-        "   Call with job_root and backend.",
-        "10. **story_preflight** — Run preflight feasibility checks on all scripts.",
-        "   Call with job_root. This produces story-preflight.json.",
-        "11. **story_approval** — HUMAN REVIEW NODE.",
-        "   This is a human-in-the-loop gate. Call story_approval with job_root and mode.",
-        "   In interactive mode: if no decisions are provided, the tool returns a prompt",
-        "   asking for human review. You MUST report \"awaiting approval\" and pause.",
-        "   In auto mode: decisions are generated automatically.",
-        "",
-        "**Reserve Activation:**",
-        "If any primary story is rejected at the approval stage, activate the next",
-        "available reserve story from the portfolio. Re-run story_treatments, story_scripts,",
-        "story_preflight, and story_approval for the reserve story.",
-        "",
-        "IMPORTANT RULES:",
-        "- Run stages in order. Each stage depends on the previous one completing.",
-        "- If any stage fails, report the error and do not continue to subsequent stages.",
-        "- At story_approval: in interactive mode, if human input is required, pause and",
-        "  report \"awaiting approval\" with the preflight report path.",
-        "- If a primary story is rejected, activate reserve from the portfolio before",
-        "  reporting final status.",
-        "- When all stories are approved, report: milestone=script_approved.",
-        "",
-        "SKILL CONTEXT:",
-        "- Read the Skill file at skills/ac_story_generation/SKILL.md for detailed tool",
-        "  descriptions, data layer query tools, and writing discipline rules.",
-        "- The Skill declares which tools are available and how to use them.",
-        "- All data layer tools (query_tools, context_packer, grounded_gen) are documented",
-        "  in the Skill — use them as described there.",
-    ]
-    if backend:
-        parts.append(f"\nBackend: {backend}")
-    if mode:
-        parts.append(f"Mode: {mode}")
-
-    return "\n".join(parts)
 
 
 # ── Tool ────────────────────────────────────────────────────────────────────────
@@ -139,15 +55,19 @@ def _build_task_prompt(
     },
     "required": ["job_root", "backend"],
 })
-class DomainStoryAgentTool(Tool):
-    """Domain sub-agent that orchestrates the 11 story generation pipeline stages.
+class DomainStoryAgentTool(Tool, DomainAgent):
+    """Domain sub-agent that orchestrates the story generation pipeline stages.
 
     Instead of the main agent calling each story-generation tool individually
-    (requiring 11+ round-trips), this tool delegates the entire story generation
+    (requiring many round-trips), this tool delegates the entire story generation
     workflow to a sub-agent that can call the individual tools autonomously.
 
     The sub-agent is spawned via SubagentManager.run_inline() and given
-    a structured task description with numbered steps.
+    a structured task description built from the contract's skill_names.
+
+    Inherits from DomainAgent ABC, declaring its contract via the
+    STORY_AGENT_CONTRACT. Stage ordering and skill injection follow the
+    contract rather than hardcoded lists.
 
     HITL: story_approval is a human-in-the-loop gate. In interactive mode,
     the sub-agent pauses and reports "awaiting approval" when it reaches
@@ -165,9 +85,18 @@ class DomainStoryAgentTool(Tool):
     def create(cls, ctx: ToolContext) -> "DomainStoryAgentTool":
         return cls(subagent_manager=ctx.subagent_manager)
 
+    # ── DomainAgent contract ──────────────────────────────────────────────────
+
+    @property
+    def contract(self) -> DomainAgentContract:
+        """The immutable contract declaring this agent's responsibilities."""
+        return STORY_AGENT_CONTRACT
+
+    # ── Tool interface ────────────────────────────────────────────────────────
+
     @property
     def name(self) -> str:
-        return "story_agent"
+        return self.contract.agent_name
 
     @property
     def description(self) -> str:
@@ -182,9 +111,9 @@ class DomainStoryAgentTool(Tool):
     async def execute(self, **kwargs: Any) -> Any:
         """Delegate story generation to a sub-agent.
 
-        Validates inputs, builds a task prompt, and either spawns a sub-agent
-        via SubagentManager.run_inline() or returns an error if no sub-agent
-        manager is available.
+        Validates inputs, builds a task prompt from the contract, and either
+        spawns a sub-agent via SubagentManager.run_inline() or returns an
+        error if no sub-agent manager is available.
         """
         job_root = Path(kwargs["job_root"]).expanduser().resolve()
         if not job_root.is_dir():
@@ -193,7 +122,7 @@ class DomainStoryAgentTool(Tool):
         backend = kwargs["backend"]
         mode = kwargs.get("mode")
 
-        task_prompt = _build_task_prompt(
+        task_prompt = self._build_task_prompt(
             job_root=str(job_root),
             backend=backend,
             mode=mode,
@@ -220,31 +149,39 @@ class DomainStoryAgentTool(Tool):
             task_prompt=task_prompt,
         )
 
-    async def _run_via_subagent(
-        self,
-        manager: "SubagentManager",
-        request_ctx: "RequestContext",
-        task_prompt: str,
-    ) -> str:
-        """Run the story generation task via SubagentManager.run_inline()."""
-        origin_channel = request_ctx.channel
-        origin_chat_id = request_ctx.chat_id
-        session_key = request_ctx.session_key or f"{origin_channel}:{origin_chat_id}"
+    # ── Domain-specific prompt construction ────────────────────────────────────
 
-        try:
-            result = await manager.run_inline(
-                task=task_prompt,
-                label="story-agent",
-                runtime=request_ctx.runtime,
-                origin_channel=origin_channel,
-                origin_chat_id=origin_chat_id,
-                session_key=session_key,
-                origin_message_id=request_ctx.message_id,
-                workspace_scope=current_workspace_scope(),
-            )
-            return result
-        except Exception as exc:
-            return ToolResult.error(
-                f"story_agent sub-agent failed: {exc}\n\n"
-                "The sub-agent encountered an error. Check the job log for details."
-            )
+    def _build_task_prompt(
+        self,
+        job_root: str,
+        backend: str | None = None,
+        mode: str | None = None,
+        **extra: Any,
+    ) -> str:
+        """Build the task prompt for the story sub-agent.
+
+        Delegates to the base class for common structure (skill injection,
+        goal, milestone, error handling) and appends story-specific HITL
+        and reserve activation rules.
+        """
+        base = super()._build_task_prompt(
+            job_root=job_root,
+            backend=backend,
+            mode=mode,
+            **extra,
+        )
+
+        story_rules: list[str] = [
+            "",
+            "- At story_approval: in interactive mode, if human input is required, pause and",
+            "  report \"awaiting approval\" with the preflight report path.",
+            "",
+            "**Reserve Activation:**",
+            "If any primary story is rejected at the approval stage, activate the next",
+            "available reserve story from the portfolio. Re-run story_treatments, story_scripts,",
+            "story_preflight, and story_approval for the reserve story.",
+            "",
+            "When all stories are approved, report: milestone=script_approved.",
+        ]
+
+        return base + "\n".join(story_rules)

@@ -169,7 +169,12 @@ class PipelineOrchestratorTool(Tool):
         to_stage = kwargs.get("to_stage")
 
         try:
-            orchestrator.run(from_stage=from_stage, to_stage=to_stage)
+            import asyncio
+            await asyncio.to_thread(
+                orchestrator.run,
+                from_stage=from_stage,
+                to_stage=to_stage,
+            )
 
             # Read project.json for summary
             project_path = job_root / "project.json"
