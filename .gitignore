@@ -101,3 +101,8 @@ exp/
 .playwright-mcp/
 bridge/node_modules/
 webui/.verify-*
+
+webui/websocket_*.jsonl
+.qoder/
+pipeline/data_infra/
+
