@@ -8,35 +8,68 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── 多源仲裁类型 ─────────────────────────────────────────────────────
 
+# 旧版兼容映射 — 加载旧 JSON 时自动转换为新类型
+_AGREEMENT_COMPAT_MAP: dict[str, str] = {
+    "both_match": "subtitle_match",
+    "minor_divergence": "subtitle_divergence",
+    "major_divergence": "subtitle_divergence",
+    "asr_only": "no_subtitle",
+    "api_only": "subtitle_match",
+    "script_only": "no_subtitle",
+    "all_diverge": "subtitle_divergence",
+    "vlm_override": "subtitle_divergence",
+}
+
+_CHOSEN_SOURCE_COMPAT_MAP: dict[str, str] = {
+    "asr": "audio",
+    "api": "subtitle",
+    "script": "subtitle",
+    "both": "subtitle",
+    "vlm": "subtitle",
+}
+
 AGREEMENT_TYPES = Literal[
-    "both_match",
-    "minor_divergence",
-    "major_divergence",
-    "asr_only",
-    "api_only",
-    "script_only",
-    "all_diverge",
-    "vlm_override",
+    "subtitle_match",
+    "subtitle_divergence",
+    "no_subtitle",
+    "screen_text_only",
 ]
 
-CHOSEN_SOURCE = Literal["asr", "api", "script", "both", "vlm"]
+CHOSEN_SOURCE = Literal["subtitle", "audio", "screen_text"]
 
 
 class SourceAccuracy(BaseModel):
-    """VLM 多源字幕仲裁结果 — 对比 ASR/API/剧本三源后确定最准确的字幕。"""
+    """VLM 字幕来源仲裁结果 — 判断字幕来源并给出置信度。
 
-    asr_text: str | None = None
-    api_text: str | None = None
-    script_text: str | None = None
-    agreement: AGREEMENT_TYPES = "both_match"
-    chosen_source: CHOSEN_SOURCE = "both"
+    VLM 直接从视频画面提取字幕信息，对比硬字幕与语音是否一致，
+    确定最终对白文本的可靠来源。
+    """
+
+    agreement: AGREEMENT_TYPES = "subtitle_match"
+    chosen_source: CHOSEN_SOURCE = "subtitle"
     vlm_override_text: str | None = None
     reason: str = ""
+
+    @field_validator("agreement", mode="before")
+    @classmethod
+    def _normalize_agreement(cls, v: Any) -> str:
+        """向后兼容: 旧版 agreement 类型自动映射为新类型。"""
+        if isinstance(v, str) and v in _AGREEMENT_COMPAT_MAP:
+            return _AGREEMENT_COMPAT_MAP[v]
+        return v
+
+    @field_validator("chosen_source", mode="before")
+    @classmethod
+    def _normalize_chosen_source(cls, v: Any) -> str:
+        """向后兼容: 旧版 chosen_source 类型自动映射为新类型。"""
+        if isinstance(v, str) and v in _CHOSEN_SOURCE_COMPAT_MAP:
+            return _CHOSEN_SOURCE_COMPAT_MAP[v]
+        return v
 
 
 # ── 枚举 ────────────────────────────────────────────────────────────
@@ -135,6 +168,33 @@ class HighlightCandidate(BaseModel):
     dialogue_excerpt: str = ""
 
 
+class CharacterAppearance(BaseModel):
+    """角色出场记录 — 谁在画面中，什么样子，何时出现/消失。
+
+    VLM 从视频画面直接识别角色，不依赖 API 预置的角色信息。
+    """
+    name: str = Field(..., min_length=1, description="角色名")
+    description: str = Field(default="", description="外观描述（衣着、年龄、特征）")
+    role: str = Field(default="", description="角色定位（主角/配角/反派/路人）")
+    first_seen: float = Field(..., description="首次出现时间（秒）")
+    last_seen: float = Field(default=0.0, description="最后出现时间（秒）")
+    source: str = Field(default="visual", description="识别来源: visual/title_card/dialogue/voice")
+
+
+class SceneLocation(BaseModel):
+    """场景位置 — 故事发生在哪里，什么时间，有哪些角色在场。
+
+    VLM 从视觉事件和窗口摘要中提取结构化场景信息，
+    供下游 episode_digests 和 story_scripts 使用。
+    """
+    name: str = Field(..., min_length=1, description="场景名称（如 '破旧木屋'、'教堂'）")
+    description: str = Field(default="", description="场景描述（环境、氛围、视觉特征）")
+    start: float = Field(..., description="场景开始时间（秒）")
+    end: float = Field(..., description="场景结束时间（秒）")
+    time_of_day: str = Field(default="", description="时间（白天/夜晚/黄昏/黎明）")
+    characters_present: list[str] = Field(default_factory=list, description="在场角色")
+
+
 class WindowAnalysisResult(BaseModel):
     source_id: str = Field(..., min_length=1)
     episode: int = Field(..., ge=1)
@@ -143,12 +203,14 @@ class WindowAnalysisResult(BaseModel):
     window_summary: str = Field(..., min_length=1)
     timeline_segments: list[TimelineSegment] = []
     boundary_context: BoundaryContext
+    character_appearances: list[CharacterAppearance] = []
+    scene_locations: list[SceneLocation] = []
     story_beats: list[StoryBeat] = []
     dialogue_and_text: list[DialogueEvent] = []
     visual_events: list[VisualEvent] = []
     candidates: list[HighlightCandidate] = []
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "ignore"}  # 允许旧版输出不带新字段
 
 
 class WindowJobResult(BaseModel):
@@ -210,6 +272,38 @@ def as_dict_schema() -> dict[str, Any]:
                 ],
                 "additionalProperties": False,
             },
+            "character_appearances": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "description": {"type": "string"},
+                        "role": {"type": "string"},
+                        "first_seen": {"type": "number"},
+                        "last_seen": {"type": "number"},
+                        "source": {"type": "string"},
+                    },
+                    "required": ["name", "first_seen"],
+                    "additionalProperties": False,
+                },
+            },
+            "scene_locations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1},
+                        "description": {"type": "string"},
+                        "start": {"type": "number"},
+                        "end": {"type": "number"},
+                        "time_of_day": {"type": "string"},
+                        "characters_present": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["name", "start", "end"],
+                    "additionalProperties": False,
+                },
+            },
             "story_beats": {
                 "type": "array",
                 "items": {
@@ -242,20 +336,18 @@ def as_dict_schema() -> dict[str, Any]:
                         "source_accuracy": {
                             "type": "object",
                             "properties": {
-                                "asr_text": {"type": "string"},
-                                "api_text": {"type": "string"},
-                                "script_text": {"type": "string"},
                                 "agreement": {
                                     "type": "string",
                                     "enum": [
-                                        "both_match", "minor_divergence", "major_divergence",
-                                        "asr_only", "api_only", "script_only",
-                                        "all_diverge", "vlm_override",
+                                        "subtitle_match",
+                                        "subtitle_divergence",
+                                        "no_subtitle",
+                                        "screen_text_only",
                                     ],
                                 },
                                 "chosen_source": {
                                     "type": "string",
-                                    "enum": ["asr", "api", "script", "both", "vlm"],
+                                    "enum": ["subtitle", "audio", "screen_text"],
                                 },
                                 "vlm_override_text": {"type": "string"},
                                 "reason": {"type": "string"},
@@ -309,8 +401,9 @@ def as_dict_schema() -> dict[str, Any]:
         },
         "required": [
             "source_id", "episode", "window_id", "window", "window_summary",
-            "timeline_segments", "boundary_context", "story_beats",
-            "dialogue_and_text", "visual_events", "candidates",
+            "timeline_segments", "boundary_context",
+            "character_appearances", "scene_locations",
+            "story_beats", "dialogue_and_text", "visual_events", "candidates",
         ],
         "additionalProperties": False,
     }
