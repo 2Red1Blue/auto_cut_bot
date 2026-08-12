@@ -10,12 +10,11 @@ from autocut_core import (
     ArtifactBus, Artifact, Stage, StageContract, Task,
 )
 from autocut_core.io import (
-    atomic_write_jsonl, load_json, update_project_stage,
+    atomic_write_jsonl, collect_digest_records, load_json, update_project_stage,
 )
 from autocut_core.semantic.batch_orchestrator import run_batch
 from autocut_core.semantic.prep.chapters import prepare_chapters
 
-from auto_cut_bot.pipeline.plugins.ac_series_knowledge.stages.episode_digests.stage import _collect_digest_records
 
 _CHAPTER_DIGEST_TASK = "chapter_digest"
 
@@ -72,7 +71,7 @@ class ChapterDigestsStage(Stage):
 
         # 3. 内联组装 (不再调用 assemble_story_artifacts.py chapters)
         manifest = load_json(batch_path)
-        records = _collect_digest_records(manifest, _CHAPTER_DIGEST_TASK)
+        records = collect_digest_records(manifest, _CHAPTER_DIGEST_TASK)
         output = root / "chapter-digests.jsonl"
         atomic_write_jsonl(output, records)
 

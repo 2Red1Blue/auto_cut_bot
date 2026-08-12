@@ -40,7 +40,7 @@ class RegistryStage(Stage):
             output_artifacts=["series_registry"],
             description="Series Registry 准入与修复链 (admission → 四段 repair → recovery)",
             db_reads=["subject_episodes"],
-            db_writes=["subjects", "relationships", "speaker_mappings"],
+            db_writes=[],
         )
 
     def prepare(self, bus: ArtifactBus) -> list[Task]:

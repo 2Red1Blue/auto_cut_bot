@@ -31,7 +31,7 @@ class EventCardsStage(Stage):
             output_artifacts=["event_cards", "highlight_hook_catalog"],
             description="编译中等粒度剧情事件 + Highlight/Hook 候选目录",
             db_reads=[],
-            db_writes=["boundaries", "subjects"],
+            db_writes=[],
         )
 
     def prepare(self, bus: ArtifactBus) -> list[Task]:
