@@ -3,8 +3,9 @@
 Each tool wraps a pipeline stage, exposing its functionality as a
 callable agent capability.  The pipeline runs in order:
 
-Source Prep:
-  source_windows -> window_analysis -> event_cards
+Source Prep (VLM-First):
+  source_windows -> global_context -> vlm_analysis -> confidence_check
+  -> event_cards
 
 Series Knowledge:
   episode_digests -> chapter_digests -> series_registry
@@ -16,10 +17,10 @@ Story Generation:
 
 Plan Orchestration:
   story_evidence -> span_candidates -> story_plans
-  -> story_plans_materialize
+  -> story_plans_preflight (HUMAN REVIEW) -> story_plans_materialize
 
 QC:
-  story_qc -> story_qc_review (HUMAN REVIEW)
+  story_plans_qc_admission (HUMAN REVIEW) -> story_qc -> story_qc_review (HUMAN REVIEW)
 
 Render:
   story_render
@@ -27,7 +28,9 @@ Render:
 
 from auto_cut_bot.agent.tools.pipeline.source_windows import SourceWindowsTool
 from auto_cut_bot.agent.tools.pipeline.source_transcripts import SourceTranscriptsTool
+from auto_cut_bot.agent.tools.pipeline.global_context import GlobalContextTool
 from auto_cut_bot.agent.tools.pipeline.window_analysis import WindowAnalysisTool
+from auto_cut_bot.agent.tools.pipeline.confidence_check import ConfidenceCheckTool
 from auto_cut_bot.agent.tools.pipeline.event_cards import EventCardsTool
 from auto_cut_bot.agent.tools.pipeline.episode_digests import EpisodeDigestsTool
 from auto_cut_bot.agent.tools.pipeline.chapter_digests import ChapterDigestsTool
@@ -43,25 +46,25 @@ from auto_cut_bot.agent.tools.pipeline.story_approval import StoryApprovalTool
 from auto_cut_bot.agent.tools.pipeline.story_evidence import StoryEvidenceTool
 from auto_cut_bot.agent.tools.pipeline.span_candidates import SpanCandidatesTool
 from auto_cut_bot.agent.tools.pipeline.story_plans import StoryPlansTool
+from auto_cut_bot.agent.tools.pipeline.story_plans_preflight import StoryPlansPreflightTool
 from auto_cut_bot.agent.tools.pipeline.story_plans_materialize import StoryPlansMaterializeTool
 from auto_cut_bot.agent.tools.pipeline.story_qc import StoryQCTool
 from auto_cut_bot.agent.tools.pipeline.story_qc_review import StoryQCReviewTool
+from auto_cut_bot.agent.tools.pipeline.story_plans_qc_admission import StoryPlansQCAdmissionTool
 from auto_cut_bot.agent.tools.pipeline.story_render import StoryRenderTool
 from auto_cut_bot.agent.tools.pipeline.database_write import DatabaseWriteTool
-from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
-from auto_cut_bot.agent.tools.pipeline.source_script_load import SourceScriptLoadTool
-from auto_cut_bot.agent.tools.pipeline.source_script_save import SourceScriptSaveTool
-from auto_cut_bot.agent.tools.pipeline.source_script_chunk_parse import SourceScriptChunkParseTool
+from auto_cut_bot.agent.tools.pipeline.db_query import DBQueryTool
 from auto_cut_bot.agent.tools.pipeline.domain_source_agent import DomainSourceAgentTool
 from auto_cut_bot.agent.tools.pipeline.domain_story_agent import DomainStoryAgentTool
 from auto_cut_bot.agent.tools.pipeline.domain_production_agent import DomainProductionAgentTool
-from auto_cut_bot.agent.tools.pipeline.db_query import DBQueryTool
 
 __all__ = [
     # Source Prep
     "SourceWindowsTool",
     "SourceTranscriptsTool",
+    "GlobalContextTool",
     "WindowAnalysisTool",
+    "ConfidenceCheckTool",
     "EventCardsTool",
     # Series Knowledge
     "EpisodeDigestsTool",
@@ -80,39 +83,33 @@ __all__ = [
     "StoryEvidenceTool",
     "SpanCandidatesTool",
     "StoryPlansTool",
+    "StoryPlansPreflightTool",
     "StoryPlansMaterializeTool",
     # QC
     "StoryQCTool",
     "StoryQCReviewTool",
+    "StoryPlansQCAdmissionTool",
     # Render
     "StoryRenderTool",
     "DatabaseWriteTool",
-    # Orchestrator
-    "PipelineOrchestratorTool",
-    # Agent-Native Script Parsing
-    "SourceScriptLoadTool",
-    "SourceScriptSaveTool",
-    "SourceScriptChunkParseTool",
-    # Domain Sub-Agents
+    # DB Query (read-only)
+    "DBQueryTool",
+    # Domain Agents
     "DomainSourceAgentTool",
     "DomainStoryAgentTool",
     "DomainProductionAgentTool",
-    # DB Query (read-only)
-    "DBQueryTool",
 ]
 
-# Convenience: list of all pipeline tool classes for registration
+# Registered pipeline tools for ToolLoader auto-discovery
 ALL_PIPELINE_TOOLS = [
-    SourceWindowsTool, SourceTranscriptsTool, WindowAnalysisTool, EventCardsTool,
+    SourceWindowsTool, SourceTranscriptsTool, GlobalContextTool, WindowAnalysisTool,
+    ConfidenceCheckTool, EventCardsTool,
     EpisodeDigestsTool, ChapterDigestsTool, SeriesRegistryTool,
     SeriesAssignmentTool, SeriesBibleTool, StoryCatalogTool,
     StoryPortfolioTool, StoryTreatmentsTool, StoryScriptsTool,
     StoryPreflightTool, StoryApprovalTool, StoryEvidenceTool,
-    SpanCandidatesTool, StoryPlansTool, StoryPlansMaterializeTool,
-    StoryQCTool, StoryQCReviewTool, StoryRenderTool,
-    DatabaseWriteTool, PipelineOrchestratorTool,
-    SourceScriptLoadTool, SourceScriptSaveTool, SourceScriptChunkParseTool,
-    DomainSourceAgentTool,
-    DomainStoryAgentTool, DomainProductionAgentTool,
-    DBQueryTool,
+    SpanCandidatesTool, StoryPlansTool, StoryPlansPreflightTool, StoryPlansMaterializeTool,
+    StoryQCTool, StoryQCReviewTool, StoryPlansQCAdmissionTool, StoryRenderTool,
+    DatabaseWriteTool, DBQueryTool,
+    DomainSourceAgentTool, DomainStoryAgentTool, DomainProductionAgentTool,
 ]
