@@ -1,5 +1,9 @@
-"""SourceMetadataStage -- 从 Platform API 拉取剧集元数据并写入 8 张 DB 表。
+"""SourceMetadataStage -- DEPRECATED since v5.1: Replaced by global_context. API data now only used for global context injection.
 
+This module is retained for backwards compatibility with older pipeline configurations.
+Do not add new features here; use the global_context stage instead.
+
+Original docstring:
 Stage 2 in the pipeline (after source_windows, before window_analysis).
 
 职责: 读取 source_manifest → 调用 Platform Metadata API → 规范化/

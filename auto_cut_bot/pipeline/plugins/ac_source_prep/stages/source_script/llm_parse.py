@@ -11,7 +11,8 @@ import re
 import time
 from typing import Any
 
-from autocut_core import PipelineConfig, get_logger
+from autocut_core import PipelineConfig
+from state_graph import get_logger
 
 logger = get_logger(__name__)
 

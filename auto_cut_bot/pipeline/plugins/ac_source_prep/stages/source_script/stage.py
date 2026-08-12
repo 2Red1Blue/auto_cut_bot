@@ -1,4 +1,11 @@
-"""source_script Stage — 加载完整剧本, LLM 解析为结构化场景, 字幕时间对齐, 写入 scenes 表。
+"""source_script Stage — SIMPLIFIED since v5.1: No longer does full scene parsing. Agent-native: Agent parses script with own LLM.
+
+This module is retained for existing script-to-DB import workflows but no longer
+performs scene-level LLM parsing. Full scene parsing is delegated to the Agent's
+own LLM in the VLM-first pipeline.
+
+Original docstring:
+加载完整剧本, LLM 解析为结构化场景, 字幕时间对齐, 写入 scenes 表。
 
 流水线位置: Phase 1 第 4 步 (source_windows → window_analysis → source_metadata → source_script)。
 职责: 读取原始剧本文件 → deepseek-v4-flash-260425 做集切分+场景解析 → 用 API 字幕时间戳

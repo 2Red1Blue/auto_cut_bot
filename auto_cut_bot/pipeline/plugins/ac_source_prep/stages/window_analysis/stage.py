@@ -1,4 +1,10 @@
-"""WindowAnalysisStage — 批量 VLM 逐窗语义分析 + 多源数据融合。
+"""WindowAnalysisStage — DEPRECATED since v5.1: Replaced by vlm_analysis. See docs/design/vlm-first-architecture.md
+
+This module is retained for backwards compatibility with older pipeline configurations.
+Do not add new features here; use the vlm_analysis stage instead.
+
+Original docstring:
+批量 VLM 逐窗语义分析 + 多源数据融合。
 
 消费 source_windows 产出的 window_batch, 逐窗调用 VLM 分析
 视频内容, 汇总为 window_summaries (jsonl)。
