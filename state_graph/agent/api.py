@@ -15,15 +15,15 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from autocut_core import get_logger
-from autocut_core.agent.engine import StateGraphEngine
-from autocut_core.agent.entities import (
+from state_graph import get_logger
+from state_graph.agent.engine import StateGraphEngine
+from state_graph.agent.entities import (
     Checkpoint,
     HumanDecision,
     Session,
     SessionStatus,
 )
-from autocut_core.agent.ports import ICheckpointRepository, ISessionStore
+from state_graph.agent.ports import ICheckpointRepository, ISessionStore
 
 logger = get_logger(__name__)
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from autocut_core.agent.entities import (
+from state_graph.agent.entities import (
     Checkpoint,
     NodeResult,
     Session,

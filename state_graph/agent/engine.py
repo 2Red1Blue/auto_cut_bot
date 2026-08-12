@@ -15,7 +15,7 @@ import time
 from typing import Any
 from uuid import UUID
 
-from autocut_core.agent.entities import (
+from state_graph.agent.entities import (
     Checkpoint,
     HumanDecision,
     NodeResult,
@@ -24,7 +24,7 @@ from autocut_core.agent.entities import (
     SessionStatus,
     StateGraph,
 )
-from autocut_core.agent.ports import (
+from state_graph.agent.ports import (
     ICheckpointRepository,
     IEventEmitter,
     INodePlugin,
