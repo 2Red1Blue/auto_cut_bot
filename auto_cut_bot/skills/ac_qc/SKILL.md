@@ -1,21 +1,9 @@
 ---
 name: ac_qc
-description: 质量检查 — Story QC（Coverage/Flow/Cut Safety 代理复核 + 本地双路 VAD 音频 Boundary Repair），覆盖 Stage 24-25。用于在 Story Plan 通过验证后，对每个 Candidate 执行代理渲染与多模态复核，自动修复安全音频边界，并决选唯一 Winner 进入正式渲染。Pipeline automation skill for auto cut bot.
-metadata:
-  auto_cut_bot:
-    emoji: "✅"
-    always: false
-version: 1.0.0
+description: 质量检查 — Story QC（Coverage/Flow/Cut Safety 代理复核），覆盖 Stage 23-24。用于在 Story Plan 通过验证后，对每个 Candidate 执行代理渲染与多模态复核，决选唯一 Winner 进入正式渲染。
+version: 0.1.0
+stages: [23, 24]
 status: active
-stages: [23, 24, 25]
-tools:
-  - story_qc
-  - story_qc_review
-data_layer_tools:
-  - db_query.DBQueryTool  # schema discovery + raw SQL for any table
-  - filmability.filmability_check
-  - conflict_queue.ConflictQueue
-  - conflict_queue.check_and_interrupt
 triggers:
   - "Story QC"
   - "质量检查"
@@ -107,12 +95,4 @@ python3 /absolute/skill/scripts/validate_story_qc.py /absolute/job
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
-| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化 Stage 24-25 |## Agent-Native Execution
-
-使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
-
-1. db_query(operation="schema") → 发现可用数据
-2. db_query(operation="raw", sql="...") → 按需查询
-3. 在上下文中处理数据（LLM 推理或编译）
-4. database_write → 写回 DB
-5. 上下文已有数据 → 不重复查询
+| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化 Stage 24-25 |

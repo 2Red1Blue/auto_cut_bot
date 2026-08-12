@@ -1,11 +1,7 @@
 ---
-name: ac_shared_contracts
-description: 共享合同 — 跨模块的合同规则定义、声明式规则引擎、Schema 版本策略、ID 规范和 Pipeline 运行模式。不拥有任何 Stage，被所有 6 个 Stage 技能共同引用。用于查询合同规则落地状态、理解跨 Skill 的校验链和产物依赖关系。Pipeline automation skill for auto cut bot.
-metadata:
-  auto_cut_bot:
-    emoji: "📜"
-    always: false
-version: 1.0.0
+name: shared_contracts
+description: 共享合同 — 跨模块的合同规则定义、声明式规则引擎、Schema 版本策略、ID 规范、Pipeline 运行模式和 VLM-First 数据使用合同。不拥有任何 Stage，被所有 6 个 Stage 技能共同引用。
+version: 0.1.0
 status: active
 shared: true
 stages: []
@@ -26,8 +22,6 @@ anti_triggers:
   - "视频切窗" → 使用 ac_source_prep
   - "生成 Story Script" → 使用 ac_story_generation
   - "QC 检查" → 使用 ac_qc
-tools:
-  - db_query  # schema discovery + raw SQL
 ---
 
 # shared_contracts — 共享合同
@@ -77,9 +71,22 @@ tools:
 
 - 约 18 条规则仍为文字约定（主要在 Evidence/Span/QC/render 环节）
 - 遗留 TODO：SHA-256 绑定链类规则（rule 13/28/34）需引入多产物哈希约定
-- 流程顺序类规则（rule 1/9/10/19）适合在 orchestrator 层以前置 Stage 状态检查落地
+
+## VLM-First 数据使用合同 (v2.0)
+
+| Rule ID | Description | Status |
+|---------|-------------|--------|
+| vlm_01 | VLM 是主要信息源：所有语义信息从视频直接提取 | landed |
+| vlm_02 | API 数据仅用于：全局上下文注入 (global_context) + Skill 进化证据 (highlight_skill_evolution) | landed |
+| vlm_03 | 不注入视觉特征：traits/appearance/dialogue/scene 描述不注入 VLM prompt | landed |
+| vlm_04 | API 高光不入库判断：VLM 独立判断高光，API 高光仅用于 IoU 对比和 skill 进化 | landed |
+| vlm_05 | PySceneDetect 边界修正：所有时间范围以 PySceneDetect 精确帧边界为准 | landed |
+| vlm_06 | 按需补充：confidence_check 触发时才启用 ASR/角色参考注入 | landed |
+| vlm_07 | 向后兼容：旧版 agreement 类型自动映射，已有数据保留不删除 | landed |
 
 ## 修改记录
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.0.0 | 2026-08-12 | VLM-First 架构：新增 7 条 VLM 数据使用合同规则 |
+| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化共享合同文档 |

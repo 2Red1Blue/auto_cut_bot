@@ -1,13 +1,9 @@
 ---
 name: ac_render
-description: 渲染输出 — 将 QC 通过的 Story Plan 编译为不可变 Render Recipe，使用本地 FFmpeg 从原始素材生成 1080×1920 正式 MP4 成片。覆盖 Stage 26。支持冷开场黑场分隔、Filler Tail 300s 兜底、内容寻址 Clip 缓存和可选注解字幕。Pipeline automation skill for auto cut bot.
-metadata:
-  auto_cut_bot:
-    emoji: "🎥"
-    always: false
-version: 1.0.0
+description: 渲染输出 — 将 QC 通过的 Story Plan 编译为不可变 Render Recipe，使用本地 FFmpeg 从原始素材生成 1080×1920 正式 MP4 成片。覆盖 Stage 25。支持冷开场黑场分隔、Filler Tail 300s 兜底、内容寻址 Clip 缓存和可选注解字幕。
+version: 0.1.0
+stages: [25]
 status: active
-stages: [26]
 triggers:
   - "渲染视频"
   - "生成成片"
@@ -23,9 +19,6 @@ anti_triggers:
   - "Story QC" → ac_qc
   - "Story Plan 生成" → ac_plan_orchestration
   - "故事脚本" → ac_story_generation
-tools:
-  - ffmpeg_video_editor  # FFmpeg command generation from natural language
-  - db_query  # schema discovery + raw SQL
 ---
 
 # ac_render — 渲染输出
@@ -103,12 +96,6 @@ python3 /absolute/skill/scripts/build_story_annotations.py /absolute/job \
 
 ## 修改记录
 
-## Agent-Native Execution
-
-使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
-
-1. db_query(operation="schema") → 发现可用数据
-2. db_query(operation="raw", sql="...") → 按需查询
-3. 在上下文中处理数据（LLM 推理或编译）
-4. database_write → 写回 DB
-5. 上下文已有数据 → 不重复查询
+| 版本 | 日期 | 变更 |
+|------|------|------|
+| 1.0.0 | 2026-08-07 | 从 v4 SKILL.md 拆分，初始化 Stage 26 |

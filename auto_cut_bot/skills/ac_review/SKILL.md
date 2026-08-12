@@ -1,6 +1,11 @@
 ---
 name: ac_review
-description: 独立审核 — 基于 DB 数据对故事计划进行规则检查和质量验证。不重新运行 VLM/ASR，只读 DB。用作 StateGraph 的 HITL gate node。Pipeline automation skill for auto cut bot.
+description: 独立审核 (VLM-First) — 基于 DB 数据对故事计划进行规则检查和质量验证。不重新运行 VLM/ASR，只读 DB。用作 StateGraph 的 HITL gate node。Pipeline automation skill for auto cut bot.
+metadata:
+  auto_cut_bot:
+    emoji: "🔍"
+    always: false
+version: 2.0.0
 stages: [review]
 status: active
 tools:
@@ -21,6 +26,16 @@ anti_triggers:
 
 你是独立审核者。你的视角独立于主 Agent，只基于 DB 中的数据做规则检查。
 不重新运行 VLM、ASR 或任何 LLM 生成。不信任主 Agent 的决策——只信 DB。
+
+## VLM-First 数据流
+
+**审核对象**: 本阶段审核上游 VLM-first 流程的产出：
+- `story_plans.json` — Story Plans（来自 ac_plan_orchestration）
+- `series_bible.json` — 系列圣经（基于 VLM 窗口分析构建）
+- `event_cards.jsonl` — 事件卡（VLM 直接提取 speaker/emotion/relationship）
+- `source_manifest.json` — 视频源清单（来自 ac_source_prep）
+
+**关键优势**: VLM-first 提取的精确 speaker 信息和时间码，使审核阶段的角色一致性检查更加准确。
 
 ## 审核流程
 
@@ -157,3 +172,8 @@ if review_result["status"] == "rejected":
         reason=review_result["reasons"],
     ))
 ```
+
+## Version History
+
+- 2.0.0 (2026-08-12): VLM-First 架构升级，审核对象来自 VLM 窗口分析
+- 1.0.0: 初始版本

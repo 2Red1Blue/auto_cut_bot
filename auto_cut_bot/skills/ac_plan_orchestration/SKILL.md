@@ -1,24 +1,9 @@
 ---
 name: ac_plan_orchestration
-description: 计划编排 — Story Evidence 检索、Span Candidate 编译、Legal Option Compiler + Plan Preflight、正式 Story Plan 生成、Plan Materialize 与 QC Admission。覆盖 Stage 18-23，产出可进入 QC 的正式 Story Plan。Pipeline automation skill for auto cut bot.
-metadata:
-  auto_cut_bot:
-    emoji: "📋"
-    always: false
-version: 1.0.0
-stages: [18, 19, 20, 21, 22]
+description: 计划编排 — Story Evidence 检索、Span Candidate 编译、Plan Preflight、正式 Story Plan 生成、Plan Materialize 与 QC Admission。覆盖 Stage 17-22，产出可进入 QC 的正式 Story Plan。
+version: 0.1.0
+stages: [17, 18, 19, 20, 21, 22]
 status: active
-tools:
-  - story_evidence
-  - span_candidates
-  - story_plans
-  - story_plans_materialize
-data_layer_tools:
-  - db_query.DBQueryTool  # schema discovery + raw SQL for any table
-  - semantic_match.match_scene_to_beat
-  - semantic_match.find_best_scenes
-  - derived_assets.build_character_appearance_index
-  - derived_assets.build_emotion_curve
 triggers:
   - "生成计划"
   - "Story Plan"
@@ -146,12 +131,3 @@ python3 /absolute/skill/scripts/story_plan_qc_admission.py decide /absolute/job 
 
 ## Version History
 
-## Agent-Native Execution
-
-使用 db_query 自主查询数据库，不在 Pipeline Stage 硬编码顺序中执行。
-
-1. db_query(operation="schema") → 发现可用数据
-2. db_query(operation="raw", sql="...") → 按需查询
-3. 在上下文中处理数据（LLM 推理或编译）
-4. database_write → 写回 DB
-5. 上下文已有数据 → 不重复查询
