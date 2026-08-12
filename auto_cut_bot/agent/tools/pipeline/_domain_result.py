@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Re-export from autocut_core (DIP-compliant)
-from autocut_core.agent.ports import DomainContext, DomainStatus  # noqa: F401
+from state_graph.agent.ports import DomainContext, DomainStatus  # noqa: F401
 
 __all__ = ["DomainStatus", "DomainContext", "Artifact", "DomainResult"]
 

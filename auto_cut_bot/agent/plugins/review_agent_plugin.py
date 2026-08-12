@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from autocut_core.agent.entities import NodeResult
-from autocut_core.agent.ports import INodePlugin
+from state_graph.agent.entities import NodeResult
+from state_graph.agent.ports import INodePlugin
 
 
 @dataclass
