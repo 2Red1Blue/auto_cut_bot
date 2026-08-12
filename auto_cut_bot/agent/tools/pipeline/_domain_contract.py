@@ -47,21 +47,20 @@ class DomainAgentContract:
 SOURCE_AGENT_CONTRACT = DomainAgentContract(
     agent_name="source_agent",
     stage_names=(
-        "source_windows", "source_metadata", "source_script_load",
-        "source_script_save", "source_script_chunk_parse",
-        "source_transcripts", "reconciliation",
-        "window_analysis", "event_cards",
+        "source_windows", "global_context",
+        "vlm_analysis", "confidence_check",
+        "event_cards",
         "episode_digests", "chapter_digests",
         "series_registry", "series_assignment",
     ),
     input_artifacts=(),
-    output_artifacts=("source_script", "source_metadata", "event_cards",
+    output_artifacts=("global_context", "confidence_report", "event_cards",
                       "episode_digests", "chapter_digests", "series_registry"),
     milestone="source_ready",
     is_human_node=False,
     skill_names=("ac_source_prep",),
-    description="Source material preparation: ingestion, script parsing, "
-                "VLM analysis, metadata, ASR transcription, series registration.",
+    description="Source material preparation: video windows, global context extraction, "
+                "VLM analysis, confidence gating, event cards, series registration.",
 )
 
 STORY_AGENT_CONTRACT = DomainAgentContract(
@@ -73,7 +72,7 @@ STORY_AGENT_CONTRACT = DomainAgentContract(
         "story_plans", "story_plans_materialize",
         "story_plans_preflight", "story_plans_qc_admission",
     ),
-    input_artifacts=("source_script", "event_cards", "series_registry"),
+    input_artifacts=("event_cards", "series_registry"),
     output_artifacts=("story_scripts", "story_plans", "series_bible"),
     milestone="script_approved",
     is_human_node=True,

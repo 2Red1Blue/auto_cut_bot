@@ -42,7 +42,7 @@ async def _run_stages_direct(
 
     Uses StageOrchestrator with per-stage config overrides because:
     - source_windows needs source_kind + input_root
-    - window_analysis needs backend
+    - vlm_analysis needs backend
     - event_cards needs only job_root
     """
     from auto_cut_bot.agent.tools.pipeline._stage_orchestrator import (
@@ -58,6 +58,15 @@ async def _run_stages_direct(
         EventCardsStage,
     )
 
+    # Phase 2 integration point: import GlobalContextStage and ConfidenceCheckStage
+    # when they are implemented in ac_auto_cut.
+    # from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.global_context.stage import (
+    #     GlobalContextStage,
+    # )
+    # from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.confidence_check.stage import (
+    #     ConfidenceCheckStage,
+    # )
+
     root = Path(job_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
 
@@ -71,7 +80,11 @@ async def _run_stages_direct(
             "source_kind": effective_source_kind,
             "extra": {"input_root": input_root} if input_root else {},
         }),
+        # Phase 2 integration point: uncomment when GlobalContextStage is implemented
+        # (GlobalContextStage, None),
         (WindowAnalysisStage, {"backend": effective_backend}),
+        # Phase 2 integration point: uncomment when ConfidenceCheckStage is implemented
+        # (ConfidenceCheckStage, None),
         (EventCardsStage, None),
     ]
 
@@ -90,7 +103,7 @@ async def _run_stages_direct(
 
     results.append(
         f"\nmilestone={contract.milestone} "
-        "(partial — script/ASR/metadata stages require sub-agent)"
+        "(partial — global_context/confidence_check stages require Phase 2 implementation)"
     )
     return "\n".join(results)
 
@@ -168,9 +181,9 @@ class DomainSourceAgentTool(Tool, DomainAgent):
     def description(self) -> str:
         return (
             "Prepare source material for the auto-cut pipeline. "
-            "Handles: video scanning, window analysis, event cards, "
-            "script parsing (adaptive Direct/MapReduce), metadata collection, "
-            "and ASR transcription. "
+            "Handles: video windowing, global context extraction, "
+            "VLM analysis, confidence gating, event cards, "
+            "episode/chapter digests, and series registration. "
             "Output milestone: source_ready."
         )
 
