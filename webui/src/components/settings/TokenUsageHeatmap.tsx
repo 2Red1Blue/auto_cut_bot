@@ -25,7 +25,7 @@ type TokenUsageMonthLabel = {
   column: number;
 };
 
-const TOKEN_HEATMAP_CELLS = 371;
+const TOKEN_HEATMAP_CELLS = 91;  // 约 3 个月（13 周 × 7 天）
 const TOKEN_HEATMAP_COLUMNS = Math.ceil(TOKEN_HEATMAP_CELLS / 7);
 const TOKEN_USAGE_SOURCE_ORDER = ["user", "api", "cron", "dream", "system"] as const;
 

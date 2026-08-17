@@ -24,8 +24,33 @@
         }
       },
       "total_tokens": 525519
+    },
+    "2026-08-13": {
+      "cached_tokens": 1830296,
+      "completion_tokens": 19739,
+      "date": "2026-08-13",
+      "estimated_requests": 0,
+      "estimated_tokens": 0,
+      "prompt_tokens": 2108457,
+      "provider_requests": 89,
+      "provider_tokens": 2128196,
+      "requests": 89,
+      "sources": {
+        "user": {
+          "cached_tokens": 1830296,
+          "completion_tokens": 19739,
+          "estimated_requests": 0,
+          "estimated_tokens": 0,
+          "prompt_tokens": 2108457,
+          "provider_requests": 89,
+          "provider_tokens": 2128196,
+          "requests": 89,
+          "total_tokens": 2128196
+        }
+      },
+      "total_tokens": 2128196
     }
   },
   "schema_version": 1,
-  "updated_at": "2026-08-10T13:20:40Z"
+  "updated_at": "2026-08-12T19:22:38Z"
 }
