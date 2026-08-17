@@ -12,7 +12,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import mark_stage_complete
+from auto_cut_bot.agent.runtime.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -62,7 +62,7 @@ class StoryPreflightTool(Tool):
         highlight/hook catalog, then runs preflight validation.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_story_generation.stages.story_preflight.stage import (
+        from autocut_core.stages.ac_story_generation.story_preflight.stage import (
             PreflightStage,
         )
 

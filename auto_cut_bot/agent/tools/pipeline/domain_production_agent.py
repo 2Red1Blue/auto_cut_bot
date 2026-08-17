@@ -35,7 +35,6 @@ from auto_cut_bot.agent.tools.pipeline._domain_contract import (
     DomainAgentContract,
 )
 from auto_cut_bot.agent.tools.pipeline._skill_context import inject_skill_context
-from auto_cut_bot.pipeline import conflict_queue, derived_assets, filmability
 from auto_cut_bot.security.workspace_access import current_workspace_scope
 
 if TYPE_CHECKING:

@@ -15,7 +15,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
+from auto_cut_bot.agent.runtime.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -80,7 +80,7 @@ class ConfidenceCheckTool(Tool):
         a global summary.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.confidence_check.stage import (
+        from autocut_core.stages.ac_source_prep.confidence_check.stage import (
             ConfidenceCheckStage,
         )
 

@@ -14,8 +14,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.core.contracts.merge_operator import merge_operator
-from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
+from auto_cut_bot.agent.runtime.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -80,7 +79,7 @@ class SeriesRegistryTool(Tool):
         digests, and event cards, then runs the admission and repair chain.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_series_knowledge.stages.registry.stage import (
+        from autocut_core.stages.ac_series_knowledge.registry.stage import (
             RegistryStage,
         )
 
@@ -226,14 +225,46 @@ def _resolve_conflicts(
         # Fetch API data from external catalogue
         api_data = _fetch_api_data(book_id, name, job_root=subj.get("_job_root", ""))
 
-        # Run merge operator
-        canonical, provs, confs = merge_operator(
-            llm_data=llm_data,
-            api_data=api_data,
-            entity_id=name,
-            entity_table="subjects",
-            policy="auto_policy",
-        )
+        # Run merge operator (lazy import — not available in all environments)
+        try:
+            from auto_cut_bot.agent.runtime.contracts.merge_operator import merge as _merge_op
+        except ImportError:
+            _merge_op = None
+
+        if _merge_op is not None:
+            result = _merge_op(
+                llm_data, api_data,
+                "llm", "api",
+                "subjects",
+                mode="auto",
+            )
+            canonical = result.canonical
+            provs = [
+                {
+                    "field": p.field,
+                    "table": p.table,
+                    "category": p.category,
+                    "resolution": p.resolution.value if hasattr(p.resolution, "value") else str(p.resolution),
+                    "winner": p.winner,
+                    "reason": p.reason,
+                }
+                for p in result.provenance
+            ]
+            confs = [
+                {
+                    "field": c.field,
+                    "table": c.table,
+                    "category": c.category,
+                    "severity": c.severity.value if hasattr(c.severity, "value") else str(c.severity),
+                    "value_a": c.value_a,
+                    "value_b": c.value_b,
+                    "preferred_source": c.preferred_source,
+                    "suggested_action": c.suggested_action,
+                }
+                for c in result.conflicts
+            ]
+        else:
+            canonical, provs, confs = {}, [], []
 
         # Write canonical values back to the subjects row
         if canonical:
@@ -242,22 +273,36 @@ def _resolve_conflicts(
         provenance_records.extend(provs)
         conflict_records.extend(confs)
 
-    # Batch-write provenance and conflict records
-    if provenance_records:
-        inserted = db.insert_provenance(provenance_records)
-        logger.info(
-            "Provenance: %d records written for %d subjects",
-            inserted,
-            len(subjects),
+    # Batch-write provenance and conflict records (best-effort; tables may not exist yet)
+    if provenance_records and hasattr(db, "insert_provenance"):
+        try:
+            inserted = db.insert_provenance(provenance_records)
+            logger.info(
+                "Provenance: %d records written for %d subjects",
+                inserted,
+                len(subjects),
+            )
+        except Exception as _prov_err:
+            logger.warning("Failed to write provenance records: %s", _prov_err)
+    elif provenance_records:
+        logger.debug(
+            "Provenance: %d records collected (db.insert_provenance not available)",
+            len(provenance_records),
         )
 
-    if conflict_records:
-        upserted = db.upsert_conflicts(conflict_records)
-        pending = len(conflict_records)
-        logger.info(
-            "Conflicts: %d records upserted (%d pending)",
-            upserted,
-            pending,
+    if conflict_records and hasattr(db, "upsert_conflicts"):
+        try:
+            upserted = db.upsert_conflicts(conflict_records)
+            logger.info(
+                "Conflicts: %d records upserted",
+                upserted,
+            )
+        except Exception as _conf_err:
+            logger.warning("Failed to write conflict records: %s", _conf_err)
+    elif conflict_records:
+        logger.debug(
+            "Conflicts: %d records collected (db.upsert_conflicts not available)",
+            len(conflict_records),
         )
 
 

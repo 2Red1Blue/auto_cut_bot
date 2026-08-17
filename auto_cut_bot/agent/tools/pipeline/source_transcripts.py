@@ -11,7 +11,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import get_db_client, mark_stage_complete
+from auto_cut_bot.agent.runtime.state import get_db_client, mark_stage_complete
 
 
 @tool_parameters({
@@ -110,7 +110,7 @@ class SourceTranscriptsTool(Tool):
         merge_results = None
         if merge_with_api:
             try:
-                from auto_cut_bot.pipeline.contracts.merge_operator import merge, merge_summary
+                from auto_cut_bot.agent.runtime.contracts.merge_operator import merge, merge_summary
                 api_subtitles_path = job_root / "api_subtitles.json"
                 api_subtitles = json.loads(api_subtitles_path.read_text()) if api_subtitles_path.exists() else []
                 merge_results = []

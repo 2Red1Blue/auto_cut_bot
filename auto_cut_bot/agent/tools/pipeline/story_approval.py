@@ -14,7 +14,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import mark_stage_complete
+from auto_cut_bot.agent.runtime.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -97,7 +97,7 @@ class StoryApprovalTool(Tool):
         In auto mode, returns the current preflight state for auto-decision.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_story_generation.stages.story_approval.stage import (
+        from autocut_core.stages.ac_story_generation.story_approval.stage import (
             ApprovalStage,
         )
 

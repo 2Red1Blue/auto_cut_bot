@@ -11,7 +11,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import mark_stage_complete
+from auto_cut_bot.agent.runtime.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -65,7 +65,7 @@ class StoryPlansMaterializeTool(Tool):
         selections, and materializes full story plans.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_plan_orchestration.stages.materialize.stage import (
+        from autocut_core.stages.ac_plan_orchestration.materialize.stage import (
             MaterializeStage,
         )
 

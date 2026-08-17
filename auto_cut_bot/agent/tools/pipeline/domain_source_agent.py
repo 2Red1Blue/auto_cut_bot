@@ -48,22 +48,22 @@ async def _run_stages_direct(
     from auto_cut_bot.agent.tools.pipeline._stage_orchestrator import (
         StageOrchestrator,
     )
-    from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.source_windows.stage import (
+    from autocut_core.stages.ac_source_prep.source_windows.stage import (
         SourceWindowsStage,
     )
-    from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.window_analysis.stage import (
+    from autocut_core.stages.ac_source_prep.window_analysis.stage import (
         WindowAnalysisStage,
     )
-    from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.event_cards.stage import (
+    from autocut_core.stages.ac_source_prep.event_cards.stage import (
         EventCardsStage,
     )
 
     # Phase 2 integration point: import GlobalContextStage and ConfidenceCheckStage
     # when they are implemented in ac_auto_cut.
-    # from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.global_context.stage import (
+    # from autocut_core.stages.ac_source_prep.global_context.stage import (
     #     GlobalContextStage,
     # )
-    # from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.confidence_check.stage import (
+    # from autocut_core.stages.ac_source_prep.confidence_check.stage import (
     #     ConfidenceCheckStage,
     # )
 

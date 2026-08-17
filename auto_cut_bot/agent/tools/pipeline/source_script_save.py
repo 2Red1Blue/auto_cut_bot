@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
-from auto_cut_bot.pipeline.contracts.merge_operator import merge, merge_summary
+from auto_cut_bot.agent.runtime.contracts.merge_operator import merge, merge_summary
 
 
 @tool_parameters({

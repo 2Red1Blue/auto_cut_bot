@@ -13,7 +13,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import mark_stage_complete
+from auto_cut_bot.agent.runtime.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -96,7 +96,7 @@ class StoryQCReviewTool(Tool):
         decisions. In auto mode, runs auto_process_qc_report.
         """
         from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_qc.stages.qc_review.stage import (
+        from autocut_core.stages.ac_qc.qc_review.stage import (
             QCReviewStage,
         )
 

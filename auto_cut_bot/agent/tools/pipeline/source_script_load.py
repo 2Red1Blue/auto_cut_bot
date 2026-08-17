@@ -85,7 +85,7 @@ class SourceScriptLoadTool(Tool):
         3. Validate each segment (episode count, continuity, scene distribution)
         4. Call source_script_save with the complete parsed episodes
         """
-        from auto_cut_bot.pipeline.core.config import PipelineConfig
+        from autocut_core.config import PipelineConfig
 
         job_root = Path(kwargs["job_root"]).expanduser().resolve()
         if not job_root.is_dir():

@@ -14,7 +14,7 @@ from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import get_db_client
+from auto_cut_bot.agent.runtime.state import get_db_client
 
 
 @tool_parameters({

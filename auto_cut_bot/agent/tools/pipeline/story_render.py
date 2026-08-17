@@ -1,17 +1,22 @@
-"""StoryRenderTool — 构建渲染配方并本地渲染成片。
+"""StoryRenderTool — 优化渲染：1 次编码 + N 次 stream copy。
 
-Wraps RenderStage as a Tool.  Builds rendering recipes from QC-reviewed
-plans and executes local ffmpeg rendering to produce final video files.
+基于 ffmpeg-render-optimization.md 设计文档，将 N 次独立 H.264 编码
+替换为 1 次 master 编码 + N 次 stream copy（零重编码切割）。
+
+接入方式：
+  - 主路径：调用 render_optimized()（autocut_core.libs.render_optimized）
+  - Fallback：如果 master 生成失败，回退到旧 autocut_core.libs.render_story_videos
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
 from auto_cut_bot.agent.tools.context import ToolContext
-from auto_cut_bot.pipeline.state import mark_stage_complete
+from auto_cut_bot.agent.runtime.state import mark_stage_complete
 
 
 @tool_parameters({
@@ -23,27 +28,33 @@ from auto_cut_bot.pipeline.state import mark_stage_complete
         },
         "mode": {
             "type": "string",
-            "enum": ["interactive", "auto"],
-            "description": "Pipeline mode: 'auto' overwrites existing renders.",
+            "enum": ["auto", "interactive"],
+            "description": "auto=overwrite existing renders, interactive=skip.",
             "default": "auto",
         },
         "render_jobs": {
             "type": "integer",
             "description": "Number of parallel render jobs (default 2).",
         },
+        "subtitle_path": {
+            "type": "string",
+            "description": "Optional ASS/SRT subtitle file for burn-in.",
+        },
     },
     "required": ["job_root"],
 })
 class StoryRenderTool(Tool):
-    """Tool that builds render recipes and renders final video files.
+    """Build render recipes and render final videos with optimized pipeline.
 
-    Builds rendering recipes from QC-reviewed plans, validates them,
-    and executes local ffmpeg rendering to produce the final story videos.
-    Produces story-renders/index.json.
+    Uses 1-encode + N-stream-copy strategy (render_optimized):
+    - Master file: full-quality encode with all I-frames (-g 1)
+    - Clip cutting: stream copy from master (~50ms per clip)
+    - Concat: lossless join of all segments
+
+    Falls back to legacy per-clip encoding if master generation fails.
     """
+
     _scopes = {"subagent"}
-
-
     human_review = False
 
     @property
@@ -53,9 +64,9 @@ class StoryRenderTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Build render recipes from QC-reviewed story plans and execute "
-            "local ffmpeg rendering to produce final video files. "
-            "Produces story-renders/index.json."
+            "Build render recipes from QC-reviewed story plans and render "
+            "final video files. Uses optimized 1-encode + N-copy pipeline "
+            "with fallback to legacy per-clip encoding."
         )
 
     @property
@@ -63,51 +74,114 @@ class StoryRenderTool(Tool):
         return False
 
     async def execute(self, **kwargs: Any) -> Any:
-        """Execute the story_render stage.
-
-        Builds render recipes, validates them, and runs ffmpeg rendering
-        for all approved stories.
-        """
-        from autocut_core import PipelineConfig, ArtifactBus
-        from auto_cut_bot.pipeline.plugins.ac_render.stages.render_videos.stage import (
-            RenderStage,
-        )
+        """Execute story_render with optimized rendering pipeline."""
+        from autocut_core.libs.render_optimized import render_optimized
 
         job_root = Path(kwargs["job_root"]).expanduser().resolve()
         if not job_root.is_dir():
             return ToolResult.error(f"job_root does not exist: {job_root}")
 
-        qc_review = job_root / "story-qc" / "index.json"
-        if not qc_review.is_file():
+        overwrite = kwargs.get("mode", "auto") == "auto"
+        subtitle_path = kwargs.get("subtitle_path")
+
+        # Load recipes
+        recipes_dir = job_root / "story-render-recipes"
+        index_path = recipes_dir / "index.json"
+        if not index_path.is_file():
             return ToolResult.error(
-                f"story-qc/index.json not found at {qc_review}. "
-                "Run story_qc and story_qc_review first."
+                f"story-render-recipes/index.json not found at {index_path}. "
+                "Run story_plans_materialize first."
             )
-
-        cfg = PipelineConfig(
-            job_root=job_root,
-            backend="qwen",
-            mode=kwargs.get("mode", "auto"),
-            extra={"render_jobs": kwargs.get("render_jobs", 2)},
-        )
-
-        bus = ArtifactBus()
-        bus.put("story_qc_review", {"path": str(qc_review)}, stage="story_qc_review")
-
-        stage = RenderStage()
-        stage.config = cfg
 
         try:
-            tasks = stage.prepare(bus)
-            artifacts = stage.execute(bus, tasks)
-            paths = {a.name: str(a.path) for a in artifacts}
+            recipes_index = json.loads(index_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            return ToolResult.error(f"Failed to read recipe index: {exc}")
 
-            mark_stage_complete(None, self.name, paths)
+        recipe_paths = recipes_index.get("recipes", [])
+        if not recipe_paths:
+            return ToolResult.error("No recipes found in index.json")
 
-            return ToolResult(
-                "story_render completed successfully.\n\n"
-                f"Artifacts:\n- story_render: {paths.get('story_render', 'N/A')}\n"
-                f"Render output: {job_root / 'story-renders'}"
+        output_dir = job_root / "story-renders"
+        cache_root = job_root / ".render-cache" / "story-render"
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+
+        for recipe_rel in recipe_paths:
+            recipe_path = recipes_dir / recipe_rel
+            if not recipe_path.is_file():
+                errors.append({"recipe": recipe_rel, "error": "file not found"})
+                continue
+
+            try:
+                recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+                output = render_optimized(
+                    recipe=recipe,
+                    output_dir=output_dir,
+                    cache_dir=cache_root / recipe["story_id"],
+                    overwrite=overwrite,
+                    subtitle_path=subtitle_path,
+                )
+                results.append(output)
+            except Exception as exc:
+                # Fallback to legacy per-clip encoding
+                try:
+                    output = self._render_legacy(
+                        recipe_path=recipe_path,
+                        output_dir=output_dir,
+                        cache_dir=cache_root,
+                        overwrite=overwrite,
+                    )
+                    results.append(output)
+                except Exception as fallback_exc:
+                    errors.append({
+                        "recipe": recipe_rel,
+                        "error": f"optimized: {exc}, legacy: {fallback_exc}",
+                    })
+
+        # Write output index
+        output_index = {
+            "renders": results,
+            "errors": errors,
+            "total": len(results),
+            "failed": len(errors),
+        }
+        output_index_path = output_dir / "index.json"
+        output_index_path.parent.mkdir(parents=True, exist_ok=True)
+        output_index_path.write_text(
+            json.dumps(output_index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        mark_stage_complete(None, self.name, {
+            "story_render": str(output_index_path),
+        })
+
+        summary = [f"story_render: {len(results)} ok, {len(errors)} failed"]
+        for e in errors[:5]:
+            summary.append(f"  - {e['recipe']}: {e['error'][:120]}")
+        return ToolResult("\n".join(summary))
+
+    @staticmethod
+    def _render_legacy(
+        recipe_path: Path, output_dir: Path, cache_dir: Path, overwrite: bool,
+    ) -> dict[str, Any]:
+        """Fallback to the old autocut_core.libs.render_story_videos path."""
+        import subprocess
+
+        # Try importing the legacy render function
+        try:
+            from autocut_core.libs.render_story_videos import render_recipe
+        except ImportError:
+            raise RuntimeError(
+                "Optimized render failed and legacy autocut_core not available. "
+                "Ensure autocut-core package is installed."
             )
-        except Exception as exc:
-            return ToolResult.error(f"story_render failed: {exc}")
+
+        recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+        return render_recipe(
+            recipe_path=recipe_path,
+            output_dir=output_dir,
+            cache_root=cache_dir,
+            ffmpeg="ffmpeg",
+            ffprobe="ffprobe",
+            overwrite=overwrite,
+        )

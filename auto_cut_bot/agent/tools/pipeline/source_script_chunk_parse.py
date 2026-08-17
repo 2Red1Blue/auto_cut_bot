@@ -170,7 +170,7 @@ class SourceScriptChunkParseTool(Tool):
 
         # ── Import shared LLM utilities ──────────────────────────────────────
         try:
-            from auto_cut_bot.pipeline.plugins.ac_source_prep.stages.source_script.llm_parse import (
+            from autocut_core.stages.ac_source_prep.source_script.llm_parse import (
                 SYSTEM_PROMPT,
                 _parse_single_chunk,
                 _validate_episode_boundaries,
@@ -189,7 +189,7 @@ class SourceScriptChunkParseTool(Tool):
                 return ToolResult.error(
                     f"chunk_id={chunk_id}: Failed to import shared LLM utilities. "
                     f"Ensure the source_script stage is installed. "
-                    f"Tried: auto_cut_bot.pipeline.plugins.ac_source_prep, "
+                    f"Tried: autocut_core.stages.ac_source_prep, "
                     f"base_auto_cut.plugins.ac_source_prep. "
                     f"Error: {exc}"
                 )
