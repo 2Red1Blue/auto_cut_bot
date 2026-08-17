@@ -96,7 +96,7 @@ def test_workspace_payload_hides_mutable_state_when_controls_unavailable(
 
 
 def test_workspace_payload_advertises_native_folder_picker(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("nanobot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
+    monkeypatch.setattr("auto_cut_bot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
     default = tmp_path / "default"
     default.mkdir()
 

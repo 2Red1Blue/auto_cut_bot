@@ -150,7 +150,7 @@ class _FsTool(Tool):
     def _resolve_read(self, path: str) -> Path:
         plugin_skill_dirs: list[Path] = []
         if self._workspace is not None:
-            from nanobot.agent.plugins import enabled_agent_plugin_skill_dirs
+            from auto_cut_bot.agent.plugins import enabled_agent_plugin_skill_dirs
 
             try:
                 access = current_tool_workspace(

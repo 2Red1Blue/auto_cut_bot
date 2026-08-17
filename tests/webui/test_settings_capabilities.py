@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from nanobot.config.schema import Config
-from nanobot.webui.settings_capabilities import (
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.webui.settings_capabilities import (
     capability_settings_payload,
     update_api_settings,
     update_image_generation_settings,

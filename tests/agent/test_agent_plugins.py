@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from nanobot.agent import plugins as agent_plugins
-from nanobot.agent.plugins import (
+from auto_cut_bot.agent import plugins as agent_plugins
+from auto_cut_bot.agent.plugins import (
     AGENT_PLUGIN_MCP_SCHEMA,
     AGENT_PLUGIN_SCHEMA,
     agent_plugin_mcp_servers,
@@ -15,11 +15,11 @@ from nanobot.agent.plugins import (
     enabled_agent_plugin_skills,
     set_agent_plugin_enabled,
 )
-from nanobot.agent.skills import SkillsLoader
-from nanobot.agent.tools.context import ToolContext
-from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool
-from nanobot.config.schema import ToolsConfig
-from nanobot.security.workspace_access import (
+from auto_cut_bot.agent.skills import SkillsLoader
+from auto_cut_bot.agent.tools.context import ToolContext
+from auto_cut_bot.agent.tools.filesystem import ReadFileTool, WriteFileTool
+from auto_cut_bot.config.schema import ToolsConfig
+from auto_cut_bot.security.workspace_access import (
     bind_workspace_scope,
     reset_workspace_scope,
     validate_workspace_scope_payload,

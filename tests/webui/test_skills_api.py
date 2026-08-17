@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from nanobot.config.loader import load_config, save_config
-from nanobot.config.schema import Config
-from nanobot.webui.skills_api import (
+from auto_cut_bot.config.loader import load_config, save_config
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.webui.skills_api import (
     SkillManagementError,
     delete_webui_skill,
     set_webui_skill_enabled,
@@ -55,7 +55,7 @@ def test_skill_detail_exposes_copyable_install_commands(tmp_path: Path) -> None:
         tmp_path,
         "custom-skill",
         metadata=(
-            'metadata: {"nanobot":{"requires":{"bins":["demo"]},'
+            'metadata: {"auto_cut_bot":{"requires":{"bins":["demo"]},'
             '"install":[{"id":"brew","kind":"brew","formula":"acme/demo",'
             '"label":"Install demo"}]}}\n'
         ),
@@ -81,9 +81,9 @@ def test_set_webui_skill_enabled_persists_and_updates_runtime(
     _write_skill(tmp_path, "custom-skill")
     config = _config()
     saved: list[object] = []
-    monkeypatch.setattr("nanobot.webui.skills_api.load_config", lambda _path=None: config)
+    monkeypatch.setattr("auto_cut_bot.webui.skills_api.load_config", lambda _path=None: config)
     monkeypatch.setattr(
-        "nanobot.webui.skills_api.save_config",
+        "auto_cut_bot.webui.skills_api.save_config",
         lambda value, _path=None: saved.append(value),
     )
     disabled: set[str] = set()
@@ -115,7 +115,7 @@ def test_skill_state_uses_explicit_gateway_config(
     gateway_path = tmp_path / "gateway.json"
     save_config(Config(), default_path)
     save_config(Config(), gateway_path)
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", default_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", default_path)
 
     set_webui_skill_enabled(
         workspace,
@@ -136,9 +136,9 @@ def test_delete_webui_skill_only_deletes_workspace_skills(
     directory = _write_skill(tmp_path, "custom-skill")
     config = _config("custom-skill")
     saved: list[object] = []
-    monkeypatch.setattr("nanobot.webui.skills_api.load_config", lambda _path=None: config)
+    monkeypatch.setattr("auto_cut_bot.webui.skills_api.load_config", lambda _path=None: config)
     monkeypatch.setattr(
-        "nanobot.webui.skills_api.save_config",
+        "auto_cut_bot.webui.skills_api.save_config",
         lambda value, _path=None: saved.append(value),
     )
     disabled = {"custom-skill"}
@@ -190,12 +190,12 @@ def test_delete_webui_skill_restores_directory_when_config_save_fails(
 ) -> None:
     directory = _write_skill(tmp_path, "custom-skill")
     config = _config("custom-skill")
-    monkeypatch.setattr("nanobot.webui.skills_api.load_config", lambda _path=None: config)
+    monkeypatch.setattr("auto_cut_bot.webui.skills_api.load_config", lambda _path=None: config)
 
     def fail_save(_config: object, _path: Path | None = None) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr("nanobot.webui.skills_api.save_config", fail_save)
+    monkeypatch.setattr("auto_cut_bot.webui.skills_api.save_config", fail_save)
     disabled = {"custom-skill"}
 
     with pytest.raises(OSError, match="disk full"):

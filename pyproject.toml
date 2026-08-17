@@ -1,5 +1,5 @@
 [project]
-name = "nanobot-ai"
+name = "auto_cut_bot"
 version = "0.3.0"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "Xubin Ren"},
-    {name = "the nanobot contributors"}
+    {name = "the auto_cut_bot contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [
@@ -107,11 +107,11 @@ dev = [
 ]
 
 [project.scripts]
-nanobot = "nanobot.cli.commands:app"
+auto_cut_bot = "auto_cut_bot.cli.commands:app"
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().
-# [project.entry-points."nanobot.tools"]
+# [project.entry-points."auto_cut_bot.tools"]
 # my_plugin = "my_package.plugins:MyTool"
 
 [build-system]
@@ -126,38 +126,38 @@ allow-direct-references = true
 
 [tool.hatch.build]
 include = [
-    "nanobot/**/*.py",
-    "nanobot/templates/**/*.md",
-    "nanobot/skills/**/*.md",
-    "nanobot/skills/**/*.sh",
-    "nanobot/channels/*/webui/**/*",
-    "nanobot/web/dist/**/*",
+    "auto_cut_bot/**/*.py",
+    "auto_cut_bot/templates/**/*.md",
+    "auto_cut_bot/skills/**/*.md",
+    "auto_cut_bot/skills/**/*.sh",
+    "auto_cut_bot/channels/*/webui/**/*",
+    "auto_cut_bot/web/dist/**/*",
 ]
-# nanobot/web/dist/ is produced by `cd webui && bun run build` and is
+# auto_cut_bot/web/dist/ is produced by `cd webui && bun run build` and is
 # git-ignored. List it as an artifact so hatch ships it in both wheel and
 # sdist even though VCS does not track it.
 artifacts = [
-    "nanobot/web/dist/**/*",
+    "auto_cut_bot/web/dist/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["nanobot"]
-exclude = ["nanobot/channels/*/tests/**"]
+packages = ["auto_cut_bot"]
+exclude = ["auto_cut_bot/channels/*/tests/**"]
 
 [tool.hatch.build.targets.wheel.sources]
-"nanobot" = "nanobot"
+"auto_cut_bot" = "auto_cut_bot"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "nanobot/",
-    "nanobot/web/dist/",
+    "auto_cut_bot/",
+    "auto_cut_bot/web/dist/",
     "hatch_build.py",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
 ]
-exclude = ["nanobot/channels/*/tests/**"]
+exclude = ["auto_cut_bot/channels/*/tests/**"]
 
 [tool.ruff]
 line-length = 100
@@ -168,17 +168,17 @@ select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
 [tool.basedpyright]
-include = ["nanobot"]
+include = ["auto_cut_bot"]
 exclude = ["**/tests"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "nanobot/channels"]
+testpaths = ["tests", "auto_cut_bot/channels"]
 
 [tool.coverage.run]
-source = ["nanobot"]
+source = ["auto_cut_bot"]
 omit = ["tests/*", "**/tests/*"]
 
 [tool.coverage.report]

@@ -116,9 +116,9 @@ export function settingsPayload(): SettingsPayload {
     },
     docs: {
       version: "0.2.2",
-      base_url: "https://nanobot.wiki/docs/0.2.2",
-      chat_apps_url: "https://nanobot.wiki/docs/0.2.2/getting-started/chat-apps",
-      latest_url: "https://nanobot.wiki/docs/latest",
+      base_url: "https://auto_cut_bot.wiki/docs/0.2.2",
+      chat_apps_url: "https://auto_cut_bot.wiki/docs/0.2.2/getting-started/chat-apps",
+      latest_url: "https://auto_cut_bot.wiki/docs/latest",
     },
   };
 }
@@ -188,7 +188,7 @@ export function installSettingsViewTestHooks() {
 
   afterEach(() => {
     cleanup();
-    localStorage.removeItem("nanobot-webui.settings-preferences");
+    localStorage.removeItem("auto_cut_bot-webui.settings-preferences");
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });

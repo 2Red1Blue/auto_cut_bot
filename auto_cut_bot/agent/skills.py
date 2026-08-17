@@ -62,7 +62,7 @@ class SkillsLoader:
 
     def _skill_aliases(self) -> dict[str, str]:
         """Return compatibility aliases owned by installed CLI Apps."""
-        from nanobot.apps.cli import CliAppManager
+        from auto_cut_bot.apps.cli import CliAppManager
 
         try:
             return CliAppManager(workspace=self.workspace).installed_skill_aliases()
@@ -95,7 +95,7 @@ class SkillsLoader:
         Returns:
             List of skill info dicts with 'name', 'path', 'source'.
         """
-        from nanobot.agent.plugins import enabled_agent_plugin_skills
+        from auto_cut_bot.agent.plugins import enabled_agent_plugin_skills
 
         plugin_skills = enabled_agent_plugin_skills(self.workspace)
         skills = self._skill_entries_from_dir(self.workspace_skills, "workspace")

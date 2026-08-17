@@ -24,8 +24,8 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import AnyHttpUrl, AnyUrl
 
-from nanobot.config.paths import get_data_dir
-from nanobot.utils.helpers import _write_text_atomic  # pyright: ignore[reportPrivateUsage]
+from auto_cut_bot.config.paths import get_data_dir
+from auto_cut_bot.utils.helpers import _write_text_atomic  # pyright: ignore[reportPrivateUsage]
 
 MCP_OAUTH_CALLBACK_PATH = "/auth/mcp/callback"
 _STORE_VERSION = 1
@@ -34,7 +34,7 @@ _DEFAULT_REDIRECT_URI = f"http://127.0.0.1{MCP_OAUTH_CALLBACK_PATH}"
 _CLIENT_URI = AnyHttpUrl("https://github.com/HKUDS/nanobot")
 _LOGO_URI = AnyHttpUrl(
     "https://raw.githubusercontent.com/HKUDS/nanobot/main/"
-    "webui/public/brand/nanobot_apple_touch.png"
+    "webui/public/brand/auto_cut_bot_apple_touch.png"
 )
 
 
@@ -367,7 +367,7 @@ async def create_mcp_oauth_auth(
     metadata = OAuthClientMetadata(
         redirect_uris=[AnyUrl(redirect_uri)],
         token_endpoint_auth_method="none",
-        client_name="nanobot",
+        client_name="auto_cut_bot",
         client_uri=_CLIENT_URI,
         logo_uri=_LOGO_URI,
         software_id="https://github.com/HKUDS/nanobot",

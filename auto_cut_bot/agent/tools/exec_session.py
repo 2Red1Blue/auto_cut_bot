@@ -10,9 +10,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
-from nanobot.agent.tools.context import ToolContext, current_request_session_key
-from nanobot.agent.tools.schema import (
+from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
+from auto_cut_bot.agent.tools.context import ToolContext, current_request_session_key
+from auto_cut_bot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
     StringSchema,
@@ -209,7 +209,7 @@ class _ExecSession:
                     timeout=2.0,
                 )
             # Safety-net reap after normal exit.
-            from nanobot.agent.tools.shell import (  # pyright: ignore[reportPrivateUsage]
+            from auto_cut_bot.agent.tools.shell import (  # pyright: ignore[reportPrivateUsage]
                 ExecTool,
                 _reap_pid,  # pyright: ignore[reportPrivateUsage]
             )
@@ -239,7 +239,7 @@ class _ExecSession:
         )
 
     async def kill(self) -> None:
-        from nanobot.agent.tools.shell import ExecTool
+        from auto_cut_bot.agent.tools.shell import ExecTool
 
         try:
             if self._process_tree:
@@ -448,7 +448,7 @@ class ExecSessionManager:
         shell_program: str | None,
         login: bool,
     ) -> asyncio.subprocess.Process:
-        from nanobot.agent.tools.shell import ExecTool
+        from auto_cut_bot.agent.tools.shell import ExecTool
 
         return await ExecTool._spawn(  # pyright: ignore[reportPrivateUsage]
             command, cwd, env, shell_program, login,
@@ -546,7 +546,7 @@ class WriteStdinTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from nanobot.agent.tools.shell import ExecToolConfig
+        from auto_cut_bot.agent.tools.shell import ExecToolConfig
 
         return ExecToolConfig
 
@@ -697,7 +697,7 @@ class ListExecSessionsTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from nanobot.agent.tools.shell import ExecToolConfig
+        from auto_cut_bot.agent.tools.shell import ExecToolConfig
 
         return ExecToolConfig
 

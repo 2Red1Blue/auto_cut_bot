@@ -49,7 +49,7 @@ def check_for_update() -> dict[str, Any] | None:
         if Version(latest) <= Version(__version__):
             return None
     except InvalidVersion:
-        logger.debug("PyPI returned an invalid nanobot version: %r", latest)
+        logger.debug("PyPI returned an invalid auto_cut_bot version: %r", latest)
         return None
     return {
         "currentVersion": __version__,

@@ -11,31 +11,31 @@ from typing import Any, cast
 from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
-from nanobot.agent.tools.image_generation import request_image_generation_reload
-from nanobot.agent.tools.mcp_oauth import MCP_OAUTH_CALLBACK_PATH
-from nanobot.api.runtime import ApiRuntime, api_runtime_paths
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.registry import load_channel_plugin
-from nanobot.channels.validation import validate_channel_config
-from nanobot.pairing import approve_code, deny_code, list_pending
-from nanobot.webui import settings_capabilities as capability_domain
-from nanobot.webui import settings_contracts as contracts
-from nanobot.webui import settings_models as model_domain
-from nanobot.webui import settings_system as system_domain
-from nanobot.webui.cli_apps_api import cli_apps_action, cli_apps_payload
-from nanobot.webui.http_utils import http_response as _http_response
-from nanobot.webui.http_utils import is_local_browser_request as _is_local_browser_request
-from nanobot.webui.mcp_oauth_api import McpOAuthManager
-from nanobot.webui.mcp_presets_api import (
+from auto_cut_bot.agent.tools.image_generation import request_image_generation_reload
+from auto_cut_bot.agent.tools.mcp_oauth import MCP_OAUTH_CALLBACK_PATH
+from auto_cut_bot.api.runtime import ApiRuntime, api_runtime_paths
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.registry import load_channel_plugin
+from auto_cut_bot.channels.validation import validate_channel_config
+from auto_cut_bot.pairing import approve_code, deny_code, list_pending
+from auto_cut_bot.webui import settings_capabilities as capability_domain
+from auto_cut_bot.webui import settings_contracts as contracts
+from auto_cut_bot.webui import settings_models as model_domain
+from auto_cut_bot.webui import settings_system as system_domain
+from auto_cut_bot.webui.cli_apps_api import cli_apps_action, cli_apps_payload
+from auto_cut_bot.webui.http_utils import http_response as _http_response
+from auto_cut_bot.webui.http_utils import is_local_browser_request as _is_local_browser_request
+from auto_cut_bot.webui.mcp_oauth_api import McpOAuthManager
+from auto_cut_bot.webui.mcp_presets_api import (
     ensure_mcp_oauth_server,
     mcp_presets_settings_action,
 )
-from nanobot.webui.nanobot_features_api import (
-    nanobot_feature_instance_target,
-    nanobot_features_action,
-    nanobot_features_payload,
+from auto_cut_bot.webui.auto_cut_bot_features_api import (
+    auto_cut_bot_feature_instance_target,
+    auto_cut_bot_features_action,
+    auto_cut_bot_features_payload,
 )
-from nanobot.webui.settings_api import (
+from auto_cut_bot.webui.settings_api import (
     WebUISettingsError,
     complete_oauth_provider,
     create_model_configuration,
@@ -58,16 +58,16 @@ from nanobot.webui.settings_api import (
     update_transcription_settings,
     update_web_search_settings,
 )
-from nanobot.webui.settings_contracts import (
+from auto_cut_bot.webui.settings_contracts import (
     QueryParams,
     SettingsRequest,
     SettingsRouteResult,
 )
-from nanobot.webui.settings_services import WebUISettingsServices
-from nanobot.webui.version_check import check_for_update
+from auto_cut_bot.webui.settings_services import WebUISettingsServices
+from auto_cut_bot.webui.version_check import check_for_update
 
-_WEBUI_MUTATION_PAYLOAD_ATTR = "_nanobot_webui_mutation_payload"
-_WEBUI_MUTATION_REQUEST_ATTR = "_nanobot_webui_mutation_request"
+_WEBUI_MUTATION_PAYLOAD_ATTR = "_auto_cut_bot_webui_mutation_payload"
+_WEBUI_MUTATION_REQUEST_ATTR = "_auto_cut_bot_webui_mutation_request"
 _CHANNEL_CONNECT_ACTIONS = frozenset({"start", "poll", "cancel"})
 _MCP_OAUTH_CALLBACK_URL_MAX_BYTES = 8 * 1024
 _MCP_RELOAD_TIMEOUT_SECONDS = 15.0
@@ -132,9 +132,9 @@ _SYSTEM_ROUTES = {
     "/api/settings/cli-apps/update": "cli-update",
     "/api/settings/cli-apps/uninstall": "cli-uninstall",
     "/api/settings/cli-apps/test": "cli-test",
-    "/api/settings/nanobot-features": "features-list",
-    "/api/settings/nanobot-features/enable": "features-enable",
-    "/api/settings/nanobot-features/disable": "features-disable",
+    "/api/settings/auto_cut_bot-features": "features-list",
+    "/api/settings/auto_cut_bot-features/enable": "features-enable",
+    "/api/settings/auto_cut_bot-features/disable": "features-disable",
     "/api/settings/channels/validate": "channel-validate",
     "/api/settings/channels/configure": "channel-configure",
     "/api/settings/pairing": "pairing-list",
@@ -170,8 +170,8 @@ _SETTINGS_MUTATION_PATHS = frozenset({
     "/api/settings/cli-apps/update",
     "/api/settings/cli-apps/uninstall",
     "/api/settings/cli-apps/test",
-    "/api/settings/nanobot-features/enable",
-    "/api/settings/nanobot-features/disable",
+    "/api/settings/auto_cut_bot-features/enable",
+    "/api/settings/auto_cut_bot-features/disable",
     "/api/settings/channels/validate",
     "/api/settings/channels/configure",
     "/api/settings/pairing/approve",
@@ -456,7 +456,7 @@ class WebUISettingsRouter:
             update_image=update_image_generation_settings,
             update_transcription=update_transcription_settings,
             update_network=update_network_safety_settings,
-            nanobot_features_action=nanobot_features_action,
+            auto_cut_bot_features_action=auto_cut_bot_features_action,
             api_runtime=self._api_runtime,
             reload_image=lambda: request_image_generation_reload(self.bus),
         )
@@ -465,9 +465,9 @@ class WebUISettingsRouter:
         return system_domain.SystemSettingsOperations(
             cli_apps_payload=cli_apps_payload,
             cli_apps_action=cli_apps_action,
-            nanobot_features_payload=nanobot_features_payload,
-            nanobot_features_action=nanobot_features_action,
-            nanobot_feature_instance_target=nanobot_feature_instance_target,
+            auto_cut_bot_features_payload=auto_cut_bot_features_payload,
+            auto_cut_bot_features_action=auto_cut_bot_features_action,
+            auto_cut_bot_feature_instance_target=auto_cut_bot_feature_instance_target,
             validate_channel_config=validate_channel_config,
             load_channel_plugin=load_channel_plugin,
             list_pending=list_pending,
@@ -505,7 +505,7 @@ class WebUISettingsRouter:
         if self._mcp_reload is None:
             return {
                 "ok": False,
-                "message": "MCP runtime reload is unavailable. Restart nanobot to apply changes.",
+                "message": "MCP runtime reload is unavailable. Restart auto_cut_bot to apply changes.",
                 "requires_restart": True,
             }
         try:
@@ -516,14 +516,14 @@ class WebUISettingsRouter:
         except asyncio.TimeoutError:
             return {
                 "ok": False,
-                "message": "MCP hot reload timed out. Restart nanobot to pick up changes.",
+                "message": "MCP hot reload timed out. Restart auto_cut_bot to pick up changes.",
                 "requires_restart": True,
             }
         except Exception as exc:
             self.logger.exception("MCP hot reload failed")
             return {
                 "ok": False,
-                "message": "MCP hot reload failed. Restart nanobot to pick up changes.",
+                "message": "MCP hot reload failed. Restart auto_cut_bot to pick up changes.",
                 "requires_restart": True,
                 "error": str(exc),
             }
@@ -593,10 +593,10 @@ class WebUISettingsRouter:
         system_domain.assign_channel_config_value
     )
 
-    def _nanobot_features_payload(self) -> dict[str, Any]:
-        return nanobot_features_payload(config_path=self.settings.config.path)
+    def _auto_cut_bot_features_payload(self) -> dict[str, Any]:
+        return auto_cut_bot_features_payload(config_path=self.settings.config.path)
 
-    def _nanobot_features_action(
+    def _auto_cut_bot_features_action(
         self,
         action: str,
         query: QueryParams,
@@ -604,7 +604,7 @@ class WebUISettingsRouter:
         allow_install: bool = True,
     ) -> dict[str, Any]:
         return self.settings.mutate(
-            nanobot_features_action,
+            auto_cut_bot_features_action,
             action,
             query,
             allow_install=allow_install,
@@ -724,7 +724,7 @@ class WebUISettingsRouter:
             return self._mcp_oauth_callback_page(ok=False, message=message, status=status)
         return self._mcp_oauth_callback_page(
             ok=True,
-            message=f"Authorization received for {name}. Return to nanobot to finish connecting.",
+            message=f"Authorization received for {name}. Return to auto_cut_bot to finish connecting.",
         )
 
     def _mcp_oauth_error_response(self, exc: Exception, *, action: str) -> Response:

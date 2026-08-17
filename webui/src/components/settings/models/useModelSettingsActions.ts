@@ -27,7 +27,7 @@ import {
   updateModelConfiguration,
   updateProviderSettings,
 } from "@/lib/api";
-import type { NanobotClient } from "@/lib/nanobot-client";
+import type { NanobotClient } from "@/lib/auto_cut_bot-client";
 import type {
   ProviderOAuthAuthorizationRequired,
   ProviderOAuthCompletionResult,

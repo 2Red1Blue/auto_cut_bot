@@ -83,7 +83,7 @@ export function RuntimeSettings({
     timeout: settings.api?.timeout ?? 120,
     api_key_hint: settings.api?.api_key_hint,
     endpoint: `http://127.0.0.1:${settings.api?.port ?? 8900}/v1`,
-    command: "nanobot serve",
+    command: "auto_cut_bot serve",
   };
   const [apiHost, setApiHost] = useState(apiDefaults.host);
   const [apiPort, setApiPort] = useState(apiDefaults.port);
@@ -329,7 +329,7 @@ export function RuntimeSettings({
                 ? undefined
                 : tx(
                     "settings.observability.environment",
-                    "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart nanobot.",
+                    "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart auto_cut_bot.",
                   )
             }
           >

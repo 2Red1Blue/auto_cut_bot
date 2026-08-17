@@ -349,7 +349,7 @@ describe("Settings providers", () => {
       await chooseProviderToConfigure("OpenAI Codex");
       expect(
         screen.getByText(
-          "Sign in through this browser, then paste the full localhost callback URL back into nanobot.",
+          "Sign in through this browser, then paste the full localhost callback URL back into auto_cut_bot.",
         ),
       ).toBeInTheDocument();
 

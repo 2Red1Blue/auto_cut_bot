@@ -20,7 +20,7 @@ def runtime_lines_for_request(
     """Return CLI App annotations from an immutable request snapshot."""
     structured = metadata.get("cli_apps") if isinstance(metadata, Mapping) else None
     if isinstance(structured, list):
-        from nanobot.apps.cli.service import cli_app_skill_relative_path
+        from auto_cut_bot.apps.cli.service import cli_app_skill_relative_path
 
         structured_items = cast(list[Any], structured)
         mentions = [

@@ -44,7 +44,7 @@ from auto_cut_bot.security.workspace_access import current_scope_allows_loopback
 from auto_cut_bot.security.workspace_policy import is_path_within
 
 _IS_WINDOWS = sys.platform == "win32"
-_PROCESS_TREE_OWNER_ATTR = "_nanobot_process_tree_owner"
+_PROCESS_TREE_OWNER_ATTR = "_auto_cut_bot_process_tree_owner"
 
 
 class _ProcessTreeOwner(Protocol):
@@ -764,7 +764,7 @@ class ExecTool(Tool):
 
     @staticmethod
     def _create_windows_job() -> _ProcessTreeOwner:
-        from nanobot.agent.tools._windows_job import WindowsJob
+        from auto_cut_bot.agent.tools._windows_job import WindowsJob
 
         return WindowsJob.create()
 

@@ -12,12 +12,12 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import SplitResult, parse_qs, urlsplit, urlunsplit
 
-from nanobot.agent.tools.mcp import MCPConnection, connect_mcp_servers
-from nanobot.agent.tools.mcp_oauth import MCP_OAUTH_CALLBACK_PATH, MCPOAuthHandlers
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.config.schema import MCPServerConfig
-from nanobot.security.network import validate_url_target
-from nanobot.webui.http_utils import is_loopback_host
+from auto_cut_bot.agent.tools.mcp import MCPConnection, connect_mcp_servers
+from auto_cut_bot.agent.tools.mcp_oauth import MCP_OAUTH_CALLBACK_PATH, MCPOAuthHandlers
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.config.schema import MCPServerConfig
+from auto_cut_bot.security.network import validate_url_target
+from auto_cut_bot.webui.http_utils import is_loopback_host
 
 McpReload = Callable[[], Awaitable[dict[str, Any]]]
 _FLOW_TTL_S = 300
@@ -332,7 +332,7 @@ class McpOAuthManager:
         except Exception:
             flow.reload_result = {
                 "ok": False,
-                "message": "Signed in, but nanobot could not activate the MCP tools.",
+                "message": "Signed in, but auto_cut_bot could not activate the MCP tools.",
                 "requires_restart": True,
             }
         return True

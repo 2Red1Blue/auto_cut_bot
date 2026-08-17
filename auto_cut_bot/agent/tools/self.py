@@ -11,20 +11,20 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from loguru import logger
 
-from nanobot.agent.tools.base import Tool, ToolResult
-from nanobot.agent.tools.context import current_request_context, current_request_session_key
-from nanobot.agent.tools.runtime_control import (
+from auto_cut_bot.agent.tools.base import Tool, ToolResult
+from auto_cut_bot.agent.tools.context import current_request_context, current_request_session_key
+from auto_cut_bot.agent.tools.runtime_control import (
     RUNTIME_COMMAND_KEYS,
     RUNTIME_SNAPSHOT_KEYS,
     JsonValue,
     RuntimeControl,
     RuntimeSnapshot,
 )
-from nanobot.config_base import Base
+from auto_cut_bot.config_base import Base
 
 if TYPE_CHECKING:
-    from nanobot.agent.subagent import SubagentStatus
-    from nanobot.agent.tools.context import ToolContext
+    from auto_cut_bot.agent.subagent import SubagentStatus
+    from auto_cut_bot.agent.tools.context import ToolContext
 
 
 class MyToolConfig(Base):
@@ -34,7 +34,7 @@ class MyToolConfig(Base):
 
 
 def _is_subagent_status(value: object) -> TypeGuard[SubagentStatus]:
-    from nanobot.agent.subagent import SubagentStatus
+    from auto_cut_bot.agent.subagent import SubagentStatus
 
     return isinstance(value, SubagentStatus)
 

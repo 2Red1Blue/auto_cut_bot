@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from nanobot.channels.weixin.connect import WeixinConnectStore
-from nanobot.channels.weixin.runtime import WeixinChannel
-from nanobot.config.loader import save_config
-from nanobot.config.schema import Config
+from auto_cut_bot.channels.weixin.connect import WeixinConnectStore
+from auto_cut_bot.channels.weixin.runtime import WeixinChannel
+from auto_cut_bot.config.loader import save_config
+from auto_cut_bot.config.schema import Config
 
 
 @pytest.mark.asyncio
@@ -23,7 +23,7 @@ async def test_weixin_connect_store_saves_confirmed_qr_login(
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     async def fake_fetch_qr_code(
         self: WeixinChannel, **_kwargs: Any
@@ -88,7 +88,7 @@ async def test_weixin_connect_persists_credentials_without_channels_config(
         json.dumps({"agents": {"defaults": {"model": "test"}}}),
         encoding="utf-8",
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     async def fake_fetch_qr_code(
         self: WeixinChannel, **_kwargs: Any
@@ -143,7 +143,7 @@ async def test_weixin_reconnect_keeps_existing_account_until_scan_succeeds(
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     observed_force: list[bool] = []
 
@@ -187,7 +187,7 @@ async def test_weixin_cancel_wins_over_inflight_confirmation(
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     poll_started = asyncio.Event()
     release_poll = asyncio.Event()
@@ -238,7 +238,7 @@ async def test_weixin_connect_store_handles_verification_code(
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     async def fake_fetch_qr_code(
         self: WeixinChannel, **_kwargs: Any
@@ -299,7 +299,7 @@ async def test_weixin_connect_store_rejects_existing_binding_during_forced_login
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     async def fake_fetch_qr_code(
         self: WeixinChannel,
@@ -338,7 +338,7 @@ async def test_weixin_connect_store_rejects_existing_binding_without_local_crede
         Config.model_validate({"channels": {"weixin": {"stateDir": str(state_dir)}}}),
         config_path,
     )
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
 
     async def fake_fetch_qr_code(
         self: WeixinChannel, **_kwargs: Any

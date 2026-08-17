@@ -16,24 +16,24 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 import httpx
 from loguru import logger
 
-from nanobot.agent.tools.base import Tool, ToolResult
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.security.network import (
+from auto_cut_bot.agent.tools.base import Tool, ToolResult
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.security.network import (
     PinnedDNSAsyncTransport,
     env_proxy_applies_to_url,
     httpx_env_proxy_mounts,
     resolve_url_target,
     validate_url_target,
 )
-from nanobot.utils.cancellation import task_is_cancelling
+from auto_cut_bot.utils.cancellation import task_is_cancelling
 
 if TYPE_CHECKING:
     from mcp import ClientSession
     from mcp.types import Prompt, Resource
     from mcp.types import Tool as MCPToolDefinition
 
-    from nanobot.agent.tools.mcp_oauth import MCPOAuthHandlers
-    from nanobot.config.schema import Config, MCPServerConfig
+    from auto_cut_bot.agent.tools.mcp_oauth import MCPOAuthHandlers
+    from auto_cut_bot.config.schema import Config, MCPServerConfig
 
 # Transient connection errors that warrant a single retry.
 # These typically happen when an MCP server restarts or a network
@@ -593,7 +593,7 @@ def _mcp_image_tool_result(text_parts: list[str], artifacts: list[dict[str, Any]
 
 
 class MCPToolWrapper(_MCPWrapperBase):
-    """Wraps a single MCP server tool as a nanobot Tool."""
+    """Wraps a single MCP server tool as a auto_cut_bot Tool."""
 
     _plugin_discoverable = False
 
@@ -735,7 +735,7 @@ class MCPToolWrapper(_MCPWrapperBase):
         self, data_url: str, arguments: Mapping[str, Any]
     ) -> dict[str, Any] | None:
         """Persist one image data URL as an artifact; return its metadata or None."""
-        from nanobot.utils.artifacts import ArtifactError, store_generated_image_artifact
+        from auto_cut_bot.utils.artifacts import ArtifactError, store_generated_image_artifact
 
         try:
             return store_generated_image_artifact(
@@ -755,7 +755,7 @@ class MCPToolWrapper(_MCPWrapperBase):
 
 
 class MCPResourceWrapper(_MCPWrapperBase):
-    """Wraps an MCP resource URI as a read-only nanobot Tool."""
+    """Wraps an MCP resource URI as a read-only auto_cut_bot Tool."""
 
     _plugin_discoverable = False
 
@@ -859,7 +859,7 @@ class MCPResourceWrapper(_MCPWrapperBase):
 
 
 class MCPPromptWrapper(_MCPWrapperBase):
-    """Wraps an MCP prompt as a read-only nanobot Tool."""
+    """Wraps an MCP prompt as a read-only auto_cut_bot Tool."""
 
     _plugin_discoverable = False
 
@@ -1049,7 +1049,7 @@ async def connect_mcp_servers(
                         name,
                     )
                     return False
-                from nanobot.agent.tools.mcp_oauth import (
+                from auto_cut_bot.agent.tools.mcp_oauth import (
                     MCPAuthorizationRequiredError,
                     create_mcp_oauth_auth,
                 )
@@ -1329,7 +1329,7 @@ def session_extra(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _configured_servers(config: Config) -> dict[str, MCPServerConfig]:
-    from nanobot.agent.plugins import agent_plugin_mcp_servers
+    from auto_cut_bot.agent.plugins import agent_plugin_mcp_servers
 
     return agent_plugin_mcp_servers(
         config.workspace_path,
@@ -1338,7 +1338,7 @@ def _configured_servers(config: Config) -> dict[str, MCPServerConfig]:
 
 
 def _load_current_servers() -> dict[str, MCPServerConfig]:
-    from nanobot.config.loader import load_config, resolve_config_env_vars
+    from auto_cut_bot.config.loader import load_config, resolve_config_env_vars
 
     return _configured_servers(resolve_config_env_vars(load_config()))
 
@@ -1426,7 +1426,7 @@ class MCPProvider:
             }
             authorization_pending: set[str] = set()
             if oauth_servers:
-                from nanobot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
+                from auto_cut_bot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
 
                 authorization_pending = {
                     name
@@ -1484,7 +1484,7 @@ class MCPProvider:
                 logger.warning("MCP hot reload could not read config: {}", exc)
                 return {
                     "ok": False,
-                    "message": "Could not reload MCP config. Restart nanobot to pick up changes.",
+                    "message": "Could not reload MCP config. Restart auto_cut_bot to pick up changes.",
                     "requires_restart": True,
                     "error": str(exc),
                 }
@@ -1492,7 +1492,7 @@ class MCPProvider:
             current_servers = dict(self._servers)
             current_names = set(current_servers)
             next_names = set(next_servers)
-            from nanobot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
+            from auto_cut_bot.agent.tools.mcp_oauth import mcp_oauth_has_credentials
 
             authorization_pending = {
                 name
@@ -1555,9 +1555,9 @@ class MCPProvider:
             elif unchanged:
                 message = "MCP config is already live."
             elif retry_missing and not added and not changed and not removed:
-                message = "MCP connections refreshed without restarting nanobot."
+                message = "MCP connections refreshed without restarting auto_cut_bot."
             else:
-                message = "MCP config reloaded without restarting nanobot."
+                message = "MCP config reloaded without restarting auto_cut_bot."
 
             logger.info(
                 "MCP hot reload: added={} changed={} removed={} retried={} "

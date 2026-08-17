@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
 if TYPE_CHECKING:
-    from nanobot.agent.subagent import SubagentManager, SubagentStatus
-    from nanobot.agent.tools.shell import ExecToolConfig
-    from nanobot.agent.tools.web import WebToolsConfig
-    from nanobot.config.schema import ModelPresetConfig
-    from nanobot.utils.llm_runtime import LLMRuntime
+    from auto_cut_bot.agent.subagent import SubagentManager, SubagentStatus
+    from auto_cut_bot.agent.tools.shell import ExecToolConfig
+    from auto_cut_bot.agent.tools.web import WebToolsConfig
+    from auto_cut_bot.config.schema import ModelPresetConfig
+    from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 
 JsonScalar: TypeAlias = str | int | float | bool | None

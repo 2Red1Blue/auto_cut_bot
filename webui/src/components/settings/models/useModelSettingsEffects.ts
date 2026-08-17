@@ -4,7 +4,7 @@ import type { ApplySettingsPayload } from "@/components/settings/contracts";
 import { providerFormFromRow } from "@/components/settings/models/ProviderSettings";
 import type { ModelSettingsState } from "@/components/settings/models/useModelSettingsState";
 import { completeProviderOAuth } from "@/lib/api";
-import type { NanobotClient } from "@/lib/nanobot-client";
+import type { NanobotClient } from "@/lib/auto_cut_bot-client";
 import type {
   ProviderOAuthCompletionResult,
   ProviderOAuthPending,

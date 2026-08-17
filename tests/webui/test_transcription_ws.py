@@ -55,7 +55,7 @@ async def test_webui_transcription_uses_explicit_gateway_config(
     gateway.transcription.provider = "groq"
     save_config(default, default_path)
     save_config(gateway, gateway_path)
-    monkeypatch.setattr("nanobot.config.loader._current_config_path", default_path)
+    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", default_path)
 
     event, payload = await webui_transcription_event(
         {

@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from filelock import Timeout
 
-from nanobot.providers.base import ProviderConversationState
-from nanobot.session.manager import Session, SessionManager
+from auto_cut_bot.providers.base import ProviderConversationState
+from auto_cut_bot.session.manager import Session, SessionManager
 
 
 class TestAtomicSave:
@@ -54,7 +54,7 @@ class TestAtomicSave:
         path.parent.mkdir(parents=True, exist_ok=True)
         stale_shared_tmp.write_text("stale", encoding="utf-8")
         monkeypatch.setattr(
-            "nanobot.session.manager.secrets.token_hex",
+            "auto_cut_bot.session.manager.secrets.token_hex",
             lambda _length: "save-failure",
         )
 
@@ -78,7 +78,7 @@ class TestAtomicSave:
         import unittest.mock
         with (
             unittest.mock.patch(
-                "nanobot.session.manager.json.dumps",
+                "auto_cut_bot.session.manager.json.dumps",
                 side_effect=failing_dumps,
             ),
             pytest.raises(OSError, match="simulated disk full"),
@@ -186,7 +186,7 @@ class TestAtomicSave:
         tmp_path: Path,
         monkeypatch,
     ):
-        import nanobot.session.manager as session_manager
+        import auto_cut_bot.session.manager as session_manager
 
         monkeypatch.setattr(session_manager, "_SESSION_LIST_PREVIEW_MAX_CHARS", 100)
         mgr = SessionManager(tmp_path)

@@ -7,11 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from nanobot.channels.connect import ChannelConnectError, QueryParams, query_first
-from nanobot.config.loader import load_config
+from auto_cut_bot.channels.connect import ChannelConnectError, QueryParams, query_first
+from auto_cut_bot.config.loader import load_config
 
 if TYPE_CHECKING:
-    from nanobot.channels.weixin.runtime import WeixinChannel
+    from auto_cut_bot.channels.weixin.runtime import WeixinChannel
 
 
 @dataclass(slots=True)
@@ -126,7 +126,7 @@ class WeixinConnectStore:
 
         status_payload = status_data
         status = status_payload.get("status", "")
-        from nanobot.channels.weixin.runtime import MAX_QR_REFRESH_COUNT
+        from auto_cut_bot.channels.weixin.runtime import MAX_QR_REFRESH_COUNT
 
         if status == "confirmed":
             if self._sessions.get(session_id) is not session:
@@ -232,7 +232,7 @@ class WeixinConnectStore:
             return {
                 "session_id": session_id,
                 "status": "succeeded",
-                "message": "WeChat is already connected to this nanobot instance.",
+                "message": "WeChat is already connected to this auto_cut_bot instance.",
             }
 
         if status == "expired":
@@ -286,8 +286,8 @@ class WeixinConnectStore:
 
     @staticmethod
     def _build_channel() -> WeixinChannel:
-        from nanobot.bus.queue import MessageBus
-        from nanobot.channels.weixin.runtime import WeixinChannel
+        from auto_cut_bot.bus.queue import MessageBus
+        from auto_cut_bot.channels.weixin.runtime import WeixinChannel
 
         section = getattr(load_config().channels, "weixin", None)
         if section is not None and hasattr(section, "model_dump"):

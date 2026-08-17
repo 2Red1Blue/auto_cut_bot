@@ -283,7 +283,7 @@ export function AppsCatalogSettings({
 
       {requiresRestartPending ? (
         <RestartRequiredNotice
-          message={tx("settings.apps.restartRequired", "Restart nanobot to apply updated apps and MCP tools.")}
+          message={tx("settings.apps.restartRequired", "Restart auto_cut_bot to apply updated apps and MCP tools.")}
           onRestart={onRestart}
           isRestarting={isRestarting}
         />
@@ -546,7 +546,7 @@ function McpAppsCatalogRow({
   const runtimeConnecting = !toggleable && preset.runtime_status === "connecting";
   const runtimeFailed = !toggleable && preset.runtime_status === "failed";
   const statusLabel = toggleable
-    ? tx("settings.nanobotFeatures.enabled", "Enabled")
+    ? tx("settings.auto_cut_botFeatures.enabled", "Enabled")
     : runtimeConnected
       ? tx("connection.open", "Connected")
       : mcpPresetStatusLabel(preset.status, tx);
@@ -678,7 +678,7 @@ function McpAppsCatalogRow({
                     onClick={() => onAction("disable", preset.name)}
                   >
                     <PauseCircle aria-hidden />
-                    {tx("settings.nanobotFeatures.disable", "Disable")}
+                    {tx("settings.auto_cut_botFeatures.disable", "Disable")}
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
@@ -699,8 +699,8 @@ function McpAppsCatalogRow({
             )
           ) : preset.enabled === false ? (
             <AppsActionButton
-              ariaLabel={tx("settings.nanobotFeatures.enable", "Enable")}
-              visibleLabel={tx("settings.nanobotFeatures.enable", "Enable")}
+              ariaLabel={tx("settings.auto_cut_botFeatures.enable", "Enable")}
+              visibleLabel={tx("settings.auto_cut_botFeatures.enable", "Enable")}
               busy={enableBusy}
               onClick={() => onAction("enable", preset.name, values)}
             />
@@ -1290,7 +1290,7 @@ function mcpOAuthStatusText(
       if (completionInput === "callback_url") {
         return tx(
           "settings.mcp.manualCallbackRequired",
-          "Finish signing in, then paste the callback URL into nanobot.",
+          "Finish signing in, then paste the callback URL into auto_cut_bot.",
         );
       }
       return popupBlocked

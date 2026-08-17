@@ -1,4 +1,4 @@
-"""High-level programmatic interface to nanobot."""
+"""High-level programmatic interface to auto_cut_bot."""
 
 from __future__ import annotations
 
@@ -7,20 +7,20 @@ from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from nanobot.agent.hook import AgentHook, SDKCaptureHook
-from nanobot.agent.hooks import create_file_edit_activity_hook
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.mcp import MCPProvider
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.config.schema import Config
-from nanobot.providers.image_generation import image_gen_provider_configs
-from nanobot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
-from nanobot.sdk.runtime import (
+from auto_cut_bot.agent.hook import AgentHook, SDKCaptureHook
+from auto_cut_bot.agent.hooks import create_file_edit_activity_hook
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.agent.tools.mcp import MCPProvider
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.providers.image_generation import image_gen_provider_configs
+from auto_cut_bot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
+from auto_cut_bot.sdk.runtime import (
     build_process_direct_kwargs,
     ensure_single_model_selector,
 )
-from nanobot.sdk.streaming import RunStream, SDKStreamEmitter, SDKStreamingHook
-from nanobot.sdk.types import (
+from auto_cut_bot.sdk.streaming import RunStream, SDKStreamEmitter, SDKStreamingHook
+from auto_cut_bot.sdk.types import (
     STREAM_EVENT_REASONING_COMPLETED,
     STREAM_EVENT_REASONING_DELTA,
     STREAM_EVENT_RUN_COMPLETED,
@@ -39,7 +39,7 @@ from nanobot.sdk.types import (
     StreamEventType,
     result_from_response,
 )
-from nanobot.utils.llm_runtime import LLMRuntime
+from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 __all__ = [
     "Nanobot",
@@ -64,7 +64,7 @@ __all__ = [
 
 
 class Nanobot:
-    """Programmatic facade for running the nanobot agent.
+    """Programmatic facade for running the auto_cut_bot agent.
 
     Usage::
 
@@ -100,12 +100,12 @@ class Nanobot:
 
         Args:
             config_path: Path to ``config.json``.  Defaults to
-                ``~/.nanobot/config.json``.
+                ``~/.auto_cut_bot/config.json``.
             workspace: Override the workspace directory from config.
             model: Override the instance default model.
             model_preset: Override the instance default model preset.
         """
-        from nanobot.config.loader import load_config, resolve_config_env_vars
+        from auto_cut_bot.config.loader import load_config, resolve_config_env_vars
 
         ensure_single_model_selector(model=model, model_preset=model_preset)
         resolved: Path | None = None
@@ -167,7 +167,7 @@ class Nanobot:
             ephemeral: If true, do not persist the turn or compact session history.
             attributes: Optional caller-owned request data exposed to context
                 providers and turn-hook factories. Attributes are kept separate
-                from nanobot's trusted internal message metadata.
+                from auto_cut_bot's trusted internal message metadata.
             hooks: Optional lifecycle hooks for this run.
             model: Override the model for this run only.
             model_preset: Override the model preset for this run only.

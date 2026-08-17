@@ -7,7 +7,7 @@ import httpx
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-from nanobot.agent.tools.mcp_oauth import (
+from auto_cut_bot.agent.tools.mcp_oauth import (
     MCPAuthorizationRequiredError,
     MCPOAuthHandlers,
     MCPOAuthStorage,
@@ -15,11 +15,11 @@ from nanobot.agent.tools.mcp_oauth import (
     delete_mcp_oauth_credentials,
     mcp_oauth_has_credentials,
 )
-from nanobot.config.schema import MCPServerConfig
+from auto_cut_bot.config.schema import MCPServerConfig
 
 
 def _use_data_dir(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("nanobot.agent.tools.mcp_oauth.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("auto_cut_bot.agent.tools.mcp_oauth.get_data_dir", lambda: tmp_path)
 
 
 def test_mcp_server_config_accepts_explicit_oauth() -> None:
@@ -185,7 +185,7 @@ async def test_create_mcp_oauth_auth_uses_browser_handlers_and_persists_redirect
     assert str(auth.context.client_metadata.client_uri) == "https://github.com/HKUDS/nanobot"
     assert str(auth.context.client_metadata.logo_uri) == (
         "https://raw.githubusercontent.com/HKUDS/nanobot/main/"
-        "webui/public/brand/nanobot_apple_touch.png"
+        "webui/public/brand/auto_cut_bot_apple_touch.png"
     )
     assert auth.context.redirect_handler is redirect
     assert auth.context.callback_handler is callback
@@ -291,10 +291,10 @@ async def test_official_mcp_sdk_completes_discovery_registration_and_token_excha
             registration = json.loads(request.content)
             assert registration["client_uri"] == "https://github.com/HKUDS/nanobot"
             assert registration["logo_uri"].endswith(
-                "/webui/public/brand/nanobot_apple_touch.png"
+                "/webui/public/brand/auto_cut_bot_apple_touch.png"
             )
             return httpx.Response(201, json={
-                "client_id": "nanobot-client",
+                "client_id": "auto_cut_bot-client",
                 "redirect_uris": ["https://agent.example/auth/mcp/callback"],
                 "token_endpoint_auth_method": "none",
             })

@@ -139,11 +139,11 @@ export function SettingsPage({
     modelPresetEditingName,
     modelPresetNameError,
     modelPresetPendingDelete,
-    nanobotFeatureAction,
-    nanobotFeatureConfirm,
-    nanobotFeatures,
-    nanobotFeaturesError,
-    nanobotFeaturesLoading,
+    auto_cut_botFeatureAction,
+    auto_cut_botFeatureConfirm,
+    auto_cut_botFeatures,
+    auto_cut_botFeaturesError,
+    auto_cut_botFeaturesLoading,
     networkSafetyDirty,
     networkSafetyForm,
     networkSafetySaving,
@@ -273,9 +273,9 @@ export function SettingsPage({
             />
             <ProvidersSettings
               settings={settings}
-              nanobotFeatures={nanobotFeatures}
-              featureAction={nanobotFeatureAction}
-              capabilityError={nanobotFeaturesError}
+              auto_cut_botFeatures={auto_cut_botFeatures}
+              featureAction={auto_cut_botFeatureAction}
+              capabilityError={auto_cut_botFeaturesError}
               expandedProvider={expandedProvider}
               providerForms={providerForms}
               visibleProviderKeys={visibleProviderKeys}
@@ -367,21 +367,21 @@ export function SettingsPage({
             isRestarting={isRestarting || hostEngineApplying}
             requiresRestartPending={pendingRestartSections.browser}
             olostepFeature={featureCatalog.find((feature) => feature.name === "olostep")}
-            olostepInstalling={nanobotFeatureAction === "enable:olostep"}
-            capabilityError={nanobotFeaturesError}
+            olostepInstalling={auto_cut_botFeatureAction === "enable:olostep"}
+            capabilityError={auto_cut_botFeaturesError}
           />
         );
       case "channels":
         return (
           <ChannelsSettings
             token={token}
-            nanobotFeatures={nanobotFeatures}
-            loading={nanobotFeaturesLoading}
+            auto_cut_botFeatures={auto_cut_botFeatures}
+            loading={auto_cut_botFeaturesLoading}
             query={channelsQuery}
-            actionKey={nanobotFeatureAction}
+            actionKey={auto_cut_botFeatureAction}
             chatAppsDocsUrl={settings.docs?.chat_apps_url}
             showBrandLogos={localPrefs.brandLogos}
-            error={nanobotFeaturesError}
+            error={auto_cut_botFeaturesError}
             requiresRestartPending={pendingRestartSections.runtime}
             onQueryChange={setChannelsQuery}
             onAction={handleNanobotFeatureAction}
@@ -490,9 +490,9 @@ export function SettingsPage({
             apiServiceAction={apiServiceAction}
             apiServiceError={apiServiceError}
             langfuseFeature={featureCatalog.find((feature) => feature.name === "langfuse")}
-            capabilitiesLoading={nanobotFeaturesLoading}
-            capabilityAction={nanobotFeatureAction}
-            capabilityError={nanobotFeaturesError}
+            capabilitiesLoading={auto_cut_botFeaturesLoading}
+            capabilityAction={auto_cut_botFeatureAction}
+            capabilityError={auto_cut_botFeaturesError}
             onApiServiceAction={handleApiServiceAction}
             onInstallCapability={(name) => void installCapabilities([name])}
           />
@@ -567,8 +567,8 @@ export function SettingsPage({
       />
 
       <NanobotFeatureInstallDialog
-        feature={nanobotFeatureConfirm}
-        installing={nanobotFeatureAction === `enable:${nanobotFeatureConfirm?.name ?? ""}`}
+        feature={auto_cut_botFeatureConfirm}
+        installing={auto_cut_botFeatureAction === `enable:${auto_cut_botFeatureConfirm?.name ?? ""}`}
         onOpenChange={(open) => {
           if (!open) setNanobotFeatureConfirm(null);
         }}

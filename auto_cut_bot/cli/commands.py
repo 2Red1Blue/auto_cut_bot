@@ -1,4 +1,4 @@
-"""CLI commands for nanobot."""
+"""CLI commands for auto_cut_bot."""
 
 # pyright: reportConstantRedefinition=false, reportMissingTypeStubs=false, reportPrivateUsage=false, reportUnusedFunction=false, reportUnusedImport=false
 
@@ -24,7 +24,7 @@ if sys.platform == "win32":
 import typer  # noqa: E402
 from loguru import logger  # noqa: E402
 
-# Remove default handler and re-add with unified nanobot format
+# Remove default handler and re-add with unified auto_cut_bot format
 logger.remove()
 _log_handler_id = logger.add(
     sys.stderr,
@@ -45,19 +45,19 @@ from rich.markup import escape  # noqa: E402
 from rich.table import Table  # noqa: E402
 from rich.text import Text  # noqa: E402
 
-from nanobot import __logo__, __version__  # noqa: E402
-from nanobot import optional_features as feature_support  # noqa: E402
-from nanobot.agent.hooks import create_file_edit_activity_hook  # noqa: E402
-from nanobot.agent.loop import AgentLoop  # noqa: E402
-from nanobot.agent.tools.mcp import MCPProvider  # noqa: E402
-from nanobot.agent.tools.registry import ToolRegistry  # noqa: E402
-from nanobot.cli import terminal as cli_terminal  # noqa: E402
-from nanobot.cli.agent import agent  # noqa: E402
-from nanobot.cli.gateway import create_gateway_app  # noqa: E402
-from nanobot.cli.gateway_runtime import _run_gateway  # noqa: E402
-from nanobot.cli.log_control import _set_nanobot_logs  # noqa: E402
-from nanobot.cli.provider import provider_app  # noqa: E402
-from nanobot.cli.runtime_config import (  # noqa: E402
+from auto_cut_bot import __logo__, __version__  # noqa: E402
+from auto_cut_bot import optional_features as feature_support  # noqa: E402
+from auto_cut_bot.agent.hooks import create_file_edit_activity_hook  # noqa: E402
+from auto_cut_bot.agent.loop import AgentLoop  # noqa: E402
+from auto_cut_bot.agent.tools.mcp import MCPProvider  # noqa: E402
+from auto_cut_bot.agent.tools.registry import ToolRegistry  # noqa: E402
+from auto_cut_bot.cli import terminal as cli_terminal  # noqa: E402
+from auto_cut_bot.cli.agent import agent  # noqa: E402
+from auto_cut_bot.cli.gateway import create_gateway_app  # noqa: E402
+from auto_cut_bot.cli.gateway_runtime import _run_gateway  # noqa: E402
+from auto_cut_bot.cli.log_control import _set_auto_cut_bot_logs  # noqa: E402
+from auto_cut_bot.cli.provider import provider_app  # noqa: E402
+from auto_cut_bot.cli.runtime_config import (  # noqa: E402
     _load_inspection_config,
     _load_runtime_config,
     _model_display,
@@ -65,16 +65,16 @@ from nanobot.cli.runtime_config import (  # noqa: E402
     _print_model_setup_steps,
     _provider_setup_error,
 )
-from nanobot.cli.webui import webui  # noqa: E402
-from nanobot.cli.webui_support import (  # noqa: E402
+from auto_cut_bot.cli.webui import webui  # noqa: E402
+from auto_cut_bot.cli.webui_support import (  # noqa: E402
     _prepare_webui_bundle_for_gateway,
     _validate_gateway_startup,
 )
-from nanobot.config.paths import get_workspace_path  # noqa: E402
-from nanobot.config.schema import Config  # noqa: E402
-from nanobot.security.network import is_loopback_host  # noqa: E402
-from nanobot.utils.helpers import sanitize_surrogates as _sanitize_surrogates  # noqa: E402,F401
-from nanobot.utils.helpers import (  # noqa: E402
+from auto_cut_bot.config.paths import get_workspace_path  # noqa: E402
+from auto_cut_bot.config.schema import Config  # noqa: E402
+from auto_cut_bot.security.network import is_loopback_host  # noqa: E402
+from auto_cut_bot.utils.helpers import sanitize_surrogates as _sanitize_surrogates  # noqa: E402,F401
+from auto_cut_bot.utils.helpers import (  # noqa: E402
     sync_workspace_templates,
 )
 
@@ -83,9 +83,9 @@ SafeFileHistory = cli_terminal.SafeFileHistory
 
 
 app = typer.Typer(
-    name="nanobot",
+    name="auto_cut_bot",
     context_settings={"help_option_names": ["-h", "--help"]},
-    help=f"{__logo__} nanobot - Personal AI Assistant",
+    help=f"{__logo__} auto_cut_bot - Personal AI Assistant",
     no_args_is_help=True,
 )
 
@@ -93,7 +93,7 @@ console = Console()
 
 def version_callback(value: bool):
     if value:
-        console.print(f"{__logo__} nanobot v{__version__}")
+        console.print(f"{__logo__} auto_cut_bot v{__version__}")
         raise typer.Exit()
 
 
@@ -103,7 +103,7 @@ def main(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
 ):
-    """nanobot - Personal AI Assistant."""
+    """auto_cut_bot - Personal AI Assistant."""
     pass
 
 
@@ -119,9 +119,9 @@ def onboard(
     wizard: bool = typer.Option(False, "--wizard", help="Use interactive wizard"),
     non_interactive_refresh: bool = typer.Option(False, "--refresh", help="Refresh config, preserving existing settings without prompting"),
 ):
-    """Initialize nanobot configuration and workspace."""
-    from nanobot.config.loader import get_config_path, load_config, save_config, set_config_path
-    from nanobot.config.schema import Config
+    """Initialize auto_cut_bot configuration and workspace."""
+    from auto_cut_bot.config.loader import get_config_path, load_config, save_config, set_config_path
+    from auto_cut_bot.config.schema import Config
 
     explicit_config = config is not None
     if config:
@@ -175,7 +175,7 @@ def onboard(
 
     # Run interactive wizard if enabled
     if wizard:
-        from nanobot.cli.onboard import run_onboard
+        from auto_cut_bot.cli.onboard import run_onboard
 
         try:
             result = run_onboard(initial_config=loaded_config)
@@ -188,7 +188,7 @@ def onboard(
             console.print(f"[green]✓[/green] Config saved at {config_path}")
         except Exception as e:
             console.print(f"[red]✗[/red] Error during configuration: {e}")
-            console.print("[yellow]Please run 'nanobot onboard' again to complete setup.[/yellow]")
+            console.print("[yellow]Please run 'auto_cut_bot onboard' again to complete setup.[/yellow]")
             raise typer.Exit(1)
     _onboard_plugins(config_path)
 
@@ -200,20 +200,20 @@ def onboard(
 
     sync_workspace_templates(workspace_path)
 
-    webui_cmd = "nanobot webui"
+    webui_cmd = "auto_cut_bot webui"
     if explicit_config:
         webui_cmd += f' -c "{config_path}"'
 
-    typer.echo(f"\n✓ nanobot is ready. Run: {webui_cmd}")
+    typer.echo(f"\n✓ auto_cut_bot is ready. Run: {webui_cmd}")
 
 
 def _onboard_plugins(config_path: Path) -> None:
     """Inject default config for all discovered channels (built-in + plugins)."""
     import json
 
-    from nanobot.channels.contracts import channel_default_config
-    from nanobot.channels.registry import discover_plugins
-    from nanobot.config.loader import merge_missing_defaults
+    from auto_cut_bot.channels.contracts import channel_default_config
+    from auto_cut_bot.channels.registry import discover_plugins
+    from auto_cut_bot.config.loader import merge_missing_defaults
 
     plugins = discover_plugins()
     if not plugins:
@@ -289,7 +289,7 @@ def trigger(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Deliver a local trigger message to its bound chat session."""
-    from nanobot.triggers.local_store import (
+    from auto_cut_bot.triggers.local_store import (
         LocalTriggerStore,
         TriggerDisabledError,
         TriggerNotFoundError,
@@ -320,7 +320,7 @@ def serve(
     port: int | None = typer.Option(None, "--port", "-p", help="API server port"),
     host: str | None = typer.Option(None, "--host", "-H", help="Bind address"),
     timeout: float | None = typer.Option(None, "--timeout", "-t", help="Per-request timeout (seconds)"),
-    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show nanobot runtime logs"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show auto_cut_bot runtime logs"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
@@ -328,15 +328,15 @@ def serve(
     try:
         from aiohttp import web  # noqa: F401
     except ImportError:
-        console.print("[red]aiohttp is required. Install with: nanobot plugins enable api[/red]")
+        console.print("[red]aiohttp is required. Install with: auto_cut_bot plugins enable api[/red]")
         raise typer.Exit(1)
 
-    from nanobot.api.server import create_app
-    from nanobot.bus.queue import MessageBus
-    from nanobot.providers.image_generation import image_gen_provider_configs
-    from nanobot.session.manager import SessionManager
+    from auto_cut_bot.api.server import create_app
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.providers.image_generation import image_gen_provider_configs
+    from auto_cut_bot.session.manager import SessionManager
 
-    _set_nanobot_logs(verbose)
+    _set_auto_cut_bot_logs(verbose)
 
     runtime_config = _load_runtime_config(config, workspace)
     api_cfg = runtime_config.api
@@ -454,8 +454,8 @@ def sessions_restore_workspace(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
 ) -> None:
-    """Copy sessions back into the workspace before downgrading nanobot."""
-    from nanobot.session.manager import SessionManager
+    """Copy sessions back into the workspace before downgrading auto_cut_bot."""
+    from auto_cut_bot.session.manager import SessionManager
 
     runtime_config = _load_runtime_config(config, workspace)
     data_dir = runtime_config.runtime_data_dir
@@ -492,7 +492,7 @@ def channels_status(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Show channel status."""
-    from nanobot.channels.registry import discover_all
+    from auto_cut_bot.channels.registry import discover_all
 
     _, loaded = _load_inspection_config(config=config)
 
@@ -523,8 +523,8 @@ def channels_login(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
     """Authenticate with a channel via QR code or other interactive login."""
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.registry import discover_all
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.channels.registry import discover_all
 
     _, loaded = _load_inspection_config(config=config)
     channel_cfg: Any = getattr(loaded.channels, channel_name, None) or {}
@@ -551,7 +551,7 @@ def channels_login(
 # Plugin Commands
 # ============================================================================
 
-plugins_app = typer.Typer(help="Manage optional nanobot features")
+plugins_app = typer.Typer(help="Manage optional auto_cut_bot features")
 app.add_typer(plugins_app, name="plugins")
 
 
@@ -559,9 +559,9 @@ app.add_typer(plugins_app, name="plugins")
 def plugins_list(
     config_path: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
-    """List optional nanobot features."""
-    from nanobot.channels.registry import discover_plugins
-    from nanobot.config.loader import load_config, set_config_path
+    """List optional auto_cut_bot features."""
+    from auto_cut_bot.channels.registry import discover_plugins
+    from auto_cut_bot.config.loader import load_config, set_config_path
 
     resolved_config_path = Path(config_path).expanduser().resolve() if config_path else None
     if resolved_config_path is not None:
@@ -580,14 +580,14 @@ def plugins_enable(
     config_path: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show optional package install logs"),
 ):
-    """Enable a nanobot feature."""
-    from nanobot.config.loader import get_config_path, set_config_path
+    """Enable a auto_cut_bot feature."""
+    from auto_cut_bot.config.loader import get_config_path, set_config_path
 
     resolved_config_path = Path(config_path).expanduser().resolve() if config_path else None
     if resolved_config_path is not None:
         set_config_path(resolved_config_path)
     resolved_config_path = resolved_config_path or get_config_path()
-    _set_nanobot_logs(logs)
+    _set_auto_cut_bot_logs(logs)
 
     try:
         payload = feature_support.enable_optional_feature(
@@ -608,8 +608,8 @@ def plugins_disable(
     name: str = typer.Argument(..., help="Channel name (e.g. telegram, matrix, slack)"),
     config_path: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
 ):
-    """Disable a nanobot channel feature."""
-    from nanobot.config.loader import get_config_path, set_config_path
+    """Disable a auto_cut_bot channel feature."""
+    from auto_cut_bot.config.loader import get_config_path, set_config_path
 
     resolved_config_path = Path(config_path).expanduser().resolve() if config_path else None
     if resolved_config_path is not None:
@@ -636,11 +636,11 @@ def status(
     config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
 ):
-    """Show nanobot status."""
+    """Show auto_cut_bot status."""
     config_path, loaded = _load_inspection_config(config=config, workspace=workspace)
     workspace_path = loaded.workspace_path
 
-    console.print(f"{__logo__} nanobot Status\n")
+    console.print(f"{__logo__} auto_cut_bot Status\n")
 
     console.print(f"Config: {config_path} {'[green]✓[/green]' if config_path.exists() else '[red]✗[/red]'}")
     console.print(
@@ -649,9 +649,9 @@ def status(
     )
 
     if config_path.exists():
-        from nanobot.config.errors import ConfigLoadError
-        from nanobot.config.loader import resolve_config_env_vars, resolve_env_refs
-        from nanobot.providers.registry import PROVIDERS
+        from auto_cut_bot.config.errors import ConfigLoadError
+        from auto_cut_bot.config.loader import resolve_config_env_vars, resolve_env_refs
+        from auto_cut_bot.providers.registry import PROVIDERS
 
         _model, _preset_tag = _model_display(loaded)
         console.print(f"Model: {_model}{_preset_tag}")
@@ -694,7 +694,7 @@ def status(
 
         if provider_ready:
             console.print()
-            console.print('Next: [cyan]nanobot agent -m "Hello!"[/cyan]')
+            console.print('Next: [cyan]auto_cut_bot agent -m "Hello!"[/cyan]')
             console.print(
                 "[dim]Status does not call the model or verify network access and credentials.[/dim]"
             )

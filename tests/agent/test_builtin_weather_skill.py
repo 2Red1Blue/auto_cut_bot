@@ -1,4 +1,4 @@
-from nanobot.agent.skills import BUILTIN_SKILLS_DIR
+from auto_cut_bot.agent.skills import BUILTIN_SKILLS_DIR
 
 
 def test_weather_skill_uses_windows_safe_single_today_request() -> None:

@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from nanobot.bus.outbound_events import ProgressEvent
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.weixin import runtime as weixin_mod
-from nanobot.channels.weixin.runtime import (
+from auto_cut_bot.bus.outbound_events import ProgressEvent
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.weixin import runtime as weixin_mod
+from auto_cut_bot.channels.weixin.runtime import (
     ITEM_IMAGE,
     ITEM_TEXT,
     MESSAGE_TYPE_BOT,
@@ -31,7 +31,7 @@ def _make_channel() -> tuple[WeixinChannel, MessageBus]:
         WeixinConfig(
             enabled=True,
             allow_from=["*"],
-            state_dir=tempfile.mkdtemp(prefix="nanobot-weixin-test-"),
+            state_dir=tempfile.mkdtemp(prefix="auto_cut_bot-weixin-test-"),
         ),
         bus,
     )
@@ -342,7 +342,7 @@ async def test_process_message_pairs_unauthorized_sender_before_media_side_effec
     channel._get_typing_ticket = AsyncMock(return_value="")
     channel._send_text = AsyncMock()
     monkeypatch.setattr(
-        "nanobot.channels.base.generate_code", lambda _ch, _sid: "ABCD-EFGH"
+        "auto_cut_bot.channels.base.generate_code", lambda _ch, _sid: "ABCD-EFGH"
     )
 
     await channel._process_message(
@@ -765,7 +765,7 @@ async def test_manager_surfaces_actionable_weixin_auth_error_without_traceback(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from nanobot.channels import manager as manager_mod
+    from auto_cut_bot.channels import manager as manager_mod
 
     channel = WeixinChannel(
         WeixinConfig(enabled=True, allow_from=["*"], state_dir=str(tmp_path)),
@@ -1319,8 +1319,8 @@ def test_missing_aes_dependency_recommends_weixin_plugin(monkeypatch) -> None:
     assert _encrypt_aes_ecb(data, key_b64) == data
     assert _decrypt_aes_ecb(data, key_b64) == data
     assert warnings == [
-        "Cannot encrypt media. Run `nanobot plugins enable weixin` to install WeChat support.",
-        "Cannot decrypt media. Run `nanobot plugins enable weixin` to install WeChat support.",
+        "Cannot encrypt media. Run `auto_cut_bot plugins enable weixin` to install WeChat support.",
+        "Cannot decrypt media. Run `auto_cut_bot plugins enable weixin` to install WeChat support.",
     ]
 
 
@@ -1465,7 +1465,7 @@ async def test_download_media_item_non_image_requires_aes_key_even_with_full_url
 
 def _make_outbound_msg(chat_id: str = "wx-user", content: str = "", media: list | None = None):
     """Build a minimal OutboundMessage-like object for send() tests."""
-    from nanobot.bus.events import OutboundMessage
+    from auto_cut_bot.bus.events import OutboundMessage
 
     return OutboundMessage(
         channel="weixin",

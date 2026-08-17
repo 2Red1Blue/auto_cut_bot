@@ -126,7 +126,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "matrix",
@@ -193,7 +193,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "matrix",
@@ -235,7 +235,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "feishu",
@@ -269,10 +269,10 @@ describe("Settings channels", () => {
     renderSettingsView({ initialSection: "channels" });
 
     expect(await screen.findByRole("button", { name: "View Feishu settings" })).toBeInTheDocument();
-    expect(screen.queryByText("nanobot channels login feishu")).not.toBeInTheDocument();
+    expect(screen.queryByText("auto_cut_bot channels login feishu")).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole(
       "button",
-      { name: "nanobot" },
+      { name: "auto_cut_bot" },
       { timeout: 3_000 },
     ));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
@@ -294,7 +294,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "feishu",
@@ -330,7 +330,7 @@ describe("Settings channels", () => {
     expect(await screen.findByRole("button", { name: "View Feishu settings" })).toBeInTheDocument();
     fireEvent.click(await screen.findByRole(
       "button",
-      { name: "nanobot" },
+      { name: "auto_cut_bot" },
       { timeout: 3_000 },
     ));
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
@@ -351,7 +351,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "feishu",
@@ -386,7 +386,7 @@ describe("Settings channels", () => {
             configured: true,
             instances: [{
               id: "default",
-              name: "nanobot",
+              name: "auto_cut_bot",
               enabled: true,
               running: true,
               runtime_status: "running",
@@ -416,8 +416,8 @@ describe("Settings channels", () => {
 
     renderSettingsView({ initialSection: "channels" });
 
-    fireEvent.click(await screen.findByRole("button", { name: "nanobot" }));
-    fireEvent.click(await screen.findByRole("switch", { name: "nanobot assistant" }));
+    fireEvent.click(await screen.findByRole("button", { name: "auto_cut_bot" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "auto_cut_bot assistant" }));
 
     await waitFor(() =>
       expect(requestMutationMock).toHaveBeenCalledWith(
@@ -429,7 +429,7 @@ describe("Settings channels", () => {
     expect(requestMutationMock.mock.calls.some(([action]) => (
       action === "settings.channel.connect.start"
     ))).toBe(false);
-    expect(screen.getByRole("switch", { name: "nanobot assistant" })).toHaveAttribute(
+    expect(screen.getByRole("switch", { name: "auto_cut_bot assistant" })).toHaveAttribute(
       "aria-checked",
       "true",
     );
@@ -443,7 +443,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "feishu",
@@ -461,7 +461,7 @@ describe("Settings channels", () => {
               instances: [
                 {
                   id: "default",
-                  name: "nanobot",
+                  name: "auto_cut_bot",
                   display_name: "Support Bot",
                   avatar_url: "https://example.com/support.png",
                   enabled: true,
@@ -545,7 +545,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "multiplugin",
@@ -634,7 +634,7 @@ describe("Settings channels", () => {
         requires_restart: true,
         instances: [{
           id: "default",
-          name: "nanobot",
+          name: "auto_cut_bot",
           display_name: "Support Bot",
           avatar_url: "https://example.com/support.png",
           enabled: true,
@@ -657,7 +657,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") return jsonResponse(feishuPayload);
+        if (url === "/api/settings/auto_cut_bot-features") return jsonResponse(feishuPayload);
         return { ok: false, status: 404, json: async () => ({}) } as Response;
       }),
     );
@@ -694,7 +694,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "feishu",
@@ -754,7 +754,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "discord",
@@ -818,7 +818,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "email",
@@ -866,7 +866,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "discord",
@@ -905,7 +905,7 @@ describe("Settings channels", () => {
             "channels.discord.allowChannels",
             "channels.discord.groupPolicy",
           ],
-          nanobot_features: {
+          auto_cut_bot_features: {
             features: [{
               name: "discord",
               display_name: "Discord",
@@ -932,7 +932,7 @@ describe("Settings channels", () => {
     expect(await screen.findByRole("button", { name: "View Discord settings" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Discord setup" })).toHaveAttribute(
       "href",
-      "https://nanobot.wiki/docs/0.2.2/getting-started/chat-apps#discord",
+      "https://auto_cut_bot.wiki/docs/0.2.2/getting-started/chat-apps#discord",
     );
     expect(screen.getByRole("switch", { name: "Discord channel" })).toBeDisabled();
     fireEvent.change(screen.getByPlaceholderText("Discord bot token"), {
@@ -981,7 +981,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "discord",
@@ -1072,7 +1072,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: [{
               name: "telegram",
@@ -1098,7 +1098,7 @@ describe("Settings channels", () => {
     expect(await screen.findByRole("button", { name: "View Telegram settings" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Open Telegram setup" })).toHaveAttribute(
       "href",
-      "https://nanobot.wiki/docs/0.2.2/getting-started/chat-apps#telegram",
+      "https://auto_cut_bot.wiki/docs/0.2.2/getting-started/chat-apps#telegram",
     );
   });
 
@@ -1129,7 +1129,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: channels.map(([name, displayName]) => ({
               name,
@@ -1168,7 +1168,7 @@ describe("Settings channels", () => {
       if (displayName === "Feishu") {
         fireEvent.click(await screen.findByRole(
           "button",
-          { name: "nanobot" },
+          { name: "auto_cut_bot" },
           { timeout: 3_000 },
         ));
       }
@@ -1187,7 +1187,7 @@ describe("Settings channels", () => {
         if (url === "/api/settings") return jsonResponse(settingsPayload());
         if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
         if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-        if (url === "/api/settings/nanobot-features") {
+        if (url === "/api/settings/auto_cut_bot-features") {
           return jsonResponse({
             features: ["email", "feishu", "matrix", "qq"].map((name) => ({
               name,
@@ -1221,7 +1221,7 @@ describe("Settings channels", () => {
     expect(screen.queryByPlaceholderText("true")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "View Feishu settings" }));
-    fireEvent.click(screen.getByRole("button", { name: "nanobot" }));
+    fireEvent.click(screen.getByRole("button", { name: "auto_cut_bot" }));
     fireEvent.click(screen.getByText("Advanced"));
     const region = screen.getByRole("radiogroup", { name: "Region" });
     expect(within(region).getByRole("radio", { name: "Feishu" })).toHaveAttribute(
@@ -1255,7 +1255,7 @@ describe("Settings channels", () => {
       if (url === "/api/settings") return jsonResponse(settingsPayload());
       if (url === "/api/settings/cli-apps") return jsonResponse({ apps: [], installed_count: 0 });
       if (url === "/api/settings/mcp-presets") return jsonResponse({ presets: [], installed_count: 0 });
-      if (url === "/api/settings/nanobot-features") {
+      if (url === "/api/settings/auto_cut_bot-features") {
         return jsonResponse({
           features: [{
             name: "websocket",

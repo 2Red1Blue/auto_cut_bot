@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from nanobot.config.errors import ConfigLoadError
-from nanobot.config.loader import load_config, resolve_config_env_vars
-from nanobot.config.schema import ApiConfig
+from auto_cut_bot.config.errors import ConfigLoadError
+from auto_cut_bot.config.loader import load_config, resolve_config_env_vars
+from auto_cut_bot.config.schema import ApiConfig
 
 
 def test_load_config_missing_file_uses_defaults(tmp_path) -> None:

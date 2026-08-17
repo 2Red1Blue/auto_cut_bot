@@ -20,14 +20,14 @@ from weakref import WeakValueDictionary
 from filelock import FileLock
 from loguru import logger
 
-from nanobot.config.paths import get_legacy_sessions_dir, get_runtime_subdir
-from nanobot.providers.base import ProviderConversationState
-from nanobot.runtime_context import (
+from auto_cut_bot.config.paths import get_legacy_sessions_dir, get_runtime_subdir
+from auto_cut_bot.providers.base import ProviderConversationState
+from auto_cut_bot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
     public_history_message,
 )
-from nanobot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
-from nanobot.utils.helpers import (
+from auto_cut_bot.session.model_selection import SESSION_MODEL_PRESET_METADATA_KEY
+from auto_cut_bot.utils.helpers import (
     content_with_media_breadcrumbs,
     ensure_dir,
     estimate_message_tokens,
@@ -36,7 +36,7 @@ from nanobot.utils.helpers import (
     safe_filename,
     strip_think,
 )
-from nanobot.utils.subagent_channel_display import scrub_subagent_announce_body
+from auto_cut_bot.utils.subagent_channel_display import scrub_subagent_announce_body
 
 FILE_MAX_MESSAGES = 2000
 SESSION_CACHE_MAX_SIZE = 128
@@ -62,7 +62,7 @@ _FORK_VOLATILE_METADATA_KEYS = {
     "title",
     "title_user_edited",
 }
-_WORKSPACE_STATE_DIR = ".nanobot"
+_WORKSPACE_STATE_DIR = ".auto_cut_bot"
 _WORKSPACE_ID_FILE = "workspace-id"
 _WORKSPACE_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _SESSION_MIGRATION_LOCK_TIMEOUT_SECONDS = 30
@@ -639,7 +639,7 @@ class JsonlSessionStore:
         if not _WORKSPACE_ID_RE.fullmatch(value):
             raise RuntimeError(
                 f"workspace identity marker is invalid: {marker}; "
-                "restore its original 32-character identifier before starting nanobot"
+                "restore its original 32-character identifier before starting auto_cut_bot"
             )
         return value
 
@@ -678,7 +678,7 @@ class JsonlSessionStore:
         if len(matches) > 1:
             raise RuntimeError(
                 f"multiple session namespaces claim workspace {workspace}; "
-                "remove the stale namespace marker before starting nanobot"
+                "remove the stale namespace marker before starting auto_cut_bot"
             )
         return matches[0] if matches else None
 
@@ -1592,7 +1592,7 @@ class SessionManager:
         return self._jsonl_store.get_legacy_lossy_path(key)
 
     def _get_legacy_session_path(self, key: str) -> Path:
-        """Legacy global session path (~/.nanobot/sessions/)."""
+        """Legacy global session path (~/.auto_cut_bot/sessions/)."""
         return self._jsonl_store.get_legacy_session_path(key)
 
     @contextmanager

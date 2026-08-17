@@ -107,7 +107,7 @@ class ChannelManager:
         config_path: Path | None = None,
     ):
         if config_path is None:
-            from nanobot.config.loader import get_config_path
+            from auto_cut_bot.config.loader import get_config_path
 
             config_path = get_config_path()
         self.config = config

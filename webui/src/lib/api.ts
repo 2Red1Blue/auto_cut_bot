@@ -119,7 +119,7 @@ async function request<T>(
     throw new ApiError(
       res.status,
       isHtml
-        ? "Gateway returned WebUI HTML instead of JSON. Restart nanobot gateway and try again."
+        ? "Gateway returned WebUI HTML instead of JSON. Restart auto_cut_bot gateway and try again."
         : "Gateway returned a non-JSON response.",
     );
   }
@@ -508,7 +508,7 @@ export async function fetchNanobotFeatures(
   base: string = "",
 ): Promise<NanobotFeaturesPayload> {
   return request<NanobotFeaturesPayload>(
-    `${base}/api/settings/nanobot-features`,
+    `${base}/api/settings/auto_cut_bot-features`,
     token,
     undefined,
     API_READ_TIMEOUT_MS,

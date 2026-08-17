@@ -30,13 +30,13 @@ import httpx
 from loguru import logger
 from pydantic import Field, model_validator
 
-from nanobot import __version__
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.outbound_events import ProgressEvent
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.paths import get_media_dir, get_runtime_subdir
-from nanobot.config.schema import Base
+from auto_cut_bot import __version__
+from auto_cut_bot.bus.events import OutboundMessage
+from auto_cut_bot.bus.outbound_events import ProgressEvent
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.base import BaseChannel
+from auto_cut_bot.config.paths import get_media_dir, get_runtime_subdir
+from auto_cut_bot.config.schema import Base
 
 # ---------------------------------------------------------------------------
 # Protocol constants (from openclaw-weixin types.ts)
@@ -80,7 +80,7 @@ def _build_client_version(version: str) -> int:
 ILINK_APP_CLIENT_VERSION = _build_client_version(WEIXIN_CHANNEL_VERSION)
 BASE_INFO: dict[str, str] = {
     "channel_version": WEIXIN_CHANNEL_VERSION,
-    "bot_agent": f"nanobot/{__version__} (python)",
+    "bot_agent": f"auto_cut_bot/{__version__} (python)",
 }
 
 # Business error codes observed in the public iLink protocol.
@@ -205,7 +205,7 @@ class WeixinConfig(Base):
     cdn_base_url: str = "https://novac2c.cdn.weixin.qq.com/c2c"
     route_tag: str | int | None = None
     token: str = ""  # Manually set token, or obtained via QR login
-    state_dir: str = ""  # Default: ~/.nanobot/weixin/
+    state_dir: str = ""  # Default: ~/.auto_cut_bot/weixin/
     poll_timeout: int = DEFAULT_LONG_POLL_TIMEOUT_S  # seconds for long-poll
     # Extra progress messages consume the same undocumented iLink send quota as
     # final replies. Keep them off unless an operator explicitly opts in.
@@ -497,7 +497,7 @@ class WeixinChannel(BaseChannel):
         persisting the token here, that step would overwrite it with the
         default empty value, losing the freshly obtained credential.
         """
-        from nanobot.config.loader import get_config_path, load_config, save_config
+        from auto_cut_bot.config.loader import get_config_path, load_config, save_config
 
         try:
             full_config = load_config()
@@ -1008,7 +1008,7 @@ class WeixinChannel(BaseChannel):
                 self._replaced_config_token_hash = ""
         elif not self._load_state():
             if not await self._qr_login():
-                self.logger.error("login failed. Run 'nanobot channels login weixin' to authenticate.")
+                self.logger.error("login failed. Run 'auto_cut_bot channels login weixin' to authenticate.")
                 self._running = False
                 return
 
@@ -1086,7 +1086,7 @@ class WeixinChannel(BaseChannel):
             raise WeixinAuthError(
                 "sendmessage",
                 errcode=ERRCODE_STALE_TOKEN,
-                errmsg="bot token is stale; run 'nanobot channels login weixin --force'",
+                errmsg="bot token is stale; run 'auto_cut_bot channels login weixin --force'",
             )
 
     def _reload_replacement_token(self) -> bool:
@@ -1123,7 +1123,7 @@ class WeixinChannel(BaseChannel):
                 errcode=ERRCODE_STALE_TOKEN,
                 errmsg=(
                     "bot token is stale and no replacement credentials were found; "
-                    "run 'nanobot channels login weixin --force'"
+                    "run 'auto_cut_bot channels login weixin --force'"
                 ),
             ) from None
 
@@ -1533,7 +1533,7 @@ class WeixinChannel(BaseChannel):
     @staticmethod
     def _part_client_id(delivery_id: str, part: str) -> str:
         digest = hashlib.sha256(f"{delivery_id}:{part}".encode()).hexdigest()[:20]
-        return f"nanobot-{digest}"
+        return f"auto_cut_bot-{digest}"
 
     async def _send_text_part(
         self,
@@ -2304,7 +2304,7 @@ class WeixinChannel(BaseChannel):
             reserve=options.reserve_budget if options else 0,
         )
         client_id = client_id or (options.client_id if options else None)
-        client_id = client_id or f"nanobot-{uuid.uuid4().hex[:12]}"
+        client_id = client_id or f"auto_cut_bot-{uuid.uuid4().hex[:12]}"
         run_id = run_id or (options.run_id if options else "")
 
         item_list: list[dict[str, Any]] = []
@@ -2469,7 +2469,7 @@ class WeixinChannel(BaseChannel):
 
         # Send each media item as its own message (matching reference plugin)
         client_id = client_id or (options.client_id if options else None)
-        client_id = client_id or f"nanobot-{uuid.uuid4().hex[:12]}"
+        client_id = client_id or f"auto_cut_bot-{uuid.uuid4().hex[:12]}"
         run_id = run_id or (options.run_id if options else "")
         item_list: list[dict[str, Any]] = [
             {"type": item_type, item_key: media_item}
@@ -2553,7 +2553,7 @@ def _encrypt_aes_ecb(data: bytes, aes_key_b64: str) -> bytes:
         return encryptor.update(padded) + encryptor.finalize()
     except ImportError:
         logger.warning(
-            "Cannot encrypt media. Run `nanobot plugins enable weixin` "
+            "Cannot encrypt media. Run `auto_cut_bot plugins enable weixin` "
             "to install WeChat support."
         )
         return data
@@ -2588,7 +2588,7 @@ def _decrypt_aes_ecb(data: bytes, aes_key_b64: str) -> bytes:
             decrypted = decryptor.update(data) + decryptor.finalize()
         except ImportError:
             logger.warning(
-                "Cannot decrypt media. Run `nanobot plugins enable weixin` "
+                "Cannot decrypt media. Run `auto_cut_bot plugins enable weixin` "
                 "to install WeChat support."
             )
             return data

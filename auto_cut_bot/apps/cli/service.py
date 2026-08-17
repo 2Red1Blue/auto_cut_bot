@@ -20,10 +20,10 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 
-from nanobot.agent.skills import parse_skill_metadata, valid_skill_metadata
-from nanobot.apps.protocol import app_manifest, compact_dict
-from nanobot.config.paths import get_runtime_subdir
-from nanobot.security.workspace_policy import is_path_within
+from auto_cut_bot.agent.skills import parse_skill_metadata, valid_skill_metadata
+from auto_cut_bot.apps.protocol import app_manifest, compact_dict
+from auto_cut_bot.config.paths import get_runtime_subdir
+from auto_cut_bot.security.workspace_policy import is_path_within
 
 CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
 CLI_ANYTHING_PUBLIC_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/public_registry.json"
@@ -67,7 +67,7 @@ _ARTIFACT_IGNORE_DIRS = frozenset({
     ".git",
     ".hg",
     ".mypy_cache",
-    ".nanobot",
+    ".auto_cut_bot",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
@@ -762,7 +762,7 @@ class CliAppManager:
             "verification": (
                 ["package_manager_ok", "entry_point_absent", "managed_paths_absent"]
                 if strategy not in {"bundled", "unsupported"}
-                else ["nanobot_state_absent", "managed_paths_absent"]
+                else ["auto_cut_bot_state_absent", "managed_paths_absent"]
             ),
         })
         return app_manifest(
@@ -1088,7 +1088,7 @@ class CliAppManager:
         name = str(app.get("name") or "unknown")
         display = str(app.get("display_name") or name)
         entry = str(app.get("entry_point") or f"cli-anything-{name}")
-        description = (_catalog_description(app) or f"Use {display} from nanobot.")[:1024]
+        description = (_catalog_description(app) or f"Use {display} from auto_cut_bot.")[:1024]
         return f"""---
 name: {_skill_name(name)}
 description: {json.dumps(description, ensure_ascii=False)}
@@ -1096,7 +1096,7 @@ description: {json.dumps(description, ensure_ascii=False)}
 
 # {display}
 
-Use this skill when the user asks nanobot to operate {display} through its installed CLI app.
+Use this skill when the user asks auto_cut_bot to operate {display} through its installed CLI app.
 
 If the user attached `@{name}` in chat, treat that as the selected app for the current turn.
 
@@ -1110,7 +1110,7 @@ If the user attached `@{name}` in chat, treat that as the selected app for the c
 Prefer machine-readable output when the CLI supports `--json`.
 """
 
-    def _with_nanobot_skill_note(self, content: str, app: dict[str, Any]) -> str:
+    def _with_auto_cut_bot_skill_note(self, content: str, app: dict[str, Any]) -> str:
         name = str(app.get("name") or "unknown")
         skill_name = _skill_name(name)
         metadata = parse_skill_metadata(content)
@@ -1119,7 +1119,7 @@ Prefer machine-readable output when the CLI supports `--json`.
         content, replaced = re.subn(r"(?m)^name\s*:.*$", f"name: {skill_name}", content, count=1)
         if not replaced:
             content = content.replace("---\n", f"---\nname: {skill_name}\n", 1)
-        marker = "<!-- nanobot-cli-app-note -->"
+        marker = "<!-- auto_cut_bot-cli-app-note -->"
         if marker in content:
             return content
         note = f"""{marker}
@@ -1139,7 +1139,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         path = self.workspace / _plugin_skill_relative_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         content = self._fetch_skill_content(app) or self._fallback_skill(app)
-        content = self._with_nanobot_skill_note(content, app)
+        content = self._with_auto_cut_bot_skill_note(content, app)
         path.write_text(content, encoding="utf-8")
         plugin_root = path.parents[2]
         manifest = compact_dict({
@@ -1163,7 +1163,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
             shutil.rmtree(legacy_dir)
 
     def _record_installed(self, app: dict[str, Any]) -> dict[str, Any]:
-        from nanobot.agent.plugins import set_agent_plugin_enabled
+        from auto_cut_bot.agent.plugins import set_agent_plugin_enabled
 
         installed = self._load_installed()
         entry = self._installed_entry(app)
@@ -1277,7 +1277,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
                 )
                 message = (
                     f"Uninstall for {app['display_name']} completed, but {reason}, "
-                    "so nanobot kept it installed."
+                    "so auto_cut_bot kept it installed."
                 )
                 return self.payload() | {
                     "last_action": {
@@ -1295,8 +1295,8 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         self.remove_skill(str(app["name"]))
         if strategy == "bundled" and still_available:
             message = (
-                f"Removed {app['display_name']} from nanobot. {entry_point} "
-                "is still available because it is managed outside nanobot."
+                f"Removed {app['display_name']} from auto_cut_bot. {entry_point} "
+                "is still available because it is managed outside auto_cut_bot."
             )
         elif still_available:
             message = (

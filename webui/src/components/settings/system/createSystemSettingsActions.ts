@@ -31,7 +31,7 @@ import {
 } from "@/lib/api";
 import { notifyCliAppsChanged } from "@/lib/cli-app-events";
 import { notifyMcpPresetsChanged } from "@/lib/mcp-preset-events";
-import type { NanobotClient } from "@/lib/nanobot-client";
+import type { NanobotClient } from "@/lib/auto_cut_bot-client";
 import type {
   AutomationUpdatePayload,
   McpOAuthFlowPayload,
@@ -98,7 +98,7 @@ export function createSystemSettingsActions({
     mcpOAuthFlowRef,
     mcpOAuthNavigatedUrlRef,
     mcpOAuthPopupRef,
-    nanobotFeatures,
+    auto_cut_botFeatures,
     setApiService,
     setApiServiceAction,
     setApiServiceError,
@@ -138,7 +138,7 @@ export function createSystemSettingsActions({
     setNanobotFeatureAction(`enable:${names.join("+")}`);
     setNanobotFeaturesError(null);
     try {
-      let latest = nanobotFeatures;
+      let latest = auto_cut_botFeatures;
       for (const name of missing) {
         latest = await enableNanobotFeature(client, name);
         if (latest.requires_restart) {
@@ -288,7 +288,7 @@ export function createSystemSettingsActions({
     try {
       popup = window.open(
         authorizationUrl ?? "about:blank",
-        "nanobot-mcp-oauth",
+        "auto_cut_bot-mcp-oauth",
         "popup,width=560,height=720,resizable=yes,scrollbars=yes",
       );
       if (popup) {
@@ -371,7 +371,7 @@ export function createSystemSettingsActions({
       setMcpError(
         flow.hot_reload.message
         || t("settings.mcp.reloadFailed", {
-          defaultValue: "Signed in, but nanobot could not connect the tools. Try restarting nanobot.",
+          defaultValue: "Signed in, but auto_cut_bot could not connect the tools. Try restarting auto_cut_bot.",
         }),
       );
       return;

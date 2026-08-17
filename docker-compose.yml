@@ -8,7 +8,7 @@ x-common-config: &common-config
     - ~/.auto_cut_bot:/home/auto_cut_bot/.auto_cut_bot
   cap_drop:
     - ALL
-  # Entrypoint uses these to fix bind-mount ownership and drop to the nanobot user.
+  # Entrypoint uses these to fix bind-mount ownership and drop to the auto_cut_bot user.
   cap_add:
     - CHOWN
     - SETGID

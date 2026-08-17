@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import nanobot.webui.version_check as version_check
+import auto_cut_bot.webui.version_check as version_check
 
 
 @pytest.fixture(autouse=True)
@@ -29,12 +29,12 @@ def test_version_check_reports_only_a_newer_release_and_caches_it(
     expected = {
         "currentVersion": "1.2.0",
         "latestVersion": "1.3.0",
-        "pypiUrl": "https://pypi.org/project/nanobot-ai/",
+        "pypiUrl": "https://pypi.org/project/auto_cut_bot-ai/",
     }
     assert version_check.check_for_update() == expected
     assert version_check.check_for_update() == expected
     get.assert_called_once_with(
-        "https://pypi.org/pypi/nanobot-ai/json",
+        "https://pypi.org/pypi/auto_cut_bot-ai/json",
         timeout=5.0,
         follow_redirects=True,
     )

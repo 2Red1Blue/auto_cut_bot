@@ -8,26 +8,26 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypedDict
 
-from nanobot.agent.tools.web import SEARCH_PROVIDER_OPTIONS
-from nanobot.api.runtime import ApiRuntime, ApiStartOptions
-from nanobot.audio.transcription import resolve_transcription_config
-from nanobot.audio.transcription_registry import (
+from auto_cut_bot.agent.tools.web import SEARCH_PROVIDER_OPTIONS
+from auto_cut_bot.api.runtime import ApiRuntime, ApiStartOptions
+from auto_cut_bot.audio.transcription import resolve_transcription_config
+from auto_cut_bot.audio.transcription_registry import (
     resolve_transcription_provider,
     transcription_provider_names,
 )
-from nanobot.config.schema import Config
-from nanobot.optional_features import (
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.optional_features import (
     OptionalFeatureError,
     extra_installed,
     optional_dependency_groups,
 )
-from nanobot.providers.image_generation import (
+from auto_cut_bot.providers.image_generation import (
     get_image_gen_provider,
     image_gen_provider_names,
 )
-from nanobot.providers.registry import find_by_name
-from nanobot.security.network import is_loopback_host
-from nanobot.webui.settings_contracts import (
+from auto_cut_bot.providers.registry import find_by_name
+from auto_cut_bot.security.network import is_loopback_host
+from auto_cut_bot.webui.settings_contracts import (
     QueryParams,
     SettingsRequest,
     SettingsRouteResult,
@@ -36,17 +36,17 @@ from nanobot.webui.settings_contracts import (
     query_first,
     query_first_alias,
 )
-from nanobot.webui.settings_models import (
+from auto_cut_bot.webui.settings_models import (
     OAuthStatusReader,
     mask_secret_hint,
     provider_configured_for_settings,
 )
-from nanobot.webui.workspaces import (
+from auto_cut_bot.webui.workspaces import (
     read_webui_default_access_mode,
 )
 
 if TYPE_CHECKING:
-    from nanobot.webui.settings_services import WebUISettingsServices
+    from auto_cut_bot.webui.settings_services import WebUISettingsServices
 
 SettingsOperation = Callable[..., dict[str, Any]]
 
@@ -58,7 +58,7 @@ class CapabilitySettingsOperations:
     update_image: SettingsOperation
     update_transcription: SettingsOperation
     update_network: SettingsOperation
-    nanobot_features_action: SettingsOperation
+    auto_cut_bot_features_action: SettingsOperation
     api_runtime: Callable[[], ApiRuntime]
     reload_image: Callable[[], Awaitable[dict[str, Any]]]
 
@@ -617,7 +617,7 @@ def api_service_payload(
         "timeout": config.api.timeout,
         "api_key_hint": masked_api_secret(config.api.api_key),
         "endpoint": f"http://{connect_host}:{config.api.port}/v1",
-        "command": "nanobot serve",
+        "command": "auto_cut_bot serve",
         "log_path": str(status.log_path),
     }
     if last_action:
@@ -729,7 +729,7 @@ class CapabilitySettingsHandler:
         try:
             await asyncio.to_thread(
                 self.settings.mutate,
-                operations.nanobot_features_action,
+                operations.auto_cut_bot_features_action,
                 "enable",
                 {"name": ["api"]},
                 allow_install=self._allow_feature_package_install(request),

@@ -10,8 +10,8 @@ from typing import Any, TypeVar
 
 from filelock import FileLock
 
-from nanobot.config.loader import load_config, save_config
-from nanobot.config.schema import Config
+from auto_cut_bot.config.loader import load_config, save_config
+from auto_cut_bot.config.schema import Config
 
 _T = TypeVar("_T")
 _WEBUI_OAUTH_MAX_FLOWS = 8

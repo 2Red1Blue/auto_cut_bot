@@ -342,7 +342,7 @@ async def test_deepseek_v4_pro_uses_responses_api() -> None:
     mock_chat = AsyncMock(return_value=_fake_chat_response())
     mock_responses = AsyncMock(return_value=_fake_responses_response("from responses"))
 
-    with patch("nanobot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_class:
+    with patch("auto_cut_bot.providers.openai_compat_provider.AsyncOpenAI") as mock_client_class:
         client_instance = mock_client_class.return_value
         client_instance.chat.completions.create = mock_chat
         client_instance.responses.create = mock_responses

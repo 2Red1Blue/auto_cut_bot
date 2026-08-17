@@ -21,7 +21,7 @@ describe("Settings overview and appearance", () => {
     fireEvent.click(screen.getByRole("button", { name: "Diff" }));
 
     await waitFor(() => {
-      const saved = JSON.parse(localStorage.getItem("nanobot-webui.settings-preferences") || "{}");
+      const saved = JSON.parse(localStorage.getItem("auto_cut_bot-webui.settings-preferences") || "{}");
       expect(saved.fileEditDisplayMode).toBe("diff");
     });
   });

@@ -118,8 +118,8 @@ export function useSettingsController({
     channelsQuery, cliApps, cliAppsAction, cliAppsError, cliAppsFocusName, cliAppsLoading,
     cliAppsMessage, customMcpForm, mcpConfigImport, mcpError, mcpFieldValues, mcpMessage,
     mcpOAuthCallbackError, mcpOAuthCallbackUrl, mcpOAuthCompleting, mcpOAuthFlow,
-    mcpOAuthPopupBlocked, mcpPresetAction, mcpPresets, mcpPresetsLoading, nanobotFeatureAction,
-    nanobotFeatureConfirm, nanobotFeatures, nanobotFeaturesError, nanobotFeaturesLoading,
+    mcpOAuthPopupBlocked, mcpPresetAction, mcpPresets, mcpPresetsLoading, auto_cut_botFeatureAction,
+    auto_cut_botFeatureConfirm, auto_cut_botFeatures, auto_cut_botFeaturesError, auto_cut_botFeaturesLoading,
     setAppsKindFilter, setAppsQuery, setAutomationPendingDelete,
     setAutomationPendingEdit, setAutomationsFilter,
     setAutomationsQuery, setAutomationsSort, setChannelsQuery,
@@ -129,7 +129,7 @@ export function useSettingsController({
     setNanobotFeatureConfirm, setNanobotFeatures,
     setNanobotFeaturesError,
   } = systemState;
-  const featureCatalog = nanobotFeatures?.features ?? [];
+  const featureCatalog = auto_cut_botFeatures?.features ?? [];
 
   useEffect(() => {
     setActiveSection(initialSection);
@@ -540,11 +540,11 @@ export function useSettingsController({
     modelPresetEditingName,
     modelPresetNameError,
     modelPresetPendingDelete,
-    nanobotFeatureAction,
-    nanobotFeatureConfirm,
-    nanobotFeatures,
-    nanobotFeaturesError,
-    nanobotFeaturesLoading,
+    auto_cut_botFeatureAction,
+    auto_cut_botFeatureConfirm,
+    auto_cut_botFeatures,
+    auto_cut_botFeaturesError,
+    auto_cut_botFeaturesLoading,
     networkSafetyDirty,
     networkSafetyForm,
     networkSafetySaving,

@@ -13,18 +13,18 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 import httpx
 
-from nanobot import __version__
-from nanobot.config.loader import get_config_path, load_config, save_config
-from nanobot.config.schema import Config
-from nanobot.webui import settings_capabilities as capabilities
-from nanobot.webui import settings_contracts as contracts
-from nanobot.webui import settings_models as models
-from nanobot.webui import settings_system as system
-from nanobot.webui.settings_contracts import QueryParams, WebUISettingsError
-from nanobot.webui.workspaces import write_webui_default_access_mode
+from auto_cut_bot import __version__
+from auto_cut_bot.config.loader import get_config_path, load_config, save_config
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.webui import settings_capabilities as capabilities
+from auto_cut_bot.webui import settings_contracts as contracts
+from auto_cut_bot.webui import settings_models as models
+from auto_cut_bot.webui import settings_system as system
+from auto_cut_bot.webui.settings_contracts import QueryParams, WebUISettingsError
+from auto_cut_bot.webui.workspaces import write_webui_default_access_mode
 
 if TYPE_CHECKING:
-    from nanobot.webui.settings_services import WebUIOAuthFlowRegistry
+    from auto_cut_bot.webui.settings_services import WebUIOAuthFlowRegistry
 
 RuntimeSurface = Literal["browser", "native"]
 

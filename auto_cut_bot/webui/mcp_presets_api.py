@@ -16,26 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, cast
 
-from nanobot.agent.plugins import (
+from auto_cut_bot.agent.plugins import (
     AgentPlugin,
     discover_agent_plugins,
     set_agent_plugin_enabled,
 )
-from nanobot.agent.tools.mcp_oauth import (
+from auto_cut_bot.agent.tools.mcp_oauth import (
     delete_mcp_oauth_credentials,
     mcp_oauth_has_credentials,
 )
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.apps.protocol import app_manifest, compact_dict
-from nanobot.config.loader import load_config, resolve_config_env_vars, save_config
-from nanobot.config.paths import get_runtime_subdir
-from nanobot.config.schema import MCPServerConfig
-from nanobot.utils.helpers import ensure_dir
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.apps.protocol import app_manifest, compact_dict
+from auto_cut_bot.config.loader import load_config, resolve_config_env_vars, save_config
+from auto_cut_bot.config.paths import get_runtime_subdir
+from auto_cut_bot.config.schema import MCPServerConfig
+from auto_cut_bot.utils.helpers import ensure_dir
 
 QueryParams = dict[str, list[str]]
 
 if TYPE_CHECKING:
-    from nanobot.webui.settings_services import WebUISettingsConfig
+    from auto_cut_bot.webui.settings_services import WebUISettingsConfig
 
 _MCP_PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$", re.IGNORECASE)
 _SECRET_QUERY_RE = re.compile(
@@ -818,7 +818,7 @@ def _custom_manifest(name: str, cfg: MCPServerConfig) -> dict[str, Any]:
     return app_manifest(
         app_id=name,
         display_name=name,
-        description="Custom MCP server from nanobot config.",
+        description="Custom MCP server from auto_cut_bot config.",
         category="custom",
         source="mcp-custom",
         brand_color="#64748B",
@@ -899,7 +899,7 @@ def _custom_payload(
         "name": name,
         "display_name": name,
         "category": "custom",
-        "description": "Custom MCP server from nanobot config.",
+        "description": "Custom MCP server from auto_cut_bot config.",
         "docs_url": "",
         "transport": transport,
         "auth": cfg.auth,
@@ -1101,7 +1101,7 @@ async def mcp_presets_test_action(
     config_path: Path | None = None,
 ) -> dict[str, Any]:
     """Connect to an enabled MCP preset and report its complete tool surface."""
-    from nanobot.agent.tools.mcp import connect_mcp_servers
+    from auto_cut_bot.agent.tools.mcp import connect_mcp_servers
 
     name = (_query_first(query, "name") or "").strip()
     if not name:

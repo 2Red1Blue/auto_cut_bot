@@ -1,13 +1,13 @@
 {
   "app": {
-    "brand": "nanobot",
+    "brand": "auto_cut_bot",
     "loading": {
-      "connecting": "Connecting to nanobot…",
-      "boot": "Loading nanobot…"
+      "connecting": "Connecting to auto_cut_bot…",
+      "boot": "Loading auto_cut_bot…"
     },
     "error": {
-      "title": "Couldn't reach nanobot",
-      "gatewayHint": "Make sure the gateway is running (`nanobot gateway`) and that this page is open on the same machine."
+      "title": "Couldn't reach auto_cut_bot",
+      "gatewayHint": "Make sure the gateway is running (`auto_cut_bot gateway`) and that this page is open on the same machine."
     },
     "auth": {
       "label": "Password",
@@ -24,8 +24,8 @@
     },
     "system": {
       "section": "System",
-      "restartHint": "Restart nanobot to apply runtime changes.",
-      "restart": "Restart nanobot",
+      "restartHint": "Restart auto_cut_bot to apply runtime changes.",
+      "restart": "Restart auto_cut_bot",
       "restarting": "Restarting...",
       "restartEngine": "Restart engine",
       "restartingEngine": "Restarting engine..."
@@ -34,11 +34,11 @@
       "completed": "Restart completed in {{seconds}}s."
     },
     "documentTitle": {
-      "base": "nanobot",
-      "chat": "{{title}} · nanobot"
+      "base": "auto_cut_bot",
+      "chat": "{{title}} · auto_cut_bot"
     },
     "meta": {
-      "description": "nanobot web UI — chat with your nanobot workspace."
+      "description": "auto_cut_bot web UI — chat with your auto_cut_bot workspace."
     },
     "pairing": {
       "title": "Pair a chat user",
@@ -184,7 +184,7 @@
       "language": "Language",
       "provider": "Provider",
       "model": "Model",
-      "restart": "Restart nanobot",
+      "restart": "Restart auto_cut_bot",
       "configPath": "Config path",
       "activePreset": "Active preset",
       "gateway": "Gateway",
@@ -254,7 +254,7 @@
       "defaultImageSize": "Size hint sent to providers that support it.",
       "maxImagesPerTurn": "Upper bound for one generate_image request.",
       "timezone": "Used for schedules and time-aware replies.",
-      "cliAppsCatalog": "Install only the app-specific CLI adapters nanobot can run locally; native apps stay untouched.",
+      "cliAppsCatalog": "Install only the app-specific CLI adapters auto_cut_bot can run locally; native apps stay untouched.",
       "cliAppsFilter": "Search by app, category, or capability.",
       "localServiceAccess": "Allow Full Access shell commands to reach localhost services.",
       "webuiDefaultAccess": "Used by web chats without a project-specific permission.",
@@ -300,7 +300,7 @@
       "readyStatus": "Ready",
       "readyTry": "Try @{{name}}",
       "readyCopied": "Copied",
-      "readyPrompt": "Ask nanobot to use @{{name}} for this task.",
+      "readyPrompt": "Ask auto_cut_bot to use @{{name}} for this task.",
       "openChat": "Open chat",
       "unsupported": "Unsupported",
       "unavailable": "Unavailable",
@@ -344,7 +344,7 @@
       "saveCustom": "Save MCP",
       "configImport": "Import mcp.json",
       "importConfig": "Import",
-      "restartRequired": "Restart nanobot to connect updated MCP tools.",
+      "restartRequired": "Restart auto_cut_bot to connect updated MCP tools.",
       "toolsFound": "{{count}} tools",
       "loading": "Loading MCP presets...",
       "empty": "No MCP presets match this filter.",
@@ -372,14 +372,14 @@
       "preparingSignIn": "Preparing secure sign-in…",
       "openSignInToContinue": "Open the sign-in page to continue.",
       "finishSignInInBrowser": "Finish signing in in the browser window.",
-      "manualCallbackRequired": "Finish signing in, then paste the callback URL into nanobot.",
+      "manualCallbackRequired": "Finish signing in, then paste the callback URL into auto_cut_bot.",
       "manualCallbackHelp": "After approving access, the localhost page will not load. Copy its full URL from the address bar and paste it here.",
       "finishingConnection": "Finishing connection…",
       "activatingTools": "Activating tools…",
       "connected": "Connected.",
       "connectionFailed": "Connection failed.",
       "connectionCancelled": "Connection cancelled.",
-      "reloadFailed": "Signed in, but nanobot could not connect the tools. Try restarting nanobot.",
+      "reloadFailed": "Signed in, but auto_cut_bot could not connect the tools. Try restarting auto_cut_bot.",
       "oauthFailed": "Unable to connect. Try signing in again.",
       "statusMissingDependency": "Needs dependency",
       "statusComingSoon": "Coming soon",
@@ -465,11 +465,11 @@
       "loadError": "Could not load settings",
       "unsaved": "Unsaved changes.",
       "upToDate": "Up to date.",
-      "savedRestart": "Saved. Restart nanobot to apply.",
+      "savedRestart": "Saved. Restart auto_cut_bot to apply.",
       "restartAfterSaving": "Save changes, then restart when ready.",
       "savedRestartApply": "Saved. Restart when ready.",
       "imageProviderRestart": "Image provider changes saved. Restart when ready.",
-      "hostRestartAfterSaving": "Save changes and nanobot will restart its engine.",
+      "hostRestartAfterSaving": "Save changes and auto_cut_bot will restart its engine.",
       "hostRestartPending": "Saved. Restarting engine when ready.",
       "hostApiUnavailable": "Host actions are only available inside the native app.",
       "logsOpened": "Opened logs folder.",
@@ -640,12 +640,12 @@
     },
     "observability": {
       "title": "Observability",
-      "configured": "Tracing credentials are available to nanobot.",
-      "environment": "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart nanobot.",
+      "configured": "Tracing credentials are available to auto_cut_bot.",
+      "environment": "Set LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY, then restart auto_cut_bot.",
       "enable": "Enable tracing support"
     },
     "apps": {
-      "description": "Add tools to nanobot, then @ them in chat.",
+      "description": "Add tools to auto_cut_bot, then @ them in chat.",
       "cliLabel": "App",
       "mcpLabel": "MCP",
       "channelLabel": "Channel",
@@ -668,21 +668,21 @@
       "browseApps": "Browse apps",
       "browseIntegrations": "Browse MCP tools",
       "emptyIntegrationsHint": "Add a custom MCP server below.",
-      "restartRequired": "Restart nanobot to apply updated apps and MCP tools."
+      "restartRequired": "Restart auto_cut_bot to apply updated apps and MCP tools."
     },
     "channels": {
-      "description": "Connect chat apps, email, and WebUI to nanobot.",
+      "description": "Connect chat apps, email, and WebUI to auto_cut_bot.",
       "caption": "{{enabled}} running · {{total}} channels",
       "searchPlaceholder": "Search channels",
       "backToChannels": "All channels",
       "catalog": "Channels",
       "loading": "Loading Channels...",
       "empty": "No channels match this filter.",
-      "restartRequired": "Restart nanobot to apply updated channel support.",
+      "restartRequired": "Restart auto_cut_bot to apply updated channel support.",
       "requires": "Requires: {{requirements}}",
       "setUp": "Set up",
       "setupGuide": "Setup guide",
-      "setupSummary": "Enable only turns on nanobot support. Add the platform credentials, then restart nanobot.",
+      "setupSummary": "Enable only turns on auto_cut_bot support. Add the platform credentials, then restart auto_cut_bot.",
       "configKeys": "Config keys",
       "enable": "Enable channel",
       "disable": "Disable channel",
@@ -737,7 +737,7 @@
         "unsupported": "Manual setup"
       }
     },
-    "nanobotFeatures": {
+    "auto_cut_botFeatures": {
       "enabled": "Enabled",
       "enable": "Enable",
       "disable": "Disable",
@@ -745,7 +745,7 @@
       "missingDependency": "Support missing",
       "installSupport": "Install support",
       "installConfirmTitle": "Install support for {{name}}?",
-      "installConfirmDescription": "nanobot will add what {{name}} needs, then turn it on. Continue?",
+      "installConfirmDescription": "auto_cut_bot will add what {{name}} needs, then turn it on. Continue?",
       "installConfirmAction": "Install and enable",
       "websocketRequired": "Required for WebUI",
       "channelDisabled": "Channel is disabled",
@@ -889,7 +889,7 @@
       "signedInAs": "Signed in as {{account}}",
       "signInHelp": "Sign in from this device; no API key is stored in config.",
       "remoteSignInHelp": "Select Sign in to open xAI on your computer, then paste the authorization code shown after login.",
-      "codexRemoteSignInHelp": "Sign in through this browser, then paste the full localhost callback URL back into nanobot.",
+      "codexRemoteSignInHelp": "Sign in through this browser, then paste the full localhost callback URL back into auto_cut_bot.",
       "signInRequired": "Sign in required",
       "signInBeforeSaving": "Sign in before saving this provider in the preset.",
       "signedIn": "Signed in",
@@ -942,7 +942,7 @@
       "deleteConfirmAction": "Delete skill",
       "instructionsTitle": "Skill instructions",
       "setupRequired": "Setup required",
-      "setupDescription": "Install the missing dependency on the machine running nanobot, then check again.",
+      "setupDescription": "Install the missing dependency on the machine running auto_cut_bot, then check again.",
       "copySetupCommand": "Copy setup command",
       "checkAgain": "Check again",
       "marketplaceSearchFailed": "Could not search skill marketplaces.",
@@ -1117,7 +1117,7 @@
       "imageQuickActions": {
         "icon": {
           "title": "Design an app icon",
-          "prompt": "Generate a clean 1:1 app icon for nanobot: friendly robot, simple vector style, soft blue and white palette, no text."
+          "prompt": "Generate a clean 1:1 app icon for auto_cut_bot: friendly robot, simple vector style, soft blue and white palette, no text."
         },
         "sticker": {
           "title": "Make a sticker",
@@ -1264,7 +1264,7 @@
             "description": "Cancel the active agent turn for this chat."
           },
           "restart": {
-            "title": "Restart nanobot",
+            "title": "Restart auto_cut_bot",
             "description": "Restart the bot process in place."
           },
           "status": {
@@ -1439,7 +1439,7 @@
     "close": "Close file preview",
     "loading": "Loading preview...",
     "failed": "Could not preview this file.",
-    "routeMissing": "File preview needs the latest gateway. Restart nanobot gateway and try again.",
+    "routeMissing": "File preview needs the latest gateway. Restart auto_cut_bot gateway and try again.",
     "resize": "Resize file preview",
     "truncated": "Preview is truncated because this file is large."
   },

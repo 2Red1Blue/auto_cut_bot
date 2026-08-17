@@ -1138,9 +1138,9 @@ describe("ThreadComposer", () => {
   });
 
   it.each([
-    ["Windows", "D:\\Users\\test\\.nanobot\\workspace", "D:\\path\\to\\project"],
-    ["macOS", "/Users/test/.nanobot/workspace", "/Users/name/project"],
-    ["Linux", "/home/test/.nanobot/workspace", "/home/name/project"],
+    ["Windows", "D:\\Users\\test\\.auto_cut_bot\\workspace", "D:\\path\\to\\project"],
+    ["macOS", "/Users/test/.auto_cut_bot/workspace", "/Users/name/project"],
+    ["Linux", "/home/test/.auto_cut_bot/workspace", "/home/name/project"],
   ])("uses a %s path example for the project picker", async (_, projectPath, placeholder) => {
     const user = userEvent.setup();
     const defaultScope = {
@@ -1264,7 +1264,7 @@ describe("ThreadComposer", () => {
     const onWorkspaceScopeChange = vi.fn();
     const pickFolder = vi.fn().mockResolvedValue("/Users/test/gateway-project");
     const defaultScope = {
-      project_path: "/Users/test/.nanobot/workspace",
+      project_path: "/Users/test/.auto_cut_bot/workspace",
       project_name: "workspace",
       access_mode: "full" as const,
       restrict_to_workspace: false,

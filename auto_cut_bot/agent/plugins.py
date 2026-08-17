@@ -13,9 +13,9 @@ from typing import cast
 from loguru import logger
 from pydantic import ValidationError
 
-from nanobot.agent.skills import parse_skill_metadata, valid_skill_metadata
-from nanobot.config.loader import get_config_path
-from nanobot.config.schema import MCPServerConfig
+from auto_cut_bot.agent.skills import parse_skill_metadata, valid_skill_metadata
+from auto_cut_bot.config.loader import get_config_path
+from auto_cut_bot.config.schema import MCPServerConfig
 
 AGENT_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 AGENT_PLUGIN_MCP_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -196,17 +196,17 @@ def _load_manifest(plugin_root: Path) -> AgentPlugin | None:
     extension = payload.get("extensions")
     extension_payload = cast(dict[str, object], extension) if isinstance(extension, dict) else {}
     nanobot_value = extension_payload.get("dev.nanobot")
-    nanobot = cast(dict[str, object], nanobot_value) if isinstance(nanobot_value, dict) else {}
+    auto_cut_bot = cast(dict[str, object], auto_cut_bot_value) if isinstance(auto_cut_bot_value, dict) else {}
     return AgentPlugin(
         name=name,
         root=plugin_root,
         description=_string(payload.get("description")),
         repository=_string(payload.get("repository")),
-        display_name=_string(nanobot.get("displayName")) or name,
-        category=_string(nanobot.get("category")) or "Plugin",
-        accent_color=_accent_color(nanobot.get("accentColor")),
-        logo=_plugin_logo(nanobot.get("logo"), plugin_root),
-        permissions=_string_tuple(nanobot.get("permissions")),
+        display_name=_string(auto_cut_bot.get("displayName")) or name,
+        category=_string(auto_cut_bot.get("category")) or "Plugin",
+        accent_color=_accent_color(auto_cut_bot.get("accentColor")),
+        logo=_plugin_logo(auto_cut_bot.get("logo"), plugin_root),
+        permissions=_string_tuple(auto_cut_bot.get("permissions")),
     )
 
 
@@ -278,7 +278,7 @@ def _accent_color(value: object) -> str | None:
 
 
 def _plugin_logo(value: object, plugin_root: Path) -> str | None:
-    """Resolve nanobot's optional packaged logo extension."""
+    """Resolve auto_cut_bot's optional packaged logo extension."""
     if value is None:
         return None
     if not isinstance(value, str) or not value.startswith("./"):

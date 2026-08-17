@@ -159,8 +159,8 @@ class TestSpawnWindows:
         job.assign_and_resume.side_effect = OSError("OpenProcess failed")
 
         with (
-            patch("nanobot.agent.tools.shell._IS_WINDOWS", True),
-            patch("nanobot.agent.tools.shell.sys", MagicMock(platform="win32")),
+            patch("auto_cut_bot.agent.tools.shell._IS_WINDOWS", True),
+            patch("auto_cut_bot.agent.tools.shell.sys", MagicMock(platform="win32")),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec,
             patch.object(ExecTool, "_create_windows_job", return_value=job),
             pytest.raises(OSError, match="OpenProcess failed"),

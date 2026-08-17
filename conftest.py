@@ -39,11 +39,11 @@ def _isolate_sessions_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> I
         return path
 
     monkeypatch.setattr(
-        "nanobot.session.manager.get_runtime_subdir",
+        "auto_cut_bot.session.manager.get_runtime_subdir",
         runtime_subdir,
     )
     monkeypatch.setattr(
-        "nanobot.session.manager.get_legacy_sessions_dir",
+        "auto_cut_bot.session.manager.get_legacy_sessions_dir",
         lambda: legacy_root,
     )
     yield

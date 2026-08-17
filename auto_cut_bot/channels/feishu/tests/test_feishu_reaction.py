@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("lark_oapi")
 
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.feishu.runtime import FeishuChannel, FeishuConfig, _FeishuStreamBuf
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.feishu.runtime import FeishuChannel, FeishuConfig, _FeishuStreamBuf
 
 
 def _make_channel() -> FeishuChannel:

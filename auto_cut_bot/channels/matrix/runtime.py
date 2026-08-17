@@ -17,7 +17,7 @@ from urllib.parse import quote, unquote, urlparse
 
 from pydantic import Field
 
-from nanobot.security.workspace_policy import is_path_within
+from auto_cut_bot.security.workspace_policy import is_path_within
 
 try:
     import aiohttp
@@ -53,17 +53,17 @@ try:
     from nio.exceptions import EncryptionError
 except ImportError as e:
     raise ImportError(
-        "Matrix dependencies not installed. Run: nanobot plugins enable matrix"
+        "Matrix dependencies not installed. Run: auto_cut_bot plugins enable matrix"
     ) from e
 
-from nanobot.bus.events import OutboundMessage
-from nanobot.bus.outbound_events import ProgressEvent
-from nanobot.bus.queue import MessageBus
-from nanobot.channels.base import BaseChannel
-from nanobot.config.paths import get_data_dir, get_media_dir
-from nanobot.config.schema import Base
-from nanobot.utils.helpers import safe_filename
-from nanobot.utils.logging_bridge import redirect_lib_logging
+from auto_cut_bot.bus.events import OutboundMessage
+from auto_cut_bot.bus.outbound_events import ProgressEvent
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.base import BaseChannel
+from auto_cut_bot.config.paths import get_data_dir, get_media_dir
+from auto_cut_bot.config.schema import Base
+from auto_cut_bot.utils.helpers import safe_filename
+from auto_cut_bot.utils.logging_bridge import redirect_lib_logging
 
 TYPING_NOTICE_TIMEOUT_MS = 30_000
 # Must stay below TYPING_NOTICE_TIMEOUT_MS so the indicator doesn't expire mid-processing.
@@ -111,7 +111,7 @@ MATRIX_ALLOWED_HTML_ATTRIBUTES: dict[str, set[str]] = {
     "img": {"src", "alt", "title", "width", "height"},
 }
 MATRIX_ALLOWED_URL_SCHEMES = {"https", "http", "matrix", "mailto", "mxc"}
-_MXC_IMAGE_PLACEHOLDER_PREFIX = "https://nanobot.invalid/matrix-mxc/"
+_MXC_IMAGE_PLACEHOLDER_PREFIX = "https://auto_cut_bot.invalid/matrix-mxc/"
 _MXC_MARKDOWN_IMAGE_RE = re.compile(
     r"(?P<prefix>!\[[^\]]*\]\()"
     r"(?P<value>mxc://[^\s)]+)"

@@ -10,34 +10,34 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from nanobot import __logo__
-from nanobot.agent.hooks import create_file_edit_activity_hook
-from nanobot.agent.loop import AgentLoop
-from nanobot.agent.tools.mcp import MCPProvider
-from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.bus.outbound_events import (
+from auto_cut_bot import __logo__
+from auto_cut_bot.agent.hooks import create_file_edit_activity_hook
+from auto_cut_bot.agent.loop import AgentLoop
+from auto_cut_bot.agent.tools.mcp import MCPProvider
+from auto_cut_bot.agent.tools.registry import ToolRegistry
+from auto_cut_bot.bus.outbound_events import (
     StreamDeltaEvent,
     StreamedResponseEvent,
     StreamEndEvent,
     outbound_event_from_message,
 )
-from nanobot.cli import terminal as cli_terminal
-from nanobot.cli.log_control import _set_nanobot_logs
-from nanobot.cli.runtime_config import (
+from auto_cut_bot.cli import terminal as cli_terminal
+from auto_cut_bot.cli.log_control import _set_auto_cut_bot_logs
+from auto_cut_bot.cli.runtime_config import (
     _load_runtime_config,
     _migrate_cron_store,
     _model_display,
     _print_agent_start_error,
 )
-from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
-from nanobot.config.paths import is_default_workspace
-from nanobot.utils.helpers import (
+from auto_cut_bot.cli.stream import StreamRenderer, ThinkingSpinner
+from auto_cut_bot.config.paths import is_default_workspace
+from auto_cut_bot.utils.helpers import (
     sanitize_surrogates as _sanitize_surrogates,
 )
-from nanobot.utils.helpers import (
+from auto_cut_bot.utils.helpers import (
     sync_workspace_templates,
 )
-from nanobot.utils.restart import (
+from auto_cut_bot.utils.restart import (
     consume_restart_notice_from_env,
     format_restart_completed_message,
     should_show_cli_restart_notice,
@@ -59,14 +59,14 @@ def agent(
     logs: bool = typer.Option(
         False,
         "--logs/--no-logs",
-        help="Show nanobot runtime logs during chat",
+        help="Show auto_cut_bot runtime logs during chat",
     ),
 ):
     """Interact with the agent directly."""
-    from nanobot.bus.queue import MessageBus
-    from nanobot.cron.service import CronService
-    from nanobot.providers.factory import make_provider
-    from nanobot.providers.image_generation import image_gen_provider_configs
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.cron.service import CronService
+    from auto_cut_bot.providers.factory import make_provider
+    from auto_cut_bot.providers.image_generation import image_gen_provider_configs
 
     runtime_config = _load_runtime_config(config, workspace)
     try:
@@ -89,7 +89,7 @@ def agent(
     tools = ToolRegistry()
     mcp_provider = MCPProvider.from_config(runtime_config, tools)
 
-    _set_nanobot_logs(logs)
+    _set_auto_cut_bot_logs(logs)
 
     try:
         agent_loop = AgentLoop.from_config(
@@ -191,7 +191,7 @@ def agent(
         asyncio.run(run_once())
     else:
         # Interactive mode — route through bus like other channels
-        from nanobot.bus.events import InboundMessage
+        from auto_cut_bot.bus.events import InboundMessage
 
         cli_terminal._init_prompt_session()
         _model, _preset_tag = _model_display(runtime_config)

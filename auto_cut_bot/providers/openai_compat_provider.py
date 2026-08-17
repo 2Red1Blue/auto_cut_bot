@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from loguru import logger
 from pydantic.alias_generators import to_snake
 
-from nanobot.providers.base import (
+from auto_cut_bot.providers.base import (
     LLMProvider,
     LLMResponse,
     ProviderCallContext,
@@ -33,7 +33,7 @@ from nanobot.providers.base import (
     resolve_stream_idle_timeout_s,
     tool_arguments_json_for_replay,
 )
-from nanobot.providers.openai_responses import (
+from auto_cut_bot.providers.openai_responses import (
     ResponsesStreamCapture,
     build_responses_state,
     consume_sdk_stream,
@@ -49,7 +49,7 @@ from nanobot.providers.openai_responses import (
 if TYPE_CHECKING:
     from openai import AsyncOpenAI as AsyncOpenAIType
 
-    from nanobot.providers.registry import ProviderSpec
+    from auto_cut_bot.providers.registry import ProviderSpec
 
 # Module-level placeholder — set lazily by _ensure_client on first real
 # use, or replaced by tests via ``patch(...)``.  Kept as a plain name so
@@ -94,7 +94,7 @@ _STANDARD_TC_KEYS = frozenset({"id", "type", "index", "function"})
 _STANDARD_FN_KEYS = frozenset({"name", "arguments"})
 _DEFAULT_OPENROUTER_HEADERS = {
     "HTTP-Referer": "https://github.com/HKUDS/nanobot",
-    "X-OpenRouter-Title": "nanobot",
+    "X-OpenRouter-Title": "auto_cut_bot",
     "X-OpenRouter-Categories": "cli-agent,personal-agent",
 }
 _KIMI_K3_MODEL = "kimi-k3"
@@ -607,7 +607,7 @@ class OpenAICompatProvider(LLMProvider):
                     if os.environ.get("LANGFUSE_SECRET_KEY"):
                         logger.warning(
                             "LANGFUSE_SECRET_KEY is set but langfuse is not installed; "
-                            "run `nanobot plugins enable langfuse` to enable tracing"
+                            "run `auto_cut_bot plugins enable langfuse` to enable tracing"
                         )
                     from openai import AsyncOpenAI as _AsyncOpenAI
                 AsyncOpenAI = _AsyncOpenAI
@@ -777,7 +777,7 @@ class OpenAICompatProvider(LLMProvider):
 
         Gemini's OpenAI-compatible endpoint returns tool calls with an
         ``extra_content`` field: ``{"google": {"thought_signature": "..."}}``.
-        nanobot preserves it through the parse -> serialize round-trip so
+        auto_cut_bot preserves it through the parse -> serialize round-trip so
         replayed calls stay valid. Calls produced by other providers (e.g.
         after a mid-conversation model switch) carry no signature.
         """
@@ -1054,7 +1054,7 @@ class OpenAICompatProvider(LLMProvider):
 
         # Merge user-configured extra_body last so ordinary fields can override
         # provider defaults. Keep configured tools at the top level: the SDK
-        # otherwise lets extra_body.tools replace nanobot's generated functions.
+        # otherwise lets extra_body.tools replace auto_cut_bot's generated functions.
         if self._extra_body:
             kwargs = _merge_chat_extra_body(kwargs, self._extra_body)
 

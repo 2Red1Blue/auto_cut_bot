@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypedDict, cast
 
 import httpx
 
-from nanobot.config.loader import resolve_config_env_vars
-from nanobot.config.schema import Config, FallbackCandidate, ModelPresetConfig, ProviderConfig
-from nanobot.providers.image_generation import get_image_gen_provider
-from nanobot.providers.oauth_guidance import OAUTH_CLI_KIT_MISSING_MESSAGE
-from nanobot.providers.registry import PROVIDERS, create_dynamic_spec, find_by_name
-from nanobot.webui.settings_contracts import (
+from auto_cut_bot.config.loader import resolve_config_env_vars
+from auto_cut_bot.config.schema import Config, FallbackCandidate, ModelPresetConfig, ProviderConfig
+from auto_cut_bot.providers.image_generation import get_image_gen_provider
+from auto_cut_bot.providers.oauth_guidance import OAUTH_CLI_KIT_MISSING_MESSAGE
+from auto_cut_bot.providers.registry import PROVIDERS, create_dynamic_spec, find_by_name
+from auto_cut_bot.webui.settings_contracts import (
     QueryParams,
     SettingsRequest,
     SettingsRouteResult,
@@ -41,7 +41,7 @@ from nanobot.webui.settings_contracts import (
 )
 
 if TYPE_CHECKING:
-    from nanobot.webui.settings_services import (
+    from auto_cut_bot.webui.settings_services import (
         WebUIOAuthFlowRegistry,
         WebUISettingsServices,
     )
@@ -321,7 +321,7 @@ def oauth_provider_status(spec: Any) -> dict[str, Any]:
 
     if spec.name == "github_copilot":
         try:
-            from nanobot.providers.github_copilot_provider import get_github_copilot_login_status
+            from auto_cut_bot.providers.github_copilot_provider import get_github_copilot_login_status
         except Exception:
             return {
                 "configured": False,
@@ -341,7 +341,7 @@ def oauth_provider_status(spec: Any) -> dict[str, Any]:
 
     if spec.name == "xai_grok":
         try:
-            from nanobot.providers.xai_oauth import get_xai_oauth_login_status
+            from auto_cut_bot.providers.xai_oauth import get_xai_oauth_login_status
         except Exception:
             return {
                 "configured": False,
@@ -1453,7 +1453,7 @@ def login_oauth_provider(
 
     if spec.name == "openai_codex":
         try:
-            from nanobot.providers.openai_codex_oauth import start_openai_codex_oauth_login
+            from auto_cut_bot.providers.openai_codex_oauth import start_openai_codex_oauth_login
         except ImportError:
             raise WebUISettingsError(OAUTH_CLI_KIT_MISSING_MESSAGE, status=500) from None
 
@@ -1494,7 +1494,7 @@ def login_oauth_provider(
 
     if spec.name == "github_copilot":
         try:
-            from nanobot.providers.github_copilot_provider import (
+            from auto_cut_bot.providers.github_copilot_provider import (
                 get_github_copilot_login_status,
                 login_github_copilot,
             )
@@ -1509,7 +1509,7 @@ def login_oauth_provider(
         return settings_payload(config_path=config_path)
 
     if spec.name == "xai_grok":
-        from nanobot.providers.xai_oauth import start_xai_oauth_login
+        from auto_cut_bot.providers.xai_oauth import start_xai_oauth_login
 
         try:
             proxy = resolve_config_env_vars(
@@ -1561,7 +1561,7 @@ def complete_oauth_provider(
 
     try:
         if spec.name == "openai_codex":
-            from nanobot.providers.openai_codex_oauth import (
+            from auto_cut_bot.providers.openai_codex_oauth import (
                 OpenAICodexOAuthInputError,
                 complete_openai_codex_oauth_login,
             )
@@ -1571,7 +1571,7 @@ def complete_oauth_provider(
             except OpenAICodexOAuthInputError as exc:
                 raise WebUISettingsError(str(exc), status=400) from exc
         else:
-            from nanobot.providers.xai_oauth import complete_xai_oauth_login
+            from auto_cut_bot.providers.xai_oauth import complete_xai_oauth_login
 
             token = complete_xai_oauth_login(flow, authorization_response)
     except WebUISettingsError:
@@ -1620,12 +1620,12 @@ def logout_oauth_provider(
         ).get_token_path()
     elif spec.name == "github_copilot":
         try:
-            from nanobot.providers.github_copilot_provider import get_storage
+            from auto_cut_bot.providers.github_copilot_provider import get_storage
         except ImportError:
             raise WebUISettingsError(OAUTH_CLI_KIT_MISSING_MESSAGE, status=500) from None
         token_path = get_storage().get_token_path()
     elif spec.name == "xai_grok":
-        from nanobot.providers.xai_oauth import logout_xai_oauth
+        from auto_cut_bot.providers.xai_oauth import logout_xai_oauth
 
         oauth_flows.clear(spec.name)
         logout_xai_oauth()

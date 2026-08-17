@@ -9,22 +9,22 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from loguru import logger as default_logger
 
-from nanobot.config.loader import get_config_path
-from nanobot.webui.gateway_tokens import GatewayTokenStore
-from nanobot.webui.ingress_policy import DEFAULT_WEBUI_INGRESS_POLICY, WebUIIngressPolicy
-from nanobot.webui.media_gateway import WebUIMediaGateway
-from nanobot.webui.settings_services import WebUISettingsServices
-from nanobot.webui.temporary_chats import WebUITemporaryChats
-from nanobot.webui.transcript import WebUITranscriptRecorder
-from nanobot.webui.workspaces import WebUIWorkspaceController
-from nanobot.webui.ws_http import GatewayHTTPHandler
+from auto_cut_bot.config.loader import get_config_path
+from auto_cut_bot.webui.gateway_tokens import GatewayTokenStore
+from auto_cut_bot.webui.ingress_policy import DEFAULT_WEBUI_INGRESS_POLICY, WebUIIngressPolicy
+from auto_cut_bot.webui.media_gateway import WebUIMediaGateway
+from auto_cut_bot.webui.settings_services import WebUISettingsServices
+from auto_cut_bot.webui.temporary_chats import WebUITemporaryChats
+from auto_cut_bot.webui.transcript import WebUITranscriptRecorder
+from auto_cut_bot.webui.workspaces import WebUIWorkspaceController
+from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
 if TYPE_CHECKING:
-    from nanobot.bus.queue import MessageBus
-    from nanobot.channels.websocket.runtime import WebSocketConfig
-    from nanobot.cron.service import CronService
-    from nanobot.session.manager import SessionManager
-    from nanobot.triggers.local_store import LocalTriggerStore
+    from auto_cut_bot.bus.queue import MessageBus
+    from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
+    from auto_cut_bot.cron.service import CronService
+    from auto_cut_bot.session.manager import SessionManager
+    from auto_cut_bot.triggers.local_store import LocalTriggerStore
 
 
 @dataclass(frozen=True)
