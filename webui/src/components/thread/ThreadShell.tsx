@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 
 import { FilePreviewAvailabilityProvider } from "@/components/FilePreviewAvailabilityContext";
@@ -215,17 +216,18 @@ function isStaleThreadSnapshot(
   return snapshot.every((message, index) => sameMessageShape(current[index], message));
 }
 
-function latestActiveTurnId(messages: UIMessage[]): string | null {
+function latestActiveTurnId(messages: UIMessage[], runStartedAt: number | null): string | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message.isStreaming && message.turnId) return message.turnId;
   }
+  if (runStartedAt === null) return null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (
-      message.role === "user"
-      && message.deliveryStatus !== "failed"
+      message.role !== "user"
       && message.turnId
+      && message.createdAt >= runStartedAt * 1000
     ) return message.turnId;
   }
   return null;
@@ -311,9 +313,18 @@ interface ThreadShellProps {
   theme?: "light" | "dark";
   onToggleTheme?: () => void;
   hideSidebarToggleForHostChrome?: boolean;
+  hideSidebarToggle?: boolean;
   hostChromeTitleInset?: boolean;
   hideThemeButton?: boolean;
+  hideHeaderTitle?: boolean;
   hideHeader?: boolean;
+  headerActions?: ReactNode;
+  headerPortalTarget?: HTMLElement | null;
+  headerActive?: boolean;
+  composerPortalTarget?: HTMLElement | null;
+  composerActive?: boolean;
+  composerInputAriaLabel?: string;
+  emptyComposerVariant?: "hero" | "thread";
   workspaceScope?: WorkspaceScopePayload | null;
   workspaceDefaultScope?: WorkspaceScopePayload | null;
   workspaceControls?: WorkspacesPayload["controls"] | null;
@@ -367,7 +378,11 @@ function toModelBadgeInfo(
   const model = scopedPreset
     ? preset?.model || null
     : settings?.agent.model || modelName || null;
-  const label = preset?.label?.trim() || scopedPreset || toModelBadgeLabel(model);
+  const label = preset
+    ? preset.is_default
+      ? preset.label?.trim() || "Default"
+      : preset.name.trim()
+    : scopedPreset || toModelBadgeLabel(model);
   const rawProvider = preset?.provider
     || (!scopedPreset ? settings?.agent.provider : null)
     || null;
@@ -408,7 +423,6 @@ function modelPresetOptionsFromSettings(
       const name = preset.name.trim();
       return {
         name,
-        label: preset.label?.trim() || name,
         model: preset.model,
         provider: preset.resolved_provider || preset.provider,
       };
@@ -598,9 +612,18 @@ export function ThreadShell({
   theme = "light",
   onToggleTheme = () => {},
   hideSidebarToggleForHostChrome = false,
+  hideSidebarToggle = false,
   hostChromeTitleInset = false,
   hideThemeButton = false,
+  hideHeaderTitle = false,
   hideHeader = false,
+  headerActions,
+  headerPortalTarget,
+  headerActive = true,
+  composerPortalTarget,
+  composerActive = true,
+  composerInputAriaLabel,
+  emptyComposerVariant = "hero",
   workspaceScope = null,
   workspaceDefaultScope = null,
   workspaceControls = null,
@@ -642,6 +665,14 @@ export function ThreadShell({
     forkBoundaryMessageCount,
   } = useSessionHistory(historyKey);
   const { client, getToken, ingressLimits, modelName, token } = useClient();
+  const pickWorkspaceFolder = useCallback(async (): Promise<string | null> => {
+    const response = await client.requestMutation<{ path: unknown }>(
+      "workspace.pick_folder",
+      {},
+      300_000,
+    );
+    return typeof response.path === "string" ? response.path : null;
+  }, [client]);
   const [fallbackModelName, setFallbackModelName] = useState<string | null>(null);
   const [booting, setBooting] = useState(false);
   const [slashCommands, setSlashCommands] = useState<SlashCommand[]>([]);
@@ -781,14 +812,20 @@ export function ThreadShell({
   const currentGoalState = messagesReady ? goalState : undefined;
   const turnActive = messagesReady && (isStreaming || currentRunStartedAt !== null);
   const restoredViewportTurnId = useMemo(
-    () => turnActive ? latestActiveTurnId(displayMessages) : null,
-    [displayMessages, turnActive],
+    () => turnActive ? latestActiveTurnId(displayMessages, currentRunStartedAt) : null,
+    [currentRunStartedAt, displayMessages, turnActive],
   );
   const rememberedViewportTurnId = chatId
     ? activeViewportTurnByChatIdRef.current.get(chatId) ?? null
     : null;
+  const canonicalRunTurnId = chatId && messagesReady && turnActive
+    ? client.getRunTurnId(chatId)
+    : null;
   const viewportTurnId = messagesReady && turnActive
-    ? rememberedViewportTurnId ?? restoredViewportTurnId
+    ? canonicalRunTurnId
+      ?? rememberedViewportTurnId
+      ?? historyActiveTurnId
+      ?? restoredViewportTurnId
     : null;
   const activeTurnStartedHere =
     viewportTurnId !== null && viewportTurnId === submittedViewportTurnId;
@@ -843,6 +880,7 @@ export function ThreadShell({
   ]);
 
   const showHeroComposer = displayMessages.length === 0 && !loading;
+  const composerVariant = showHeroComposer ? emptyComposerVariant : "thread";
   const wasShowingHeroComposerRef = useRef(showHeroComposer);
   const sessionModelPreset = session?.modelPreset?.trim() || null;
   const [localModelPreset, setLocalModelPreset] = useState<string | null>(null);
@@ -1261,7 +1299,7 @@ export function ThreadShell({
 
   const handleWelcomeSend = useCallback(
     async (content: string, images?: SendAttachment[], options?: SendOptions) => {
-      if (booting) return;
+      if (booting) return false;
       setBooting(true);
       pendingFirstRef.current = { content, images, options: withWorkspaceScope(options) };
       setPendingFirstTargetChatId(null);
@@ -1270,12 +1308,13 @@ export function ThreadShell({
         pendingFirstRef.current = null;
         setPendingFirstTargetChatId(null);
         setBooting(false);
-        return;
+        return false;
       }
       if (localModelPreset) {
         await client.sendSystemCommand(newId, `/model ${localModelPreset}`).catch(() => {});
       }
       setPendingFirstTargetChatId(newId);
+      return true;
     },
     [booting, client, localModelPreset, onCreateChat, withWorkspaceScope, workspaceScope],
   );
@@ -1284,7 +1323,12 @@ export function ThreadShell({
     (content: string, images?: SendAttachment[], options?: SendOptions) => {
       setFallbackModelName(null);
       const submitted = send(content, images, withWorkspaceScope(options));
-      if (chatId && submitted && !submitted.sideChannel) {
+      if (
+        chatId
+        && submitted
+        && !submitted.sideChannel
+        && options?.continueActiveTurn !== true
+      ) {
         activeViewportTurnByChatIdRef.current.set(chatId, submitted.turnId);
         setSubmittedViewportTurnId(submitted.turnId);
       }
@@ -1404,9 +1448,10 @@ export function ThreadShell({
         <ThreadComposer
           onSend={handleThreadSend}
           disabled={!chatId}
+          inputAriaLabel={composerInputAriaLabel}
           isStreaming={turnActive}
           placeholder={
-            showHeroComposer
+            composerVariant === "hero"
               ? t("thread.composer.placeholderHero")
               : t("thread.composer.placeholderThread")
           }
@@ -1420,7 +1465,7 @@ export function ThreadShell({
           modelNeedsSetup={modelBadge.needsSetup}
           fallbackModelName={fallbackModelName}
           onModelBadgeClick={modelBadge.needsSetup ? onOpenModelSettings : undefined}
-          variant={showHeroComposer ? "hero" : "thread"}
+          variant={composerVariant}
           slashCommands={availableSlashCommands}
           cliApps={cliApps}
           mcpPresets={mcpPresets}
@@ -1428,7 +1473,6 @@ export function ThreadShell({
           skills={skills}
           onStop={stop}
           onTranscribeAudio={transcribeAudio}
-          runStartedAt={currentRunStartedAt}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
           workspaceControlsHidden={temporary}
@@ -1436,6 +1480,9 @@ export function ThreadShell({
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
           workspaceError={workspaceError}
+          onPickWorkspaceFolder={
+            workspaceControls?.can_pick_folder ? pickWorkspaceFolder : undefined
+          }
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           pendingQueueKey={temporary ? null : chatId}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}
@@ -1448,6 +1495,7 @@ export function ThreadShell({
         <ThreadComposer
           onSend={handleWelcomeSend}
           disabled={booting}
+          inputAriaLabel={composerInputAriaLabel}
           isStreaming={turnActive}
           placeholder={
             booting
@@ -1471,7 +1519,6 @@ export function ThreadShell({
           sessions={mentionSessions}
           skills={skills}
           surfaceRef={composerSurfaceRef}
-          runStartedAt={currentRunStartedAt}
           onTranscribeAudio={transcribeAudio}
           goalState={currentGoalState}
           workspaceScope={workspaceScope}
@@ -1480,6 +1527,9 @@ export function ThreadShell({
           workspaceControls={workspaceControls}
           workspaceScopeDisabled={workspaceScopeDisabled}
           workspaceError={workspaceError}
+          onPickWorkspaceFolder={
+            workspaceControls?.can_pick_folder ? pickWorkspaceFolder : undefined
+          }
           onWorkspaceScopeChange={onWorkspaceScopeChange}
           transcriptionProvider={settingsSnapshot?.transcription?.provider}
           ingressLimits={ingressLimits}
@@ -1507,28 +1557,33 @@ export function ThreadShell({
     />
   ) : undefined;
 
+  const threadHeader = !hideHeader ? (
+    <ThreadHeader
+      title={title}
+      onToggleSidebar={onToggleSidebar}
+      theme={theme}
+      onToggleTheme={onToggleTheme}
+      hideSidebarToggleForHostChrome={hideSidebarToggleForHostChrome}
+      hideSidebarToggle={hideSidebarToggle}
+      hostChromeTitleInset={hostChromeTitleInset}
+      hideThemeButton={hideThemeButton}
+      hideTitle={hideHeaderTitle}
+      actions={headerActions}
+      minimal={!session && !loading}
+      promptNavigatorAction={promptNavigatorAction}
+      sessionInfoAction={sessionInfoAction}
+      temporaryChatEnabled={temporaryChatEnabled}
+      temporaryChatDisabled={booting || turnActive}
+      onTemporaryChatEnabledChange={
+        showTemporaryChatControl ? onTemporaryChatEnabledChange : undefined
+      }
+    />
+  ) : null;
+
   return (
     <section ref={shellRef} className="relative flex min-h-0 flex-1 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!hideHeader ? (
-          <ThreadHeader
-            title={title}
-            onToggleSidebar={onToggleSidebar}
-            theme={theme}
-            onToggleTheme={onToggleTheme}
-            hideSidebarToggleForHostChrome={hideSidebarToggleForHostChrome}
-            hostChromeTitleInset={hostChromeTitleInset}
-            hideThemeButton={hideThemeButton}
-            minimal={!session && !loading}
-            promptNavigatorAction={promptNavigatorAction}
-            sessionInfoAction={sessionInfoAction}
-            temporaryChatEnabled={temporaryChatEnabled}
-            temporaryChatDisabled={booting || turnActive}
-            onTemporaryChatEnabledChange={
-              showTemporaryChatControl ? onTemporaryChatEnabledChange : undefined
-            }
-          />
-        ) : null}
+        {headerPortalTarget === undefined ? threadHeader : null}
         <FilePreviewAvailabilityProvider
           resolve={historyKey ? resolveFilePreviewAvailability : undefined}
         >
@@ -1537,8 +1592,9 @@ export function ThreadShell({
             messages={displayMessages}
             temporary={temporary}
             isStreaming={turnActive}
+            runStartedAt={currentRunStartedAt}
             emptyState={emptyState}
-            composer={composer}
+            composer={composerPortalTarget === undefined ? composer : null}
             activeTurnId={viewportTurnId}
             activeTurnStartedHere={activeTurnStartedHere}
             conversationKey={historyKey}
@@ -1558,6 +1614,19 @@ export function ThreadShell({
           />
         </FilePreviewAvailabilityProvider>
       </div>
+      {headerPortalTarget && headerActive
+        ? createPortal(threadHeader, headerPortalTarget)
+        : null}
+      {composerPortalTarget ? createPortal(
+        <div
+          hidden={!composerActive}
+          aria-hidden={!composerActive}
+          data-testid={composerActive ? "active-pane-composer" : undefined}
+        >
+          {composer}
+        </div>,
+        composerPortalTarget,
+      ) : null}
       {filePreviewPath && historyKey ? (
         <FilePreviewPanel
           sessionKey={historyKey}

@@ -6,11 +6,11 @@ import errno
 import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
-from auto_cut_bot.session.manager import SessionManager
+from nanobot.session.manager import SessionManager
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -65,18 +65,19 @@ class TestSaveFsync:
         session.add_message("user", "hello")
         directory_fd = 987654
         with (
-            patch("auto_cut_bot.session.manager.os.open", return_value=directory_fd) as open_dir,
+            manager.locked_session_files(),
+            patch("nanobot.session.manager.os.open", return_value=directory_fd) as open_dir,
             patch(
-                "auto_cut_bot.session.manager.os.fsync",
+                "nanobot.session.manager.os.fsync",
                 side_effect=[None, OSError(errno.EINVAL, "Invalid argument")],
             ),
-            patch("auto_cut_bot.session.manager.os.close") as close_dir,
+            patch("nanobot.session.manager.os.close") as close_dir,
         ):
             manager.save(session, fsync=True)
 
         assert manager._get_session_path(session.key).exists()
         open_dir.assert_called_once_with(str(manager.sessions_dir), os.O_RDONLY)
-        close_dir.assert_called_once_with(directory_fd)
+        assert close_dir.call_args_list.count(call(directory_fd)) == 1
 
     def test_save_propagates_other_directory_fsync_errors(
         self, manager: SessionManager
@@ -85,17 +86,18 @@ class TestSaveFsync:
         session = manager.get_or_create("test:directory-fsync-io-error")
         directory_fd = 987654
         with (
-            patch("auto_cut_bot.session.manager.os.open", return_value=directory_fd),
+            manager.locked_session_files(),
+            patch("nanobot.session.manager.os.open", return_value=directory_fd),
             patch(
-                "auto_cut_bot.session.manager.os.fsync",
+                "nanobot.session.manager.os.fsync",
                 side_effect=[None, OSError(errno.EIO, "I/O error")],
             ),
-            patch("auto_cut_bot.session.manager.os.close") as close_dir,
+            patch("nanobot.session.manager.os.close") as close_dir,
             pytest.raises(OSError, match="I/O error"),
         ):
             manager.save(session, fsync=True)
 
-        close_dir.assert_called_once_with(directory_fd)
+        assert close_dir.call_args_list.count(call(directory_fd)) == 1
 
 
 class TestFlushAll:

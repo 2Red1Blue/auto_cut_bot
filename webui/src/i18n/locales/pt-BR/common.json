@@ -1,20 +1,21 @@
 {
   "app": {
-    "brand": "auto_cut_bot",
+    "brand": "nanobot",
     "loading": {
-      "connecting": "Conectando-se ao auto_cut_bot…",
-      "boot": "Carregando auto_cut_bot…"
+      "connecting": "Conectando-se ao nanobot…",
+      "boot": "Carregando nanobot…"
     },
     "error": {
-      "title": "Não foi possível conectar-se com o auto_cut_bot",
-      "gatewayHint": "Verifique se o gateway está em execução (`auto_cut_bot gateway`) e se esta página está aberta na mesma máquina."
+      "title": "Não foi possível conectar-se com o nanobot",
+      "gatewayHint": "Verifique se o gateway está em execução (`nanobot gateway`) e se esta página está aberta na mesma máquina."
     },
     "auth": {
-      "title": "Autenticação necessária",
-      "hint": "Informe o segredo configurado como tokenIssueSecret na configuração do gateway.",
-      "placeholder": "Senha",
+      "label": "Senha",
+      "showPassword": "Mostrar senha",
+      "hidePassword": "Ocultar senha",
       "submit": "Conectar",
-      "invalid": "Senha inválida. Tente novamente."
+      "required": "Digite a senha.",
+      "invalid": "Senha incorreta. Tente novamente."
     },
     "account": {
       "section": "Conta",
@@ -23,9 +24,9 @@
     },
     "system": {
       "section": "Sistema",
-      "restartHint": "Reinicie o auto_cut_bot para aplicar as alterações de tempo de execução.",
-      "restart": "Reiniciar auto_cut_bot",
-      "restarting": "Reiniciando auto_cut_bot...",
+      "restartHint": "Reinicie o nanobot para aplicar as alterações de tempo de execução.",
+      "restart": "Reiniciar nanobot",
+      "restarting": "Reiniciando nanobot...",
       "restartEngine": "Reiniciar motor",
       "restartingEngine": "Reiniciando motor..."
     },
@@ -33,11 +34,11 @@
       "completed": "Reinício concluído em {{seconds}}s."
     },
     "documentTitle": {
-      "base": "auto_cut_bot",
-      "chat": "{{title}} · auto_cut_bot"
+      "base": "nanobot",
+      "chat": "{{title}} · nanobot"
     },
     "meta": {
-      "description": "Interface web do auto_cut_bot — converse com o seu espaço de trabalho do auto_cut_bot."
+      "description": "Interface web do nanobot — converse com o seu espaço de trabalho do nanobot."
     },
     "pairing": {
       "title": "Vincular usuário do chat",
@@ -142,7 +143,8 @@
       "presets": "Predefinições de modelo",
       "editPreset": "Editar predefinição",
       "presetName": "Nome da predefinição",
-      "presetNameHelp": "Um nome curto usado nas configurações de modelo.",
+      "presetNameHelp": "Usado na interface e nos comandos /model. Os nomes devem ser únicos.",
+      "presetNameDuplicate": "Já existe uma predefinição com este nome.",
       "presetNamePlaceholder": "Escrita rápida",
       "advancedOptions": "Opções avançadas",
       "advancedSummary": "Contexto {{context}} · Máx. {{max}} tokens",
@@ -182,7 +184,7 @@
       "language": "Idioma",
       "provider": "Provedor",
       "model": "Modelo",
-      "restart": "Reiniciar auto_cut_bot",
+      "restart": "Reiniciar nanobot",
       "configPath": "Caminho da configuração",
       "activePreset": "Predefinição ativa",
       "gateway": "Gateway",
@@ -252,7 +254,7 @@
       "defaultImageSize": "Dica de tamanho enviada a provedores compatíveis.",
       "maxImagesPerTurn": "Limite superior para uma requisição de generate_image.",
       "timezone": "Usado para agendamentos e respostas sensíveis ao horário.",
-      "cliAppsCatalog": "Instale apenas os adaptadores CLI de aplicativos que o auto_cut_bot pode executar localmente; aplicativos nativos permanecem intactos.",
+      "cliAppsCatalog": "Instale apenas os adaptadores CLI de aplicativos que o nanobot pode executar localmente; aplicativos nativos permanecem intactos.",
       "cliAppsFilter": "Busque por aplicativo, categoria ou capacidade.",
       "localServiceAccess": "Permite que comandos shell com acesso completo alcancem serviços locais.",
       "webuiDefaultAccess": "Usado por chats web sem permissão específica de projeto.",
@@ -298,7 +300,7 @@
       "readyStatus": "Pronto",
       "readyTry": "Experimentar @{{name}}",
       "readyCopied": "Copiado",
-      "readyPrompt": "Peça ao auto_cut_bot para usar @{{name}} nesta tarefa.",
+      "readyPrompt": "Peça ao nanobot para usar @{{name}} nesta tarefa.",
       "openChat": "Abrir conversa",
       "unsupported": "Não compatível",
       "unavailable": "Indisponível",
@@ -318,8 +320,8 @@
       "filterInstalled": "Habilitadas",
       "filterNotInstalled": "Não habilitadas",
       "searchPlaceholder": "Buscar predefinições MCP",
-      "moreOptions": "Adicionar integração",
-      "moreOptionsSubtitle": "Conecte um servidor de ferramentas personalizado ou importe uma configuração existente.",
+      "moreOptions": "Adicionar servidor MCP",
+      "moreOptionsSubtitle": "Conecte um servidor MCP personalizado ou importe uma configuração existente.",
       "customTitle": "MCP personalizado",
       "customSubtitle": "Adicione qualquer servidor MCP stdio, HTTP ou SSE.",
       "customAction": "Personalizado",
@@ -327,9 +329,14 @@
       "serverName": "Nome do servidor",
       "serverUrl": "URL",
       "transport": "Transporte",
+      "authentication": "Autenticação",
+      "authNone": "Nenhuma",
+      "authHeaders": "Cabeçalhos",
       "command": "Comando",
       "args": "Argumentos JSON",
       "headers": "Cabeçalhos JSON",
+      "oauthAfterSave": "Salve o servidor e selecione Conectar para entrar.",
+      "headersHelp": "Adicione os cabeçalhos de solicitação usados por este servidor.",
       "env": "Ambiente JSON",
       "timeout": "Tempo limite da ferramenta",
       "advancedOptions": "Opções avançadas",
@@ -337,7 +344,7 @@
       "saveCustom": "Salvar MCP",
       "configImport": "Importar mcp.json",
       "importConfig": "Importar",
-      "restartRequired": "Reinicie o auto_cut_bot para conectar as ferramentas MCP atualizadas.",
+      "restartRequired": "Reinicie o nanobot para conectar as ferramentas MCP atualizadas.",
       "toolsFound": "{{count}} ferramentas",
       "loading": "Carregando predefinições MCP...",
       "empty": "Nenhuma predefinição MCP corresponde a este filtro.",
@@ -348,7 +355,10 @@
       "enabled": "Habilitado",
       "setup": "Conectar",
       "configure": "Conectar",
+      "reconnect": "Reconectar",
       "connectTitle": "Conectar {{name}}",
+      "reconnectTitle": "Reconectar {{name}}",
+      "actionsTitle": "Ações para {{name}}",
       "connectHint": "Adicione a chave a partir das configurações da sua conta.",
       "saveAndEnable": "Salvar e habilitar",
       "updateSetup": "Atualizar configuração",
@@ -356,14 +366,68 @@
       "keepExisting": "Deixe em branco para manter o valor atual",
       "statusConfigured": "Configurado",
       "statusMissingCredentials": "Precisa de chave",
+      "connectingAccount": "Conectando {{name}}",
+      "connectingLabel": "Conectando…",
+      "continueSignIn": "Continuar login",
+      "preparingSignIn": "Preparando login seguro…",
+      "openSignInToContinue": "Abra a página de login para continuar.",
+      "finishSignInInBrowser": "Conclua o login na janela do navegador.",
+      "manualCallbackRequired": "Conclua o login e cole a URL de callback no nanobot.",
+      "manualCallbackHelp": "Depois de autorizar o acesso, a página localhost não será carregada. Copie a URL completa da barra de endereços e cole-a aqui.",
+      "finishingConnection": "Finalizando conexão…",
+      "activatingTools": "Ativando ferramentas…",
+      "connected": "Conectado.",
+      "connectionFailed": "Falha na conexão.",
+      "connectionCancelled": "Conexão cancelada.",
+      "reloadFailed": "Login concluído, mas o nanobot não conseguiu conectar as ferramentas. Tente reiniciar o nanobot.",
+      "oauthFailed": "Não foi possível conectar. Tente fazer login novamente.",
       "statusMissingDependency": "Precisa de dependência",
       "statusComingSoon": "Em breve",
       "comingSoon": "Em breve",
       "statusNotInstalled": "Não habilitado",
+      "manage": "Gerenciar",
+      "manageTitle": "Gerenciar {{name}}",
+      "fixConnection": "Corrigir conexão",
+      "overviewTab": "Visão geral",
+      "connectionTab": "Conexão",
+      "manageTabs": "Gerenciamento de MCP",
+      "about": "Sobre",
+      "statusLabel": "Status",
+      "transportLabel": "Transporte",
+      "endpointLabel": "Endpoint",
+      "toolPreview": "Ferramentas",
+      "noToolsAvailable": "Nenhuma ferramenta disponível",
+      "searchTools": "Buscar ferramentas",
+      "searchToolsPlaceholder": "Buscar ferramentas",
+      "selectedCount": "{{count}} ativadas",
+      "noMatchingTools": "Nenhuma ferramenta encontrada",
+      "applyChanges": "Salvar alterações",
+      "connectionDetails": "Detalhes da conexão",
+      "credentials": "Credenciais",
+      "none": "Nenhuma",
+      "dangerZone": "Remover conexão",
       "toolScope": "Ferramentas",
-      "allTools": "Todas",
-      "noTools": "Nenhuma",
-      "testForTools": "Execute Testar para inspecionar e escolher ferramentas individuais."
+      "allTools": "Ativar todas",
+      "noTools": "Desativar todas",
+      "reloadTools": "Recarregar ferramentas",
+      "presetDescriptions": {
+        "browserbase": "Automatize navegadores na nuvem com o Browserbase.",
+        "playwright": "Inspecione e automatize navegadores locais com o Playwright.",
+        "context7": "Obtenha documentação atualizada e exemplos de código.",
+        "firecrawl": "Rastreie, pesquise e extraia conteúdo da web.",
+        "parallel-search": "Pesquise na web e leia páginas relevantes.",
+        "exa": "Pesquise na web e extraia conteúdo limpo das páginas.",
+        "microsoft-learn": "Pesquise e leia a documentação do Microsoft Learn.",
+        "aws-docs": "Pesquise a documentação e os guias de serviços da AWS.",
+        "brave-search": "Pesquise web, notícias, imagens, vídeos e resultados locais com o Brave Search.",
+        "postman": "Inspecione e gerencie APIs, coleções e espaços de trabalho do Postman.",
+        "figma": "Leia o contexto de design do Figma pelo MCP local do Dev Mode.",
+        "xmind": "Crie, leia e edite mapas mentais do Xmind na nuvem.",
+        "notion": "Leia e atualize seu espaço de trabalho do Notion.",
+        "linear": "Encontre e gerencie issues, projetos e comentários do Linear.",
+        "github": "Gerencie repositórios, issues e pull requests do GitHub.",
+        "supabase": "Inspecione e gerencie projetos do Supabase."
+      }
     },
     "values": {
       "light": "Claro",
@@ -401,11 +465,11 @@
       "loadError": "Não foi possível carregar as configurações",
       "unsaved": "Alterações não salvas.",
       "upToDate": "Atualizado.",
-      "savedRestart": "Salvo. Reinicie o auto_cut_bot para aplicar.",
+      "savedRestart": "Salvo. Reinicie o nanobot para aplicar.",
       "restartAfterSaving": "Salve as alterações e reinicie quando estiver pronto.",
       "savedRestartApply": "Salvo. Reinicie quando estiver pronto.",
       "imageProviderRestart": "Alterações do provedor de imagem salvas. Reinicie quando estiver pronto.",
-      "hostRestartAfterSaving": "Ao salvar, o auto_cut_bot reiniciará o motor.",
+      "hostRestartAfterSaving": "Ao salvar, o nanobot reiniciará o motor.",
       "hostRestartPending": "Salvo. O motor será reiniciado quando estiver pronto.",
       "hostApiUnavailable": "As ações do host só estão disponíveis dentro do app nativo.",
       "logsOpened": "Pasta de logs aberta.",
@@ -429,7 +493,7 @@
       "exporting": "Exportando..."
     },
     "byok": {
-      "description": "Traga suas próprias chaves de provedor. O auto_cut_bot lê esses valores da configuração atual e apenas provedores configurados podem ser usados nas predefinições de modelo.",
+      "description": "Traga suas próprias chaves de provedor. O nanobot lê esses valores da configuração atual e apenas provedores configurados podem ser usados nas predefinições de modelo.",
       "configured": "Configurado",
       "notConfigured": "Não configurado",
       "configuredSection": "Configurados",
@@ -576,41 +640,49 @@
     },
     "observability": {
       "title": "Observabilidade",
-      "configured": "Credenciais de tracing estão disponíveis para o auto_cut_bot.",
-      "environment": "Defina LANGFUSE_SECRET_KEY e LANGFUSE_PUBLIC_KEY e reinicie o auto_cut_bot.",
+      "configured": "Credenciais de tracing estão disponíveis para o nanobot.",
+      "environment": "Defina LANGFUSE_SECRET_KEY e LANGFUSE_PUBLIC_KEY e reinicie o nanobot.",
       "enable": "Habilitar suporte a tracing"
     },
     "apps": {
-      "description": "Adicione ferramentas ao auto_cut_bot e mencione-as com @ na conversa.",
+      "description": "Adicione ferramentas ao nanobot e mencione-as com @ na conversa.",
       "cliLabel": "Aplicativo",
-      "mcpLabel": "Integração",
+      "mcpLabel": "MCP",
       "channelLabel": "Canal",
       "featureLabel": "Recurso",
       "filterAll": "Prontos",
       "filterPlugins": "Complementos",
       "filterCli": "Aplicativos",
-      "filterMcp": "Integrações",
+      "filterMcp": "MCP",
       "enabledSummary": "{{count}} prontos",
-      "caption": "{{cli}} aplicativos · {{mcp}} integrações",
+      "caption": "{{cli}} aplicativos · {{mcp}} ferramentas MCP",
       "searchPlaceholder": "Buscar ferramentas",
       "featured": "Ferramentas",
+      "mcpTools": "Ferramentas MCP",
       "loading": "Carregando aplicativos...",
-      "empty": "Nenhuma ferramenta corresponde a esta visualização.",
-      "restartRequired": "Reinicie o auto_cut_bot para aplicar os aplicativos e integrações atualizados."
+      "empty": "Nenhuma ferramenta corresponde à sua busca.",
+      "emptyApps": "Nenhum aplicativo disponível.",
+      "emptyIntegrations": "Nenhuma ferramenta MCP disponível.",
+      "emptyReady": "Ainda não há ferramentas prontas.",
+      "clearSearch": "Limpar busca",
+      "browseApps": "Explorar aplicativos",
+      "browseIntegrations": "Explorar ferramentas MCP",
+      "emptyIntegrationsHint": "Adicione um servidor MCP personalizado abaixo.",
+      "restartRequired": "Reinicie o nanobot para aplicar os aplicativos e ferramentas MCP atualizados."
     },
     "channels": {
-      "description": "Conecte aplicativos de chat, e-mail e WebUI ao auto_cut_bot.",
+      "description": "Conecte aplicativos de chat, e-mail e WebUI ao nanobot.",
       "caption": "{{enabled}} habilitados · {{total}} canais",
       "searchPlaceholder": "Buscar canais",
       "backToChannels": "Todos os canais",
       "catalog": "Canais",
       "loading": "Carregando canais...",
       "empty": "Nenhum canal corresponde a este filtro.",
-      "restartRequired": "Reinicie o auto_cut_bot para aplicar o suporte de canais atualizado.",
+      "restartRequired": "Reinicie o nanobot para aplicar o suporte de canais atualizado.",
       "requires": "Requer: {{requirements}}",
       "setUp": "Configurar",
       "setupGuide": "Guia de configuração",
-      "setupSummary": "Habilitar apenas ativa o suporte no auto_cut_bot. Adicione as credenciais da plataforma e reinicie o auto_cut_bot.",
+      "setupSummary": "Habilitar apenas ativa o suporte no nanobot. Adicione as credenciais da plataforma e reinicie o nanobot.",
       "configKeys": "Chaves de configuração",
       "enable": "Habilitar canal",
       "disable": "Desabilitar canal",
@@ -665,7 +737,7 @@
         "unsupported": "Configuração manual"
       }
     },
-    "auto_cut_botFeatures": {
+    "nanobotFeatures": {
       "enabled": "Habilitado",
       "enable": "Habilitar",
       "disable": "Desabilitar",
@@ -673,7 +745,7 @@
       "missingDependency": "Suporte ausente",
       "installSupport": "Instalar suporte",
       "installConfirmTitle": "Instalar suporte para {{name}}?",
-      "installConfirmDescription": "O auto_cut_bot adicionará o que {{name}} precisa e depois o ativará. Continuar?",
+      "installConfirmDescription": "O nanobot adicionará o que {{name}} precisa e depois o ativará. Continuar?",
       "installConfirmAction": "Instalar e habilitar",
       "websocketRequired": "Necessário para a WebUI",
       "channelDisabled": "Canal desabilitado",
@@ -698,7 +770,9 @@
       "loading": "Carregando automações...",
       "noMatches": "Nenhuma automação corresponde a esta visualização.",
       "empty": "Nenhuma automação ainda.",
-      "emptyHint": "Crie uma de onde ela deve rodar para que o auto_cut_bot mantenha o contexto correto.",
+      "emptyHint": "Crie automações em uma conversa para que mantenham o contexto correto.",
+      "emptyAction": "Abrir uma conversa",
+      "clearFilters": "Limpar filtros",
       "oneShot": "Uma vez",
       "systemTask": "Automação gerenciada pelo sistema",
       "localTrigger": "Gatilho local",
@@ -815,7 +889,7 @@
       "signedInAs": "Conectado como {{account}}",
       "signInHelp": "Entre por este dispositivo; nenhuma chave de API é armazenada em config.",
       "remoteSignInHelp": "Selecione Entrar para abrir a xAI no seu computador e depois cole o código de autorização exibido após o login.",
-      "codexRemoteSignInHelp": "Entre por este navegador e cole no auto_cut_bot a URL completa de callback do localhost.",
+      "codexRemoteSignInHelp": "Entre por este navegador e cole no nanobot a URL completa de callback do localhost.",
       "signInRequired": "Login necessário",
       "signInBeforeSaving": "Entre neste provedor antes de salvar a predefinição.",
       "signedIn": "Conectado",
@@ -823,9 +897,9 @@
       "proxyLabel": "Proxy de rede",
       "proxySaveBeforeSignIn": "Salve as alterações do proxy antes de entrar.",
       "saveProxy": "Salvar proxy",
-      "localCodeHelp": "Conclua o login no navegador. O auto_cut_bot geralmente termina automaticamente; caso contrário, cole o código de autorização abaixo.",
+      "localCodeHelp": "Conclua o login no navegador. O nanobot geralmente termina automaticamente; caso contrário, cole o código de autorização abaixo.",
       "remoteCodeHelp": "Selecione Entrar para abrir a xAI no seu computador. Após o login, cole abaixo o código de autorização exibido pela xAI.",
-      "localCallbackHelp": "Conclua o login no navegador. O auto_cut_bot geralmente termina automaticamente; caso contrário, copie da barra de endereço a URL completa de callback do localhost e cole abaixo.",
+      "localCallbackHelp": "Conclua o login no navegador. O nanobot geralmente termina automaticamente; caso contrário, copie da barra de endereço a URL completa de callback do localhost e cole abaixo.",
       "remoteCallbackHelp": "Abra o ChatGPT neste navegador e conclua o login. Quando a página localhost não carregar, copie a URL completa da barra de endereço e cole abaixo.",
       "authorizationCode": "Código de autorização",
       "callbackUrl": "URL completa de callback",
@@ -868,7 +942,7 @@
       "deleteConfirmAction": "Excluir habilidade",
       "instructionsTitle": "Instruções da habilidade",
       "setupRequired": "Requer configuração",
-      "setupDescription": "Instale a dependência ausente na máquina que executa o auto_cut_bot e verifique novamente.",
+      "setupDescription": "Instale a dependência ausente na máquina que executa o nanobot e verifique novamente.",
       "copySetupCommand": "Copiar comando de configuração",
       "checkAgain": "Verificar novamente",
       "marketplaceSearchFailed": "Não foi possível pesquisar nos mercados de habilidades.",
@@ -955,6 +1029,10 @@
     "unarchive": "Desarquivar",
     "showArchived": "Mostrar arquivadas",
     "hideArchived": "Ocultar arquivadas",
+    "select": "Selecionar",
+    "cancelSelection": "Cancelar seleção",
+    "selectedCount": "{{count}} selecionados",
+    "deleteSelected": "Excluir",
     "delete": "Excluir",
     "newChat": "Novo tópico",
     "groups": {
@@ -969,10 +1047,13 @@
   },
   "deleteConfirm": {
     "title": "Excluir esta conversa?",
+    "titleMany": "Excluir {{count}} conversas?",
     "description": "Esta ação não pode ser desfeita.",
+    "descriptionMany": "Esta ação não pode ser desfeita.",
     "cancel": "Cancelar",
     "confirm": "Excluir",
     "automationsDescription": "Esta conversa possui automações agendadas. Excluí-la também excluirá essas automações.",
+    "automationsDescriptionMany": "As automações vinculadas também serão excluídas.",
     "moreAutomations": "+ {{count}} a mais",
     "confirmWithAutomations": "Excluir",
     "schedule": {
@@ -1036,7 +1117,7 @@
       "imageQuickActions": {
         "icon": {
           "title": "Desenhar um ícone de aplicativo",
-          "prompt": "Gere um ícone de aplicativo 1:1 limpo para o auto_cut_bot: robô amigável, estilo vetorial simples, paleta suave em azul e branco, sem texto."
+          "prompt": "Gere um ícone de aplicativo 1:1 limpo para o nanobot: robô amigável, estilo vetorial simples, paleta suave em azul e branco, sem texto."
         },
         "sticker": {
           "title": "Criar um sticker",
@@ -1147,6 +1228,7 @@
         "recordingStatus": "Gravando {{time}}"
       },
       "voiceErrors": {
+        "insecureContext": "Por segurança, o Chrome e outros navegadores bloqueiam o acesso ao microfone em páginas HTTP remotas. Abra esta WebUI por HTTPS para usar a entrada de voz.",
         "unsupported": "A entrada de voz não é compatível com este navegador.",
         "permission": "Permita o microfone na barra de endereço e tente novamente.",
         "notConfigured": "Configure primeiro um provedor de transcrição.",
@@ -1182,7 +1264,7 @@
             "description": "Cancela o turno ativo do agente nesta conversa."
           },
           "restart": {
-            "title": "Reiniciar auto_cut_bot",
+            "title": "Reiniciar nanobot",
             "description": "Reinicia o processo do bot no mesmo lugar."
           },
           "status": {
@@ -1357,7 +1439,7 @@
     "close": "Fechar pré-visualização de arquivo",
     "loading": "Carregando pré-visualização...",
     "failed": "Não foi possível pré-visualizar este arquivo.",
-    "routeMissing": "A pré-visualização de arquivo precisa do gateway mais recente. Reinicie o auto_cut_bot gateway e tente novamente.",
+    "routeMissing": "A pré-visualização de arquivo precisa do gateway mais recente. Reinicie o nanobot gateway e tente novamente.",
     "resize": "Redimensionar pré-visualização de arquivo",
     "truncated": "A pré-visualização foi truncada porque este arquivo é grande."
   },
@@ -1366,6 +1448,39 @@
     "copyAria": "Copiar código",
     "copy": "Copiar",
     "copied": "Copiado"
+  },
+  "workbench": {
+    "aria": "Área de conversas",
+    "panes": "Painéis",
+    "tabAria": "Grupo: {{title}}",
+    "panesInTab": "Painéis em {{title}}",
+    "collapseTabGroup": "Recolher os painéis em {{title}}",
+    "expandTabGroup": "Expandir os painéis em {{title}}",
+    "dropPane": "Mover {{pane}} para {{tab}}",
+    "createGroup": "Criar grupo",
+    "moveTo": "Mover para",
+    "renameGroupTitle": "Renomear grupo",
+    "renameGroupDescription": "Dê um nome a este grupo.",
+    "renameGroupPlaceholder": "Nome do grupo",
+    "dissolveTab": "Desfazer grupo",
+    "layout": "Layout de painéis",
+    "addPane": "Adicionar painel",
+    "paneLimit": "Máximo de {{count}} painéis",
+    "deleteConversations": "Excluir tudo",
+    "movePane": "Mover painel {{title}}",
+    "movePaneHint": "Arraste para mover · As setas também funcionam",
+    "resizePaneBoundary": "Redimensionar limite do painel {{index}}",
+    "promotePane": "Tornar {{title}} o painel principal",
+    "paneActions": "Ações do painel {{title}}",
+    "detachPane": "Remover",
+    "composerAria": "Mensagem para {{title}}",
+    "layouts": {
+      "columns": "Colunas",
+      "rows": "Linhas",
+      "grid": "Grade",
+      "bsp": "BSP",
+      "main-stack": "Principal e pilha"
+    }
   },
   "common": {
     "dismiss": "Descartar",
@@ -1380,7 +1495,7 @@
     },
     "workspaceScopeRejected": {
       "title": "O espaço de trabalho não foi alterado",
-      "body": "O auto_cut_bot manteve o espaço de trabalho anterior porque o projeto ou modo de acesso solicitado foi rejeitado pelo gateway."
+      "body": "O gateway rejeitou este projeto ou modo de acesso. Escolha um projeto existente ou outro modo de acesso e tente novamente."
     },
     "turnRejected": {
       "title": "A mensagem não foi enviada",

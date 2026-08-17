@@ -9,7 +9,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_cut_bot.apps.cli.service import CliAppError, CliAppManager, CliAppsRuntimeConfig
+from nanobot.agent import plugins as agent_plugins
+from nanobot.agent.skills import SkillsLoader
+from nanobot.apps.cli.service import CliAppError, CliAppManager, CliAppsRuntimeConfig
+
+
+@pytest.fixture(autouse=True)
+def _isolate_plugin_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_plugins, "get_config_path", lambda: tmp_path / "config/config.json")
 
 
 def _write_cache(path: Path, registry: dict) -> None:
@@ -237,7 +244,7 @@ def test_installed_payload_enriches_apps_from_cached_catalog(
         }
     })
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda entry_point: "/bin/installed-gimp" if entry_point == "installed-gimp" else None,
     )
 
@@ -254,7 +261,7 @@ def test_installed_payload_enriches_apps_from_cached_catalog(
     assert app["logo_url"] == "https://cdn.simpleicons.org/gimp/5C5543"
 
 
-def test_payload_includes_auto_cut_bot_extension_registry(tmp_path: Path) -> None:
+def test_payload_includes_nanobot_extension_registry(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     _write_cache(manager._cache_path("harness"), {"meta": {"updated": "2026-04-16"}, "clis": []})
     _write_cache(manager._cache_path("public"), {"meta": {"updated": "2026-04-18"}, "clis": []})
@@ -290,8 +297,8 @@ def test_payload_includes_auto_cut_bot_extension_registry(tmp_path: Path) -> Non
     assert app["logo_url"] == "https://raw.githubusercontent.com/heygen-com/hyperframes/main/assets/logo.png"
     assert app["brand_color"] == "#111827"
     assert app["install_supported"] is True
-    assert app["manifest"]["source"] == "auto_cut_bot-extension"
-    assert app["manifest"]["trust"]["registry"] == "auto_cut_bot-extension"
+    assert app["manifest"]["source"] == "nanobot-extension"
+    assert app["manifest"]["trust"]["registry"] == "nanobot-extension"
 
 
 def test_optional_extension_registry_failure_does_not_break_payload(
@@ -319,7 +326,7 @@ def test_optional_extension_registry_failure_does_not_break_payload(
     def fail_get(*args, **kwargs):
         raise RuntimeError("network unavailable")
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fail_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fail_get)
 
     payload = manager.payload()
 
@@ -334,7 +341,7 @@ def test_payload_cache_only_does_not_fetch_catalog(tmp_path: Path, monkeypatch: 
     def fail_get(*args, **kwargs):
         raise AssertionError("network should not be used")
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fail_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fail_get)
 
     payload = manager.payload(cache_only=True)
 
@@ -364,7 +371,7 @@ def test_payload_cache_only_without_cache_returns_empty(tmp_path: Path, monkeypa
     def fail_get(*args, **kwargs):
         raise AssertionError("network should not be used")
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fail_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fail_get)
 
     payload = manager.payload(cache_only=True)
 
@@ -391,6 +398,9 @@ def test_install_dispatches_safe_pip_and_installs_skill(
         "_fetch_skill_content",
         lambda app: "---\nname: cli-anything-gimp\ndescription: GIMP\n---\n# GIMP\n",
     )
+    legacy = manager.workspace / "skills" / "cli-app-gimp" / "SKILL.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("legacy", encoding="utf-8")
 
     payload = manager.install("gimp")
 
@@ -400,16 +410,22 @@ def test_install_dispatches_safe_pip_and_installs_skill(
     assert "state_recorded" in payload["last_action"]["verification"]
     installed = json.loads(manager.installed_path.read_text(encoding="utf-8"))["apps"]
     assert installed["gimp"]["entry_point"] == "cli-anything-gimp"
-    skill = manager.workspace / "skills" / "cli-app-gimp" / "SKILL.md"
+    plugin = manager.workspace / "plugins" / "cli-app-gimp"
+    skill = plugin / "skills" / "cli-app-gimp" / "SKILL.md"
     assert skill.is_file()
+    manifest = json.loads((plugin / "plugin.json").read_text(encoding="utf-8"))
+    assert (manifest["name"], manifest["version"]) == ("cli-app-gimp", "1.0.0")
+    assert "name: cli-app-gimp" in skill.read_text(encoding="utf-8")
     assert 'run_cli_app` tool with `name="gimp"' in skill.read_text(encoding="utf-8")
+    assert SkillsLoader(manager.workspace).load_skill("cli-app-gimp") is not None
+    assert not legacy.exists()
 
 
 def test_run_argv_logs_command_exit_and_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from auto_cut_bot.apps.cli import service as cli_service
+    from nanobot.apps.cli import service as cli_service
 
     manager = _manager(tmp_path)
     records: list[str] = []
@@ -426,12 +442,15 @@ def test_run_argv_logs_command_exit_and_output(
         encoding: str,
         errors: str,
         timeout: int,
+        env: dict[str, str],
     ) -> subprocess.CompletedProcess[str]:
         assert capture_output is True
         assert text is True
         assert encoding == "utf-8"
         assert errors == "replace"
         assert timeout == 5
+        assert "OPENAI_API_KEY" not in env
+        assert env["PYTHONUNBUFFERED"] == "1"
         return subprocess.CompletedProcess(argv, 0, stdout="installed ok", stderr="")
 
     monkeypatch.setattr(cli_service, "logger", _Logger())
@@ -476,7 +495,7 @@ def test_install_records_available_cli_without_reinstalling(
 
     monkeypatch.setattr(manager, "_run_argv", fail_run)
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: str(resolved) if command == "lark-cli" else None,
     )
 
@@ -487,7 +506,7 @@ def test_install_records_available_cli_without_reinstalling(
     assert "entry_point_available" in payload["last_action"]["verification"]
     installed = json.loads(manager.installed_path.read_text(encoding="utf-8"))["apps"]
     assert installed["feishu"]["entry_point_path"] == str(resolved)
-    skill = manager.workspace / "skills" / "cli-app-feishu" / "SKILL.md"
+    skill = manager.workspace / "plugins/cli-app-feishu/skills/cli-app-feishu/SKILL.md"
     assert skill.is_file()
     assert 'run_cli_app` tool with `name="feishu"' in skill.read_text(encoding="utf-8")
 
@@ -542,7 +561,7 @@ def test_install_recovers_stale_npm_global_directory(
 
     monkeypatch.setattr(manager, "_run_argv", fake_run)
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: npm if command == "npm" else None,
     )
 
@@ -577,11 +596,11 @@ def test_install_records_entry_point_path_and_pip_distribution(
         lambda app: "---\nname: cli-anything-gimp\ndescription: GIMP\n---\n# GIMP\n",
     )
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: str(resolved) if command == "cli-anything-gimp" else None,
     )
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.importlib_metadata.distributions",
+        "nanobot.apps.cli.service.importlib_metadata.distributions",
         lambda: [
             SimpleNamespace(
                 entry_points=[
@@ -622,7 +641,7 @@ def test_fetch_skill_content_rejects_untrusted_urls(
     def fail_get(*args, **kwargs):
         raise AssertionError("untrusted skill URL should not be fetched")
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fail_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fail_get)
 
     assert manager._fetch_skill_content({
         "name": "evil",
@@ -652,7 +671,7 @@ def test_fetch_skill_content_allows_cli_anything_raw_skill_url(
         seen.append(url)
         return Response()
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fake_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fake_get)
 
     content = manager._fetch_skill_content({
         "name": "gimp",
@@ -683,17 +702,17 @@ def test_fetch_skill_content_uses_extension_raw_base_for_relative_skills(
         seen.append(url)
         return Response()
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.httpx.get", fake_get)
+    monkeypatch.setattr("nanobot.apps.cli.service.httpx.get", fake_get)
 
     content = manager._fetch_skill_content({
         "name": "hyperframes",
         "skill_md": "skills/hyperframes/SKILL.md",
-        "_raw_base": "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main",
+        "_raw_base": "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main",
     })
 
     assert content and "# HyperFrames" in content
     assert seen == [
-        "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main/skills/hyperframes/SKILL.md"
+        "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main/skills/hyperframes/SKILL.md"
     ]
 
 
@@ -704,7 +723,8 @@ def test_uninstall_removes_installed_state_and_generated_skill(
     manager = _manager(tmp_path)
     _seed_catalog(manager)
     manager._save_installed({"gimp": {"entry_point": "cli-anything-gimp"}})
-    skill_dir = manager.workspace / "skills" / "cli-app-gimp"
+    plugin_dir = manager.workspace / "plugins" / "cli-app-gimp"
+    skill_dir = plugin_dir / "skills" / "cli-app-gimp"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text("# GIMP\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -717,7 +737,7 @@ def test_uninstall_removes_installed_state_and_generated_skill(
 
     assert payload["last_action"]["ok"] is True
     assert "gimp" not in json.loads(manager.installed_path.read_text(encoding="utf-8"))["apps"]
-    assert not skill_dir.exists()
+    assert not plugin_dir.exists()
 
 
 def test_uninstall_uses_safe_python_m_pip_uninstall_command(
@@ -787,7 +807,7 @@ def test_uninstall_keeps_state_when_entry_point_still_available(
     )
     monkeypatch.setattr(manager, "_pip_available", staticmethod(lambda: True))
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: "/usr/local/bin/cli-anything-gimp" if command == "cli-anything-gimp" else None,
     )
 
@@ -845,17 +865,60 @@ def test_mentioned_installed_apps_only_returns_installed_mentions(tmp_path: Path
             "name": "zoom",
             "entry_point": "cli-anything-zoom",
             "source": "public",
-            "skill": "skills/cli-app-zoom/SKILL.md",
+            "skill": "plugins/cli-app-zoom/skills/cli-app-zoom/SKILL.md",
             "tool": "run_cli_app",
         },
         {
             "name": "gimp",
             "entry_point": "cli-anything-gimp",
             "source": "harness",
-            "skill": "skills/cli-app-gimp/SKILL.md",
+            "skill": "plugins/cli-app-gimp/skills/cli-app-gimp/SKILL.md",
             "tool": "run_cli_app",
         },
     ]
+
+
+def test_remove_skill_cleans_legacy_underscored_name(tmp_path: Path) -> None:
+    manager = _manager(tmp_path)
+    legacy = manager.workspace / "skills" / "cli-app-unimol_tools" / "SKILL.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("# Legacy Uni-Mol\n", encoding="utf-8")
+
+    manager.remove_skill("unimol_tools")
+
+    assert not legacy.exists()
+
+
+def test_migrated_cli_app_skill_keeps_legacy_identity_alias(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setattr(
+        "nanobot.apps.cli.service.get_runtime_subdir",
+        lambda _name: data_dir,
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = CliAppManager(workspace=workspace)
+    manager._save_installed({"unimol_tools": {"entry_point": "unimol-tools"}})
+    manager.install_skill({
+        "name": "unimol_tools",
+        "display_name": "Uni-Mol Tools",
+        "entry_point": "unimol-tools",
+    })
+    agent_plugins.set_agent_plugin_enabled(workspace, "cli-app-unimol-tools", True)
+
+    loader = SkillsLoader(workspace)
+    assert loader.get_explicitly_invoked_skills("Use $cli-app-unimol_tools") == [
+        "cli-app-unimol-tools"
+    ]
+    assert loader.load_skill("cli-app-unimol_tools") is not None
+
+    disabled = SkillsLoader(workspace, disabled_skills={"cli-app-unimol_tools"})
+    assert "cli-app-unimol-tools" not in {
+        skill["name"] for skill in disabled.list_skills(filter_unavailable=False)
+    }
 
 
 def test_install_rejects_unknown_and_script_strategy(tmp_path: Path) -> None:
@@ -877,7 +940,7 @@ def test_run_installed_cli_uses_argv_without_shell(
     _seed_catalog(manager)
     resolved = str(tmp_path / "bin" / "cli-anything-gimp")
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda entry: resolved if entry == "cli-anything-gimp" else None,
     )
 
@@ -893,7 +956,7 @@ def test_run_installed_cli_uses_argv_without_shell(
             stderr="",
         )
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.subprocess.run", fake_run)
+    monkeypatch.setattr("nanobot.apps.cli.service.subprocess.run", fake_run)
     manager._save_installed(
         {
             "gimp": {
@@ -919,7 +982,7 @@ def test_run_reports_created_artifacts(
     _seed_catalog(manager)
     resolved = str(tmp_path / "bin" / "cli-anything-gimp")
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda entry: resolved if entry == "cli-anything-gimp" else None,
     )
 
@@ -928,7 +991,7 @@ def test_run_reports_created_artifacts(
         (cwd / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\nimage")
         return subprocess.CompletedProcess(argv, 0, stdout="done", stderr="")
 
-    monkeypatch.setattr("auto_cut_bot.apps.cli.service.subprocess.run", fake_run)
+    monkeypatch.setattr("nanobot.apps.cli.service.subprocess.run", fake_run)
     manager._save_installed({"gimp": {"entry_point": "cli-anything-gimp"}})
 
     result = manager.run("gimp", ["render"])
@@ -961,7 +1024,7 @@ def test_install_uses_uv_pip_when_pip_unavailable(
 
     monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: "/usr/bin/uv" if command == "uv" else None,
     )
     monkeypatch.setattr(manager, "_run_argv", fake_run)
@@ -986,7 +1049,7 @@ def test_update_uses_uv_pip_reinstall_when_pip_unavailable(
     manager = _manager(tmp_path)
     monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: "/usr/bin/uv" if command == "uv" else None,
     )
 
@@ -1022,7 +1085,7 @@ def test_uninstall_uses_uv_pip_when_pip_unavailable(
 
     monkeypatch.setattr(CliAppManager, "_pip_available", staticmethod(lambda: False))
     monkeypatch.setattr(
-        "auto_cut_bot.apps.cli.service.shutil.which",
+        "nanobot.apps.cli.service.shutil.which",
         lambda command: "/usr/bin/uv" if command == "uv" else None,
     )
     monkeypatch.setattr(manager, "_run_argv", fake_run)

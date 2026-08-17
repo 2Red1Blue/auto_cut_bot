@@ -20,38 +20,39 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar, cast
 
 from loguru import logger
 
-from auto_cut_bot.agent import context as agent_context
-from auto_cut_bot.agent import model_presets as preset_helpers
-from auto_cut_bot.agent.autocompact import AutoCompact
-from auto_cut_bot.agent.automation_turns import publish_next_deferred_turn
-from auto_cut_bot.agent.context import ContextBuilder
-from auto_cut_bot.agent.cron_turns import CronTurnCoordinator
-from auto_cut_bot.agent.hook import AgentHook, AgentTurnHookFactory
-from auto_cut_bot.agent.memory import Consolidator
-from auto_cut_bot.agent.model_runtime import ModelRuntimeResolver
-from auto_cut_bot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
-from auto_cut_bot.agent.subagent import SubagentManager
-from auto_cut_bot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
-from auto_cut_bot.agent.tools.exec_session import ExecSessionManager
-from auto_cut_bot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
-from auto_cut_bot.agent.tools.message import MessageTool
-from auto_cut_bot.agent.tools.registry import ToolRegistry
-from auto_cut_bot.agent.tools.self import MyTool
-from auto_cut_bot.agent.turn_delivery import (
+from nanobot.agent import context as agent_context
+from nanobot.agent import model_presets as preset_helpers
+from nanobot.agent.autocompact import AutoCompact
+from nanobot.agent.automation_turns import publish_next_deferred_turn
+from nanobot.agent.context import ContextBuilder
+from nanobot.agent.cron_turns import CronTurnCoordinator
+from nanobot.agent.hook import AgentHook, AgentTurnHookFactory
+from nanobot.agent.memory import Consolidator
+from nanobot.agent.model_runtime import ModelRuntimeResolver
+from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
+from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
+from nanobot.agent.tools.exec_session import ExecSessionManager
+from nanobot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
+from nanobot.agent.tools.message import MessageTool
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.runtime_control import AgentRuntimeControl
+from nanobot.agent.tools.self import MyTool
+from nanobot.agent.turn_delivery import (
     TurnDelivery,
     TurnDeliveryFactory,
 )
-from auto_cut_bot.agent.turn_delivery import TurnRoute as TurnRoute
-from auto_cut_bot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
-from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
-from auto_cut_bot.bus.outbound_events import StreamedResponseEvent
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.bus.runtime_events import RuntimeEventBus
-from auto_cut_bot.command import CommandContext, CommandRouter, register_builtin_commands
-from auto_cut_bot.config.schema import AgentDefaults, ModelPresetConfig
-from auto_cut_bot.providers.base import LLMProvider, ProviderConversationState
-from auto_cut_bot.providers.factory import ProviderSnapshot
-from auto_cut_bot.runtime_context import (
+from nanobot.agent.turn_delivery import TurnRoute as TurnRoute
+from nanobot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
+from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.bus.outbound_events import StreamedResponseEvent
+from nanobot.bus.queue import MessageBus
+from nanobot.bus.runtime_events import RuntimeEventBus
+from nanobot.command import CommandContext, CommandRouter, register_builtin_commands
+from nanobot.config.schema import AgentDefaults, ModelPresetConfig
+from nanobot.providers.base import LLMProvider, ProviderConversationState
+from nanobot.providers.factory import ProviderSnapshot
+from nanobot.runtime_context import (
     RUNTIME_CONTEXT_HISTORY_META,
     RUNTIME_CONTEXT_MESSAGE_META,
     RuntimeContextBlock,
@@ -60,50 +61,49 @@ from auto_cut_bot.runtime_context import (
     resolve_runtime_context,
     runtime_context_blocks_from_metadata,
 )
-from auto_cut_bot.security.workspace_access import (
+from nanobot.security.workspace_access import (
     WorkspaceScopeResolver,
     bind_workspace_scope,
     reset_workspace_scope,
 )
-from auto_cut_bot.session import turn_continuation
-from auto_cut_bot.session.automation_turns import automation_history_overrides
-from auto_cut_bot.session.goal_state import (
+from nanobot.session import turn_continuation
+from nanobot.session.automation_turns import automation_history_overrides
+from nanobot.session.goal_state import (
     goal_state_runtime_lines,
     runner_wall_llm_timeout_s,
     sustained_goal_active,
 )
-from auto_cut_bot.session.history_visibility import HIDDEN_HISTORY_META
-from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
-from auto_cut_bot.session.manager import (
+from nanobot.session.history_visibility import HIDDEN_HISTORY_META
+from nanobot.session.keys import UNIFIED_SESSION_KEY, remember_last_channel
+from nanobot.session.manager import (
+    SESSION_CACHE_MAX_SIZE,
     Session,
     SessionManager,
     replay_max_messages_for_context,
 )
-from auto_cut_bot.session.model_selection import (
+from nanobot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
 )
-from auto_cut_bot.triggers.local_turns import LocalTriggerTurnCoordinator
-from auto_cut_bot.utils.cancellation import task_is_cancelling
-from auto_cut_bot.utils.document import reference_non_image_attachments
-from auto_cut_bot.utils.helpers import image_placeholder_text
-from auto_cut_bot.utils.helpers import truncate_text as truncate_text_fn
-from auto_cut_bot.utils.llm_runtime import LLMRuntime
-from auto_cut_bot.utils.runtime import (
+from nanobot.triggers.local_turns import LocalTriggerTurnCoordinator
+from nanobot.utils.cancellation import task_is_cancelling
+from nanobot.utils.document import reference_non_image_attachments
+from nanobot.utils.helpers import image_placeholder_text
+from nanobot.utils.helpers import truncate_text as truncate_text_fn
+from nanobot.utils.llm_runtime import LLMRuntime
+from nanobot.utils.runtime import (
     EMPTY_FINAL_RESPONSE_MESSAGE,
 )
 
 if TYPE_CHECKING:
-    from auto_cut_bot.agent.tools.mcp import MCPConnection
-    from auto_cut_bot.config.schema import (
+    from nanobot.config.schema import (
         ChannelsConfig,
         Config,
-        MCPServerConfig,
         ProviderConfig,
         ToolsConfig,
     )
-    from auto_cut_bot.cron.service import CronService
-    from auto_cut_bot.triggers.local_store import LocalTriggerStore
+    from nanobot.cron.service import CronService
+    from nanobot.triggers.local_store import LocalTriggerStore
 
 _T = TypeVar("_T")
 _SUBAGENT_PROVIDER_TASK_META = "subagent_provider_task_id"
@@ -198,6 +198,11 @@ class AgentLoop:
         return self.tools.tool_names
 
     @property
+    def last_usage(self) -> Mapping[str, int]:
+        """Latest aggregate usage exposed through the runtime-control snapshot."""
+        return self._last_usage
+
+    @property
     def provider(self) -> LLMProvider:
         """Provider selected for future turn admissions."""
         return self.runtime_resolver.runtime.provider
@@ -265,7 +270,7 @@ class AgentLoop:
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
-        mcp_servers: dict[str, MCPServerConfig] | None = None,
+        tool_registry: ToolRegistry | None = None,
         channels_config: ChannelsConfig | None = None,
         timezone: str | None = None,
         session_ttl_minutes: int = 0,
@@ -291,7 +296,7 @@ class AgentLoop:
         local_trigger_store: LocalTriggerStore | None = None,
         idle_compact_check_interval_seconds: int = 0,
     ):
-        from auto_cut_bot.config.schema import ToolsConfig
+        from nanobot.config.schema import ToolsConfig
 
         _tc = tools_config or ToolsConfig()
         defaults = AgentDefaults()
@@ -372,11 +377,15 @@ class AgentLoop:
 
         self.context = ContextBuilder(workspace, timezone=timezone, disabled_skills=disabled_skills)
         self.sessions = session_manager or SessionManager(workspace)
-        self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
-        self.tools = ToolRegistry()
         # One file-read/write tracker per logical session. The tool registry is
         # shared by this loop, so tools resolve the active state via contextvars.
-        self._file_state_store = FileStateStore()
+        self._file_state_store = FileStateStore(max_sessions=SESSION_CACHE_MAX_SIZE)
+        # SessionManager owns every durable deletion entrypoint, including the
+        # WebUI and fork rollback paths.  Observe that boundary once instead of
+        # duplicating cleanup in each consumer.
+        self.sessions.set_delete_observer(self._file_state_store.discard)
+        self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
+        self.tools = tool_registry if tool_registry is not None else ToolRegistry()
         self._exec_session_manager = ExecSessionManager()
         self.runner = AgentRunner()
         self.subagents = SubagentManager(
@@ -393,14 +402,11 @@ class AgentLoop:
         )
         self._unified_session = unified_session
         self._running = False
-        self._mcp_servers = mcp_servers or {}
-        self._mcp_stacks: dict[str, MCPConnection] = {}
-        self._mcp_connecting = False
         self._runtime_context_providers: list[RuntimeContextProvider] = []
         self._active_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._discarding_sessions: set[str] = set()
         self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._close_mcp_lock = asyncio.Lock()
+        self._close_lock = asyncio.Lock()
         self._session_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
         )
@@ -425,8 +431,8 @@ class AgentLoop:
             ("cron", self._cron_turns),
             ("local trigger", self._local_trigger_turns),
         )
-        # AUTO_CUT_BOT_MAX_CONCURRENT_REQUESTS: <=0 means unlimited; default 3.
-        _max = int(os.environ.get("AUTO_CUT_BOT_MAX_CONCURRENT_REQUESTS", "3"))
+        # NANOBOT_MAX_CONCURRENT_REQUESTS: <=0 means unlimited; default 3.
+        _max = int(os.environ.get("NANOBOT_MAX_CONCURRENT_REQUESTS", "3"))
         self._concurrency_gate: asyncio.Semaphore | None = (
             asyncio.Semaphore(_max) if _max > 0 else None
         )
@@ -448,7 +454,6 @@ class AgentLoop:
         if model_preset:
             self.set_model_preset(model_preset, publish_update=False)
         self._register_default_tools(provider_snapshot_loader=provider_snapshot_loader)
-        self._runtime_vars: dict[str, Any] = {}
         self._current_iteration: int = 0
         self.commands = CommandRouter()
         register_builtin_commands(self.commands)
@@ -458,19 +463,30 @@ class AgentLoop:
         cls,
         config: Config,
         bus: MessageBus | None = None,
+        *,
+        tool_registry: ToolRegistry,
         **extra: Any,
     ) -> AgentLoop:
         """Create an AgentLoop from config with the common parameter set.
+
+        The tool registry is caller-owned so application composition can share
+        it with infrastructure such as an ``MCPProvider``.
 
         Extra keyword arguments are forwarded to ``AgentLoop.__init__``,
         allowing callers to override or extend the standard config-derived
         parameters (e.g. ``cron_service``, ``session_manager``).
         """
-        from auto_cut_bot.providers.factory import make_provider
+        from nanobot.providers.factory import make_provider
 
         if bus is None:
             bus = MessageBus()
         defaults = config.agents.defaults
+        if "session_manager" not in extra:
+            data_dir = config.runtime_data_dir
+            extra["session_manager"] = SessionManager(
+                config.workspace_path,
+                sessions_root=data_dir / "sessions" if data_dir is not None else None,
+            )
         provider = extra.pop("provider", None) or make_provider(config)
         resolved = config.resolve_preset()
         model = extra.pop("model", None) or resolved.model
@@ -494,7 +510,6 @@ class AgentLoop:
             provider_retry_mode=defaults.provider_retry_mode,
             tool_hint_max_length=defaults.tool_hint_max_length,
             restrict_to_workspace=config.tools.restrict_to_workspace,
-            mcp_servers=config.tools.mcp_servers,
             channels_config=config.channels,
             timezone=defaults.timezone,
             unified_session=defaults.unified_session,
@@ -509,6 +524,7 @@ class AgentLoop:
             restart_mode=config.gateway.restart_mode,
             provider_snapshot_loader=provider_snapshot_loader,
             preset_snapshot_loader=preset_snapshot_loader,
+            tool_registry=tool_registry,
             **extra,
         )
 
@@ -517,9 +533,15 @@ class AgentLoop:
         self.subagents.max_iterations = self.max_iterations
 
     def invalidate_runtime_config(self) -> None:
-        """Invalidate runtime config and notify clients to refresh its catalog."""
+        """Invalidate runtime config for lazy refresh at the next admission."""
         self.runtime_resolver.invalidate()
-        self._publish_runtime_selection(self.runtime_resolver.runtime)
+
+    def refresh_runtime_config(self) -> LLMRuntime:
+        """Refresh runtime config now and publish the canonical selection."""
+        self.runtime_resolver.invalidate()
+        runtime = self.runtime_resolver.admit()
+        self._publish_runtime_selection(runtime)
+        return runtime
 
     def runtime_for_session(
         self,
@@ -603,8 +625,8 @@ class AgentLoop:
         provider_snapshot_loader: Callable[..., ProviderSnapshot] | None,
     ) -> None:
         """Register the default set of tools via plugin loader."""
-        from auto_cut_bot.agent.tools.context import ToolContext
-        from auto_cut_bot.agent.tools.loader import ToolLoader
+        from nanobot.agent.tools.context import ToolContext
+        from nanobot.agent.tools.loader import ToolLoader
 
         ctx = ToolContext(
             config=self.tools_config,
@@ -623,18 +645,17 @@ class AgentLoop:
         loader = ToolLoader()
         registered = loader.load(ctx, self.tools)
 
-        # MyTool needs runtime state reference — manual registration
+        # MyTool receives only the explicit runtime-control capability.
         if self.tools_config.my.enable:
             self.tools.register(
-                MyTool(runtime_state=self, modify_allowed=self.tools_config.my.allow_set)
+                MyTool(
+                    runtime_control=AgentRuntimeControl(self),
+                    modify_allowed=self.tools_config.my.allow_set,
+                )
             )
             registered.append("my")
 
         logger.info("Registered {} tools: {}", len(registered), registered)
-
-    async def _connect_mcp(self) -> None:
-        """Connect configured MCP servers."""
-        await agent_context.connect_mcp(self, self.tools)
 
     def register_runtime_context_provider(
         self,
@@ -808,7 +829,12 @@ class AgentLoop:
             self.sessions.invalidate(key)
             await self._cancel_active_tasks(key)
         finally:
+            self.discard_session_file_state(key)
             self._discarding_sessions.discard(key)
+
+    def discard_session_file_state(self, key: str) -> None:
+        """Forget ephemeral file-read state for a reset or removed session."""
+        self._file_state_store.discard(key)
 
     def _effective_session_key(self, msg: InboundMessage) -> str:
         """Return the session key used for task routing and mid-turn injections."""
@@ -1084,8 +1110,8 @@ class AgentLoop:
                 retry_wait_callback=on_retry_wait,
                 checkpoint_callback=_checkpoint,
                 injection_callback=_drain_pending,
-                # Sustained goals may legitimately exceed AUTO_CUT_BOT_LLM_TIMEOUT_S; idle stall
-                # is still capped by AUTO_CUT_BOT_STREAM_IDLE_TIMEOUT_S in streaming providers.
+                # Sustained goals may legitimately exceed NANOBOT_LLM_TIMEOUT_S; idle stall
+                # is still capped by NANOBOT_STREAM_IDLE_TIMEOUT_S in streaming providers.
                 llm_timeout_s=runner_wall_llm_timeout_s(
                     self.sessions,
                     session.key if session is not None else session_key,
@@ -1147,7 +1173,6 @@ class AgentLoop:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
         try:
-            await self._connect_mcp()
             logger.info("Agent loop started")
 
             while self._running:
@@ -1238,8 +1263,7 @@ class AgentLoop:
                 active_tasks.add(task)
                 task.add_done_callback(active_tasks.discard)
         finally:
-            # MCP stdio transports use AnyIO cancel scopes; close them from the task that opened them.
-            await self.close_mcp()
+            await self.aclose()
 
     async def _dispatch(self, msg: InboundMessage) -> None:
         """Process a message: per-session serial, cross-session concurrent."""
@@ -1357,24 +1381,24 @@ class AgentLoop:
                 await delivery.idle()
                 await self._publish_next_deferred_automation_turn(session_key)
 
-    async def close_mcp(self) -> None:
-        """Stop active work, then close exec, subagent, and MCP resources.
+    async def aclose(self) -> None:
+        """Stop active work, then close resources owned by the agent loop.
 
         Resource teardown must still run if cancellation interrupts task draining.
         Gateway shutdown deliberately bounds this coroutine, so keeping the cleanup
         phase in ``finally`` prevents a timed-out background task from leaving
         subprocess transports alive after the event loop closes.
         """
-        # The agent loop closes itself from ``run()`` while gateway shutdown also
+        # The loop closes itself from ``run()`` while application shutdown also
         # performs a guaranteed final close. Serialize those owners so they cannot
-        # tear down the same subprocess transports concurrently.
-        close_lock = getattr(self, "_close_mcp_lock", None)
+        # tear down the same resources concurrently.
+        close_lock = getattr(self, "_close_lock", None)
         if close_lock is None:
-            close_lock = self._close_mcp_lock = asyncio.Lock()
+            close_lock = self._close_lock = asyncio.Lock()
         async with close_lock:
-            await self._close_mcp_unlocked()
+            await self._aclose_unlocked()
 
-    async def _close_mcp_unlocked(self) -> None:
+    async def _aclose_unlocked(self) -> None:
         errors: list[BaseException] = []
         active_task_groups = getattr(self, "_active_tasks", {})
         active_tasks = tuple({task for tasks in active_task_groups.values() for task in tasks})
@@ -1397,7 +1421,6 @@ class AgentLoop:
         cleanup_steps = (
             self.subagents.close,
             self._exec_session_manager.close_all,
-            lambda: agent_context.close_mcp(self),
         )
         for cleanup in cleanup_steps:
             try:
@@ -1770,7 +1793,7 @@ class AgentLoop:
                 session.provider_state = None
                 self.sessions.save(session)
             ctx.input_persisted_early = True
-        ctx.delivery.record_runtime(runtime)
+        await ctx.delivery.runtime_admitted(runtime)
 
         ctx.request_context = self._request_context_for_turn(ctx)
         if ctx.kind is TurnKind.USER:
@@ -2286,7 +2309,6 @@ class AgentLoop:
         """Process an external message directly and return the outbound payload."""
         if channel == "system":
             raise ValueError("channel 'system' is reserved for internal messages")
-        await self._connect_mcp()
         metadata: dict[str, Any] = {}
         if not persist_user_message:
             metadata[turn_continuation.SKIP_USER_PERSIST_META] = True

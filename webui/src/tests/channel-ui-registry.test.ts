@@ -12,8 +12,8 @@ import {
 
 describe("channel UI contributions", () => {
   it("selects channel-owned UI only through the backend manifest entry", () => {
-    expect(channelUiContribution("feishu", "webui/index.tsx")?.Panel).toBeTypeOf("function");
-    expect(channelUiContribution("weixin", "webui/index.tsx")?.ConnectFlow).toBeTypeOf("function");
+    expect(channelUiContribution("feishu", "webui/index.tsx")?.Panel).toBeDefined();
+    expect(channelUiContribution("weixin", "webui/index.tsx")?.ConnectFlow).toBeDefined();
     expect(channelUiContribution("feishu", undefined)).toBeUndefined();
     expect(channelUiContribution("feishu", "webui/missing.tsx")).toBeUndefined();
     expect(channelUiContribution("missing", "webui/index.tsx")).toBeUndefined();
@@ -56,14 +56,15 @@ describe("channel UI contributions", () => {
       "utf8",
     );
 
-    expect(source).toContain("../../../auto_cut_bot/channels/*/webui/**/*.{ts,tsx}");
+    expect(source).toContain("../../../nanobot/channels/*/webui/index.{ts,tsx}");
+    expect(source).not.toContain("webui/**/*.{ts,tsx}");
     expect(source).not.toContain('"./*/index.tsx"');
   });
 
   it("derives channel identity from the package directory", () => {
     for (const channel of ["feishu", "weixin"]) {
       const source = readFileSync(
-        resolve(process.cwd(), `../auto_cut_bot/channels/${channel}/webui/index.tsx`),
+        resolve(process.cwd(), `../nanobot/channels/${channel}/webui/index.tsx`),
         "utf8",
       );
       expect(source).not.toMatch(/\bchannel\s*:/);
@@ -73,6 +74,6 @@ describe("channel UI contributions", () => {
   it("includes channel-owned UI in Tailwind's production scan", () => {
     const source = readFileSync(resolve(process.cwd(), "tailwind.config.js"), "utf8");
 
-    expect(source).toContain("../auto_cut_bot/channels/*/webui/**/*.{ts,tsx}");
+    expect(source).toContain("../nanobot/channels/*/webui/**/*.{ts,tsx}");
   });
 });

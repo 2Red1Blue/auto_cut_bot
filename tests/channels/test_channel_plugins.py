@@ -15,16 +15,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from auto_cut_bot.bus.events import OutboundMessage
-from auto_cut_bot.bus.outbound_events import (
+from nanobot.bus.events import OutboundMessage
+from nanobot.bus.outbound_events import (
     StreamDeltaEvent,
     StreamedResponseEvent,
     StreamEndEvent,
     outbound_message_for_event,
 )
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.channels.base import BaseChannel
-from auto_cut_bot.channels.contracts import (
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.base import BaseChannel
+from nanobot.channels.contracts import (
     ChannelFieldSpec,
     ChannelInstanceSpec,
     ChannelManagementSpec,
@@ -32,13 +32,13 @@ from auto_cut_bot.channels.contracts import (
     SetupRequirement,
     channel_default_config,
 )
-from auto_cut_bot.channels.manager import ChannelManager
-from auto_cut_bot.channels.plugin import ChannelPlugin, load_channel_package
-from auto_cut_bot.config.loader import load_config, save_config
-from auto_cut_bot.config.schema import ChannelsConfig, Config
-from auto_cut_bot.providers.transcription import GroqTranscriptionProvider as _GroqProvider
-from auto_cut_bot.providers.transcription import OpenAITranscriptionProvider as _OpenAIProvider
-from auto_cut_bot.utils.restart import RestartNotice
+from nanobot.channels.manager import ChannelManager
+from nanobot.channels.plugin import ChannelPlugin, load_channel_package
+from nanobot.config.loader import load_config, save_config
+from nanobot.config.schema import ChannelsConfig, Config
+from nanobot.providers.transcription import GroqTranscriptionProvider as _GroqProvider
+from nanobot.providers.transcription import OpenAITranscriptionProvider as _OpenAIProvider
+from nanobot.utils.restart import RestartNotice
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -96,7 +96,7 @@ class _FakeMultiChannel(BaseChannel):
     def default_config(cls) -> dict:
         return {
             "instanceId": "default",
-            "name": "auto_cut_bot",
+            "name": "nanobot",
             "enabled": False,
             "token": "",
         }
@@ -201,14 +201,14 @@ def _stub_channel_registry(
             return dict(by_name)
         return {name: plugin for name, plugin in by_name.items() if name in enabled_names}
 
-    monkeypatch.setattr("auto_cut_bot.channels.registry.discover_plugins", discover)
+    monkeypatch.setattr("nanobot.channels.registry.discover_plugins", discover)
 
 
 def _stub_channel_packages(
     monkeypatch: pytest.MonkeyPatch,
     *names: str,
 ) -> None:
-    from auto_cut_bot.channels.plugin import load_channel_package
+    from nanobot.channels.plugin import load_channel_package
 
     plugins = [load_channel_package(name) for name in names]
     assert all(plugin is not None for plugin in plugins)
@@ -234,11 +234,11 @@ def _stub_optional_feature_cli(
         )
     assert not channels or {plugin.name for plugin in plugins} == set(channels)
     _stub_channel_registry(monkeypatch, *plugins)
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: extras)
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: installed)
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: extras)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: installed)
     if commands is not None:
         monkeypatch.setattr(
-            "auto_cut_bot.optional_features.run_install_command",
+            "nanobot.optional_features.run_install_command",
             lambda argv: commands.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
         )
 
@@ -290,7 +290,7 @@ def test_special_setup_validation_is_owned_by_channel_package(name: str):
     assert plugin is not None
     assert plugin.setup is not None
     assert plugin.setup.validator is not None
-    assert plugin.setup.validator.__module__ == f"auto_cut_bot.channels.{name}.validation"
+    assert plugin.setup.validator.__module__ == f"nanobot.channels.{name}.validation"
 
 
 @pytest.mark.parametrize("name", ["feishu", "weixin"])
@@ -299,8 +299,8 @@ def test_interactive_connector_is_owned_by_channel_package(name: str):
 
     assert plugin is not None
     assert plugin.connector is not None
-    assert plugin.connector.startswith(f"auto_cut_bot.channels.{name}.")
-    assert plugin.load_connector().__class__.__module__ == f"auto_cut_bot.channels.{name}.connect"
+    assert plugin.connector.startswith(f"nanobot.channels.{name}.")
+    assert plugin.load_connector().__class__.__module__ == f"nanobot.channels.{name}.connect"
 
 
 def test_descriptor_defaults_cover_onboarding_fields_without_runtime_import():
@@ -366,11 +366,11 @@ def test_channel_manager_loads_descriptor_but_not_disabled_runtime(monkeypatch):
     })
 
     monkeypatch.setattr(
-        "auto_cut_bot.channels.registry._channel_package_names",
+        "nanobot.channels.registry._channel_package_names",
         lambda: ["fakeplugin"],
     )
     monkeypatch.setattr(
-        "auto_cut_bot.channels.registry.load_channel_package",
+        "nanobot.channels.registry.load_channel_package",
         lambda _name: load_calls.append("descriptor") or plugin,
     )
 
@@ -381,7 +381,7 @@ def test_channel_manager_loads_descriptor_but_not_disabled_runtime(monkeypatch):
 
 
 def test_feature_payload_uses_unified_instance_activation(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
@@ -392,7 +392,7 @@ def test_feature_payload_uses_unified_instance_activation(monkeypatch):
         }
     })
     _stub_channel_registry(monkeypatch, _channel_plugin(_FakeMultiChannel))
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -406,8 +406,8 @@ def test_multi_plugin_action_defaults_to_default_instance(
     monkeypatch,
     tmp_path,
 ):
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
+    from nanobot.config import loader
+    from nanobot.webui.nanobot_features_api import nanobot_features_action
 
     class _ManagedMultiPlugin(_FakeMultiChannel):
         name = "managedmulti"
@@ -432,21 +432,21 @@ def test_multi_plugin_action_defaults_to_default_instance(
         monkeypatch,
         _channel_plugin(_ManagedMultiPlugin, management=_fake_multi_management()),
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
-    disabled = auto_cut_bot_features_action("disable", {"name": ["managedmulti"]})
+    disabled = nanobot_features_action("disable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [False, True]
     assert disabled["features"][0]["enabled"] is True
 
-    enabled = auto_cut_bot_features_action("enable", {"name": ["managedmulti"]})
+    enabled = nanobot_features_action("enable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [True, True]
     assert enabled["features"][0]["enabled"] is True
 
-    explicit = auto_cut_bot_features_action(
+    explicit = nanobot_features_action(
         "disable",
         {"name": ["managedmulti"], "instance_id": ["default"]},
     )
@@ -460,8 +460,8 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
     monkeypatch,
     tmp_path,
 ):
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
+    from nanobot.config import loader
+    from nanobot.webui.nanobot_features_api import nanobot_features_action
 
     class _SingleDefaultsPlugin(_FakePlugin):
         name = "singleplugin"
@@ -486,13 +486,13 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
     )
     monkeypatch.setattr(loader, "_current_config_path", config_path)
     _stub_channel_registry(monkeypatch, _channel_plugin(_SingleDefaultsPlugin))
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
     manager = ChannelManager(
         Config.model_validate({"channels": {"singleplugin": {"enabled": False}}}),
         MessageBus(),
     )
 
-    payload = auto_cut_bot_features_action("enable", {"name": ["singleplugin"]})
+    payload = nanobot_features_action("enable", {"name": ["singleplugin"]})
     hot_reload = await manager.apply_channel_feature_action("enable", "singleplugin")
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["singleplugin"]
@@ -531,12 +531,12 @@ def test_channel_manager_preserves_single_instance_plugin_owned_instances(monkey
 # ---------------------------------------------------------------------------
 
 def test_discover_plugins_loads_package_descriptors():
-    from auto_cut_bot.channels.registry import discover_plugins
+    from nanobot.channels.registry import discover_plugins
 
     plugin = _channel_plugin(_FakeLine)
     with (
-        patch("auto_cut_bot.channels.registry._channel_package_names", return_value=["line"]),
-        patch("auto_cut_bot.channels.registry.load_channel_package", return_value=plugin),
+        patch("nanobot.channels.registry._channel_package_names", return_value=["line"]),
+        patch("nanobot.channels.registry.load_channel_package", return_value=plugin),
     ):
         result = discover_plugins()
 
@@ -545,7 +545,7 @@ def test_discover_plugins_loads_package_descriptors():
 
 
 def test_plugin_setup_contract_drives_feature_payload(monkeypatch: pytest.MonkeyPatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
@@ -560,7 +560,7 @@ def test_plugin_setup_contract_drives_feature_payload(monkeypatch: pytest.Monkey
         monkeypatch,
         _channel_plugin(_SetupPlugin, setup=_SETUP_PLUGIN_SPEC),
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -593,7 +593,7 @@ def test_plugin_setup_contract_drives_feature_payload(monkeypatch: pytest.Monkey
 
 
 def test_plugin_contract_error_is_isolated_in_feature_payload(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     class _BrokenPlugin(_FakePlugin):
         name = "broken"
@@ -620,7 +620,7 @@ def test_plugin_contract_error_is_isolated_in_feature_payload(monkeypatch):
         ),
         _channel_plugin(_SetupPlugin, setup=_SETUP_PLUGIN_SPEC),
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -648,9 +648,10 @@ def test_plugin_setup_contract_drives_save_and_validation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
-    from auto_cut_bot.channels.validation import validate_channel_config
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.settings_routes import WebUISettingsRouter
+    from nanobot.channels.validation import validate_channel_config
+    from nanobot.config import loader
+    from nanobot.webui.settings_routes import WebUISettingsRouter
+    from nanobot.webui.settings_services import WebUISettingsServices
 
     config_path = tmp_path / "config.json"
     save_config(Config(), config_path)
@@ -660,6 +661,7 @@ def test_plugin_setup_contract_drives_save_and_validation(
         _channel_plugin(_SetupPlugin, setup=_SETUP_PLUGIN_SPEC),
     )
     router = object.__new__(WebUISettingsRouter)
+    router.settings = WebUISettingsServices.create(config_path)
 
     saved = router._save_channel_config_values(
         "setupplugin",
@@ -683,8 +685,8 @@ def test_generic_plugin_validation_enforces_composite_requirements(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from auto_cut_bot.channels.validation import validate_channel_config
-    from auto_cut_bot.config import loader
+    from nanobot.channels.validation import validate_channel_config
+    from nanobot.config import loader
 
     class _CompositeSetupPlugin(_FakePlugin):
         name = "compositeplugin"
@@ -735,9 +737,10 @@ def test_generic_plugin_validation_enforces_composite_requirements(
 
 
 def test_webui_save_rejects_duplicate_feishu_ids_without_writing(monkeypatch, tmp_path):
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.settings_api import WebUISettingsError
-    from auto_cut_bot.webui.settings_routes import WebUISettingsRouter
+    from nanobot.config import loader
+    from nanobot.webui.settings_api import WebUISettingsError
+    from nanobot.webui.settings_routes import WebUISettingsRouter
+    from nanobot.webui.settings_services import WebUISettingsServices
 
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -756,6 +759,7 @@ def test_webui_save_rejects_duplicate_feishu_ids_without_writing(monkeypatch, tm
     before = config_path.read_text(encoding="utf-8")
     monkeypatch.setattr(loader, "_current_config_path", config_path)
     router = object.__new__(WebUISettingsRouter)
+    router.settings = WebUISettingsServices.create(config_path)
 
     with pytest.raises(WebUISettingsError, match="duplicate Feishu instance id 'default'") as error:
         router._save_channel_config_values(
@@ -768,7 +772,7 @@ def test_webui_save_rejects_duplicate_feishu_ids_without_writing(monkeypatch, tm
 
 
 def test_discover_plugins_skips_names_outside_enabled_set():
-    from auto_cut_bot.channels.registry import discover_plugins
+    from nanobot.channels.registry import discover_plugins
 
     loaded: list[str] = []
 
@@ -777,8 +781,8 @@ def test_discover_plugins_skips_names_outside_enabled_set():
         return _channel_plugin(_FakePlugin)
 
     with (
-        patch("auto_cut_bot.channels.registry._channel_package_names", return_value=["disabled"]),
-        patch("auto_cut_bot.channels.registry.load_channel_package", side_effect=_load_disabled),
+        patch("nanobot.channels.registry._channel_package_names", return_value=["disabled"]),
+        patch("nanobot.channels.registry.load_channel_package", side_effect=_load_disabled),
     ):
         result = discover_plugins({"enabled"})
 
@@ -804,14 +808,14 @@ def test_channel_manifest_rejects_invalid_dependency_metadata():
 
 
 def test_discover_plugins_handles_load_error():
-    from auto_cut_bot.channels.registry import discover_plugins
+    from nanobot.channels.registry import discover_plugins
 
     def _boom(_name: str):
         raise RuntimeError("broken")
 
     with (
-        patch("auto_cut_bot.channels.registry._channel_package_names", return_value=["broken"]),
-        patch("auto_cut_bot.channels.registry.load_channel_package", side_effect=_boom),
+        patch("nanobot.channels.registry._channel_package_names", return_value=["broken"]),
+        patch("nanobot.channels.registry.load_channel_package", side_effect=_boom),
     ):
         result = discover_plugins()
 
@@ -823,7 +827,7 @@ def test_discover_plugins_handles_load_error():
 # ---------------------------------------------------------------------------
 
 def test_discover_all_includes_available_channel_packages():
-    from auto_cut_bot.channels.registry import discover_all, discover_plugins
+    from nanobot.channels.registry import discover_all, discover_plugins
 
     result = discover_all()
 
@@ -835,7 +839,7 @@ def test_discover_all_includes_available_channel_packages():
 
 
 def test_discover_plugins_excludes_internal_helpers():
-    from auto_cut_bot.channels.registry import discover_plugins
+    from nanobot.channels.registry import discover_plugins
 
     names = discover_plugins()
 
@@ -846,7 +850,7 @@ def test_discover_plugins_excludes_internal_helpers():
 
 
 def test_discover_enabled_imports_only_enabled_packages():
-    from auto_cut_bot.channels.registry import discover_enabled
+    from nanobot.channels.registry import discover_enabled
 
     class _EnabledPlugin(_FakePlugin):
         name = "enabled"
@@ -866,14 +870,14 @@ def test_discover_enabled_imports_only_enabled_packages():
 
 
 def test_discover_enabled_warns_for_enabled_package_import_errors():
-    from auto_cut_bot.channels.registry import discover_enabled
+    from nanobot.channels.registry import discover_enabled
 
     plugin = ChannelPlugin(
         name="matrix",
         display_name="Matrix",
         runtime="missing.matrix.runtime:MatrixChannel",
     )
-    with patch("auto_cut_bot.channels.registry.logger.warning") as warning:
+    with patch("nanobot.channels.registry.logger.warning") as warning:
         result = discover_enabled(
             {"matrix"},
             _plugins={"matrix": plugin},
@@ -893,7 +897,7 @@ def test_discover_enabled_warns_for_enabled_package_import_errors():
 
 def test_manager_loads_plugin_from_dict_config(monkeypatch):
     """ChannelManager should instantiate a channel package from a raw dict config."""
-    from auto_cut_bot.channels.manager import ChannelManager
+    from nanobot.channels.manager import ChannelManager
 
     fake_config = Config.model_validate({
         "channels": {
@@ -909,7 +913,7 @@ def test_manager_loads_plugin_from_dict_config(monkeypatch):
 
 
 def test_manager_installs_manifest_dependencies_before_loading_enabled_channel(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
 
     plugin = _channel_plugin(
         _FakePlugin,
@@ -928,8 +932,8 @@ def test_manager_installs_manifest_dependencies_before_loading_enabled_channel(m
         installed = True
         return InstallResult(True, name, ["pip"])
 
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", extra_installed)
-    monkeypatch.setattr("auto_cut_bot.optional_features.install_extra", install_extra)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", extra_installed)
+    monkeypatch.setattr("nanobot.optional_features.install_extra", install_extra)
     config = Config.model_validate({
         "channels": {
             "websocket": {"enabled": False},
@@ -944,7 +948,7 @@ def test_manager_installs_manifest_dependencies_before_loading_enabled_channel(m
 
 
 def test_manager_reports_dependency_install_failure_as_runtime_failure(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
 
     plugin = _channel_plugin(
         _FakePlugin,
@@ -952,11 +956,11 @@ def test_manager_reports_dependency_install_failure_as_runtime_failure(monkeypat
     )
     _stub_channel_registry(monkeypatch, plugin)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.extra_installed",
+        "nanobot.optional_features.extra_installed",
         lambda _name, _dependencies: False,
     )
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.install_extra",
+        "nanobot.optional_features.install_extra",
         lambda name, _dependencies, *, runner: InstallResult(False, name, ["pip"]),
     )
     config = Config.model_validate({
@@ -980,7 +984,7 @@ def test_manager_reports_dependency_install_failure_as_runtime_failure(monkeypat
 
 
 def test_manager_loads_websocket_from_default_config():
-    from auto_cut_bot.channels.manager import ChannelManager
+    from nanobot.channels.manager import ChannelManager
 
     class _FakeWebSocket(_FakePlugin):
         name = "websocket"
@@ -995,7 +999,7 @@ def test_manager_loads_websocket_from_default_config():
             return {"enabled": True, "host": "127.0.0.1"}
 
     plugin = _channel_plugin(_FakeWebSocket, default_enabled=True)
-    with patch("auto_cut_bot.channels.registry.discover_plugins", return_value={"websocket": plugin}):
+    with patch("nanobot.channels.registry.discover_plugins", return_value={"websocket": plugin}):
         mgr = ChannelManager(Config(), MessageBus(), webui_static_dist=False)
 
     assert "websocket" in mgr.channels
@@ -1004,7 +1008,7 @@ def test_manager_loads_websocket_from_default_config():
 
 
 def test_manager_respects_explicitly_disabled_websocket_config():
-    from auto_cut_bot.channels.manager import ChannelManager
+    from nanobot.channels.manager import ChannelManager
 
     config = Config.model_validate({"channels": {"websocket": {"enabled": False}}})
     plugin = ChannelPlugin(
@@ -1013,7 +1017,7 @@ def test_manager_respects_explicitly_disabled_websocket_config():
         runtime="missing.websocket.runtime:WebSocketChannel",
         default_enabled=True,
     )
-    with patch("auto_cut_bot.channels.registry.discover_plugins", return_value={"websocket": plugin}):
+    with patch("nanobot.channels.registry.discover_plugins", return_value={"websocket": plugin}):
         mgr = ChannelManager(config, MessageBus(), webui_static_dist=False)
 
     assert "websocket" not in mgr.channels
@@ -1025,7 +1029,7 @@ async def test_base_channel_reads_current_transcription_config_each_call(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """BaseChannel.transcribe_audio resolves config at call time, not manager init time."""
-    from auto_cut_bot.providers import transcription as transcription_mod
+    from nanobot.providers import transcription as transcription_mod
 
     config_path = tmp_path / "config.json"
     config = Config()
@@ -1035,7 +1039,7 @@ async def test_base_channel_reads_current_transcription_config_each_call(
     config.providers.openai.api_key = "openai-key"
     config.providers.openai.api_base = "http://openai.local/v1/audio/transcriptions"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     channel = _FakePlugin({"enabled": True, "allowFrom": ["*"]}, MessageBus())
 
@@ -1110,17 +1114,17 @@ async def test_base_channel_respects_disabled_transcription_config(
     config.transcription.enabled = False
     config.providers.groq.api_key = "groq-key"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     channel = _FakePlugin({"enabled": True, "allowFrom": ["*"]}, MessageBus())
 
-    with patch("auto_cut_bot.providers.transcription.GroqTranscriptionProvider") as provider:
+    with patch("nanobot.providers.transcription.GroqTranscriptionProvider") as provider:
         assert await channel.transcribe_audio("/tmp/does-not-matter.wav") == ""
     provider.assert_not_called()
 
 
 def test_openai_transcription_provider_honors_api_base_argument():
-    from auto_cut_bot.providers.transcription import OpenAITranscriptionProvider
+    from nanobot.providers.transcription import OpenAITranscriptionProvider
 
     default = OpenAITranscriptionProvider(api_key="k")
     assert default.api_url == "https://api.openai.com/v1/audio/transcriptions"
@@ -1174,7 +1178,7 @@ async def test_transcription_provider_includes_language(tmp_path, provider_cls, 
     audio.write_bytes(b"audio")
     captured: dict[str, object] = {}
 
-    with patch("auto_cut_bot.providers.transcription.httpx.AsyncClient", return_value=_stub_async_client(captured)):
+    with patch("nanobot.providers.transcription.httpx.AsyncClient", return_value=_stub_async_client(captured)):
         provider = provider_cls(api_key="k", language=language)
         result = await provider.transcribe(audio)
 
@@ -1194,7 +1198,7 @@ async def test_transcription_provider_omits_language_when_none(tmp_path, provide
     audio.write_bytes(b"audio")
     captured: dict[str, object] = {}
 
-    with patch("auto_cut_bot.providers.transcription.httpx.AsyncClient", return_value=_stub_async_client(captured)):
+    with patch("nanobot.providers.transcription.httpx.AsyncClient", return_value=_stub_async_client(captured)):
         provider = provider_cls(api_key="k")
         result = await provider.transcribe(audio)
 
@@ -1205,8 +1209,8 @@ async def test_transcription_provider_omits_language_when_none(tmp_path, provide
 def test_channels_login_uses_discovered_plugin_class(monkeypatch):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
-    from auto_cut_bot.config.schema import Config
+    from nanobot.cli.commands import app
+    from nanobot.config.schema import Config
 
     runner = CliRunner()
     seen: dict[str, object] = {}
@@ -1220,9 +1224,9 @@ def test_channels_login_uses_discovered_plugin_class(monkeypatch):
             seen["bus"] = self.bus
             return True
 
-    monkeypatch.setattr("auto_cut_bot.config.loader.load_config", lambda config_path=None: Config())
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda config_path=None: Config())
     monkeypatch.setattr(
-        "auto_cut_bot.channels.registry.discover_all",
+        "nanobot.channels.registry.discover_all",
         lambda: {"fakeplugin": _LoginPlugin},
     )
 
@@ -1236,8 +1240,8 @@ def test_channels_login_uses_discovered_plugin_class(monkeypatch):
 def test_channels_login_sets_custom_config_path(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
-    from auto_cut_bot.config.schema import Config
+    from nanobot.cli.commands import app
+    from nanobot.config.schema import Config
 
     runner = CliRunner()
     seen: dict[str, object] = {}
@@ -1247,13 +1251,13 @@ def test_channels_login_sets_custom_config_path(monkeypatch, tmp_path):
         async def login(self, force: bool = False) -> bool:
             return True
 
-    monkeypatch.setattr("auto_cut_bot.config.loader.load_config", lambda config_path=None: Config())
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda config_path=None: Config())
     monkeypatch.setattr(
-        "auto_cut_bot.config.loader.set_config_path",
+        "nanobot.config.loader.set_config_path",
         lambda path: seen.__setitem__("config_path", path),
     )
     monkeypatch.setattr(
-        "auto_cut_bot.channels.registry.discover_all",
+        "nanobot.channels.registry.discover_all",
         lambda: {"fakeplugin": _LoginPlugin},
     )
 
@@ -1266,19 +1270,19 @@ def test_channels_login_sets_custom_config_path(monkeypatch, tmp_path):
 def test_channels_status_sets_custom_config_path(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
-    from auto_cut_bot.config.schema import Config
+    from nanobot.cli.commands import app
+    from nanobot.config.schema import Config
 
     runner = CliRunner()
     seen: dict[str, object] = {}
     config_path = tmp_path / "custom-config.json"
 
-    monkeypatch.setattr("auto_cut_bot.config.loader.load_config", lambda config_path=None: Config())
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda config_path=None: Config())
     monkeypatch.setattr(
-        "auto_cut_bot.config.loader.set_config_path",
+        "nanobot.config.loader.set_config_path",
         lambda path: seen.__setitem__("config_path", path),
     )
-    monkeypatch.setattr("auto_cut_bot.channels.registry.discover_all", lambda: {})
+    monkeypatch.setattr("nanobot.channels.registry.discover_all", lambda: {})
 
     result = runner.invoke(app, ["channels", "status", "--config", str(config_path)])
 
@@ -1289,15 +1293,15 @@ def test_channels_status_sets_custom_config_path(monkeypatch, tmp_path):
 def test_plugins_list_shows_available_features(monkeypatch):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
-    from auto_cut_bot.config.schema import Config
+    from nanobot.cli.commands import app
+    from nanobot.config.schema import Config
 
     runner = CliRunner()
     config = Config.model_validate({"channels": {"weixin": {"enabled": True}}})
-    monkeypatch.setattr("auto_cut_bot.config.loader.load_config", lambda config_path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda config_path=None: config)
     _stub_channel_packages(monkeypatch, "weixin")
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"weixin": ["qrcode[pil]>=8.0"], "bedrock": ["boto3>=1.43.0"]},
     )
 
@@ -1315,7 +1319,7 @@ def test_plugins_list_shows_available_features(monkeypatch):
 def test_plugins_list_reads_multi_instance_state_without_runtime(monkeypatch):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli.commands import app
 
     plugin = ChannelPlugin(
         name="managedmulti",
@@ -1331,9 +1335,9 @@ def test_plugins_list_reads_multi_instance_state_without_runtime(monkeypatch):
             }
         }
     })
-    monkeypatch.setattr("auto_cut_bot.config.loader.load_config", lambda config_path=None: config)
+    monkeypatch.setattr("nanobot.config.loader.load_config", lambda config_path=None: config)
     _stub_channel_registry(monkeypatch, plugin)
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     result = CliRunner().invoke(app, ["plugins", "list"])
 
@@ -1345,7 +1349,7 @@ def test_plugins_list_reads_multi_instance_state_without_runtime(monkeypatch):
 def test_plugins_enable_channel_installs_extra_and_writes_config(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli.commands import app
 
     class _WeixinChannel(_FakePlugin):
         name = "weixin"
@@ -1387,13 +1391,13 @@ def test_plugins_enable_channel_installs_extra_and_writes_config(monkeypatch, tm
 def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli import commands as cli_commands
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli import commands as cli_commands
+    from nanobot.cli.commands import app
 
     commands: list[list[str]] = []
     log_flags: list[bool] = []
     config_path = tmp_path / "config.json"
-    original_set_logs = cli_commands._set_auto_cut_bot_logs
+    original_set_logs = cli_commands._set_nanobot_logs
 
     def _set_logs(enabled: bool) -> None:
         log_flags.append(enabled)
@@ -1406,7 +1410,7 @@ def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_pat
         installed=False,
         commands=commands,
     )
-    monkeypatch.setattr("auto_cut_bot.cli.commands._set_auto_cut_bot_logs", _set_logs)
+    monkeypatch.setattr("nanobot.cli.commands._set_nanobot_logs", _set_logs)
 
     result = runner.invoke(app, ["plugins", "enable", "bedrock", "--config", str(config_path)])
 
@@ -1417,15 +1421,15 @@ def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_pat
     assert not config_path.exists()
 
 
-def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_path):
+def test_plugins_enable_logs_option_enables_nanobot_logs(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli import commands as cli_commands
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli import commands as cli_commands
+    from nanobot.cli.commands import app
 
     config_path = tmp_path / "config.json"
     log_flags: list[bool] = []
-    original_set_logs = cli_commands._set_auto_cut_bot_logs
+    original_set_logs = cli_commands._set_nanobot_logs
 
     def _set_logs(enabled: bool) -> None:
         log_flags.append(enabled)
@@ -1438,7 +1442,7 @@ def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_p
         installed=False,
         commands=[],
     )
-    monkeypatch.setattr("auto_cut_bot.cli.commands._set_auto_cut_bot_logs", _set_logs)
+    monkeypatch.setattr("nanobot.cli.commands._set_nanobot_logs", _set_logs)
 
     result = runner.invoke(
         app,
@@ -1453,7 +1457,7 @@ def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_p
 def test_plugins_enable_skips_install_when_extra_is_present(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli.commands import app
 
     commands: list[list[str]] = []
     config_path = tmp_path / "config.json"
@@ -1503,7 +1507,7 @@ def test_repository_dependency_installer_selects_all_channel_manifests(monkeypat
 
 
 def test_repository_dependency_installer_batches_missing_manifests(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
     from scripts import install_channel_dependencies as dependencies
 
     plugins = {
@@ -1558,7 +1562,7 @@ def test_repository_dependency_installer_batches_missing_manifests(monkeypatch):
 
 
 def test_repository_dependency_installer_falls_back_after_batch_failure(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
     from scripts import install_channel_dependencies as dependencies
 
     plugins = {
@@ -1601,7 +1605,7 @@ def test_repository_dependency_installer_falls_back_after_batch_failure(monkeypa
 
 
 def test_repository_dependency_installer_rechecks_each_channel_after_batch(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
     from scripts import install_channel_dependencies as dependencies
 
     plugins = {
@@ -1650,7 +1654,7 @@ def test_repository_dependency_installer_rechecks_each_channel_after_batch(monke
 
 
 def test_repository_dependency_installer_reports_conflict_after_fallback(monkeypatch):
-    from auto_cut_bot.optional_features import InstallResult
+    from nanobot.optional_features import InstallResult
     from scripts import install_channel_dependencies as dependencies
 
     plugins = {
@@ -1718,7 +1722,7 @@ def test_repository_dependency_installer_propagates_install_failure(monkeypatch,
 def test_plugins_disable_channel_writes_config(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli.commands import app
 
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -1727,7 +1731,7 @@ def test_plugins_disable_channel_writes_config(monkeypatch, tmp_path):
     )
     runner = CliRunner()
     _stub_channel_packages(monkeypatch, "matrix")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     result = runner.invoke(app, ["plugins", "disable", "matrix", "--config", str(config_path)])
 
@@ -1741,13 +1745,13 @@ def test_plugins_disable_channel_writes_config(monkeypatch, tmp_path):
 def test_plugins_disable_rejects_non_channel_and_allows_websocket(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
-    from auto_cut_bot.cli.commands import app
+    from nanobot.cli.commands import app
 
     config_path = tmp_path / "config.json"
     runner = CliRunner()
     _stub_channel_packages(monkeypatch, "matrix", "websocket")
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"bedrock": ["boto3>=1.43.0"]},
     )
 
@@ -1770,16 +1774,16 @@ def test_plugins_disable_rejects_non_channel_and_allows_websocket(monkeypatch, t
 
 
 def test_enable_optional_feature_blocks_install_when_disallowed(monkeypatch, tmp_path):
-    from auto_cut_bot.optional_features import OptionalFeatureError, enable_optional_feature
+    from nanobot.optional_features import OptionalFeatureError, enable_optional_feature
 
     config_path = tmp_path / "config.json"
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_registry(monkeypatch)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"bedrock": ["boto3>=1.43.0"]},
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: False)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: False)
 
     with pytest.raises(OptionalFeatureError) as exc:
         enable_optional_feature("bedrock", config_path=config_path, allow_install=False)
@@ -1793,17 +1797,17 @@ def test_enable_optional_feature_skips_install_when_dependency_present(
     monkeypatch,
     tmp_path,
 ):
-    from auto_cut_bot.optional_features import InstallResult, enable_optional_feature
+    from nanobot.optional_features import InstallResult, enable_optional_feature
 
     config_path = tmp_path / "config.json"
     install_calls: list[str] = []
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_registry(monkeypatch)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"bedrock": ["boto3>=1.43.0"]},
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: True)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: True)
 
     def _install_extra(
         name: str,
@@ -1814,7 +1818,7 @@ def test_enable_optional_feature_skips_install_when_dependency_present(
         install_calls.append(name)
         return InstallResult(True, f"{name} support", ["python", "-m", "pip", "install", name])
 
-    monkeypatch.setattr("auto_cut_bot.optional_features.install_extra", _install_extra)
+    monkeypatch.setattr("nanobot.optional_features.install_extra", _install_extra)
 
     payload = enable_optional_feature("bedrock", config_path=config_path, allow_install=False)
 
@@ -1825,40 +1829,40 @@ def test_enable_optional_feature_skips_install_when_dependency_present(
 
 
 def test_enable_optional_feature_lazy_reader_does_not_require_restart(monkeypatch, tmp_path):
-    from auto_cut_bot.optional_features import enable_optional_feature
+    from nanobot.optional_features import enable_optional_feature
 
     config_path = tmp_path / "config.json"
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_registry(monkeypatch)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"documents": ["pypdf>=5.0.0,<6.0.0"]},
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: True)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: True)
 
     payload = enable_optional_feature("documents", config_path=config_path)
 
     assert payload["requires_restart"] is False
-    assert payload["last_action"]["message"] == "Feature 'documents' is included with auto_cut_bot"
+    assert payload["last_action"]["message"] == "Feature 'documents' is included with nanobot"
 
 
 def test_enable_optional_feature_reports_install_failure(monkeypatch, tmp_path):
-    from auto_cut_bot.optional_features import (
+    from nanobot.optional_features import (
         InstallResult,
         OptionalFeatureError,
         enable_optional_feature,
     )
 
     config_path = tmp_path / "config.json"
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_registry(monkeypatch)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"bedrock": ["boto3>=1.43.0"]},
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: False)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: False)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.install_extra",
+        "nanobot.optional_features.install_extra",
         lambda _name, _deps, *, runner: InstallResult(
             False,
             "bedrock support",
@@ -1881,13 +1885,13 @@ def test_disable_optional_feature_rejects_unknown_features_and_non_channels(
     monkeypatch,
     tmp_path,
 ):
-    from auto_cut_bot.optional_features import OptionalFeatureError, disable_optional_feature
+    from nanobot.optional_features import OptionalFeatureError, disable_optional_feature
 
     config_path = tmp_path / "config.json"
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_packages(monkeypatch, "matrix", "websocket")
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"bedrock": ["boto3>=1.43.0"]},
     )
 
@@ -1905,16 +1909,16 @@ def test_disable_optional_feature_rejects_unknown_features_and_non_channels(
 
 
 def test_disable_optional_feature_writes_channel_disabled(monkeypatch, tmp_path):
-    from auto_cut_bot.optional_features import disable_optional_feature
+    from nanobot.optional_features import disable_optional_feature
 
     config_path = tmp_path / "config.json"
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     config_path.write_text(
         json.dumps({"channels": {"matrix": {"enabled": True, "homeserver": "keep"}}}),
         encoding="utf-8",
     )
     _stub_channel_packages(monkeypatch, "matrix", "websocket")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = disable_optional_feature("matrix", config_path=config_path)
 
@@ -1931,7 +1935,7 @@ def test_disable_optional_feature_writes_channel_disabled(monkeypatch, tmp_path)
 
 
 def test_disable_multi_instance_channel_without_importing_runtime(monkeypatch, tmp_path):
-    from auto_cut_bot.optional_features import disable_optional_feature
+    from nanobot.optional_features import disable_optional_feature
 
     plugin = ChannelPlugin(
         name="managedmulti",
@@ -1954,9 +1958,9 @@ def test_disable_multi_instance_channel_without_importing_runtime(monkeypatch, t
         }),
         encoding="utf-8",
     )
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     _stub_channel_registry(monkeypatch, plugin)
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = disable_optional_feature(
         "managedmulti",
@@ -1975,8 +1979,8 @@ def test_disable_multi_instance_channel_without_importing_runtime(monkeypatch, t
 
 
 def test_feishu_enable_rejects_duplicate_instance_ids_without_writing(tmp_path):
-    from auto_cut_bot.channels.registry import load_channel_plugin
-    from auto_cut_bot.optional_features import OptionalFeatureError, set_channel_config_enabled
+    from nanobot.channels.registry import load_channel_plugin
+    from nanobot.optional_features import OptionalFeatureError, set_channel_config_enabled
 
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -2003,15 +2007,15 @@ def test_feishu_enable_rejects_duplicate_instance_ids_without_writing(tmp_path):
 def test_optional_features_payload_counts_enabled_channel_with_missing_dependency(
     monkeypatch,
 ):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({"channels": {"matrix": {"enabled": True}}})
     _stub_channel_packages(monkeypatch, "matrix")
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {"matrix": ["matrix-nio>=0.25.2"]},
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", lambda _name, _deps: False)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", lambda _name, _deps: False)
 
     payload = optional_features_payload(config=config)
 
@@ -2024,7 +2028,7 @@ def test_optional_features_payload_counts_enabled_channel_with_missing_dependenc
 
 
 def test_live_runtime_status_overrides_enabled_configuration_for_webui():
-    from auto_cut_bot.optional_features import with_channel_runtime_status
+    from nanobot.optional_features import with_channel_runtime_status
 
     payload = {
         "features": [{
@@ -2064,7 +2068,7 @@ def test_live_runtime_status_overrides_enabled_configuration_for_webui():
 
 
 def test_package_manifest_metadata_drives_optional_feature_payload(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     plugin = ChannelPlugin(
         name="demo",
@@ -2080,7 +2084,7 @@ def test_package_manifest_metadata_drives_optional_feature_payload(monkeypatch):
 
     _stub_channel_registry(monkeypatch, plugin)
     monkeypatch.setattr(
-        "auto_cut_bot.optional_features.optional_dependency_groups",
+        "nanobot.optional_features.optional_dependency_groups",
         lambda: {},
     )
 
@@ -2088,7 +2092,7 @@ def test_package_manifest_metadata_drives_optional_feature_payload(monkeypatch):
         checked_extras.append((extra, deps))
         return True
 
-    monkeypatch.setattr("auto_cut_bot.optional_features.extra_installed", record_extra)
+    monkeypatch.setattr("nanobot.optional_features.extra_installed", record_extra)
 
     payload = optional_features_payload(config=config)
 
@@ -2100,7 +2104,7 @@ def test_package_manifest_metadata_drives_optional_feature_payload(monkeypatch):
 
 
 def test_optional_features_payload_reflects_saved_channel_config(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
@@ -2113,7 +2117,7 @@ def test_optional_features_payload_reflects_saved_channel_config(monkeypatch):
         }
     })
     _stub_channel_packages(monkeypatch, "discord")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2134,11 +2138,11 @@ def test_optional_features_payload_reflects_saved_channel_config(monkeypatch):
 
 
 def test_optional_features_payload_marks_enabled_channel_missing_credentials(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({"channels": {"discord": {"enabled": True}}})
     _stub_channel_packages(monkeypatch, "discord")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2150,7 +2154,7 @@ def test_optional_features_payload_marks_enabled_channel_missing_credentials(mon
 
 
 def test_optional_features_payload_detects_saved_weixin_login_state(tmp_path, monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     state_dir = tmp_path / "weixin-state"
     state_dir.mkdir()
@@ -2167,7 +2171,7 @@ def test_optional_features_payload_detects_saved_weixin_login_state(tmp_path, mo
         }
     })
     _stub_channel_packages(monkeypatch, "weixin")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2177,8 +2181,8 @@ def test_optional_features_payload_detects_saved_weixin_login_state(tmp_path, mo
 
 
 def test_optional_features_payload_detects_legacy_default_weixin_state(tmp_path, monkeypatch):
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.config import loader
+    from nanobot.optional_features import optional_features_payload
 
     config_path = tmp_path / "config.json"
     loader.save_config(Config(), config_path)
@@ -2190,7 +2194,7 @@ def test_optional_features_payload_detects_legacy_default_weixin_state(tmp_path,
         encoding="utf-8",
     )
     _stub_channel_packages(monkeypatch, "weixin")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=Config())
 
@@ -2204,21 +2208,21 @@ def test_optional_features_payload_requires_matrix_device_id_for_token_login(
     monkeypatch,
     device_id,
 ):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
             "matrix": {
                 "enabled": False,
                 "homeserver": "https://matrix.example",
-                "userId": "@auto_cut_bot:matrix.example",
+                "userId": "@nanobot:matrix.example",
                 "accessToken": "saved-token",
                 "deviceId": device_id,
             }
         }
     })
     _stub_channel_packages(monkeypatch, "matrix")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2226,7 +2230,7 @@ def test_optional_features_payload_requires_matrix_device_id_for_token_login(
 
 
 def test_optional_features_payload_marks_disabled_feishu_as_configured(monkeypatch):
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
@@ -2244,7 +2248,7 @@ def test_optional_features_payload_marks_disabled_feishu_as_configured(monkeypat
         monkeypatch,
         replace(plugin, runtime="missing.feishu.runtime:FeishuChannel"),
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2258,8 +2262,8 @@ def test_optional_features_payload_marks_disabled_feishu_as_configured(monkeypat
 
 
 def test_optional_features_payload_lists_feishu_instances(monkeypatch):
-    from auto_cut_bot.channels.plugin import load_channel_package
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.channels.plugin import load_channel_package
+    from nanobot.optional_features import optional_features_payload
 
     config = Config.model_validate({
         "channels": {
@@ -2267,7 +2271,7 @@ def test_optional_features_payload_lists_feishu_instances(monkeypatch):
                 "instances": [
                     {
                         "id": "default",
-                        "name": "auto_cut_bot",
+                        "name": "nanobot",
                         "displayName": "Voraflare Bot",
                         "avatarUrl": "https://example.com/bot.png",
                         "enabled": True,
@@ -2291,7 +2295,7 @@ def test_optional_features_payload_lists_feishu_instances(monkeypatch):
         monkeypatch,
         replace(plugin, runtime="missing.feishu.runtime:FeishuChannel"),
     )
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
 
     payload = optional_features_payload(config=config)
 
@@ -2303,7 +2307,7 @@ def test_optional_features_payload_lists_feishu_instances(monkeypatch):
     assert feishu["instances"] == [
         {
             "id": "default",
-            "name": "auto_cut_bot",
+            "name": "nanobot",
             "display_name": "Voraflare Bot",
             "avatar_url": "https://example.com/bot.png",
             "enabled": True,
@@ -2347,9 +2351,9 @@ def test_optional_features_payload_lists_feishu_instances(monkeypatch):
 
 
 def test_optional_features_payload_does_not_refresh_saved_feishu_identity(monkeypatch, tmp_path):
-    from auto_cut_bot.channels.feishu import runtime as feishu_module
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.channels.feishu import runtime as feishu_module
+    from nanobot.config import loader
+    from nanobot.optional_features import optional_features_payload
 
     config_path = tmp_path / "config.json"
     save_config(
@@ -2358,7 +2362,7 @@ def test_optional_features_payload_does_not_refresh_saved_feishu_identity(monkey
                 "feishu": {
                     "instances": [{
                         "id": "default",
-                        "name": "auto_cut_bot",
+                        "name": "nanobot",
                         "enabled": True,
                         "appId": "cli_default",
                         "appSecret": "secret",
@@ -2370,7 +2374,7 @@ def test_optional_features_payload_does_not_refresh_saved_feishu_identity(monkey
     )
     monkeypatch.setattr(loader, "_current_config_path", config_path)
     _stub_channel_packages(monkeypatch, "feishu")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
     monkeypatch.setattr(
         feishu_module,
         "fetch_feishu_app_identity",
@@ -2381,7 +2385,7 @@ def test_optional_features_payload_does_not_refresh_saved_feishu_identity(monkey
     payload = optional_features_payload()
 
     instance = payload["features"][0]["instances"][0]
-    assert instance["display_name"] == "auto_cut_bot"
+    assert instance["display_name"] == "nanobot"
     assert instance["avatar_url"] == ""
     assert config_path.read_text(encoding="utf-8") == before
 
@@ -2390,9 +2394,9 @@ def test_enable_optional_feature_refreshes_feishu_identity(
     monkeypatch,
     tmp_path,
 ):
-    from auto_cut_bot.channels.feishu import runtime as feishu_module
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.optional_features import enable_optional_feature
+    from nanobot.channels.feishu import runtime as feishu_module
+    from nanobot.config import loader
+    from nanobot.optional_features import enable_optional_feature
 
     config_path = tmp_path / "config.json"
     save_config(
@@ -2401,7 +2405,7 @@ def test_enable_optional_feature_refreshes_feishu_identity(
                 "feishu": {
                     "instances": [{
                         "id": "default",
-                        "name": "auto_cut_bot",
+                        "name": "nanobot",
                         "enabled": True,
                         "appId": "cli_default",
                         "appSecret": "secret",
@@ -2413,7 +2417,7 @@ def test_enable_optional_feature_refreshes_feishu_identity(
     )
     monkeypatch.setattr(loader, "_current_config_path", config_path)
     _stub_channel_packages(monkeypatch, "feishu")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
     monkeypatch.setattr(feishu_module, "FEISHU_AVAILABLE", True)
     monkeypatch.setattr(
         feishu_module,
@@ -2439,9 +2443,9 @@ def test_enable_optional_feature_refreshes_feishu_identity(
 
 
 def test_optional_features_payload_preserves_legacy_flat_feishu_config(monkeypatch, tmp_path):
-    from auto_cut_bot.channels.feishu import runtime as feishu_module
-    from auto_cut_bot.config import loader
-    from auto_cut_bot.optional_features import optional_features_payload
+    from nanobot.channels.feishu import runtime as feishu_module
+    from nanobot.config import loader
+    from nanobot.optional_features import optional_features_payload
 
     config_path = tmp_path / "config.json"
     save_config(
@@ -2459,7 +2463,7 @@ def test_optional_features_payload_preserves_legacy_flat_feishu_config(monkeypat
     )
     monkeypatch.setattr(loader, "_current_config_path", config_path)
     _stub_channel_packages(monkeypatch, "feishu")
-    monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
+    monkeypatch.setattr("nanobot.optional_features.optional_dependency_groups", lambda: {})
     monkeypatch.setattr(
         feishu_module,
         "fetch_feishu_app_identity",
@@ -2469,7 +2473,7 @@ def test_optional_features_payload_preserves_legacy_flat_feishu_config(monkeypat
 
     payload = optional_features_payload()
 
-    assert payload["features"][0]["instances"][0]["display_name"] == "auto_cut_bot"
+    assert payload["features"][0]["instances"][0]["display_name"] == "nanobot"
     assert config_path.read_text(encoding="utf-8") == before
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["feishu"]
     assert saved["appId"] == "cli_legacy"
@@ -2490,7 +2494,7 @@ def test_enable_uses_uv_when_tool_environment_has_no_pip(
     monkeypatch,
     index_url,
 ):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     calls: list[list[str]] = []
     call_envs: list[dict[str, str] | None] = []
@@ -2543,7 +2547,7 @@ def test_enable_uses_uv_when_tool_environment_has_no_pip(
 
 
 def test_enable_bootstraps_pip_with_ensurepip(monkeypatch):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     calls: list[list[str]] = []
 
@@ -2557,14 +2561,14 @@ def test_enable_bootstraps_pip_with_ensurepip(monkeypatch):
 
     assert optional_features.install_extra("bedrock", None, runner=_run).ok is True
     assert calls == [
-        [sys.executable, "-m", "pip", "install", "auto-cut-bot-ai[bedrock]"],
+        [sys.executable, "-m", "pip", "install", "nanobot-ai[bedrock]"],
         [sys.executable, "-m", "ensurepip", "--upgrade"],
-        [sys.executable, "-m", "pip", "install", "auto-cut-bot-ai[bedrock]"],
+        [sys.executable, "-m", "pip", "install", "nanobot-ai[bedrock]"],
     ]
 
 
 def test_install_extra_logs_command_and_output(monkeypatch):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     records: list[str] = []
 
@@ -2586,7 +2590,7 @@ def test_install_extra_logs_command_and_output(monkeypatch):
 
 
 def test_run_install_command_returns_failure_on_timeout(monkeypatch):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     def _run(*args, **kwargs):
         raise subprocess.TimeoutExpired(["pip"], 300, output="partial", stderr=b"still running")
@@ -2601,8 +2605,8 @@ def test_run_install_command_returns_failure_on_timeout(monkeypatch):
 
 
 def test_optional_dependency_metadata_for_enable():
-    from auto_cut_bot import optional_features
-    from auto_cut_bot.channels.plugin import load_channel_package
+    from nanobot import optional_features
+    from nanobot.channels.plugin import load_channel_package
 
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     deps = data["project"]["optional-dependencies"]
@@ -2711,7 +2715,7 @@ def test_optional_dependency_metadata_for_enable():
 
 
 def test_optional_dependency_groups_falls_back_to_package_metadata(monkeypatch):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     class _Metadata:
         def get_all(self, key: str):
@@ -2739,10 +2743,10 @@ def test_optional_dependency_groups_falls_back_to_package_metadata(monkeypatch):
 
 
 def test_load_pyproject_propagates_malformed_toml(tmp_path):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     path = tmp_path / "pyproject.toml"
-    path.write_text("[project\nname = 'auto_cut_bot'", encoding="utf-8")
+    path.write_text("[project\nname = 'nanobot'", encoding="utf-8")
 
     with pytest.raises(tomllib.TOMLDecodeError):
         optional_features.load_pyproject(path)
@@ -2751,7 +2755,7 @@ def test_load_pyproject_propagates_malformed_toml(tmp_path):
 def test_optional_dependency_metadata_propagates_malformed_requirement(monkeypatch):
     from packaging.requirements import InvalidRequirement
 
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     class _Metadata:
         def get_all(self, key: str):
@@ -2769,7 +2773,7 @@ def test_optional_dependency_metadata_propagates_malformed_requirement(monkeypat
 
 
 def test_install_args_for_extra_resolves_metadata_markers_for_current_platform():
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     current_platform = sys.platform
     deps = [
@@ -2784,7 +2788,7 @@ def test_install_args_for_extra_resolves_metadata_markers_for_current_platform()
 
 
 def test_requirement_installed_validates_requested_extras(monkeypatch):
-    from auto_cut_bot import optional_features
+    from nanobot import optional_features
 
     class _Metadata:
         def __init__(self, extras: list[str] | None = None) -> None:
@@ -2856,7 +2860,7 @@ async def test_manager_skips_disabled_channel_package(monkeypatch):
 
 def test_channel_default_config():
     """Channels expose default_config() returning a dict with 'enabled': False."""
-    from auto_cut_bot.channels.dingtalk.runtime import DingTalkChannel
+    from nanobot.channels.dingtalk.runtime import DingTalkChannel
     cfg = DingTalkChannel.default_config()
     assert isinstance(cfg, dict)
     assert cfg["enabled"] is False
@@ -2865,7 +2869,7 @@ def test_channel_default_config():
 
 def test_channel_init_from_dict():
     """Channels accept a raw dict and convert to Pydantic internally."""
-    from auto_cut_bot.channels.dingtalk.runtime import DingTalkChannel
+    from nanobot.channels.dingtalk.runtime import DingTalkChannel
     bus = MessageBus()
     ch = DingTalkChannel({"enabled": False, "clientId": "test-id", "allowFrom": ["*"]}, bus)
     assert ch.config.client_id == "test-id"
@@ -2996,7 +3000,7 @@ async def test_send_with_retry_retries_on_failure():
     msg = OutboundMessage(channel="failing", chat_id="123", content="test")
 
     # Patch asyncio.sleep to avoid actual delays
-    with patch("auto_cut_bot.channels.manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+    with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 3  # 3 total attempts (initial + 2 retries)
@@ -3036,7 +3040,7 @@ async def test_send_with_retry_no_retry_when_max_is_zero():
 
     msg = OutboundMessage(channel="failing", chat_id="123", content="test")
 
-    with patch("auto_cut_bot.channels.manager.asyncio.sleep", new_callable=AsyncMock):
+    with patch("nanobot.channels.manager.asyncio.sleep", new_callable=AsyncMock):
         await mgr._send_with_retry(mgr.channels["failing"], msg)
 
     assert call_count == 1  # Called once but no retry (max(0, 1) = 1)
@@ -3278,7 +3282,7 @@ async def test_send_with_retry_propagates_cancelled_error_during_sleep():
     async def cancel_during_sleep(_):
         raise asyncio.CancelledError("cancelled during sleep")
 
-    with patch("auto_cut_bot.channels.manager.asyncio.sleep", side_effect=cancel_during_sleep):
+    with patch("nanobot.channels.manager.asyncio.sleep", side_effect=cancel_during_sleep):
         with pytest.raises(asyncio.CancelledError):
             await mgr._send_with_retry(mgr.channels["failing"], msg)
 
@@ -3699,7 +3703,7 @@ async def test_notify_restart_done_waits_until_channel_starts():
     mgr._send_with_retry = AsyncMock()
 
     notice = RestartNotice(channel="feishu", chat_id="oc_123", started_at_raw="100.0")
-    with patch("auto_cut_bot.channels.manager.consume_restart_notice_from_env", return_value=notice):
+    with patch("nanobot.channels.manager.consume_restart_notice_from_env", return_value=notice):
         task = mgr._notify_restart_done_if_needed()
 
     await asyncio.sleep(0)
@@ -3745,7 +3749,7 @@ async def test_restart_notice_retries_until_running_channel_accepts_delivery():
     mgr.channels = {"discord": channel}
 
     notice = RestartNotice(channel="discord", chat_id="123", started_at_raw="")
-    with patch("auto_cut_bot.channels.manager._SEND_RETRY_DELAYS", (0,)):
+    with patch("nanobot.channels.manager._SEND_RETRY_DELAYS", (0,)):
         await mgr._send_restart_notice_when_started(notice, timeout_s=0.1, poll_s=0.01)
 
     assert channel.attempts == 2

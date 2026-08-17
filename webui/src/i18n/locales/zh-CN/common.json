@@ -1,20 +1,21 @@
 {
   "app": {
-    "brand": "auto_cut_bot",
+    "brand": "nanobot",
     "loading": {
-      "connecting": "正在连接 auto_cut_bot…",
-      "boot": "正在加载 auto_cut_bot…"
+      "connecting": "正在连接 nanobot…",
+      "boot": "正在加载 nanobot…"
     },
     "error": {
-      "title": "无法连接到 auto_cut_bot",
-      "gatewayHint": "请确认网关已启动（`auto_cut_bot gateway`），并且当前页面与网关运行在同一台机器上。"
+      "title": "无法连接到 nanobot",
+      "gatewayHint": "请确认网关已启动（`nanobot gateway`），并且当前页面与网关运行在同一台机器上。"
     },
     "auth": {
-      "title": "需要验证",
-      "hint": "请输入网关配置中的 tokenIssueSecret。",
-      "placeholder": "密码",
+      "label": "密码",
+      "showPassword": "显示密码",
+      "hidePassword": "隐藏密码",
       "submit": "连接",
-      "invalid": "密码无效，请重试。"
+      "required": "请输入密码。",
+      "invalid": "密码错误，请重试。"
     },
     "account": {
       "section": "账户",
@@ -23,8 +24,8 @@
     },
     "system": {
       "section": "系统",
-      "restartHint": "重启 auto_cut_bot 以应用运行时更改。",
-      "restart": "重启 auto_cut_bot",
+      "restartHint": "重启 nanobot 以应用运行时更改。",
+      "restart": "重启 nanobot",
       "restarting": "正在重启...",
       "restartEngine": "重启引擎",
       "restartingEngine": "正在重启引擎..."
@@ -33,11 +34,11 @@
       "completed": "重启已完成，用时 {{seconds}} 秒。"
     },
     "documentTitle": {
-      "base": "auto_cut_bot",
-      "chat": "{{title}} · auto_cut_bot"
+      "base": "nanobot",
+      "chat": "{{title}} · nanobot"
     },
     "meta": {
-      "description": "auto_cut_bot Web UI —— 与你的 auto_cut_bot 工作区对话。"
+      "description": "nanobot Web UI —— 与你的 nanobot 工作区对话。"
     },
     "pairing": {
       "title": "配对聊天用户",
@@ -142,7 +143,8 @@
       "presets": "模型预设",
       "editPreset": "编辑预设",
       "presetName": "预设名称",
-      "presetNameHelp": "在模型设置中使用的简短名称。",
+      "presetNameHelp": "用于界面和 /model 命令；名称不能重复。",
+      "presetNameDuplicate": "已存在同名预设。",
       "presetNamePlaceholder": "快速写作",
       "advancedOptions": "高级选项",
       "advancedSummary": "上下文 {{context}} · 最大输出 {{max}} tokens",
@@ -182,7 +184,7 @@
       "language": "语言",
       "provider": "提供商",
       "model": "模型",
-      "restart": "重启 auto_cut_bot",
+      "restart": "重启 nanobot",
       "configPath": "配置路径",
       "activePreset": "当前预设",
       "gateway": "网关",
@@ -252,7 +254,7 @@
       "defaultImageSize": "发送给支持此选项的提供商的尺寸提示。",
       "maxImagesPerTurn": "单次 generate_image 请求可生成的图片上限。",
       "timezone": "用于日程和需要时间感知的回复。",
-      "cliAppsCatalog": "只安装 auto_cut_bot 可本地运行的应用 CLI 适配器；不会改动原生应用。",
+      "cliAppsCatalog": "只安装 nanobot 可本地运行的应用 CLI 适配器；不会改动原生应用。",
       "cliAppsFilter": "按应用、类别或能力搜索。",
       "localServiceAccess": "允许完全访问权限下的 shell 命令访问 localhost 服务。",
       "webuiDefaultAccess": "用于没有单独项目权限的 Web 聊天。",
@@ -298,7 +300,7 @@
       "readyStatus": "就绪",
       "readyTry": "试试 @{{name}}",
       "readyCopied": "已复制",
-      "readyPrompt": "让 auto_cut_bot 在这个任务中使用 @{{name}}。",
+      "readyPrompt": "让 nanobot 在这个任务中使用 @{{name}}。",
       "openChat": "回到对话",
       "unsupported": "暂不支持",
       "unavailable": "不可用",
@@ -318,8 +320,8 @@
       "filterInstalled": "已启用",
       "filterNotInstalled": "未启用",
       "searchPlaceholder": "搜索 MCP 预设",
-      "moreOptions": "添加集成",
-      "moreOptionsSubtitle": "连接自定义工具服务，或导入已有配置。",
+      "moreOptions": "添加 MCP 服务",
+      "moreOptionsSubtitle": "连接自定义 MCP 服务，或导入已有配置。",
       "customTitle": "自定义 MCP",
       "customSubtitle": "添加任意 stdio、HTTP 或 SSE MCP 服务。",
       "customAction": "自定义",
@@ -327,9 +329,14 @@
       "serverName": "服务名",
       "serverUrl": "URL",
       "transport": "传输方式",
+      "authentication": "身份验证",
+      "authNone": "无",
+      "authHeaders": "请求头",
       "command": "命令",
       "args": "Args JSON",
-      "headers": "Headers JSON",
+      "headers": "请求头 JSON",
+      "oauthAfterSave": "保存服务器后，选择“连接”以完成登录。",
+      "headersHelp": "添加此服务器要求的请求头。",
       "env": "Env JSON",
       "timeout": "工具超时",
       "advancedOptions": "高级选项",
@@ -337,7 +344,7 @@
       "saveCustom": "保存 MCP",
       "configImport": "导入 mcp.json",
       "importConfig": "导入",
-      "restartRequired": "重启 auto_cut_bot 以连接更新后的 MCP 工具。",
+      "restartRequired": "重启 nanobot 以连接更新后的 MCP 工具。",
       "toolsFound": "{{count}} 个工具",
       "loading": "正在加载 MCP 预设...",
       "empty": "没有匹配的 MCP 预设。",
@@ -348,7 +355,10 @@
       "enabled": "已启用",
       "setup": "连接",
       "configure": "连接",
+      "reconnect": "重新连接",
       "connectTitle": "连接 {{name}}",
+      "reconnectTitle": "重新连接 {{name}}",
+      "actionsTitle": "{{name}} 操作",
       "connectHint": "填入账户中的密钥。",
       "saveAndEnable": "保存并启用",
       "updateSetup": "更新配置",
@@ -356,14 +366,68 @@
       "keepExisting": "留空则保留当前值",
       "statusConfigured": "已配置",
       "statusMissingCredentials": "需要密钥",
+      "connectingAccount": "正在连接 {{name}}",
+      "connectingLabel": "正在连接…",
+      "continueSignIn": "继续登录",
+      "preparingSignIn": "正在准备安全登录…",
+      "openSignInToContinue": "打开登录页面以继续。",
+      "finishSignInInBrowser": "请在浏览器窗口中完成登录。",
+      "manualCallbackRequired": "完成登录后，将回调 URL 粘贴到 nanobot。",
+      "manualCallbackHelp": "授权后，localhost 页面将无法打开。请复制地址栏中的完整 URL 并粘贴到这里。",
+      "finishingConnection": "正在完成连接…",
+      "activatingTools": "正在启用工具…",
+      "connected": "已连接。",
+      "connectionFailed": "连接失败。",
+      "connectionCancelled": "已取消连接。",
+      "reloadFailed": "已登录，但 nanobot 无法连接这些工具。请尝试重启 nanobot。",
+      "oauthFailed": "无法连接，请重新登录。",
       "statusMissingDependency": "缺少依赖",
       "statusComingSoon": "暂不支持",
       "comingSoon": "即将推出",
       "statusNotInstalled": "未启用",
+      "manage": "管理",
+      "manageTitle": "管理 {{name}}",
+      "fixConnection": "修复连接",
+      "overviewTab": "概览",
+      "connectionTab": "连接",
+      "manageTabs": "MCP 管理",
+      "about": "简介",
+      "statusLabel": "状态",
+      "transportLabel": "传输方式",
+      "endpointLabel": "端点",
+      "toolPreview": "工具",
+      "noToolsAvailable": "没有可用工具",
+      "searchTools": "搜索工具",
+      "searchToolsPlaceholder": "搜索工具",
+      "selectedCount": "已启用 {{count}} 个",
+      "noMatchingTools": "没有匹配的工具",
+      "applyChanges": "保存更改",
+      "connectionDetails": "连接详情",
+      "credentials": "凭据",
+      "none": "无",
+      "dangerZone": "移除连接",
       "toolScope": "工具",
-      "allTools": "全部",
-      "noTools": "不暴露",
-      "testForTools": "运行测试后，可以查看并选择单个工具。"
+      "allTools": "全选",
+      "noTools": "全部停用",
+      "reloadTools": "重新读取",
+      "presetDescriptions": {
+        "browserbase": "使用 Browserbase 自动操作云端浏览器。",
+        "playwright": "使用 Playwright 检查和自动操作本地浏览器。",
+        "context7": "获取最新的库文档和代码示例。",
+        "firecrawl": "抓取、遍历、搜索并提取网页内容。",
+        "parallel-search": "搜索网页并读取相关页面。",
+        "exa": "搜索网页并提取整洁的页面内容。",
+        "microsoft-learn": "搜索并读取 Microsoft Learn 文档。",
+        "aws-docs": "搜索 AWS 文档和服务指南。",
+        "brave-search": "使用 Brave Search 搜索网页、新闻、图片、视频和本地信息。",
+        "postman": "查看并管理 Postman API、集合和工作区。",
+        "figma": "通过本地 Dev Mode MCP 读取 Figma 设计上下文。",
+        "xmind": "创建、读取和编辑 Xmind 云端思维导图。",
+        "notion": "读取和更新 Notion 工作区。",
+        "linear": "查找和管理 Linear 议题、项目和评论。",
+        "github": "管理 GitHub 仓库、议题和拉取请求。",
+        "supabase": "查看和管理 Supabase 项目。"
+      }
     },
     "values": {
       "light": "浅色",
@@ -401,11 +465,11 @@
       "loadError": "无法加载设置",
       "unsaved": "有未保存的更改。",
       "upToDate": "已是最新。",
-      "savedRestart": "已保存。重启 auto_cut_bot 后生效。",
+      "savedRestart": "已保存。重启 nanobot 后生效。",
       "restartAfterSaving": "保存更改后，在合适时重启。",
       "savedRestartApply": "已保存。准备好后重启。",
       "imageProviderRestart": "图片提供商更改已保存。准备好后重启。",
-      "hostRestartAfterSaving": "保存后 auto_cut_bot 会重启引擎。",
+      "hostRestartAfterSaving": "保存后 nanobot 会重启引擎。",
       "hostRestartPending": "已保存。准备好后会重启引擎。",
       "hostApiUnavailable": "宿主操作仅在原生应用中可用。",
       "logsOpened": "已打开日志文件夹。",
@@ -429,7 +493,7 @@
       "exporting": "正在导出..."
     },
     "byok": {
-      "description": "使用自己的提供商密钥。auto_cut_bot 会从当前配置读取这些值，只有已配置的提供商才能用于模型预设。",
+      "description": "使用自己的提供商密钥。nanobot 会从当前配置读取这些值，只有已配置的提供商才能用于模型预设。",
       "configured": "已配置",
       "notConfigured": "未配置",
       "configuredSection": "已配置",
@@ -556,7 +620,7 @@
     "api": {
       "title": "API 服务",
       "openaiCompatible": "OpenAI 兼容 API",
-      "description": "让 SDK 和其他智能体通过本地 /v1 接口连接 auto_cut_bot。",
+      "description": "让 SDK 和其他智能体通过本地 /v1 接口连接 nanobot。",
       "start": "启动 API 服务",
       "starting": "正在启动...",
       "stop": "停止",
@@ -576,41 +640,49 @@
     },
     "observability": {
       "title": "可观测性",
-      "configured": "auto_cut_bot 已检测到追踪凭证。",
-      "environment": "设置 LANGFUSE_SECRET_KEY 和 LANGFUSE_PUBLIC_KEY 后重启 auto_cut_bot。",
+      "configured": "nanobot 已检测到追踪凭证。",
+      "environment": "设置 LANGFUSE_SECRET_KEY 和 LANGFUSE_PUBLIC_KEY 后重启 nanobot。",
       "enable": "启用追踪支持"
     },
     "apps": {
-      "description": "将工具接入 auto_cut_bot，然后在对话中通过 @ 调用。",
+      "description": "将工具接入 nanobot，然后在对话中通过 @ 调用。",
       "cliLabel": "应用",
-      "mcpLabel": "集成",
+      "mcpLabel": "MCP",
       "channelLabel": "渠道",
       "featureLabel": "能力",
       "filterAll": "可用",
       "filterPlugins": "插件",
       "filterCli": "应用",
-      "filterMcp": "集成",
+      "filterMcp": "MCP",
       "enabledSummary": "{{count}} 个可用",
-      "caption": "{{cli}} 个应用 · {{mcp}} 个集成",
+      "caption": "{{cli}} 个应用 · {{mcp}} 个 MCP 工具",
       "searchPlaceholder": "搜索工具",
       "featured": "工具",
+      "mcpTools": "MCP 工具",
       "loading": "正在加载应用...",
-      "empty": "当前视图没有匹配的工具。",
-      "restartRequired": "重启 auto_cut_bot 以应用更新后的应用和集成。"
+      "empty": "没有与搜索条件匹配的工具。",
+      "emptyApps": "暂无可用应用。",
+      "emptyIntegrations": "暂无可用 MCP 工具。",
+      "emptyReady": "还没有就绪的工具。",
+      "clearSearch": "清除搜索",
+      "browseApps": "浏览应用",
+      "browseIntegrations": "浏览 MCP 工具",
+      "emptyIntegrationsHint": "可在下方添加自定义 MCP 服务器。",
+      "restartRequired": "重启 nanobot 以应用更新后的应用和 MCP 工具。"
     },
     "channels": {
-      "description": "把聊天应用、邮箱和 WebUI 连接到 auto_cut_bot。",
+      "description": "把聊天应用、邮箱和 WebUI 连接到 nanobot。",
       "caption": "{{enabled}} 个运行中 · 共 {{total}} 个渠道",
       "searchPlaceholder": "搜索渠道",
       "backToChannels": "所有渠道",
       "catalog": "渠道",
       "loading": "正在加载渠道...",
       "empty": "没有匹配的渠道。",
-      "restartRequired": "重启 auto_cut_bot 以应用更新后的渠道支持。",
+      "restartRequired": "重启 nanobot 以应用更新后的渠道支持。",
       "requires": "需要：{{requirements}}",
       "setUp": "设置",
       "setupGuide": "配置指南",
-      "setupSummary": "启用只会开启 auto_cut_bot 对该渠道的支持。请补充平台凭据，然后重启 auto_cut_bot。",
+      "setupSummary": "启用只会开启 nanobot 对该渠道的支持。请补充平台凭据，然后重启 nanobot。",
       "configKeys": "配置字段",
       "enable": "启用渠道",
       "disable": "禁用渠道",
@@ -665,7 +737,7 @@
         "unsupported": "手动配置"
       }
     },
-    "auto_cut_botFeatures": {
+    "nanobotFeatures": {
       "enabled": "已启用",
       "enable": "启用",
       "disable": "禁用",
@@ -698,7 +770,9 @@
       "loading": "正在加载自动任务...",
       "noMatches": "当前视图没有匹配的自动任务。",
       "empty": "暂无自动任务。",
-      "emptyHint": "请从它应该运行的来源处创建，这样 auto_cut_bot 才能保留正确上下文。",
+      "emptyHint": "请在对话中创建自动任务，以便保留正确的上下文。",
+      "emptyAction": "打开对话",
+      "clearFilters": "清除筛选",
       "oneShot": "一次性",
       "systemTask": "系统管理的自动任务",
       "localTrigger": "本地触发器",
@@ -815,7 +889,7 @@
       "signedInAs": "已登录为 {{account}}",
       "signInHelp": "从这台设备登录；不会在配置中保存 API 密钥。",
       "remoteSignInHelp": "点击“登录”在你的电脑上打开 xAI，完成登录后粘贴页面显示的授权码。",
-      "codexRemoteSignInHelp": "在此浏览器中登录，然后将完整的 localhost 回调 URL 粘贴回 auto_cut_bot。",
+      "codexRemoteSignInHelp": "在此浏览器中登录，然后将完整的 localhost 回调 URL 粘贴回 nanobot。",
       "signInRequired": "需要登录",
       "signInBeforeSaving": "请先登录此提供商，再保存模型预设。",
       "signedIn": "已登录",
@@ -823,9 +897,9 @@
       "proxyLabel": "网络代理",
       "proxySaveBeforeSignIn": "请先保存代理更改再登录。",
       "saveProxy": "保存代理",
-      "localCodeHelp": "请在浏览器中完成登录。auto_cut_bot 通常会自动完成；若未自动完成，请将授权码粘贴到下方。",
+      "localCodeHelp": "请在浏览器中完成登录。nanobot 通常会自动完成；若未自动完成，请将授权码粘贴到下方。",
       "remoteCodeHelp": "点击“登录”在你的电脑上打开 xAI。完成登录后，请将 xAI 显示的授权码粘贴到下方。",
-      "localCallbackHelp": "请在浏览器中完成登录。auto_cut_bot 通常会自动完成；若未自动完成，请复制地址栏中的完整 localhost 回调 URL 并粘贴到下方。",
+      "localCallbackHelp": "请在浏览器中完成登录。nanobot 通常会自动完成；若未自动完成，请复制地址栏中的完整 localhost 回调 URL 并粘贴到下方。",
       "remoteCallbackHelp": "在此浏览器中打开 ChatGPT 并完成登录。当 localhost 页面无法打开时，请复制地址栏中的完整 URL 并粘贴到下方。",
       "authorizationCode": "授权码",
       "callbackUrl": "完整回调 URL",
@@ -868,7 +942,7 @@
       "deleteConfirmAction": "删除技能",
       "instructionsTitle": "技能说明",
       "setupRequired": "需要设置",
-      "setupDescription": "请在运行 auto_cut_bot 的设备上安装缺少的依赖，然后重新检查。",
+      "setupDescription": "请在运行 nanobot 的设备上安装缺少的依赖，然后重新检查。",
       "copySetupCommand": "复制设置命令",
       "checkAgain": "重新检查",
       "marketplaceSearchFailed": "暂时无法搜索技能市场。",
@@ -955,6 +1029,10 @@
     "unarchive": "取消归档",
     "showArchived": "显示归档",
     "hideArchived": "隐藏归档",
+    "select": "选择",
+    "cancelSelection": "取消选择",
+    "selectedCount": "已选择 {{count}} 项",
+    "deleteSelected": "删除",
     "delete": "删除",
     "newChat": "新建话题",
     "groups": {
@@ -969,10 +1047,13 @@
   },
   "deleteConfirm": {
     "title": "删除这个话题？",
+    "titleMany": "删除这 {{count}} 个对话？",
     "description": "此操作无法撤销。",
+    "descriptionMany": "此操作无法撤销。",
     "cancel": "取消",
     "confirm": "删除",
     "automationsDescription": "这个话题有关联的自动任务。删除话题也会删除这些自动任务。",
+    "automationsDescriptionMany": "关联的自动任务也会一并删除。",
     "moreAutomations": "另有 {{count}} 个",
     "confirmWithAutomations": "删除",
     "schedule": {
@@ -1036,7 +1117,7 @@
       "imageQuickActions": {
         "icon": {
           "title": "设计应用图标",
-          "prompt": "生成一个干净的 1:1 auto_cut_bot 应用图标：友好的机器人，简洁矢量风格，蓝白柔和配色，不要文字。"
+          "prompt": "生成一个干净的 1:1 nanobot 应用图标：友好的机器人，简洁矢量风格，蓝白柔和配色，不要文字。"
         },
         "sticker": {
           "title": "制作贴纸",
@@ -1146,6 +1227,7 @@
         "recordingStatus": "正在录音 {{time}}"
       },
       "voiceErrors": {
+        "insecureContext": "出于安全考虑，Chrome 等浏览器会阻止远程 HTTP 页面访问麦克风。请通过 HTTPS 打开此 WebUI 以使用语音输入。",
         "unsupported": "当前浏览器不支持语音输入。",
         "permission": "请在地址栏允许麦克风后重试。",
         "notConfigured": "请先配置转写提供商。",
@@ -1181,7 +1263,7 @@
             "description": "取消这个对话中正在运行的智能体回合。"
           },
           "restart": {
-            "title": "重启 auto_cut_bot",
+            "title": "重启 nanobot",
             "description": "原地重启 bot 进程。"
           },
           "status": {
@@ -1357,7 +1439,7 @@
     "close": "关闭文件预览",
     "loading": "正在加载预览...",
     "failed": "无法预览这个文件。",
-    "routeMissing": "文件预览需要最新的网关。请重启 auto_cut_bot gateway 后再试。",
+    "routeMissing": "文件预览需要最新的网关。请重启 nanobot gateway 后再试。",
     "resize": "调整文件预览宽度",
     "truncated": "文件较大，当前只显示前半部分预览。"
   },
@@ -1366,6 +1448,39 @@
     "copyAria": "复制代码",
     "copy": "复制",
     "copied": "已复制"
+  },
+  "workbench": {
+    "aria": "会话工作台",
+    "panes": "窗格",
+    "tabAria": "分组：{{title}}",
+    "panesInTab": "{{title}} 中的窗格",
+    "collapseTabGroup": "折叠 {{title}} 中的窗格",
+    "expandTabGroup": "展开 {{title}} 中的窗格",
+    "dropPane": "将 {{pane}} 移入 {{tab}}",
+    "createGroup": "创建分组",
+    "moveTo": "移动到",
+    "renameGroupTitle": "重命名分组",
+    "renameGroupDescription": "为这个分组命名。",
+    "renameGroupPlaceholder": "分组名称",
+    "dissolveTab": "解散分组",
+    "layout": "窗格布局",
+    "addPane": "添加窗格",
+    "paneLimit": "最多 {{count}} 个窗格",
+    "deleteConversations": "删除所有对话",
+    "movePane": "移动 {{title}} 窗格",
+    "movePaneHint": "拖动换位 · 也可以使用方向键",
+    "resizePaneBoundary": "调整窗格边界 {{index}}",
+    "promotePane": "将 {{title}} 设为主窗格",
+    "paneActions": "{{title}} 窗格操作",
+    "detachPane": "移出",
+    "composerAria": "向 {{title}} 发送消息",
+    "layouts": {
+      "columns": "列布局",
+      "rows": "行布局",
+      "grid": "网格",
+      "bsp": "BSP",
+      "main-stack": "主窗格与堆栈"
+    }
   },
   "common": {
     "dismiss": "关闭",
@@ -1380,7 +1495,7 @@
     },
     "workspaceScopeRejected": {
       "title": "工作区未更改",
-      "body": "网关拒绝了请求的项目或访问权限，Nanobot 已继续使用之前的工作区。"
+      "body": "网关拒绝了此项目或访问权限。请选择已存在的项目或其他访问权限，然后重试。"
     },
     "turnRejected": {
       "title": "消息未发送",

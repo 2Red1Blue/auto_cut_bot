@@ -19,16 +19,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.bus.events import InboundMessage
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.command.builtin import cmd_new, register_builtin_commands
-from auto_cut_bot.command.router import CommandContext, CommandRouter
-from auto_cut_bot.config.schema import AgentDefaults, Config
-from auto_cut_bot.providers.base import GenerationSettings
-from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY
-from auto_cut_bot.session.manager import Session, SessionManager
-from auto_cut_bot.utils.llm_runtime import LLMRuntime
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.file_state import FileStateStore
+from nanobot.bus.events import InboundMessage
+from nanobot.bus.queue import MessageBus
+from nanobot.command.builtin import cmd_new, register_builtin_commands
+from nanobot.command.router import CommandContext, CommandRouter
+from nanobot.config.schema import AgentDefaults, Config
+from nanobot.providers.base import GenerationSettings
+from nanobot.session.keys import UNIFIED_SESSION_KEY
+from nanobot.session.manager import Session, SessionManager
+from nanobot.utils.llm_runtime import LLMRuntime
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,8 +41,8 @@ def _make_loop(tmp_path: Path, unified_session: bool = False) -> AgentLoop:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
-    with patch("auto_cut_bot.agent.loop.SessionManager"), \
-         patch("auto_cut_bot.agent.loop.SubagentManager") as mock_sub_mgr:
+    with patch("nanobot.agent.loop.SessionManager"), \
+         patch("nanobot.agent.loop.SubagentManager") as mock_sub_mgr:
         mock_sub_mgr.return_value.cancel_by_session = AsyncMock(return_value=0)
         loop = AgentLoop(
             bus=bus,
@@ -196,8 +197,8 @@ class TestUnifiedSessionConfig:
         assert config.agents.defaults.unified_session is True
 
     def test_onboard_generated_config_contains_unified_session(self, tmp_path: Path):
-        """save_config() writes 'unifiedSession' into config.json (simulates auto_cut_bot onboard)."""
-        from auto_cut_bot.config.loader import save_config
+        """save_config() writes 'unifiedSession' into config.json (simulates nanobot onboard)."""
+        from nanobot.config.loader import save_config
 
         config = Config()
         config_path = tmp_path / "config.json"
@@ -250,10 +251,16 @@ class TestCmdNewUnifiedSession:
         # asyncio.create_task().  Mirror that exactly so the coroutine is consumed
         # and no RuntimeWarning is emitted.
         admitted_runtime = MagicMock(name="admitted_runtime")
+        file_state_store = FileStateStore()
+        previous_file_state = file_state_store.for_session("unified:default")
+        tracked_file = tmp_path / "tracked.txt"
+        tracked_file.write_text("tracked", encoding="utf-8")
+        previous_file_state.record_read(tracked_file)
         loop = SimpleNamespace(
             sessions=sessions,
             consolidator=SimpleNamespace(archive=AsyncMock(return_value=True)),
             _cancel_active_tasks=AsyncMock(return_value=0),
+            discard_session_file_state=file_state_store.discard,
             llm_runtime=MagicMock(return_value=MagicMock()),
             schedule_background=lambda coro: asyncio.ensure_future(coro),
         )
@@ -278,6 +285,9 @@ class TestCmdNewUnifiedSession:
         sessions.invalidate("unified:default")
         reloaded = sessions.get_or_create("unified:default")
         assert reloaded.messages == []
+        reset_file_state = file_state_store.for_session("unified:default")
+        assert reset_file_state is not previous_file_state
+        assert reset_file_state.is_unchanged(tracked_file) is False
         loop.consolidator.archive.assert_called_once_with(
             expected_snapshot,
             runtime=admitted_runtime,
@@ -302,6 +312,7 @@ class TestCmdNewUnifiedSession:
             sessions=sessions,
             consolidator=SimpleNamespace(archive=AsyncMock(return_value=True)),
             _cancel_active_tasks=AsyncMock(return_value=0),
+            discard_session_file_state=MagicMock(),
             runtime_for_session=MagicMock(return_value=MagicMock()),
             schedule_background=lambda coro: asyncio.ensure_future(coro),
         )
@@ -329,7 +340,7 @@ class TestConsolidationUnaffectedByUnifiedSession:
     @pytest.mark.asyncio
     async def test_consolidation_skips_empty_session_for_unified_key(self):
         """Empty unified:default session → consolidation exits immediately, archive not called."""
-        from auto_cut_bot.agent.memory import Consolidator, MemoryStore
+        from nanobot.agent.memory import Consolidator, MemoryStore
 
         store = MagicMock(spec=MemoryStore)
         mock_provider = MagicMock()
@@ -359,7 +370,7 @@ class TestConsolidationUnaffectedByUnifiedSession:
     async def test_consolidation_behaviour_identical_for_any_key(self):
         """archive call count is the same for 'telegram:123' and 'unified:default'
         under identical token conditions."""
-        from auto_cut_bot.agent.memory import Consolidator, MemoryStore
+        from nanobot.agent.memory import Consolidator, MemoryStore
 
         archive_calls: dict[str, int] = {}
 
@@ -394,7 +405,7 @@ class TestConsolidationUnaffectedByUnifiedSession:
     async def test_consolidation_triggers_when_over_budget_unified_key(self):
         """When tokens exceed budget, consolidation attempts to find a boundary —
         behaviour is identical to any other session key."""
-        from auto_cut_bot.agent.memory import Consolidator, MemoryStore
+        from nanobot.agent.memory import Consolidator, MemoryStore
 
         store = MagicMock(spec=MemoryStore)
         mock_provider = MagicMock()
@@ -466,7 +477,7 @@ class TestStopCommandWithUnifiedSession:
     @pytest.mark.asyncio
     async def test_stop_command_finds_task_in_unified_mode(self, tmp_path: Path):
         """cmd_stop can cancel tasks when unified_session=True."""
-        from auto_cut_bot.command.builtin import cmd_stop
+        from nanobot.command.builtin import cmd_stop
 
         loop = _make_loop(tmp_path, unified_session=True)
 
@@ -498,7 +509,7 @@ class TestStopCommandWithUnifiedSession:
     @pytest.mark.asyncio
     async def test_stop_command_uses_effective_key_without_session_override(self, tmp_path: Path):
         """Priority /stop must cancel the unified session even before dispatch rewrites the message."""
-        from auto_cut_bot.command.builtin import cmd_stop
+        from nanobot.command.builtin import cmd_stop
 
         loop = _make_loop(tmp_path, unified_session=True)
 
@@ -523,7 +534,7 @@ class TestStopCommandWithUnifiedSession:
     @pytest.mark.asyncio
     async def test_stop_command_cross_channel_in_unified_mode(self, tmp_path: Path):
         """In unified mode, /stop from one channel cancels tasks from another channel."""
-        from auto_cut_bot.command.builtin import cmd_stop
+        from nanobot.command.builtin import cmd_stop
 
         loop = _make_loop(tmp_path, unified_session=True)
 

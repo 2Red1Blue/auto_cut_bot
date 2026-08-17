@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_cut_bot.agent.memory import MemoryStore
-from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
-from auto_cut_bot.command.builtin import (
+from nanobot.agent.memory import MemoryStore
+from nanobot.bus.events import InboundMessage, OutboundMessage
+from nanobot.command.builtin import (
     build_help_text,
     builtin_command_palette,
     cmd_dream,
@@ -15,8 +15,9 @@ from auto_cut_bot.command.builtin import (
     cmd_dream_prompt,
     cmd_dream_restore,
 )
-from auto_cut_bot.command.router import CommandContext
-from auto_cut_bot.utils.gitstore import CommitInfo
+from nanobot.command.router import CommandContext
+from nanobot.session.manager import SessionManager
+from nanobot.utils.gitstore import CommitInfo
 
 
 class _FakeStore:
@@ -107,6 +108,13 @@ class _FakeBus:
         self.outbound.append(message)
 
 
+def _make_sessions(tmp_path) -> SessionManager:
+    return SessionManager(
+        tmp_path / "workspace",
+        sessions_root=tmp_path / "runtime",
+    )
+
+
 def _make_ctx(raw: str, git: _FakeGit, *, args: str = "", last_dream_cursor: int = 1) -> CommandContext:
     msg = InboundMessage(channel="cli", sender_id="u1", chat_id="direct", content=raw)
     store = _FakeStore(git, last_dream_cursor=last_dream_cursor)
@@ -118,12 +126,10 @@ def _make_dream_ctx(tmp_path) -> tuple[CommandContext, _FakeBus]:
     msg = InboundMessage(channel="cli", sender_id="u1", chat_id="direct", content="/dream")
     store = _FakeStore(_FakeGit(initialized=False), dream_prompt_result=None)
     bus = _FakeBus()
-    sessions_dir = tmp_path / "sessions"
-    sessions_dir.mkdir()
     loop = SimpleNamespace(
         bus=bus,
         context=SimpleNamespace(memory=store, timezone="UTC"),
-        sessions=SimpleNamespace(sessions_dir=sessions_dir),
+        sessions=_make_sessions(tmp_path),
     )
     ctx = CommandContext(msg=msg, session=None, key=msg.session_key, raw="/dream", args="", loop=loop)
     return ctx, bus
@@ -169,13 +175,11 @@ async def test_dream_internal_run_silences_progress(tmp_path) -> None:
             metadata={"_stop_reason": "completed"},
         )
 
-    sessions_dir = tmp_path / "sessions"
-    sessions_dir.mkdir()
     dream_runtime = object()
     loop = SimpleNamespace(
         bus=bus,
         context=SimpleNamespace(memory=store, timezone="UTC"),
-        sessions=SimpleNamespace(sessions_dir=sessions_dir),
+        sessions=_make_sessions(tmp_path),
         process_direct=process_direct,
         dream_runtime=lambda: dream_runtime,
     )
@@ -224,12 +228,10 @@ def _build_runnable_dream(
         )
 
     bus = _FakeBus()
-    sessions_dir = tmp_path / "sessions"
-    sessions_dir.mkdir()
     loop = SimpleNamespace(
         bus=bus,
         context=SimpleNamespace(memory=store, timezone="UTC"),
-        sessions=SimpleNamespace(sessions_dir=sessions_dir),
+        sessions=_make_sessions(tmp_path),
         process_direct=process_direct,
         dream_runtime=lambda: None,
     )
@@ -311,12 +313,10 @@ async def test_dream_noop_batch_unlocks_following_history(tmp_path) -> None:
 
     msg = InboundMessage(channel="cli", sender_id="u1", chat_id="direct", content="/dream")
     bus = _FakeBus()
-    sessions_dir = tmp_path / "sessions"
-    sessions_dir.mkdir()
     loop = SimpleNamespace(
         bus=bus,
         context=SimpleNamespace(memory=store, timezone="UTC"),
-        sessions=SimpleNamespace(sessions_dir=sessions_dir),
+        sessions=_make_sessions(tmp_path),
         process_direct=process_direct,
         dream_runtime=lambda: None,
     )
@@ -426,7 +426,7 @@ async def test_dream_log_without_saved_versions_mentions_prompt_command() -> Non
 async def test_dream_prompt_reports_default_prompt(tmp_path) -> None:
     out = await cmd_dream_prompt(_make_dream_prompt_ctx(tmp_path))
 
-    assert "Dream memory instructions: auto_cut_bot default" in out.content
+    assert "Dream memory instructions: nanobot default" in out.content
     assert "prompts/dream.md" in out.content
     assert str(tmp_path) not in out.content
     assert "/dream-prompt init" in out.content
@@ -442,7 +442,7 @@ async def test_dream_prompt_init_copies_default_prompt(tmp_path) -> None:
     assert "Created Dream memory instructions" in out.content
     assert "prompts/dream.md" in out.content
     assert str(tmp_path) not in out.content
-    assert "fully replaces auto_cut_bot's default Dream guide" in out.content
+    assert "fully replaces nanobot's default Dream guide" in out.content
     assert prompt_file.read_text(encoding="utf-8") == MemoryStore.default_dream_prompt() + "\n"
 
 

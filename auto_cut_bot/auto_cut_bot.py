@@ -1,4 +1,4 @@
-"""High-level programmatic interface to auto_cut_bot."""
+"""High-level programmatic interface to nanobot."""
 
 from __future__ import annotations
 
@@ -7,18 +7,20 @@ from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from auto_cut_bot.agent.hook import AgentHook, SDKCaptureHook
-from auto_cut_bot.agent.hooks import create_file_edit_activity_hook
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.config.schema import Config
-from auto_cut_bot.providers.image_generation import image_gen_provider_configs
-from auto_cut_bot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
-from auto_cut_bot.sdk.runtime import (
+from nanobot.agent.hook import AgentHook, SDKCaptureHook
+from nanobot.agent.hooks import create_file_edit_activity_hook
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.config.schema import Config
+from nanobot.providers.image_generation import image_gen_provider_configs
+from nanobot.sdk.clients import MemoryClient, RuntimeClient, SessionClient
+from nanobot.sdk.runtime import (
     build_process_direct_kwargs,
     ensure_single_model_selector,
 )
-from auto_cut_bot.sdk.streaming import RunStream, SDKStreamEmitter, SDKStreamingHook
-from auto_cut_bot.sdk.types import (
+from nanobot.sdk.streaming import RunStream, SDKStreamEmitter, SDKStreamingHook
+from nanobot.sdk.types import (
     STREAM_EVENT_REASONING_COMPLETED,
     STREAM_EVENT_REASONING_DELTA,
     STREAM_EVENT_RUN_COMPLETED,
@@ -37,7 +39,7 @@ from auto_cut_bot.sdk.types import (
     StreamEventType,
     result_from_response,
 )
-from auto_cut_bot.utils.llm_runtime import LLMRuntime
+from nanobot.utils.llm_runtime import LLMRuntime
 
 __all__ = [
     "Nanobot",
@@ -62,7 +64,7 @@ __all__ = [
 
 
 class Nanobot:
-    """Programmatic facade for running the auto_cut_bot agent.
+    """Programmatic facade for running the nanobot agent.
 
     Usage::
 
@@ -71,9 +73,16 @@ class Nanobot:
         print(result.content)
     """
 
-    def __init__(self, loop: AgentLoop, *, config: Config | None = None) -> None:
+    def __init__(
+        self,
+        loop: AgentLoop,
+        *,
+        config: Config | None = None,
+        mcp_provider: MCPProvider | None = None,
+    ) -> None:
         self._loop = loop
         self._config = config
+        self._mcp_provider = mcp_provider
         self.sessions = SessionClient(loop)
         self.memory = MemoryClient(loop)
         self.runtime = RuntimeClient(loop)
@@ -91,12 +100,12 @@ class Nanobot:
 
         Args:
             config_path: Path to ``config.json``.  Defaults to
-                ``~/.auto_cut_bot/config.json``.
+                ``~/.nanobot/config.json``.
             workspace: Override the workspace directory from config.
             model: Override the instance default model.
             model_preset: Override the instance default model preset.
         """
-        from auto_cut_bot.config.loader import load_config, resolve_config_env_vars
+        from nanobot.config.loader import load_config, resolve_config_env_vars
 
         ensure_single_model_selector(model=model, model_preset=model_preset)
         resolved: Path | None = None
@@ -120,12 +129,15 @@ class Nanobot:
         elif model_preset is not None:
             config.agents.defaults.model_preset = model_preset
 
+        tools = ToolRegistry()
+        mcp_provider = MCPProvider.from_config(config, tools)
         loop = AgentLoop.from_config(
             config,
             image_generation_provider_configs=image_gen_provider_configs(config),
             hook_factories=[create_file_edit_activity_hook],
+            tool_registry=tools,
         )
-        return cls(loop, config=config)
+        return cls(loop, config=config, mcp_provider=mcp_provider)
 
     async def run(
         self,
@@ -155,7 +167,7 @@ class Nanobot:
             ephemeral: If true, do not persist the turn or compact session history.
             attributes: Optional caller-owned request data exposed to context
                 providers and turn-hook factories. Attributes are kept separate
-                from auto_cut_bot's trusted internal message metadata.
+                from nanobot's trusted internal message metadata.
             hooks: Optional lifecycle hooks for this run.
             model: Override the model for this run only.
             model_preset: Override the model preset for this run only.
@@ -178,6 +190,8 @@ class Nanobot:
         )
         if runtime is not None:
             kwargs["runtime"] = runtime
+        if self._mcp_provider is not None:
+            await self._mcp_provider.connect()
         response = await self._loop.process_direct(
             message,
             **kwargs,
@@ -259,6 +273,8 @@ class Nanobot:
             if override_runtime is not None:
                 kwargs["runtime"] = override_runtime
             try:
+                if self._mcp_provider is not None:
+                    await self._mcp_provider.connect()
                 response = await self._loop.process_direct(
                     message,
                     **kwargs,
@@ -327,8 +343,12 @@ class Nanobot:
                 await run.aclose()
 
     async def aclose(self) -> None:
-        """Release resources held by this instance (MCP connections, etc.)."""
-        await self._loop.close_mcp()
+        """Release resources held by this instance."""
+        try:
+            await self._loop.aclose()
+        finally:
+            if self._mcp_provider is not None:
+                await self._mcp_provider.aclose()
 
     async def __aenter__(self) -> Nanobot:
         return self

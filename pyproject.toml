@@ -1,5 +1,5 @@
 [project]
-name = "auto-cut-bot-ai"
+name = "nanobot-ai"
 version = "0.3.0"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "Xubin Ren"},
-    {name = "the auto_cut_bot contributors"}
+    {name = "the nanobot contributors"}
 ]
 keywords = ["ai", "agent", "chatbot"]
 classifiers = [
@@ -24,47 +24,46 @@ license-files = [
 
 dependencies = [
     "typer>=0.20.0,<1.0.0",
-    "anthropic>=0.30.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
+    "anthropic>=0.100.0,<1.0.0",
+    "pydantic>=2.12.0,<3.0.0",
+    "pydantic-settings>=2.12.0,<3.0.0",
     # Feishu's lark-oapi currently requires websockets<16; core supports 15 and 16.
     "websockets>=15.0,<17.0",
     "websocket-client>=1.9.0,<2.0.0",
     "httpx>=0.28.0,<1.0.0",
-    "ddgs>=9.5.5",
+    "ddgs>=9.5.5,<10.0.0",
     "oauth-cli-kit>=0.1.6,<1.0.0",
     "loguru>=0.7.3,<1.0.0",
-    "readability-lxml>=0.8.1",
-    "lxml-html-clean>=0.3.0",
-    "rich>=13.0.0",
-    "croniter>=2.0.0",
+    "readability-lxml>=0.8.4,<1.0.0",
+    "lxml-html-clean>=0.4.0,<1.0.0",
+    "rich>=14.0.0,<15.0.0",
+    "qrcode[pil]>=8.0",
+    "croniter>=6.0.0,<7.0.0",
     "prompt-toolkit>=3.0.50,<4.0.0",
     "questionary>=2.0.0,<3.0.0",
-    "mcp>=1.0.0",
-    "json-repair>=0.30.0",
-    "chardet>=3.0.2",
+    "mcp>=1.26.0,<2.0.0",
+    "json-repair>=0.57.0,<1.0.0",
+    "chardet>=3.0.2,<6.0.0",
     "openai>=2.8.0",
-    "tiktoken>=0.7.0",
+    "tiktoken>=0.12.0,<1.0.0",
     "jinja2>=3.1.0,<4.0.0",
     "dulwich>=0.22.0,<1.0.0",
     "pyyaml>=6.0,<7.0.0",
     "filelock>=3.25.2",
-    "watchfiles>=0.21.0",
+    "watchfiles>=1.1.1,<2.0.0",
     "packaging>=24.0",
-    "tzdata>=2024.1",
-    "tzlocal>=5.0",
+    "tzdata>=2025.2",
+    "tzlocal>=5.3.1,<6.0.0",
     "defusedxml>=0.7.1,<1.0.0",
-    "pypdf>=4.0.0",
-    "python-docx>=1.0.0",
-    "openpyxl>=3.1.0",
-    "python-pptx>=0.6.23",
-    "python-dotenv>=1.0.0",
-    "autocut-core[pipeline]>=0.0.1",
+    "pypdf>=5.0.0,<6.0.0",
+    "python-docx>=1.1.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "python-pptx>=1.0.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
 api = [
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.9.0,<4.0.0",
 ]
 azure = [
     "azure-identity>=1.19.0,<2.0.0",
@@ -75,51 +74,44 @@ bedrock = [
 documents = [
     # Compatibility extra: document readers are bundled since v0.2.3.
     "defusedxml>=0.7.1,<1.0.0",
-    "pypdf>=4.0.0",
-    "python-docx>=1.0.0",
-    "openpyxl>=3.1.0",
-    "python-pptx>=0.6.23",
+    "pypdf>=5.0.0,<6.0.0",
+    "python-docx>=1.1.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "python-pptx>=1.0.0,<2.0.0",
 ]
 langfuse = [
     "langfuse>=3.0.0,<4.0.0",
 ]
 pdf = [
     # Compatibility extra: PDF reading is bundled since v0.2.3.
-    "pypdf>=4.0.0",
+    "pypdf>=5.0.0,<6.0.0",
 ]
 olostep = [
     "olostep>=0.1.0; python_version < '3.14'",
 ]
-pipeline = [
-    "autocut-core @ file:packages/autocut-core",
-    "autocut",
-    "litellm>=1.80",
-    "psycopg2-binary>=2.9.0",
-    "scenedetect[opencv]>=0.6.0",
-]
 dev = [
     "pytest>=9.0.0,<10.0.0",
     "pytest-asyncio>=1.3.0,<2.0.0",
-    "aiohttp>=3.9.0",
+    "aiohttp>=3.9.0,<4.0.0",
     "pytest-cov>=6.0.0,<7.0.0",
     "pytest-xdist>=3.8.0,<4.0.0",
     "ruff>=0.1.0",
     "basedpyright>=1.39.0,<2.0.0",
     "pymupdf>=1.25.0",
-    "pypdf>=4.0.0",
-    "python-docx>=1.0.0",
-    "openpyxl>=3.1.0",
-    "python-pptx>=0.6.23",
+    "pypdf>=5.0.0,<6.0.0",
+    "python-docx>=1.1.0,<2.0.0",
+    "openpyxl>=3.1.0,<4.0.0",
+    "python-pptx>=1.0.0,<2.0.0",
     "python-socketio>=5.16.0,<6.0.0",
     "msgpack>=1.1.0,<2.0.0",
 ]
 
 [project.scripts]
-auto_cut_bot = "auto_cut_bot.cli.commands:app"
+nanobot = "nanobot.cli.commands:app"
 
 # Third-party tool plugins register here.  Built-in tools are discovered
 # automatically via pkgutil scanning in ToolLoader.discover().
-# [project.entry-points."auto_cut_bot.tools"]
+# [project.entry-points."nanobot.tools"]
 # my_plugin = "my_package.plugins:MyTool"
 
 [build-system]
@@ -134,38 +126,38 @@ allow-direct-references = true
 
 [tool.hatch.build]
 include = [
-    "auto_cut_bot/**/*.py",
-    "auto_cut_bot/templates/**/*.md",
-    "auto_cut_bot/skills/**/*.md",
-    "auto_cut_bot/skills/**/*.sh",
-    "auto_cut_bot/channels/*/webui/**/*",
-    "auto_cut_bot/web/dist/**/*",
+    "nanobot/**/*.py",
+    "nanobot/templates/**/*.md",
+    "nanobot/skills/**/*.md",
+    "nanobot/skills/**/*.sh",
+    "nanobot/channels/*/webui/**/*",
+    "nanobot/web/dist/**/*",
 ]
-# auto_cut_bot/web/dist/ is produced by `cd webui && bun run build` and is
+# nanobot/web/dist/ is produced by `cd webui && bun run build` and is
 # git-ignored. List it as an artifact so hatch ships it in both wheel and
 # sdist even though VCS does not track it.
 artifacts = [
-    "auto_cut_bot/web/dist/**/*",
+    "nanobot/web/dist/**/*",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["auto_cut_bot"]
-exclude = ["auto_cut_bot/channels/*/tests/**"]
+packages = ["nanobot"]
+exclude = ["nanobot/channels/*/tests/**"]
 
 [tool.hatch.build.targets.wheel.sources]
-"auto_cut_bot" = "auto_cut_bot"
+"nanobot" = "nanobot"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "auto_cut_bot/",
-    "auto_cut_bot/web/dist/",
+    "nanobot/",
+    "nanobot/web/dist/",
     "hatch_build.py",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "pyproject.toml",
 ]
-exclude = ["auto_cut_bot/channels/*/tests/**"]
+exclude = ["nanobot/channels/*/tests/**"]
 
 [tool.ruff]
 line-length = 100
@@ -175,35 +167,18 @@ target-version = "py311"
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
 
-# ── Agent Pipeline 配置 ──
-# 由 auto_cut_bot Agent 自动加载，注入到 pipeline stages
-[tool.pipeline]
-backend = "doubao"
-model = "doubao-seed-2-1-pro-260628"
-requests_per_minute = 0
-semantic_retries = 1
-workers = "auto"
-db_url = "postgresql://ac_user:ac_password_2026@localhost:5433/ac_db"
-db_schema = "autocut"
-
-# 环境变量映射: ENV_VAR = "config字段名"
-# 新增 provider 只需加一行
-[tool.pipeline.env]
-ARK_API_KEY = "ark_api_key"
-DASHSCOPE_API_KEY = "dashscope_api_key"
-
 [tool.basedpyright]
-include = ["auto_cut_bot"]
+include = ["nanobot"]
 exclude = ["**/tests"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "auto_cut_bot/channels"]
+testpaths = ["tests", "nanobot/channels"]
 
 [tool.coverage.run]
-source = ["auto_cut_bot"]
+source = ["nanobot"]
 omit = ["tests/*", "**/tests/*"]
 
 [tool.coverage.report]

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from auto_cut_bot.agent.tools import (
+from nanobot.agent.tools import (
     ArraySchema,
     IntegerSchema,
     ObjectSchema,
@@ -15,10 +15,10 @@ from auto_cut_bot.agent.tools import (
     tool_parameters,
     tool_parameters_schema,
 )
-from auto_cut_bot.agent.tools.base import Tool
-from auto_cut_bot.agent.tools.registry import ToolRegistry
-from auto_cut_bot.agent.tools.shell import ExecTool, ExecToolConfig
-from auto_cut_bot.security.network import configure_ssrf_whitelist
+from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.shell import ExecTool, ExecToolConfig
+from nanobot.security.network import configure_ssrf_whitelist
 
 
 class SampleTool(Tool):
@@ -283,17 +283,18 @@ def test_exec_extract_absolute_paths_captures_posix_absolute_paths() -> None:
 
 
 def test_exec_extract_absolute_paths_captures_home_paths() -> None:
-    cmd = "cat ~/.auto_cut_bot/config.json > ~/out.txt"
+    cmd = "cat ~/.nanobot/config.json > ~/out.txt"
     paths = ExecTool._extract_absolute_paths(cmd)
-    assert "~/.auto_cut_bot/config.json" in paths
+    assert "~/.nanobot/config.json" in paths
     assert "~/out.txt" in paths
 
 
 def test_exec_extract_absolute_paths_captures_paths_after_equals() -> None:
-    cmd = "curl --output=/etc/passwd --config=~/.auto_cut_bot/config.json"
+    cmd = "curl --output=/etc/passwd --config=~/.nanobot/config.json --user-home=~root"
     paths = ExecTool._extract_absolute_paths(cmd)
     assert "/etc/passwd" in paths
-    assert "~/.auto_cut_bot/config.json" in paths
+    assert "~/.nanobot/config.json" in paths
+    assert "~root" in paths
 
 
 def test_exec_extract_absolute_paths_does_not_capture_query_tilde() -> None:
@@ -302,16 +303,39 @@ def test_exec_extract_absolute_paths_does_not_capture_query_tilde() -> None:
     assert not any(p.startswith("~") for p in paths)
 
 
+def test_exec_extract_absolute_paths_captures_bare_and_named_user_home_paths() -> None:
+    paths = ExecTool._extract_absolute_paths("cd ~ && cat ~root/.bashrc")
+    assert "~" in paths
+    assert "~root/.bashrc" in paths
+
+
+def test_exec_extract_absolute_paths_captures_tilde_after_shell_operators() -> None:
+    paths = ExecTool._extract_absolute_paths(
+        "cat <~root/.bashrc;~root/bin/tool|~daemon/bin/tool"
+    )
+    assert "~root/.bashrc" in paths
+    assert paths.count("~root/bin/tool") == 1
+    assert "~daemon/bin/tool" in paths
+
+
+def test_exec_extract_absolute_paths_captures_tilde_assignment_components() -> None:
+    paths = ExecTool._extract_absolute_paths(
+        "HOME=~ PATH=bin:~root/bin curl --config=~"
+    )
+    assert "~" in paths
+    assert "~root/bin" in paths
+
+
 def test_exec_extract_absolute_paths_captures_quoted_paths() -> None:
-    cmd = 'cat "/tmp/data.txt" "~/.auto_cut_bot/config.json"'
+    cmd = 'cat "/tmp/data.txt" "~/.nanobot/config.json"'
     paths = ExecTool._extract_absolute_paths(cmd)
     assert "/tmp/data.txt" in paths
-    assert "~/.auto_cut_bot/config.json" in paths
+    assert "~/.nanobot/config.json" in paths
 
 
 def test_exec_guard_blocks_home_path_outside_workspace(tmp_path) -> None:
     tool = ExecTool(restrict_to_workspace=True)
-    error = tool._guard_command("cat ~/.auto_cut_bot/config.json", str(tmp_path))
+    error = tool._guard_command("cat ~/.nanobot/config.json", str(tmp_path))
     assert error is not None
     assert error.startswith(
         "Error: Command blocked by safety guard (path outside working dir)"
@@ -319,9 +343,60 @@ def test_exec_guard_blocks_home_path_outside_workspace(tmp_path) -> None:
     assert "hard policy boundary" in error
 
 
+def test_exec_guard_blocks_bare_tilde_cwd_escape(tmp_path) -> None:
+    tool = ExecTool(restrict_to_workspace=True)
+    error = tool._guard_command("cd ~ && cat secret.txt", str(tmp_path))
+    assert error is not None
+    assert error.startswith(
+        "Error: Command blocked by safety guard (path outside working dir)"
+    )
+
+
+def test_exec_guard_blocks_named_user_home_path(tmp_path) -> None:
+    tool = ExecTool(restrict_to_workspace=True)
+    error = tool._guard_command("cat ~root/.bashrc", str(tmp_path))
+    assert error is not None
+    assert error.startswith(
+        "Error: Command blocked by safety guard (path outside working dir)"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <~root/.bashrc",
+        "cat ~-/.bashrc",
+        "cat ~+1/.bashrc",
+        "cat ~-1/.bashrc",
+    ],
+)
+def test_exec_guard_blocks_home_paths_with_special_shell_contexts(
+    tmp_path, command: str
+) -> None:
+    error = ExecTool(restrict_to_workspace=True)._guard_command(command, str(tmp_path))
+    assert error is not None
+    assert error.startswith(
+        "Error: Command blocked by safety guard (path outside working dir)"
+    )
+
+
+def test_exec_guard_allows_current_directory_tilde(tmp_path) -> None:
+    tool = ExecTool(restrict_to_workspace=True)
+    assert tool._guard_command("cat ~+/file.txt", str(tmp_path)) is None
+
+
 def test_exec_guard_blocks_equals_home_path_outside_workspace(tmp_path) -> None:
     tool = ExecTool(restrict_to_workspace=True)
-    error = tool._guard_command("cat --config=~/.auto_cut_bot/config.json", str(tmp_path))
+    error = tool._guard_command("cat --config=~/.nanobot/config.json", str(tmp_path))
+    assert error is not None
+    assert error.startswith(
+        "Error: Command blocked by safety guard (path outside working dir)"
+    )
+
+
+def test_exec_guard_blocks_equals_named_user_home_path(tmp_path) -> None:
+    tool = ExecTool(restrict_to_workspace=True)
+    error = tool._guard_command("cat --config=~root/.bashrc", str(tmp_path))
     assert error is not None
     assert error.startswith(
         "Error: Command blocked by safety guard (path outside working dir)"
@@ -330,7 +405,7 @@ def test_exec_guard_blocks_equals_home_path_outside_workspace(tmp_path) -> None:
 
 def test_exec_guard_blocks_quoted_home_path_outside_workspace(tmp_path) -> None:
     tool = ExecTool(restrict_to_workspace=True)
-    error = tool._guard_command('cat "~/.auto_cut_bot/config.json"', str(tmp_path))
+    error = tool._guard_command('cat "~/.nanobot/config.json"', str(tmp_path))
     assert error is not None
     assert error.startswith(
         "Error: Command blocked by safety guard (path outside working dir)"
@@ -344,7 +419,7 @@ def test_exec_guard_allows_media_path_outside_workspace(tmp_path, monkeypatch) -
     media_file = media_dir / "photo.jpg"
     media_file.write_text("ok", encoding="utf-8")
 
-    monkeypatch.setattr("auto_cut_bot.agent.tools.shell.get_media_dir", lambda: media_dir)
+    monkeypatch.setattr("nanobot.agent.tools.shell.get_media_dir", lambda: media_dir)
 
     tool = ExecTool(restrict_to_workspace=True)
     error = tool._guard_command(f'cat "{media_file}"', str(tmp_path / "workspace"))
@@ -352,7 +427,7 @@ def test_exec_guard_allows_media_path_outside_workspace(tmp_path, monkeypatch) -
 
 
 def test_exec_guard_blocks_windows_drive_root_outside_workspace(monkeypatch) -> None:
-    import auto_cut_bot.agent.tools.shell as shell_mod
+    import nanobot.agent.tools.shell as shell_mod
 
     class FakeWindowsPath:
         def __init__(self, raw: str) -> None:
@@ -596,6 +671,24 @@ def test_cast_params_invalid_string_to_number() -> None:
     )
     result = tool.cast_params({"rate": "not_a_number"})
     assert result["rate"] == "not_a_number"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity"],
+)
+def test_cast_params_rejects_non_finite_numbers(value: float | str) -> None:
+    """JSON number parameters must remain finite after schema-driven casting."""
+    tool = CastTestTool(
+        {
+            "type": "object",
+            "properties": {"rate": {"type": "number"}},
+        }
+    )
+
+    result = tool.cast_params({"rate": value})
+
+    assert tool.validate_params(result) == ["rate must be finite"]
 
 
 def test_validate_params_bool_not_accepted_as_number() -> None:

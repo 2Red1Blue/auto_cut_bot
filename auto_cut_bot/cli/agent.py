@@ -10,32 +10,34 @@ from typing import Any
 import typer
 from rich.console import Console
 
-from auto_cut_bot import __logo__
-from auto_cut_bot.agent.hooks import create_file_edit_activity_hook
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.bus.outbound_events import (
+from nanobot import __logo__
+from nanobot.agent.hooks import create_file_edit_activity_hook
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.bus.outbound_events import (
     StreamDeltaEvent,
     StreamedResponseEvent,
     StreamEndEvent,
     outbound_event_from_message,
 )
-from auto_cut_bot.cli import terminal as cli_terminal
-from auto_cut_bot.cli.log_control import _set_auto_cut_bot_logs
-from auto_cut_bot.cli.runtime_config import (
+from nanobot.cli import terminal as cli_terminal
+from nanobot.cli.log_control import _set_nanobot_logs
+from nanobot.cli.runtime_config import (
     _load_runtime_config,
     _migrate_cron_store,
     _model_display,
     _print_agent_start_error,
 )
-from auto_cut_bot.cli.stream import StreamRenderer, ThinkingSpinner
-from auto_cut_bot.config.paths import is_default_workspace
-from auto_cut_bot.utils.helpers import (
+from nanobot.cli.stream import StreamRenderer, ThinkingSpinner
+from nanobot.config.paths import is_default_workspace
+from nanobot.utils.helpers import (
     sanitize_surrogates as _sanitize_surrogates,
 )
-from auto_cut_bot.utils.helpers import (
+from nanobot.utils.helpers import (
     sync_workspace_templates,
 )
-from auto_cut_bot.utils.restart import (
+from nanobot.utils.restart import (
     consume_restart_notice_from_env,
     format_restart_completed_message,
     should_show_cli_restart_notice,
@@ -57,14 +59,14 @@ def agent(
     logs: bool = typer.Option(
         False,
         "--logs/--no-logs",
-        help="Show auto_cut_bot runtime logs during chat",
+        help="Show nanobot runtime logs during chat",
     ),
 ):
     """Interact with the agent directly."""
-    from auto_cut_bot.bus.queue import MessageBus
-    from auto_cut_bot.cron.service import CronService
-    from auto_cut_bot.providers.factory import make_provider
-    from auto_cut_bot.providers.image_generation import image_gen_provider_configs
+    from nanobot.bus.queue import MessageBus
+    from nanobot.cron.service import CronService
+    from nanobot.providers.factory import make_provider
+    from nanobot.providers.image_generation import image_gen_provider_configs
 
     runtime_config = _load_runtime_config(config, workspace)
     try:
@@ -84,8 +86,10 @@ def agent(
     # Create cron service with workspace-scoped store
     cron_store_path = runtime_config.workspace_path / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
+    tools = ToolRegistry()
+    mcp_provider = MCPProvider.from_config(runtime_config, tools)
 
-    _set_auto_cut_bot_logs(logs)
+    _set_nanobot_logs(logs)
 
     try:
         agent_loop = AgentLoop.from_config(
@@ -95,6 +99,7 @@ def agent(
             cron_service=cron,
             image_generation_provider_configs=image_gen_provider_configs(runtime_config),
             hook_factories=[create_file_edit_activity_hook],
+            tool_registry=tools,
         )
     except ValueError as exc:
         _print_agent_start_error(exc)
@@ -105,6 +110,12 @@ def agent(
             format_restart_completed_message(restart_notice.started_at_raw),
             render_markdown=False,
         )
+
+    async def _close_runtime() -> None:
+        try:
+            await agent_loop.aclose()
+        finally:
+            await mcp_provider.aclose()
 
     # Shared reference for progress callbacks
     _thinking: ThinkingSpinner | None = None
@@ -149,35 +160,38 @@ def agent(
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once() -> None:
-            renderer = StreamRenderer(
-                render_markdown=markdown,
-                bot_name=runtime_config.agents.defaults.bot_name,
-                bot_icon=runtime_config.agents.defaults.bot_icon,
-            )
-            response = await agent_loop.process_direct(
-                message,
-                session_id,
-                on_progress=_make_progress(renderer),
-                on_stream=renderer.on_delta,
-                on_stream_end=renderer.on_end,
-            )
-            if not renderer.streamed:
-                await renderer.close()
-                print_kwargs: dict[str, Any] = {}
-                if renderer.header_printed:
-                    print_kwargs["show_header"] = False
-                cli_terminal._print_agent_response(
-                    response.content if response else "",
+            try:
+                await mcp_provider.connect()
+                renderer = StreamRenderer(
                     render_markdown=markdown,
-                    metadata=response.metadata if response else None,
-                    **print_kwargs,
+                    bot_name=runtime_config.agents.defaults.bot_name,
+                    bot_icon=runtime_config.agents.defaults.bot_icon,
                 )
-            await agent_loop.close_mcp()
+                response = await agent_loop.process_direct(
+                    message,
+                    session_id,
+                    on_progress=_make_progress(renderer),
+                    on_stream=renderer.on_delta,
+                    on_stream_end=renderer.on_end,
+                )
+                if not renderer.streamed:
+                    await renderer.close()
+                    print_kwargs: dict[str, Any] = {}
+                    if renderer.header_printed:
+                        print_kwargs["show_header"] = False
+                    cli_terminal._print_agent_response(
+                        response.content if response else "",
+                        render_markdown=markdown,
+                        metadata=response.metadata if response else None,
+                        **print_kwargs,
+                    )
+            finally:
+                await _close_runtime()
 
         asyncio.run(run_once())
     else:
         # Interactive mode — route through bus like other channels
-        from auto_cut_bot.bus.events import InboundMessage
+        from nanobot.bus.events import InboundMessage
 
         cli_terminal._init_prompt_session()
         _model, _preset_tag = _model_display(runtime_config)
@@ -209,6 +223,7 @@ def agent(
             signal.signal(signal.SIGPIPE, signal.SIG_IGN)
 
         async def run_interactive() -> None:
+            await mcp_provider.connect()
             bus_task = asyncio.create_task(agent_loop.run())
             turn_done = asyncio.Event()
             turn_done.set()
@@ -347,6 +362,6 @@ def agent(
                 agent_loop.stop()
                 outbound_task.cancel()
                 await asyncio.gather(bus_task, outbound_task, return_exceptions=True)
-                await agent_loop.close_mcp()
+                await _close_runtime()
 
         asyncio.run(run_interactive())

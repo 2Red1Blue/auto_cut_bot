@@ -11,12 +11,14 @@ import typer
 from loguru import logger
 from rich.console import Console
 
-from auto_cut_bot import __logo__, __version__
-from auto_cut_bot.agent.hooks import create_file_edit_activity_hook
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.cli import terminal as cli_terminal
-from auto_cut_bot.cli.runtime_config import _migrate_cron_store
-from auto_cut_bot.cli.webui_support import (
+from nanobot import __logo__, __version__
+from nanobot.agent.hooks import create_file_edit_activity_hook
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.mcp import MCPProvider
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.cli import terminal as cli_terminal
+from nanobot.cli.runtime_config import _migrate_cron_store
+from nanobot.cli.webui_support import (
     _gateway_health_bind_note,
     _gateway_health_url,
     _host_for_local_browser,
@@ -28,15 +30,15 @@ from auto_cut_bot.cli.webui_support import (
     _webui_display_url,
     _webui_endpoint_reachable,
 )
-from auto_cut_bot.config.paths import is_default_workspace
-from auto_cut_bot.config.schema import Config
-from auto_cut_bot.security.network import is_loopback_host
-from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY, last_channel_from_metadata
-from auto_cut_bot.utils.evaluator import evaluate_response, resolve_evaluator_prompt
-from auto_cut_bot.utils.helpers import sync_workspace_templates
-from auto_cut_bot.webui.build import BuildMode
-from auto_cut_bot.webui.dev import WebUIDevError, WebUIDevServer
-from auto_cut_bot.webui.sidebar_state import read_webui_sidebar_state
+from nanobot.config.paths import is_default_workspace
+from nanobot.config.schema import Config
+from nanobot.security.network import is_loopback_host
+from nanobot.session.keys import UNIFIED_SESSION_KEY, last_channel_from_metadata
+from nanobot.utils.evaluator import evaluate_response, resolve_evaluator_prompt
+from nanobot.utils.helpers import sync_workspace_templates
+from nanobot.webui.build import BuildMode
+from nanobot.webui.dev import WebUIDevError, WebUIDevServer
+from nanobot.webui.sidebar_state import read_webui_sidebar_state
 
 __all__ = ["_run_gateway"]
 
@@ -233,6 +235,7 @@ def _print_gateway_health_endpoint(host: str, port: int) -> None:
 
 async def _close_gateway_runtime(
     agent: AgentLoop,
+    mcp_provider: MCPProvider,
     channels: Any,
     tasks: list[asyncio.Task[Any]],
     runtime_tasks: asyncio.Future[list[Any]] | None,
@@ -240,18 +243,13 @@ async def _close_gateway_runtime(
     task_wait_timeout: float = 15.0,
     close_timeout: float = 15.0,
 ) -> None:
-    """Cancel runtime tasks, then deterministically close agent resources.
+    """Cancel runtime tasks, then deterministically close application resources.
 
     Order matters: runtime tasks (including the agent loop and any in-flight
-    turn) are cancelled and awaited -- bounded -- before exec sessions,
-    subagents, and MCP servers are torn down, so no active turn is using a
-    shared resource when it closes. The final close is bounded and idempotent:
-    the agent loop's own finally also calls ``close_mcp()``, so this runs again
-    as a no-op when that path already completed, and as the guaranteed final
-    close when it was skipped or cut short (which previously left asyncio
-    subprocess transports alive past ``loop.close()``, producing
-    "RuntimeError: Event loop is closed" noise and potentially orphaned
-    processes at interpreter exit).
+    turn) are cancelled and awaited -- bounded -- before the loop-owned resources
+    and the application-owned MCP provider are torn down. The final close is
+    bounded and idempotent, so it also covers a cancelled or incomplete loop
+    cleanup without leaving subprocess transports alive past ``loop.close()``.
     """
     # Some SDKs swallow task cancellation while attempting to reconnect.
     # Close channel transports before waiting for their runners to exit.
@@ -272,10 +270,14 @@ async def _close_gateway_runtime(
             task.cancel()
     if runtime_tasks is not None and not runtime_tasks.done():
         runtime_tasks.cancel()
-    try:
-        await asyncio.wait_for(agent.close_mcp(), timeout=close_timeout)
-    except BaseException as exc:  # noqa: BLE001 - shutdown must proceed
-        logger.warning("Gateway shutdown: agent resource cleanup incomplete: {}", exc)
+    for label, close in (
+        ("agent", agent.aclose),
+        ("MCP provider", mcp_provider.aclose),
+    ):
+        try:
+            await asyncio.wait_for(close(), timeout=close_timeout)
+        except BaseException as exc:  # noqa: BLE001 - shutdown must proceed
+            logger.warning("Gateway shutdown: {} cleanup incomplete: {}", label, exc)
     # Retrieving an already-finished gather prevents noisy unhandled exceptions,
     # but never wait for it here: its children were bounded individually above.
     if runtime_tasks is not None and runtime_tasks.done():
@@ -298,34 +300,34 @@ def _run_gateway(
     webui_dev_server: WebUIDevServer | None = None,
 ) -> None:
     """Shared gateway runtime; ``open_browser_url`` opens a tab once channels are up."""
-    from auto_cut_bot.agent.model_presets import load_model_preset_catalog
-    from auto_cut_bot.agent.tools.message import MessageTool
-    from auto_cut_bot.agent.turn_delivery import TurnDeliveryFactory
-    from auto_cut_bot.bus.queue import MessageBus
-    from auto_cut_bot.bus.runtime_events import RuntimeEventBus
-    from auto_cut_bot.channels.manager import ChannelManager
-    from auto_cut_bot.config.watcher import watch_config_file
-    from auto_cut_bot.cron.bound_runner import run_bound_cron_job
-    from auto_cut_bot.cron.service import CronJobSkippedError, CronService
-    from auto_cut_bot.cron.session_turns import is_bound_cron_job
-    from auto_cut_bot.cron.types import CronJob
-    from auto_cut_bot.providers.factory import (
+    from nanobot.agent.model_presets import load_model_preset_catalog
+    from nanobot.agent.tools.message import MessageTool
+    from nanobot.agent.turn_delivery import TurnDeliveryFactory
+    from nanobot.bus.queue import MessageBus
+    from nanobot.bus.runtime_events import RuntimeEventBus
+    from nanobot.channels.manager import ChannelManager
+    from nanobot.config.watcher import watch_config_file
+    from nanobot.cron.bound_runner import run_bound_cron_job
+    from nanobot.cron.service import CronJobSkippedError, CronService
+    from nanobot.cron.session_turns import is_bound_cron_job
+    from nanobot.cron.types import CronJob
+    from nanobot.providers.factory import (
         ProviderSnapshot,
         build_provider_snapshot,
         build_unconfigured_provider_snapshot,
         load_provider_snapshot,
     )
-    from auto_cut_bot.providers.fallback_provider import FallbackProvider
-    from auto_cut_bot.providers.image_generation import image_gen_provider_configs
-    from auto_cut_bot.session.manager import SessionManager
-    from auto_cut_bot.session.webui_turns import (
+    from nanobot.providers.fallback_provider import FallbackProvider
+    from nanobot.providers.image_generation import image_gen_provider_configs
+    from nanobot.session.manager import SessionManager
+    from nanobot.session.webui_turns import (
         WebuiTurnCoordinator,
         WebuiTurnRoutePolicy,
         build_webui_fallback_model_observer,
     )
-    from auto_cut_bot.triggers.local_runner import run_local_trigger_queue
-    from auto_cut_bot.triggers.local_store import LocalTriggerStore
-    from auto_cut_bot.webui.token_usage import TokenUsageHook
+    from nanobot.triggers.local_runner import run_local_trigger_queue
+    from nanobot.triggers.local_store import LocalTriggerStore
+    from nanobot.webui.token_usage import TokenUsageHook
 
     port = port if port is not None else config.gateway.port
     webui_url = _webui_browser_url(config)
@@ -345,7 +347,7 @@ def _run_gateway(
         )
         raise typer.Exit(1)
 
-    console.print(f"{__logo__} Starting auto_cut_bot gateway version {__version__} on port {port}...")
+    console.print(f"{__logo__} Starting nanobot gateway version {__version__} on port {port}...")
     _prepare_webui_bundle_for_gateway(
         config,
         mode=webui_bundle_mode,
@@ -386,8 +388,8 @@ def _run_gateway(
     session_manager = SessionManager(config.workspace_path)
 
     # Self-heal the gateway state file with the current PID after any restart.
-    from auto_cut_bot.config.loader import get_config_path
-    from auto_cut_bot.gateway.runtime import GatewayRuntime, GatewayRuntimePaths
+    from nanobot.config.loader import get_config_path
+    from nanobot.gateway.runtime import GatewayRuntime, GatewayRuntimePaths
 
     config_path = str(get_config_path().resolve(strict=False))
     GatewayRuntime.refresh_state_pid(
@@ -414,6 +416,9 @@ def _run_gateway(
         route_policy=WebuiTurnRoutePolicy(session_manager),
     )
 
+    tools = ToolRegistry()
+    mcp_provider = MCPProvider.from_config(config, tools)
+
     # Create agent with cron service
     agent = AgentLoop.from_config(
         config, bus,
@@ -431,6 +436,7 @@ def _run_gateway(
         hooks=[TokenUsageHook(timezone_name=config.agents.defaults.timezone)],
         local_trigger_store=trigger_store,
         hook_factories=[create_file_edit_activity_hook],
+        tool_registry=tools,
     )
     def _schedule_webui_background(awaitable: Awaitable[None]) -> None:
         agent.schedule_background(cast(Coroutine[Any, Any, None], awaitable))
@@ -441,8 +447,8 @@ def _run_gateway(
         schedule_background=_schedule_webui_background,
     )
     webui_turn_coordinator.subscribe(runtime_events)
-    from auto_cut_bot.bus.events import OutboundMessage
-    from auto_cut_bot.session.keys import session_key_for_channel
+    from nanobot.bus.events import OutboundMessage
+    from nanobot.session.keys import session_key_for_channel
 
     def _channel_session_key(channel: str, chat_id: str) -> str:
         return session_key_for_channel(
@@ -495,7 +501,7 @@ def _run_gateway(
 
         # Dream is an internal job — run directly, not through the agent loop.
         if job.name == "dream":
-            from auto_cut_bot.agent.memory import DreamRunProgress, MemoryStore
+            from nanobot.agent.memory import DreamRunProgress, MemoryStore
 
             dream_session_key = MemoryStore.dream_session_key
             prune_dream_sessions = MemoryStore.prune_dream_sessions
@@ -512,6 +518,7 @@ def _run_gateway(
                 prompt, last_cursor = result
                 key = dream_session_key()
                 dream_runtime = agent.dream_runtime()
+                await mcp_provider.connect()
                 resp = await agent.process_direct(
                     prompt,
                     session_key=key,
@@ -548,7 +555,7 @@ def _run_gateway(
             except Exception:
                 logger.exception("Dream cron job failed")
             finally:
-                from auto_cut_bot.webui.token_usage import record_response_token_usage
+                from nanobot.webui.token_usage import record_response_token_usage
 
                 record_response_token_usage(
                     resp,
@@ -559,7 +566,7 @@ def _run_gateway(
                 if sha:
                     logger.info("Dream commit: {}", sha)
                 store.compact_history()
-                prune_dream_sessions(agent.sessions.sessions_dir)
+                prune_dream_sessions(agent.sessions)
             return None
 
         # Heartbeat is a system job that checks HEARTBEAT.md for active tasks.
@@ -589,6 +596,7 @@ def _run_gateway(
             if isinstance(message_tool, MessageTool):
                 suppress_token = message_tool.set_suppress_delivery(True)
             try:
+                await mcp_provider.connect()
                 resp = await agent.process_direct(
                     prompt,
                     session_key="heartbeat",
@@ -649,6 +657,9 @@ def _run_gateway(
     def _webui_runtime_model_name() -> str | None:
         return agent.model.strip() or None
 
+    def _webui_refresh_runtime_config() -> None:
+        agent.refresh_runtime_config()
+
     def _webui_skill_state_action(disabled_skills: set[str]) -> None:
         config.agents.defaults.disabled_skills = sorted(disabled_skills)
         agent.context.skills.disabled_skills = set(disabled_skills)
@@ -663,12 +674,16 @@ def _run_gateway(
         cron_service=cron,
         local_trigger_store=trigger_store,
         webui_runtime_model_name=_webui_runtime_model_name,
+        webui_refresh_runtime_config=_webui_refresh_runtime_config,
         webui_cron_pending_job_ids=agent.pending_cron_job_ids_for_session,
         webui_local_trigger_pending_ids=agent.pending_local_trigger_ids_for_session,
         webui_static_dist=webui_static_dist,
         webui_runtime_surface=webui_runtime_surface,
         webui_runtime_capabilities=webui_runtime_capabilities,
+        webui_mcp_runtime_status=mcp_provider.runtime_status,
+        webui_mcp_reload=mcp_provider.reload,
         webui_skill_state_action=_webui_skill_state_action,
+        config_path=Path(config_path),
     )
 
     def _pick_heartbeat_target() -> tuple[str, str]:
@@ -758,7 +773,7 @@ def _run_gateway(
         async with server:
             await server.serve_forever()
     # Register Dream system job (idempotent on restart)
-    from auto_cut_bot.cron.types import CronJob, CronPayload, CronSchedule
+    from nanobot.cron.types import CronJob, CronPayload, CronSchedule
     dream_cfg = config.agents.defaults.dream
     if dream_cfg.enabled:
         cron.register_system_job(CronJob(
@@ -842,44 +857,51 @@ def _run_gateway(
             await cron.start()
             # Re-read once on first admission to close the watcher subscription window.
             agent.runtime_resolver.invalidate()
+            async def _run_agent() -> None:
+                try:
+                    await mcp_provider.connect()
+                    await agent.run()
+                finally:
+                    await mcp_provider.aclose()
+
             tasks = [
                 asyncio.create_task(
                     watch_config_file(
                         Path(config_path),
                         lambda: agent.invalidate_runtime_config(),
                     ),
-                    name="auto_cut_bot-config-watcher",
+                    name="nanobot-config-watcher",
                 ),
-                asyncio.create_task(agent.run(), name="auto_cut_bot-agent-loop"),
-                asyncio.create_task(channels.start_all(), name="auto_cut_bot-channels"),
+                asyncio.create_task(_run_agent(), name="nanobot-agent-loop"),
+                asyncio.create_task(channels.start_all(), name="nanobot-channels"),
                 asyncio.create_task(
                     run_local_trigger_queue(
                         store=trigger_store,
                         submit_turn=agent.submit_local_trigger_turn,
                         is_channel_enabled=lambda name: channels.get_channel(name) is not None,
                     ),
-                    name="auto_cut_bot-local-triggers",
+                    name="nanobot-local-triggers",
                 ),
             ]
             if health_server_enabled:
                 tasks.append(asyncio.create_task(
                     _health_server(config.gateway.host, port),
-                    name="auto_cut_bot-health-server",
+                    name="nanobot-health-server",
                 ))
             if open_browser_url:
                 tasks.append(asyncio.create_task(
                     _open_browser_when_ready(),
-                    name="auto_cut_bot-open-browser",
+                    name="nanobot-open-browser",
                 ))
             if webui_dev_server is not None:
                 tasks.append(asyncio.create_task(
                     _watch_webui_dev_server(webui_dev_server, shutdown_event),
-                    name="auto_cut_bot-webui-dev-server",
+                    name="nanobot-webui-dev-server",
                 ))
             runtime_tasks = asyncio.gather(*tasks)
             shutdown_task = asyncio.create_task(
                 shutdown_event.wait(),
-                name="auto_cut_bot-gateway-shutdown",
+                name="nanobot-gateway-shutdown",
             )
             done, _pending = await asyncio.wait(
                 {runtime_tasks, shutdown_task},
@@ -908,7 +930,13 @@ def _run_gateway(
                 agent.stop()
                 # Cancel runtime tasks first, then deterministically close
                 # exec/MCP resources while the event loop is still alive.
-                await _close_gateway_runtime(agent, channels, tasks, runtime_tasks)
+                await _close_gateway_runtime(
+                    agent,
+                    mcp_provider,
+                    channels,
+                    tasks,
+                    runtime_tasks,
+                )
                 # Flush all cached sessions to durable storage before exit.
                 # This prevents data loss on filesystems with write-back
                 # caching (rclone VFS, NFS, FUSE mounts, etc.).

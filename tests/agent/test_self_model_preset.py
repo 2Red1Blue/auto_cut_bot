@@ -3,13 +3,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.agent.tools.context import RequestContext, request_context
-from auto_cut_bot.agent.tools.self import MyTool
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.config.schema import ModelPresetConfig
-from auto_cut_bot.providers.factory import ProviderSnapshot
-from auto_cut_bot.session.model_selection import model_preset_from_metadata
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.context import RequestContext, request_context
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.agent.tools.runtime_control import AgentRuntimeControl
+from nanobot.agent.tools.self import MyTool
+from nanobot.bus.queue import MessageBus
+from nanobot.config.schema import ModelPresetConfig
+from nanobot.providers.factory import ProviderSnapshot
+from nanobot.session.model_selection import model_preset_from_metadata
 
 
 def _provider(default_model: str, max_tokens: int = 123) -> MagicMock:
@@ -31,6 +33,13 @@ def _make_loop(tmp_path, presets=None, active_preset=None):
         context_window_tokens=1000,
         model_presets=presets or {},
         model_preset=active_preset,
+    )
+
+
+def _my_tool(loop: AgentLoop) -> MyTool:
+    return MyTool(
+        runtime_control=AgentRuntimeControl(loop),
+        modify_allowed=True,
     )
 
 
@@ -240,7 +249,7 @@ def test_self_tool_inspect_shows_model_preset(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1"),
     }
     loop = _make_loop(tmp_path, presets=presets, active_preset="fast")
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
     output = tool._inspect_all()
     assert "model_preset: 'fast'" in output
 
@@ -250,7 +259,7 @@ def test_self_tool_set_model_preset_via_modify(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1"),
     }
     loop = _make_loop(tmp_path, presets=presets)
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
     result = tool._modify("model_preset", "fast")
     assert "Error" not in result
     assert loop.model_preset == "fast"
@@ -263,7 +272,7 @@ def test_self_tool_set_model_preset_switches_back_to_default(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1", context_window_tokens=32_768),
     }
     loop = _make_loop(tmp_path, presets=presets, active_preset="fast")
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
 
     result = tool._modify("model_preset", "default")
 
@@ -280,7 +289,7 @@ def test_self_tool_set_model_preset_unknown_lists_available(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1"),
     }
     loop = _make_loop(tmp_path, presets=presets)
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
 
     result = tool._modify("model_preset", "missing")
 
@@ -295,7 +304,7 @@ def test_self_tool_sets_model_preset_for_current_session(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1"),
     }
     loop = _make_loop(tmp_path, presets=presets)
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
 
     with request_context(RequestContext(
         channel="cli",
@@ -318,7 +327,7 @@ def test_self_tool_reports_session_preset_provider_configuration_error(tmp_path)
     loop.set_session_model_preset = MagicMock(
         side_effect=ValueError("No API key configured for provider 'openai'.")
     )
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
 
     with request_context(RequestContext(
         channel="cli",
@@ -343,7 +352,7 @@ def test_self_tool_rejects_instance_runtime_changes_in_session(
     value: object,
 ) -> None:
     loop = _make_loop(tmp_path)
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
     session = loop.sessions.get_or_create("cli:one")
 
     with request_context(RequestContext(
@@ -366,7 +375,7 @@ def test_self_tool_set_model_clears_active_preset(tmp_path) -> None:
         "fast": ModelPresetConfig(model="openai/gpt-4.1"),
     }
     loop = _make_loop(tmp_path, presets=presets, active_preset="fast")
-    tool = MyTool(runtime_state=loop, modify_allowed=True)
+    tool = _my_tool(loop)
     result = tool._modify("model", "anthropic/claude-opus-4-5")
     assert "Error" not in result
     assert loop.model_preset is None
@@ -376,13 +385,13 @@ def test_self_tool_set_model_clears_active_preset(tmp_path) -> None:
 def test_from_config_injects_default_preset(tmp_path) -> None:
     from unittest.mock import patch
 
-    from auto_cut_bot.config.schema import Config
+    from nanobot.config.schema import Config
     config = Config.model_validate({
         "agents": {"defaults": {"model": "openai/gpt-4.1", "workspace": str(tmp_path)}},
     })
     fake_provider = _provider("openai/gpt-4.1")
-    with patch("auto_cut_bot.providers.factory.make_provider", return_value=fake_provider):
-        loop = AgentLoop.from_config(config)
+    with patch("nanobot.providers.factory.make_provider", return_value=fake_provider):
+        loop = AgentLoop.from_config(config, tool_registry=ToolRegistry())
     assert loop.model == "openai/gpt-4.1"
     assert loop.model_preset is None
     assert "default" in loop.model_presets
@@ -392,14 +401,14 @@ def test_from_config_injects_default_preset(tmp_path) -> None:
 def test_from_config_static_preset_loader_does_not_enable_hot_reload(tmp_path) -> None:
     from unittest.mock import patch
 
-    from auto_cut_bot.config.schema import Config
+    from nanobot.config.schema import Config
     config = Config.model_validate({
         "agents": {"defaults": {"model": "openai/gpt-4.1", "workspace": str(tmp_path)}},
         "model_presets": {"fast": {"model": "openai/gpt-4.1-mini"}},
     })
     fake_provider = _provider("openai/gpt-4.1")
-    with patch("auto_cut_bot.providers.factory.make_provider", return_value=fake_provider):
-        loop = AgentLoop.from_config(config)
+    with patch("nanobot.providers.factory.make_provider", return_value=fake_provider):
+        loop = AgentLoop.from_config(config, tool_registry=ToolRegistry())
         default_runtime = loop.runtime_resolver.runtime
         resolved = loop.runtime_resolver.resolve_preset("fast")
     assert resolved.model == "openai/gpt-4.1-mini"

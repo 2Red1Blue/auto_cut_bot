@@ -10,9 +10,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from auto_cut_bot.agent.tools.base import Tool, ToolResult, tool_parameters
-from auto_cut_bot.agent.tools.context import ToolContext, current_request_session_key
-from auto_cut_bot.agent.tools.schema import (
+from nanobot.agent.tools.base import Tool, ToolResult, tool_parameters
+from nanobot.agent.tools.context import ToolContext, current_request_session_key
+from nanobot.agent.tools.schema import (
     BooleanSchema,
     IntegerSchema,
     StringSchema,
@@ -209,7 +209,11 @@ class _ExecSession:
                     timeout=2.0,
                 )
             # Safety-net reap after normal exit.
-            from auto_cut_bot.agent.tools.shell import _reap_pid  # pyright: ignore[reportPrivateUsage]
+            from nanobot.agent.tools.shell import (  # pyright: ignore[reportPrivateUsage]
+                ExecTool,
+                _reap_pid,  # pyright: ignore[reportPrivateUsage]
+            )
+            ExecTool._release_process_tree(self.process)  # pyright: ignore[reportPrivateUsage]
             _reap_pid(self.process.pid)  # pyright: ignore[reportPrivateUsage]
         elif yield_time_ms > 0:
             await self._wait_for_buffered_output()
@@ -235,7 +239,7 @@ class _ExecSession:
         )
 
     async def kill(self) -> None:
-        from auto_cut_bot.agent.tools.shell import ExecTool
+        from nanobot.agent.tools.shell import ExecTool
 
         try:
             if self._process_tree:
@@ -444,7 +448,7 @@ class ExecSessionManager:
         shell_program: str | None,
         login: bool,
     ) -> asyncio.subprocess.Process:
-        from auto_cut_bot.agent.tools.shell import ExecTool
+        from nanobot.agent.tools.shell import ExecTool
 
         return await ExecTool._spawn(  # pyright: ignore[reportPrivateUsage]
             command, cwd, env, shell_program, login,
@@ -542,7 +546,7 @@ class WriteStdinTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from auto_cut_bot.agent.tools.shell import ExecToolConfig
+        from nanobot.agent.tools.shell import ExecToolConfig
 
         return ExecToolConfig
 
@@ -693,7 +697,7 @@ class ListExecSessionsTool(Tool):
 
     @classmethod
     def config_cls(cls):
-        from auto_cut_bot.agent.tools.shell import ExecToolConfig
+        from nanobot.agent.tools.shell import ExecToolConfig
 
         return ExecToolConfig
 

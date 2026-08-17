@@ -71,6 +71,180 @@ afterEach(() => {
 });
 
 describe("NanobotClient", () => {
+  it("correlates successful WebUI mutation replies by request id", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const socket = lastSocket();
+    socket.fakeOpen();
+
+    const pending = client.requestMutation<{ saved: boolean }>(
+      "settings.provider.update",
+      { provider: "openrouter", apiKey: "secret" },
+    );
+    const frame = JSON.parse(socket.sent.at(-1) as string);
+    expect(frame).toMatchObject({
+      type: "webui_request",
+      action: "settings.provider.update",
+      payload: { provider: "openrouter", apiKey: "secret" },
+    });
+    expect(frame.request_id).toEqual(expect.any(String));
+
+    socket.fakeMessage({
+      event: "webui_response",
+      request_id: frame.request_id,
+      ok: true,
+      result: { saved: true },
+    });
+
+    await expect(pending).resolves.toEqual({ saved: true });
+  });
+
+  it("surfaces correlated WebUI mutation errors with status", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const socket = lastSocket();
+    socket.fakeOpen();
+
+    const pending = client.requestMutation("settings.channel.configure", {});
+    const requestId = JSON.parse(socket.sent.at(-1) as string).request_id;
+    socket.fakeMessage({
+      event: "webui_response",
+      request_id: requestId,
+      ok: false,
+      error: { status: 400, message: "missing channel name" },
+    });
+
+    await expect(pending).rejects.toMatchObject({
+      status: 400,
+      message: "missing channel name",
+    });
+  });
+
+  it("times out WebUI mutations without replaying them", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const socket = lastSocket();
+    socket.fakeOpen();
+
+    const pending = expect(
+      client.requestMutation("skill.install", { skill: "docs" }, 25),
+    ).rejects.toMatchObject({
+      status: 504,
+      message: "WebUI request timed out after 25ms",
+    });
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(25);
+
+    await pending;
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it("rejects in-flight WebUI mutations when the socket closes", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const socket = lastSocket();
+    socket.fakeOpen();
+
+    const pending = client.requestMutation("session.delete", {
+      key: "websocket:chat-1",
+    });
+    socket.fakeCloseWithCode(1006);
+
+    await expect(pending).rejects.toMatchObject({
+      status: 503,
+      message: "Socket closed before WebUI response",
+    });
+  });
+
+  it("replays the exact serialized mutation frame after reconnect", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 10,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const firstSocket = lastSocket();
+    firstSocket.fakeOpen();
+
+    const payload = { id: "daily-summary", options: { force: false } };
+    const pending = client.requestMutation<{ ran: boolean }>("automation.run", payload);
+    const frame = firstSocket.sent.at(-1) as string;
+    const requestId = JSON.parse(frame).request_id;
+    payload.id = "weekly-summary";
+    payload.options.force = true;
+    const settled = expect(pending).resolves.toEqual({ ran: true });
+    firstSocket.fakeCloseWithCode(1006);
+
+    await vi.advanceTimersByTimeAsync(20);
+    const retrySocket = lastSocket();
+    retrySocket.fakeOpen();
+    expect(retrySocket.sent).toEqual([frame]);
+    retrySocket.fakeMessage({
+      event: "webui_response",
+      request_id: requestId,
+      ok: true,
+      result: { ran: true },
+    });
+
+    await settled;
+  });
+
+  it("does not retry a WebUI mutation after its timeout expires", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: true,
+      maxBackoffMs: 1_000,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+    const firstSocket = lastSocket();
+    firstSocket.fakeOpen();
+
+    const pending = expect(
+      client.requestMutation("skill.install", { skill: "docs" }, 25),
+    ).rejects.toMatchObject({ status: 504 });
+    firstSocket.fakeCloseWithCode(1006);
+    await vi.advanceTimersByTimeAsync(25);
+    await pending;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const retrySocket = lastSocket();
+    retrySocket.fakeOpen();
+    expect(retrySocket.sent).toEqual([]);
+  });
+
+  it("does not queue WebUI mutations before the authenticated socket opens", async () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    client.connect();
+
+    await expect(client.requestMutation("settings.agent.update", {})).rejects.toMatchObject({
+      status: 503,
+      message: "WebUI connection is not open",
+    });
+    expect(lastSocket().sent).toEqual([]);
+  });
+
   it("keeps temporary chats out of attachment and reconnect state", async () => {
     const client = new NanobotClient({
       url: "ws://test",
@@ -1071,7 +1245,7 @@ describe("NanobotClient", () => {
     expect(client.hasUnsettledRun("chat-scope-control")).toBe(true);
   });
 
-  it("sends large sidebar ordering state outside the HTTP request line", () => {
+  it("sends large sidebar ordering state as a correlated WebUI request", async () => {
     const client = new NanobotClient({
       url: "ws://test",
       reconnect: false,
@@ -1090,6 +1264,7 @@ describe("NanobotClient", () => {
       project_name_overrides: {},
       tags_by_key: {},
       collapsed_groups: {},
+      workbench: { version: 1, tabs: {} },
       view: {
         density: "comfortable",
         show_previews: false,
@@ -1102,11 +1277,74 @@ describe("NanobotClient", () => {
 
     client.connect();
     lastSocket().fakeOpen();
-    client.setSidebarState(state);
+    const pending = client.setSidebarState(state);
 
     const [serialized] = lastSocket().sent;
     expect(new TextEncoder().encode(serialized).byteLength).toBeGreaterThan(8_192);
-    expect(JSON.parse(serialized)).toEqual({ type: "set_sidebar_state", state });
+    const request = JSON.parse(serialized) as {
+      type: string;
+      request_id: string;
+      action: string;
+      payload: { state: SidebarStatePayload };
+    };
+    expect(request).toEqual({
+      type: "webui_request",
+      request_id: expect.any(String),
+      action: "sidebar.update",
+      payload: { state },
+    });
+    lastSocket().fakeMessage({
+      event: "webui_response",
+      request_id: request.request_id,
+      ok: true,
+      result: state,
+    });
+    await expect(pending).resolves.toEqual(state);
+  });
+
+  it("delivers backend sidebar state updates to every subscriber", () => {
+    const client = new NanobotClient({
+      url: "ws://test",
+      reconnect: false,
+      socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket,
+    });
+    const handler = vi.fn();
+    const state: SidebarStatePayload = {
+      schema_version: 1,
+      pinned_keys: [],
+      archived_keys: [],
+      session_order: [],
+      title_overrides: {},
+      project_name_overrides: {},
+      tags_by_key: {},
+      collapsed_groups: {},
+      workbench: {
+        version: 1,
+        tabs: {
+          "tab:websocket:a": {
+            explicit: true,
+            title: "Research",
+            paneKeys: ["websocket:a", "websocket:b"],
+            layout: "columns",
+          },
+        },
+      },
+      view: {
+        density: "comfortable",
+        show_previews: false,
+        show_timestamps: false,
+        show_archived: false,
+        sort: "updated_desc",
+      },
+      updated_at: "2026-08-11T08:00:00Z",
+    };
+
+    client.onSidebarStateUpdate(handler);
+    client.connect();
+    lastSocket().fakeOpen();
+    lastSocket().fakeMessage({ event: "sidebar_state_updated", state });
+
+    expect(handler).toHaveBeenCalledWith(state);
   });
 
   it("does not correlate a new-chat scope rejection to an unrelated sent turn", async () => {
@@ -1456,12 +1694,14 @@ describe("NanobotClient", () => {
       event: "turn_model_updated",
       chat_id: "chat-a",
       model_name: "deepseek/deepseek-chat",
+      model_preset: "Deep Research",
     });
 
     expect(chatHandler).toHaveBeenCalledWith({
       event: "turn_model_updated",
       chat_id: "chat-a",
       model_name: "deepseek/deepseek-chat",
+      model_preset: "Deep Research",
     });
   });
 

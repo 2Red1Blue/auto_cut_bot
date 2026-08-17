@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from auto_cut_bot.session.manager import Session, SessionManager
+from nanobot.session.manager import Session, SessionManager
 
 # Test constants
 MEMORY_WINDOW = 50
@@ -486,9 +486,9 @@ class TestNewCommandArchival:
 
     @staticmethod
     def _make_loop(tmp_path: Path):
-        from auto_cut_bot.agent.loop import AgentLoop
-        from auto_cut_bot.bus.queue import MessageBus
-        from auto_cut_bot.providers.base import LLMResponse
+        from nanobot.agent.loop import AgentLoop
+        from nanobot.bus.queue import MessageBus
+        from nanobot.providers.base import LLMResponse
 
         bus = MessageBus()
         provider = MagicMock()
@@ -508,7 +508,7 @@ class TestNewCommandArchival:
     @pytest.mark.asyncio
     async def test_new_clears_session_immediately_even_if_archive_fails(self, tmp_path: Path) -> None:
         """/new clears session immediately; archive is fire-and-forget."""
-        from auto_cut_bot.bus.events import InboundMessage
+        from nanobot.bus.events import InboundMessage
 
         loop = self._make_loop(tmp_path)
         session = loop.sessions.get_or_create("cli:test")
@@ -538,12 +538,12 @@ class TestNewCommandArchival:
         session_after = loop.sessions.get_or_create("cli:test")
         assert len(session_after.messages) == 0
 
-        await loop.close_mcp()
+        await loop.aclose()
         assert call_count == 1
 
     @pytest.mark.asyncio
     async def test_new_archives_only_unconsolidated_messages(self, tmp_path: Path) -> None:
-        from auto_cut_bot.bus.events import InboundMessage
+        from nanobot.bus.events import InboundMessage
 
         loop = self._make_loop(tmp_path)
         session = loop.sessions.get_or_create("cli:test")
@@ -572,13 +572,13 @@ class TestNewCommandArchival:
         assert response is not None
         assert "new session started" in response.content.lower()
 
-        await loop.close_mcp()
+        await loop.aclose()
         assert archived_count == 3
         assert archived_session_key == "cli:test"
 
     @pytest.mark.asyncio
     async def test_new_clears_session_and_responds(self, tmp_path: Path) -> None:
-        from auto_cut_bot.bus.events import InboundMessage
+        from nanobot.bus.events import InboundMessage
 
         loop = self._make_loop(tmp_path)
         session = loop.sessions.get_or_create("cli:test")
@@ -603,9 +603,9 @@ class TestNewCommandArchival:
         assert loop.sessions.get_or_create("cli:test").messages == []
 
     @pytest.mark.asyncio
-    async def test_close_mcp_drains_background_tasks(self, tmp_path: Path) -> None:
-        """close_mcp waits for background tasks to complete."""
-        from auto_cut_bot.bus.events import InboundMessage
+    async def test_aclose_drains_background_tasks(self, tmp_path: Path) -> None:
+        """aclose waits for background tasks to complete."""
+        from nanobot.bus.events import InboundMessage
 
         loop = self._make_loop(tmp_path)
         session = loop.sessions.get_or_create("cli:test")
@@ -632,5 +632,5 @@ class TestNewCommandArchival:
 
         assert not archived.is_set()
         release_archive.set()
-        await loop.close_mcp()
+        await loop.aclose()
         assert archived.is_set()

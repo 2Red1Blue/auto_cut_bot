@@ -6,19 +6,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.bus.runtime_events import RuntimeModelChanged
-from auto_cut_bot.config.errors import ConfigLoadError
-from auto_cut_bot.config.loader import save_config
-from auto_cut_bot.config.schema import Config, ModelPresetConfig
-from auto_cut_bot.providers.base import GenerationSettings
-from auto_cut_bot.providers.factory import ProviderSnapshot, load_provider_snapshot
-from auto_cut_bot.session.model_selection import (
+from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.bus.queue import MessageBus
+from nanobot.bus.runtime_events import RuntimeModelChanged
+from nanobot.config.errors import ConfigLoadError
+from nanobot.config.loader import save_config
+from nanobot.config.schema import Config, ModelPresetConfig
+from nanobot.providers.base import GenerationSettings
+from nanobot.providers.factory import ProviderSnapshot, load_provider_snapshot
+from nanobot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
 )
-from auto_cut_bot.webui.settings_api import update_agent_settings
+from nanobot.webui.settings_api import update_agent_settings
 
 
 def _provider(default_model: str, max_tokens: int = 123) -> MagicMock:
@@ -133,7 +134,7 @@ def test_provider_snapshot_missing_env_reports_explicit_config_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    name = "AUTO_CUT_BOT_TEST_REFRESH_MISSING_KEY"
+    name = "NANOBOT_TEST_REFRESH_MISSING_KEY"
     monkeypatch.delenv(name, raising=False)
     config_path = tmp_path / "custom.json"
     config_path.write_text(
@@ -225,7 +226,7 @@ def test_named_default_refresh_is_used_by_sessions_without_override(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_config_invalidation_notifies_clients_before_session_runtime_refresh(
+async def test_config_invalidation_defers_canonical_notification_until_default_refresh(
     tmp_path: Path,
 ) -> None:
     provider = _provider("model-a")
@@ -265,11 +266,58 @@ async def test_config_invalidation_notifies_clients_before_session_runtime_refre
     runtime = loop.runtime_for_session(session)
     await asyncio.sleep(0)
 
-    assert [(event.model, event.model_preset) for event in published] == [
-        ("model-a", "fast"),
-    ]
+    assert published == []
     assert runtime.model == "model-b"
     assert loop.model_presets["fast"].model == "model-b"
+
+    assert loop.llm_runtime().model == "model-b"
+    await asyncio.sleep(0)
+
+    assert [(event.model, event.model_preset) for event in published] == [
+        ("model-b", "fast"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_config_refresh_publishes_renamed_canonical_preset(tmp_path: Path) -> None:
+    provider = _provider("model-a")
+    catalog = {"fast": ModelPresetConfig(model="model-a")}
+    default_name = "fast"
+    published: list[RuntimeModelChanged] = []
+
+    def load_preset(name: str) -> ProviderSnapshot:
+        return ProviderSnapshot(
+            provider=provider,
+            model=catalog[name].model,
+            context_window_tokens=16_000,
+            signature=(name, catalog[name].model),
+            model_preset=name,
+        )
+
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=provider,
+        workspace=tmp_path,
+        model="model-a",
+        context_window_tokens=16_000,
+        provider_signature=("fast", "model-a"),
+        provider_snapshot_loader=lambda: load_preset(default_name),
+        model_presets=catalog,
+        preset_catalog_loader=lambda: catalog,
+        model_preset="fast",
+        preset_snapshot_loader=load_preset,
+    )
+    loop.runtime_events.subscribe(published.append, RuntimeModelChanged)
+    catalog["Codex"] = catalog.pop("fast")
+    default_name = "Codex"
+
+    runtime = loop.refresh_runtime_config()
+    await asyncio.sleep(0)
+
+    assert (runtime.model, runtime.model_preset) == ("model-a", "Codex")
+    assert [(event.model, event.model_preset) for event in published] == [
+        ("model-a", "Codex"),
+    ]
 
 
 def test_next_turn_captures_generation_changed_after_previous_admission(
@@ -307,12 +355,16 @@ def test_settings_context_window_refreshes_runtime_state(
     config.agents.defaults.context_window_tokens = 65_536
     config.providers.openai.api_key = "sk-test"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     def loader(*, preset_name: str | None = None) -> ProviderSnapshot:
         return load_provider_snapshot(config_path, preset_name=preset_name)
 
-    loop = AgentLoop.from_config(config, provider_snapshot_loader=loader)
+    loop = AgentLoop.from_config(
+        config,
+        tool_registry=ToolRegistry(),
+        provider_snapshot_loader=loader,
+    )
 
     payload = update_agent_settings({"context_window_tokens": ["262144"]})
     loop.runtime_resolver.invalidate()

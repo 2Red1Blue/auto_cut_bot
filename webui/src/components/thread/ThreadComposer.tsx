@@ -83,7 +83,6 @@ import { useClipboardAndDrop } from "@/hooks/useClipboardAndDrop";
 import { useLogoFallback } from "@/hooks/useLogoFallback";
 import { useMediaQuery } from "@/hooks/useMediaQuery";
 import type { SendAttachment, SendOptions } from "@/hooks/useNanobotStream";
-import { usePageVisibility } from "@/hooks/usePageVisibility";
 import { useVoiceRecorder, type VoiceRecorderErrorKey } from "@/hooks/useVoiceRecorder";
 import type {
   CliAppInfo,
@@ -179,9 +178,14 @@ function getVoiceShortcutLabel(): string {
 }
 
 interface ThreadComposerProps {
-  onSend: (content: string, images?: SendAttachment[], options?: SendOptions) => void;
+  onSend: (
+    content: string,
+    images?: SendAttachment[],
+    options?: SendOptions,
+  ) => boolean | void | Promise<boolean | void>;
   disabled?: boolean;
   placeholder?: string;
+  inputAriaLabel?: string;
   isStreaming?: boolean;
   modelLabel?: string | null;
   modelDetail?: string | null;
@@ -202,8 +206,6 @@ interface ThreadComposerProps {
   onStop?: () => void;
   surfaceRef?: Ref<HTMLDivElement>;
   onTranscribeAudio?: (dataUrl: string, options?: { durationMs?: number }) => Promise<string>;
-  /** Unix seconds from server; turn elapsed timer above input while set. */
-  runStartedAt?: number | null;
   /** Sustained objective for this chat (WebSocket ``goal_state``). */
   goalState?: GoalStateWsPayload;
   workspaceScope?: WorkspaceScopePayload | null;
@@ -212,6 +214,7 @@ interface ThreadComposerProps {
   workspaceControls?: WorkspacesPayload["controls"] | null;
   workspaceScopeDisabled?: boolean;
   workspaceError?: string | null;
+  onPickWorkspaceFolder?: () => Promise<string | null>;
   onWorkspaceScopeChange?: (scope: WorkspaceScopePayload) => void;
   pendingQueueKey?: string | null;
   transcriptionProvider?: string | null;
@@ -689,63 +692,38 @@ function mcpPresetMentionPayload(preset: McpPresetInfo): OutboundMcpPresetMentio
   };
 }
 
-function RunPulseIcon() {
-  return (
-    <span className="run-pulse-icon relative flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
-      <span className="run-pulse-icon__ring" />
-      <span className="run-pulse-icon__dot" />
-    </span>
-  );
-}
-
-function RunElapsedStrip({
-  startedAt,
+function GoalStateStrip({
   goalState,
 }: {
-  startedAt: number | null;
   goalState?: GoalStateWsPayload;
 }) {
   const { t } = useTranslation();
-  const pageVisible = usePageVisibility();
   const [goalPanelOpen, setGoalPanelOpen] = useState(false);
-  const showTimer = startedAt != null;
   const stripLabel = goalStateStripPreview(goalState, t);
-  const showGoal = !!stripLabel?.trim();
-  const active = showTimer || showGoal;
+  const active = !!stripLabel?.trim();
   const [, setTick] = useState(0);
   const stripWrapperRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const expandToggleRef = useRef<HTMLButtonElement>(null);
   const stripSnapshotRef = useRef<{
-    startedAt: number | null;
     goalState?: GoalStateWsPayload;
     stripLabel: string | null;
   } | null>(null);
   const [panelMaxPx, setPanelMaxPx] = useState(280);
 
   if (active) {
-    stripSnapshotRef.current = { startedAt, goalState, stripLabel };
+    stripSnapshotRef.current = { goalState, stripLabel };
   }
 
   useEffect(() => {
     if (!active) setGoalPanelOpen(false);
   }, [active]);
 
-  useEffect(() => {
-    if (startedAt == null || !pageVisible) return;
-    setTick((n) => n + 1);
-    const id = window.setInterval(() => setTick((n) => n + 1), 1000);
-    return () => window.clearInterval(id);
-  }, [pageVisible, startedAt]);
-
   const display = active
-    ? { startedAt, goalState, stripLabel }
+    ? { goalState, stripLabel }
     : stripSnapshotRef.current;
-  const displayStartedAt = display?.startedAt ?? null;
   const displayGoalState = display?.goalState;
   const displayStripLabel = display?.stripLabel ?? null;
-  const displayShowTimer = displayStartedAt != null;
-  const displayShowGoal = !!displayStripLabel?.trim();
 
   const objectiveFull = displayGoalState?.objective?.trim() ?? "";
   const summaryFull = displayGoalState?.ui_summary?.trim() ?? "";
@@ -813,17 +791,11 @@ function RunElapsedStrip({
     };
   }, [goalPanelOpen]);
 
-  const elapsed =
-    displayStartedAt != null ? Math.max(0, Math.floor(Date.now() / 1000 - displayStartedAt)) : 0;
-  const m = Math.floor(elapsed / 60);
-  const sec = elapsed % 60;
-  const shortElapsed = m > 0 ? `${m}:${sec.toString().padStart(2, "0")}` : `${sec}s`;
-  const timerTitle = displayShowTimer
-    ? t("thread.composer.runRuntimeTitle", { elapsed: shortElapsed })
-    : null;
+  if (!display) return null;
 
-  const ariaParts = [timerTitle, displayShowGoal ? displayStripLabel : null].filter(Boolean);
-  const ariaLabel = ariaParts.join(" · ");
+  const ariaLabel = displayStripLabel
+    ? t("thread.composer.goalStateStrip", { label: displayStripLabel })
+    : t("thread.composer.goalStateFallback");
 
   return (
     <div
@@ -832,6 +804,11 @@ function RunElapsedStrip({
       data-composer-status-drawer=""
       data-state={active ? "open" : "closed"}
       aria-hidden={active ? undefined : true}
+      onTransitionEnd={(event) => {
+        if (active || event.target !== event.currentTarget) return;
+        stripSnapshotRef.current = null;
+        setTick((n) => n + 1);
+      }}
     >
       {goalPanelOpen && canExpandGoal && markdownBody ? (
         <div
@@ -885,19 +862,9 @@ function RunElapsedStrip({
             role="status"
             aria-label={ariaLabel}
           >
-            {displayShowTimer ? (
-              <RunPulseIcon />
-            ) : (
-              <Target className="h-4 w-4 shrink-0 text-primary/75" aria-hidden />
-            )}
+            <Target className="h-4 w-4 shrink-0 text-primary/75" aria-hidden />
             <span className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-medium text-foreground/75">
-              {timerTitle ? <span className="shrink-0">{timerTitle}</span> : null}
-              {timerTitle && displayShowGoal ? (
-                <span className="shrink-0 text-muted-foreground/45" aria-hidden>
-                  ·
-                </span>
-              ) : null}
-              {displayShowGoal ? (
+              {displayStripLabel ? (
                 <span className="truncate">
                   {t("thread.composer.goalStateStrip", { label: displayStripLabel })}
                 </span>
@@ -936,6 +903,7 @@ export function ThreadComposer({
   onSend,
   disabled,
   placeholder,
+  inputAriaLabel,
   isStreaming = false,
   modelLabel = null,
   modelDetail = null,
@@ -956,7 +924,6 @@ export function ThreadComposer({
   onStop,
   surfaceRef,
   onTranscribeAudio,
-  runStartedAt = null,
   goalState,
   workspaceScope = null,
   workspaceControlsHidden = false,
@@ -964,6 +931,7 @@ export function ThreadComposer({
   workspaceControls = null,
   workspaceScopeDisabled = false,
   workspaceError = null,
+  onPickWorkspaceFolder,
   onWorkspaceScopeChange,
   pendingQueueKey = null,
   transcriptionProvider = null,
@@ -981,6 +949,8 @@ export function ThreadComposer({
     end: number;
   } | null>(null);
   const [inlineError, setInlineError] = useState<string | null>(null);
+  const [sendPending, setSendPending] = useState(false);
+  const interactionDisabled = !!disabled || sendPending;
   const [voiceErrorFading, setVoiceErrorFading] = useState(false);
   const [slashMenuDismissed, setSlashMenuDismissed] = useState(false);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
@@ -1071,7 +1041,7 @@ export function ThreadComposer({
 
   const addFiles = useCallback(
     (files: File[]) => {
-      if (files.length === 0) return;
+      if (interactionDisabled || files.length === 0) return;
       secondEnterPromptIdRef.current = null;
       const { rejected } = enqueue(files);
       if (rejected.length > 0) {
@@ -1080,7 +1050,7 @@ export function ThreadComposer({
         setInlineError(null);
       }
     },
-    [enqueue, formatRejection],
+    [enqueue, formatRejection, interactionDisabled],
   );
 
   const {
@@ -1093,18 +1063,20 @@ export function ThreadComposer({
   } = useClipboardAndDrop(addFiles);
 
   useEffect(() => {
-    if (disabled || hasTouchPrimaryPointer) return;
+    if (interactionDisabled || hasTouchPrimaryPointer || (workspaceError && showProjectPicker)) {
+      return;
+    }
     const el = textareaRef.current;
     if (!el) return;
     const id = requestAnimationFrame(() => el.focus());
     return () => cancelAnimationFrame(id);
-  }, [disabled, hasTouchPrimaryPointer]);
+  }, [hasTouchPrimaryPointer, interactionDisabled, showProjectPicker, workspaceError]);
 
   useEffect(() => {
-    if (!focusRequest || disabled) return;
+    if (!focusRequest || interactionDisabled) return;
     const id = requestAnimationFrame(() => textareaRef.current?.focus());
     return () => cancelAnimationFrame(id);
-  }, [disabled, focusRequest]);
+  }, [focusRequest, interactionDisabled]);
 
   const normalizedQuotedContext = quotedContext?.trim().slice(0, QUEUED_PROMPT_MAX_CHARS) || null;
 
@@ -1118,15 +1090,17 @@ export function ThreadComposer({
 
   const hasComposerContent = value.trim().length > 0 || readyImages.length > 0;
   const canSend =
-    !disabled
+    !interactionDisabled
     && !modelNeedsSetup
     && !encoding
     && !hasErrors
     && hasComposerContent;
-  const canOpenModelSettings = Boolean(modelNeedsSetup && onModelBadgeClick && !disabled);
+  const canOpenModelSettings = Boolean(
+    modelNeedsSetup && onModelBadgeClick && !interactionDisabled,
+  );
   const canQueueGuidance =
     isStreaming
-    && !disabled
+    && !interactionDisabled
     && !modelNeedsSetup
     && !encoding
     && !hasErrors
@@ -1134,14 +1108,14 @@ export function ThreadComposer({
     && !value.trimStart().startsWith("/");
 
   const slashQuery = useMemo(() => {
-    if (disabled || slashMenuDismissed || !value.startsWith("/")) return null;
+    if (interactionDisabled || slashMenuDismissed || !value.startsWith("/")) return null;
     const commandToken = value.slice(1);
     if (/\s/.test(commandToken)) return null;
     return commandToken.toLowerCase();
-  }, [disabled, slashMenuDismissed, value]);
+  }, [interactionDisabled, slashMenuDismissed, value]);
 
   const skillQuery = useMemo(() => {
-    if (disabled || slashMenuDismissed) return null;
+    if (interactionDisabled || slashMenuDismissed) return null;
     const caret = Math.min(Math.max(cursorPosition, 0), value.length);
     const beforeCaret = value.slice(0, caret);
     const match = /\$([A-Za-z0-9_-]*)$/i.exec(beforeCaret);
@@ -1151,7 +1125,7 @@ export function ThreadComposer({
       start: match.index,
       text: match[1].toLowerCase(),
     };
-  }, [cursorPosition, disabled, slashMenuDismissed, value]);
+  }, [cursorPosition, interactionDisabled, slashMenuDismissed, value]);
 
   const visibleSlashCommands = useMemo(() => {
     if (!(isStreaming && onStop)) return slashCommands;
@@ -1279,7 +1253,7 @@ export function ThreadComposer({
 
   const showSlashMenu = filteredSlashCommands.length > 0;
   const cliAppMention = useMemo<CliAppMentionQuery | null>(() => {
-    if (disabled || cliAppMenuDismissed) return null;
+    if (interactionDisabled || cliAppMenuDismissed) return null;
     const caret = Math.min(Math.max(cursorPosition, 0), value.length);
     const beforeCaret = value.slice(0, caret);
     const match = /(?:^|\s)@([\p{L}\p{N}_-]*)$/iu.exec(beforeCaret);
@@ -1290,7 +1264,7 @@ export function ThreadComposer({
       start: caret - query.length - 1,
       end: caret,
     };
-  }, [cliAppMenuDismissed, cursorPosition, disabled, value]);
+  }, [cliAppMenuDismissed, cursorPosition, interactionDisabled, value]);
 
   const availableSessionMentions = useMemo(
     () => sessionMentionOptions(
@@ -1580,7 +1554,7 @@ export function ThreadComposer({
     }, VOICE_ERROR_VISIBLE_MS);
   }, [clearVoiceErrorTimers, t]);
   const voiceRecorder = useVoiceRecorder({
-    disabled,
+    disabled: interactionDisabled,
     onClearError: clearInlineError,
     onError: setVoiceError,
     onTranscript: appendTranscription,
@@ -1714,7 +1688,7 @@ export function ThreadComposer({
     clearDraggedSession();
     const preview = sessionDragPreview;
     setSessionDragPreview(null);
-    if (disabled) return true;
+    if (interactionDisabled) return true;
     const sessionKey = readDraggedSession(event.dataTransfer);
     const mention = availableSessionMentions.find(
       (candidate) => candidate.session_key === (sessionKey ?? preview?.mention.session_key),
@@ -1732,11 +1706,17 @@ export function ThreadComposer({
       preview?.end ?? textareaRef.current?.selectionEnd ?? caret,
     );
     return true;
-  }, [availableSessionMentions, disabled, insertMentionCandidate, sessionDragPreview, value.length]);
+  }, [
+    availableSessionMentions,
+    insertMentionCandidate,
+    interactionDisabled,
+    sessionDragPreview,
+    value.length,
+  ]);
 
   const previewSessionDrop = useCallback((event: React.DragEvent) => {
     if (!hasDraggedSession(event.dataTransfer)) return false;
-    if (disabled) {
+    if (interactionDisabled) {
       event.dataTransfer.dropEffect = "none";
       setSessionDragPreview(null);
       return true;
@@ -1765,7 +1745,7 @@ export function ThreadComposer({
         : { mention, start, end }
     ));
     return true;
-  }, [activeSessionMentions, availableSessionMentions, disabled, value.length]);
+  }, [activeSessionMentions, availableSessionMentions, interactionDisabled, value.length]);
 
   useEffect(() => {
     if (!sessionDragPreview) return;
@@ -2008,7 +1988,16 @@ export function ThreadComposer({
     const isSlashSideChannel = isSideChannelLifecycle(slashLifecycle);
     const finalizeActiveTurn =
       slashLifecycle === "finalize_active_turn";
-    onSend(
+    const finishSend = () => {
+      if (hasTouchPrimaryPointer) textareaRef.current?.blur();
+      setQueuedPrompts([]);
+      // Bubble owns the data URL copy; safe to revoke every staged blob
+      // preview here without affecting the rendered message.
+      clear();
+      clearComposerText(!hasTouchPrimaryPointer);
+      onQuotedContextChange?.(null);
+    };
+    const result = onSend(
       content,
       payload,
       isSlashSideChannel
@@ -2019,13 +2008,19 @@ export function ThreadComposer({
           }
         : options,
     );
-    if (hasTouchPrimaryPointer) textareaRef.current?.blur();
-    setQueuedPrompts([]);
-    // Bubble owns the data URL copy; safe to revoke every staged blob
-    // preview here without affecting the rendered message.
-    clear();
-    clearComposerText(!hasTouchPrimaryPointer);
-    onQuotedContextChange?.(null);
+    if (result instanceof Promise) {
+      setSendPending(true);
+      void result
+        .then((accepted) => {
+          if (accepted !== false) finishSend();
+        })
+        .catch((error: unknown) => {
+          console.error("Failed to send message", error);
+        })
+        .finally(() => setSendPending(false));
+      return;
+    }
+    if (result !== false) finishSend();
   }, [
     activeCliMentionApps,
     activeMcpPresetMentions,
@@ -2168,7 +2163,7 @@ export function ThreadComposer({
     [removeChip],
   );
 
-  const attachButtonDisabled = disabled || full;
+  const attachButtonDisabled = interactionDisabled || full;
   const showVoiceButton = Boolean(onTranscribeAudio);
   const voiceRecordingStatusLabel = t("thread.composer.voice.recordingStatus", {
     time: voiceRecorder.elapsedLabel,
@@ -2251,9 +2246,9 @@ export function ThreadComposer({
         className={cn(
           "thread-composer-surface group/composer relative mx-auto flex w-full flex-col overflow-visible transition-all duration-200",
           isHero
-            ? "max-w-[58rem] rounded-[28px] bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]"
-            : "max-w-[49.5rem] rounded-[22px] bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]",
-          disabled && "opacity-60",
+            ? "max-w-[58rem] rounded-prominent bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]"
+            : "max-w-[49.5rem] rounded-panel bg-muted/30 focus-within:bg-muted/50 dark:bg-card dark:focus-within:bg-white/[0.06]",
+          interactionDisabled && "opacity-60",
           sessionDragPreview && "ring-1 ring-primary/25",
           isDragging && "ring-2 ring-primary/40 motion-reduce:ring-0 motion-reduce:border-primary",
           goalState?.active &&
@@ -2335,7 +2330,7 @@ export function ThreadComposer({
             </button>
           </div>
         ) : null}
-        <RunElapsedStrip startedAt={runStartedAt} goalState={goalState} />
+        <GoalStateStrip goalState={goalState} />
         <div className="relative">
           {hasMentionDecorations ? (
             <ComposerCliMentionOverlay
@@ -2368,8 +2363,8 @@ export function ThreadComposer({
             onPaste={onPaste}
             rows={1}
             placeholder={sessionDragPreview ? "" : resolvedPlaceholder}
-            disabled={disabled}
-            aria-label={t("thread.composer.inputAria")}
+            disabled={interactionDisabled}
+            aria-label={inputAriaLabel ?? t("thread.composer.inputAria")}
             className={cn(
               inputTextClasses,
               "relative z-10 caret-foreground placeholder:text-muted-foreground/70",
@@ -2383,7 +2378,7 @@ export function ThreadComposer({
           <div
             role="alert"
             className={cn(
-              "mx-3 mb-1 max-h-10 overflow-hidden rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
+              "mx-3 mb-1 max-h-24 overflow-hidden rounded-md border border-destructive/40 bg-destructive/8 px-2.5 py-1",
               "text-[11.5px] font-medium text-destructive transition-[max-height,margin,padding,opacity] [transition-duration:220ms] ease-out motion-reduce:transition-none",
               voiceErrorFading && "mb-0 max-h-0 border-transparent py-0 opacity-0",
             )}
@@ -2443,7 +2438,7 @@ export function ThreadComposer({
             ) : workspaceScope && !workspaceControlsHidden ? (
               <WorkspaceAccessMenu
                 scope={workspaceScope}
-                disabled={disabled || workspaceScopeDisabled}
+                disabled={interactionDisabled || workspaceScopeDisabled}
                 canUseFullAccess={workspaceControls?.can_use_full_access !== false}
                 isHero={isHero}
                 onChange={onWorkspaceScopeChange}
@@ -2521,7 +2516,7 @@ export function ThreadComposer({
             <Button
               type={showStopButton || modelNeedsSetup ? "button" : "submit"}
               size="icon"
-              disabled={showStopButton ? disabled : !canSend && !canOpenModelSettings}
+              disabled={showStopButton ? interactionDisabled : !canSend && !canOpenModelSettings}
               aria-label={
                 showStopButton
                   ? t("thread.composer.stop")
@@ -2562,11 +2557,12 @@ export function ThreadComposer({
               <div className="composer-workspace-drawer-content">
                 <WorkspaceProjectPicker
                   isHero={isHero}
-                  disabled={disabled || workspaceScopeDisabled || !showProjectPicker}
+                  disabled={interactionDisabled || workspaceScopeDisabled || !showProjectPicker}
                   scope={workspaceScope}
                   defaultScope={workspaceDefaultScope}
                   controls={workspaceControls}
                   error={workspaceError}
+                  onPickFolder={onPickWorkspaceFolder}
                   onChange={onWorkspaceScopeChange}
                 />
               </div>
@@ -2614,7 +2610,7 @@ function QueuedPromptStack({
       role="group"
       data-state="enter"
       className={cn(
-        "composer-status-strip relative z-20 mx-3 mt-3 overflow-hidden rounded-[18px]",
+        "composer-status-strip relative z-20 mx-3 mt-3 overflow-hidden rounded-floating",
         "border border-black/[0.05] bg-popover/90 p-1.5",
         "shadow-[0_10px_28px_rgba(15,23,42,0.07)] backdrop-blur-md",
         "dark:border-white/[0.08] dark:bg-popover/90 dark:shadow-[0_14px_34px_rgba(0,0,0,0.30)]",
@@ -2692,7 +2688,7 @@ function QueuedPromptRow({
       }}
       onDragEnd={onDragEnd}
       className={cn(
-        "queued-prompt-row group/queued flex min-h-8 items-center gap-1.5 rounded-[12px] px-2 py-0.5",
+        "queued-prompt-row group/queued flex min-h-8 items-center gap-1.5 rounded-control px-2 py-0.5",
         "text-[13px] transition-colors hover:bg-muted/55 dark:hover:bg-white/[0.055]",
         isHero && "text-[13.5px]",
       )}
@@ -2977,7 +2973,7 @@ function MentionCandidateLogo({
     return (
       <span
         className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-[5px]",
+          "flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-compact",
           selected ? "bg-background/55" : "bg-transparent",
         )}
       >
@@ -2995,7 +2991,7 @@ function MentionCandidateLogo({
   }
   return (
     <span
-      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[5px] text-[7.5px] font-semibold text-white"
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-compact text-[7.5px] font-semibold text-white"
       style={{ backgroundColor: color }}
     >
       {candidate.initials}
@@ -3139,7 +3135,7 @@ function AttachmentChip({
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-2 rounded-[12px] border px-2 py-1.5",
+        "group relative flex items-center gap-2 rounded-control border px-2 py-1.5",
         "transition-colors motion-reduce:transition-none",
         tone,
       )}

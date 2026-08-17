@@ -3,22 +3,26 @@
 import asyncio
 import json
 import time
+import uuid
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 import websockets
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 
-from auto_cut_bot.bus.events import (
+from nanobot.bus.events import (
     INBOUND_META_RUNTIME_CONTROL,
     OUTBOUND_META_AGENT_UI,
     RUNTIME_CONTROL_SESSION_DISCARD,
     OutboundMessage,
 )
-from auto_cut_bot.bus.outbound_events import (
+from nanobot.bus.outbound_events import (
     GoalStateSyncEvent,
     GoalStatusEvent,
     ProgressEvent,
@@ -27,41 +31,47 @@ from auto_cut_bot.bus.outbound_events import (
     TurnEndEvent,
     TurnModelUpdatedEvent,
 )
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.channels.websocket.runtime import (
+from nanobot.bus.queue import MessageBus
+from nanobot.channels.websocket.runtime import (
     WebSocketChannel,
     WebSocketConfig,
     _is_valid_chat_id,
     _parse_envelope,
     _parse_inbound_payload,
 )
-from auto_cut_bot.config.loader import load_config, save_config
-from auto_cut_bot.config.schema import Config, ModelPresetConfig
-from auto_cut_bot.runtime_context import RUNTIME_CONTEXT_INPUT_META, WEBUI_QUOTE_SOURCE
-from auto_cut_bot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
-from auto_cut_bot.session import webui_turns as wth
-from auto_cut_bot.session.manager import SessionManager
-from auto_cut_bot.webui.gateway_services import GatewayServices, build_gateway_services
-from auto_cut_bot.webui.http_utils import (
+from nanobot.config.loader import load_config, save_config
+from nanobot.config.schema import Config, ModelPresetConfig
+from nanobot.runtime_context import RUNTIME_CONTEXT_INPUT_META, WEBUI_QUOTE_SOURCE
+from nanobot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
+from nanobot.session import webui_turns as wth
+from nanobot.session.manager import SessionManager
+from nanobot.webui.gateway_services import GatewayServices, build_gateway_services
+from nanobot.webui.http_utils import (
+    http_error as _http_error,
+)
+from nanobot.webui.http_utils import (
+    http_json_response as _http_json_response,
+)
+from nanobot.webui.http_utils import (
     issue_route_secret_matches as _issue_route_secret_matches,
 )
-from auto_cut_bot.webui.http_utils import (
+from nanobot.webui.http_utils import (
     normalize_config_path as _normalize_config_path,
 )
-from auto_cut_bot.webui.http_utils import (
+from nanobot.webui.http_utils import (
     parse_query as _parse_query,
 )
-from auto_cut_bot.webui.http_utils import (
+from nanobot.webui.http_utils import (
     parse_request_path as _parse_request_path,
 )
-from auto_cut_bot.webui.metadata import (
+from nanobot.webui.metadata import (
     WEBSOCKET_TURN_OWNER_METADATA_KEY,
     WEBUI_MESSAGE_SOURCE_METADATA_KEY,
     WEBUI_SYSTEM_COMMAND_TURN_PREFIX,
     WEBUI_TURN_METADATA_KEY,
 )
-from auto_cut_bot.webui.settings_api import settings_payload, update_provider_settings
-from auto_cut_bot.webui.transcript import (
+from nanobot.webui.settings_api import settings_payload, update_provider_settings
+from nanobot.webui.transcript import (
     append_transcript_object,
     build_webui_thread_response,
     read_transcript_lines,
@@ -119,6 +129,46 @@ def _basic_handler(bus: Any, **kw: Any) -> GatewayServices:
     )
 
 
+async def _connect_when_ready(url: str) -> Any:
+    while True:
+        try:
+            return await websockets.connect(url)
+        except OSError:
+            await asyncio.sleep(0.02)
+
+
+async def _webui_mutate(
+    client: Any,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> httpx.Response:
+    request_id = f"test-{uuid.uuid4().hex}"
+    await client.send(json.dumps({
+        "type": "webui_request",
+        "request_id": request_id,
+        "action": action,
+        "payload": payload or {},
+    }))
+    while True:
+        envelope = json.loads(await asyncio.wait_for(client.recv(), timeout=5))
+        if envelope.get("event") != "webui_response":
+            continue
+        if envelope.get("request_id") != request_id:
+            continue
+        if envelope.get("ok") is True:
+            status = 200
+            body = envelope.get("result")
+        else:
+            error = envelope.get("error") or {}
+            status = int(error.get("status") or 500)
+            body = {"error": str(error.get("message") or "WebUI mutation failed")}
+        return httpx.Response(
+            status,
+            json=body,
+            request=httpx.Request("WS", "http://nanobot.local/webui-mutation"),
+        )
+
+
 @pytest.mark.asyncio
 async def test_stop_treats_cancelled_server_task_as_shutdown() -> None:
     channel = _ch(MessageBus())
@@ -152,7 +202,7 @@ async def test_start_extends_http_open_timeout_for_slow_settings_routes(
     bus,
     monkeypatch,
 ) -> None:
-    import auto_cut_bot.channels.websocket.runtime as websocket_module
+    import nanobot.channels.websocket.runtime as websocket_module
 
     channel = _ch(bus, port=0)
     seen: dict[str, Any] = {}
@@ -183,9 +233,9 @@ def isolate_webui_workspace_state(tmp_path, monkeypatch) -> None:
     wth._WEBSOCKET_TURN_WALL_STARTED_AT.clear()
     wth._WEBSOCKET_TURN_IDS.clear()
     wth._WEBSOCKET_TURN_OWNERS.clear()
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "auto_cut_bot.webui.workspaces.get_webui_dir",
+        "nanobot.webui.workspaces.get_webui_dir",
         lambda: tmp_path / "webui",
     )
     yield
@@ -667,7 +717,7 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
         bus,
         port=port,
         token="static-token",
-        tokenIssuePath="/auth/token",
+        tokenIssuePath="/custom-token",
         websocketRequiresToken=True,
     )
 
@@ -675,15 +725,16 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
     await asyncio.sleep(0.3)
 
     try:
-        denied = await _http_get(f"http://127.0.0.1:{port}/auth/token")
+        denied = await _http_get(f"http://127.0.0.1:{port}/custom-token")
         assert denied.status_code == 401
 
         allowed = await _http_get(
-            f"http://127.0.0.1:{port}/auth/token",
+            f"http://127.0.0.1:{port}/custom-token",
             headers={"Authorization": "Bearer static-token"},
         )
         assert allowed.status_code == 200
         assert allowed.json()["token"].startswith("nbwt_")
+        assert allowed.headers["Cache-Control"] == "no-store"
     finally:
         await channel.stop()
         await server_task
@@ -691,7 +742,7 @@ async def test_token_issue_route_requires_secret_when_static_token_configured(bu
 
 @pytest.mark.asyncio
 async def test_webui_message_envelope_marks_inbound_metadata(bus: MagicMock) -> None:
-    from auto_cut_bot.webui.transcript import read_transcript_lines
+    from nanobot.webui.transcript import read_transcript_lines
 
     channel = _ch(bus)
     conn = MagicMock()
@@ -741,9 +792,9 @@ async def test_webui_message_envelope_persists_user_transcript_for_refresh(
     tmp_path,
     monkeypatch,
 ) -> None:
-    from auto_cut_bot.webui.transcript import build_webui_thread_response, read_transcript_lines
+    from nanobot.webui.transcript import build_webui_thread_response, read_transcript_lines
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     channel = _ch(bus)
     conn = AsyncMock()
     conn.remote_address = ("127.0.0.1", 50123)
@@ -774,9 +825,9 @@ async def test_webui_stop_control_message_is_not_persisted_as_user_bubble(
     tmp_path,
     monkeypatch,
 ) -> None:
-    from auto_cut_bot.webui.transcript import read_transcript_lines
+    from nanobot.webui.transcript import read_transcript_lines
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     channel = _ch(bus)
     conn = AsyncMock()
     conn.remote_address = ("127.0.0.1", 50123)
@@ -800,7 +851,7 @@ async def test_webui_user_transcript_append_failure_does_not_block_inbound(
     def fail_append(_session_key: str, _obj: dict[str, Any]) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr("auto_cut_bot.webui.transcript.append_transcript_object", fail_append)
+    monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", fail_append)
     channel = _ch(bus)
     conn = AsyncMock()
     conn.remote_address = ("127.0.0.1", 50123)
@@ -858,31 +909,443 @@ def test_only_bootstrap_tokens_mark_webui_connections(bus: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
+async def test_authenticated_webui_request_returns_correlated_success(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    conn = AsyncMock()
+    channel._webui_connections.add(conn)
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock(
+        return_value=_http_json_response({"saved": True})
+    )
+
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-1",
+            "action": "settings.provider.update",
+            "payload": {"provider": "openrouter", "apiKey": "secret"},
+        },
+    )
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    channel.gateway.http.dispatch_webui_mutation.assert_awaited_once_with(
+        conn,
+        "settings.provider.update",
+        {"provider": "openrouter", "apiKey": "secret"},
+    )
+    assert json.loads(conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": "request-1",
+        "ok": True,
+        "result": {"saved": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_webui_mutations_preserve_request_and_response_order(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    conn = AsyncMock()
+    channel._webui_connections.add(conn)
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    dispatch_order: list[str] = []
+
+    async def dispatch(
+        _connection: object,
+        action: str,
+        _payload: dict[str, object],
+    ) -> Any:
+        dispatch_order.append(action)
+        if action == "settings.provider.update":
+            first_started.set()
+            await release_first.wait()
+        return _http_json_response({"action": action})
+
+    channel.gateway.http.dispatch_webui_mutation = dispatch
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-first",
+            "action": "settings.provider.update",
+            "payload": {},
+        },
+    )
+    await first_started.wait()
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-second",
+            "action": "settings.agent.update",
+            "payload": {},
+        },
+    )
+    await asyncio.sleep(0)
+    assert dispatch_order == ["settings.provider.update"]
+
+    release_first.set()
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    assert dispatch_order == [
+        "settings.provider.update",
+        "settings.agent.update",
+    ]
+    responses = [json.loads(call.args[0]) for call in conn.send.await_args_list]
+    assert [response["request_id"] for response in responses] == [
+        "request-first",
+        "request-second",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_webui_request_survives_disconnect_and_preserves_reconnect_order(
+    bus: MagicMock,
+) -> None:
+    channel = _ch(bus)
+    first_conn = AsyncMock()
+    retry_conn = AsyncMock()
+    first_conn.send.side_effect = ConnectionClosed(Close(1006, ""), Close(1006, ""), True)
+    channel._webui_connections.update({first_conn, retry_conn})
+    started = asyncio.Event()
+    release = asyncio.Event()
+    dispatch_order: list[str] = []
+
+    async def mutate(_connection: object, action: str, _payload: dict[str, Any]) -> Any:
+        dispatch_order.append(action)
+        if action == "automation.run":
+            started.set()
+            await release.wait()
+        return _http_json_response({"action": action})
+
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock(side_effect=mutate)
+    envelope = {
+        "type": "webui_request",
+        "request_id": "request-retry",
+        "action": "automation.run",
+        "payload": {"id": "daily-summary"},
+    }
+    queued_envelope = {
+        "type": "webui_request",
+        "request_id": "request-queued",
+        "action": "automation.update",
+        "payload": {"id": "daily-summary"},
+    }
+
+    await channel._dispatch_envelope(first_conn, "webui-client", envelope)
+    await started.wait()
+    await channel._dispatch_envelope(first_conn, "webui-client", queued_envelope)
+    assert dispatch_order == ["automation.run"]
+
+    await channel._cleanup_connection(first_conn)
+    assert first_conn not in channel._webui_connections
+    await channel._dispatch_envelope(retry_conn, "webui-client", envelope)
+    await channel._dispatch_envelope(retry_conn, "webui-client", queued_envelope)
+    await channel._dispatch_envelope(
+        retry_conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-next",
+            "action": "automation.delete",
+            "payload": {"id": "daily-summary"},
+        },
+    )
+    await asyncio.sleep(0)
+    assert dispatch_order == ["automation.run"]
+
+    pending = tuple(channel._webui_request_tasks.values())
+    release.set()
+    await asyncio.gather(*pending)
+
+    assert dispatch_order == ["automation.run", "automation.update", "automation.delete"]
+    responses = [json.loads(call.args[0]) for call in retry_conn.send.await_args_list]
+    assert [response["request_id"] for response in responses] == [
+        "request-retry",
+        "request-queued",
+        "request-next",
+    ]
+    assert first_conn not in channel._webui_request_locks
+
+
+@pytest.mark.asyncio
+async def test_webui_request_replays_completed_result_after_reconnect(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    first_conn = AsyncMock()
+    retry_conn = AsyncMock()
+    channel._webui_connections.update({first_conn, retry_conn})
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock(
+        return_value=_http_json_response({"installed": True})
+    )
+    envelope = {
+        "type": "webui_request",
+        "request_id": "request-completed",
+        "action": "skill.install",
+        "payload": {"skill": "demo"},
+    }
+
+    await channel._dispatch_envelope(first_conn, "webui-client", envelope)
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+    await channel._dispatch_envelope(retry_conn, "webui-client", envelope)
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    channel.gateway.http.dispatch_webui_mutation.assert_awaited_once()
+    assert json.loads(retry_conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": "request-completed",
+        "ok": True,
+        "result": {"installed": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_webui_request_rejects_request_id_reuse_with_different_payload(
+    bus: MagicMock,
+) -> None:
+    channel = _ch(bus)
+    first_conn = AsyncMock()
+    retry_conn = AsyncMock()
+    channel._webui_connections.update({first_conn, retry_conn})
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock(
+        return_value=_http_json_response({"ran": True})
+    )
+
+    await channel._dispatch_envelope(
+        first_conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-conflict",
+            "action": "automation.run",
+            "payload": {"id": "job-a"},
+        },
+    )
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+    await channel._dispatch_envelope(
+        retry_conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-conflict",
+            "action": "automation.run",
+            "payload": {"id": "job-b"},
+        },
+    )
+
+    channel.gateway.http.dispatch_webui_mutation.assert_awaited_once()
+    assert json.loads(retry_conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": "request-conflict",
+        "ok": False,
+        "error": {
+            "status": 409,
+            "message": "request_id was already used for a different WebUI mutation",
+        },
+    }
+
+
+def test_webui_request_cache_prunes_expired_completed_but_keeps_pending(
+    bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nanobot.channels.websocket.runtime as websocket_module
+
+    channel = _ch(bus)
+    now = 1_000.0
+    monkeypatch.setattr(websocket_module, "time", SimpleNamespace(monotonic=lambda: now))
+    operations = cast(dict[str, Any], channel._webui_request_operations)
+    operations["pending"] = SimpleNamespace(completed_at=None)
+    operations["expired"] = SimpleNamespace(
+        completed_at=now - websocket_module._WEBUI_REQUEST_CACHE_TTL_S
+    )
+    operations["fresh"] = SimpleNamespace(completed_at=now - 1)
+
+    channel._prune_webui_request_operations()
+
+    assert "pending" in operations
+    assert "expired" not in operations
+    assert "fresh" in operations
+
+
+def test_webui_request_cache_prunes_oldest_completed_at_capacity(
+    bus: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import nanobot.channels.websocket.runtime as websocket_module
+
+    channel = _ch(bus)
+    now = 1_000.0
+    monkeypatch.setattr(websocket_module, "time", SimpleNamespace(monotonic=lambda: now))
+    operations = cast(dict[str, Any], channel._webui_request_operations)
+    operations["pending"] = SimpleNamespace(completed_at=None)
+    for index in range(websocket_module._WEBUI_REQUEST_CACHE_MAX + 1):
+        operations[f"completed-{index}"] = SimpleNamespace(
+            completed_at=now - 1 + index / 1_000
+        )
+
+    channel._prune_webui_request_operations()
+
+    assert "pending" in operations
+    assert "completed-0" not in operations
+    assert "completed-1" in operations
+    completed = [operation for operation in operations.values() if operation.completed_at is not None]
+    assert len(completed) == websocket_module._WEBUI_REQUEST_CACHE_MAX
+
+
+@pytest.mark.asyncio
+async def test_webui_request_returns_correlated_route_error(bus: MagicMock) -> None:
+    channel = _ch(bus)
+    conn = AsyncMock()
+    channel._webui_connections.add(conn)
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock(
+        return_value=_http_error(400, "invalid settings payload")
+    )
+
+    await channel._dispatch_envelope(
+        conn,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-2",
+            "action": "settings.agent.update",
+            "payload": {},
+        },
+    )
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    assert json.loads(conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": "request-2",
+        "ok": False,
+        "error": {"status": 400, "message": "invalid settings payload"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_webui_request_requires_bootstrap_authenticated_connection(
+    bus: MagicMock,
+) -> None:
+    channel = _ch(bus)
+    conn = AsyncMock()
+    channel.gateway.http.dispatch_webui_mutation = AsyncMock()
+
+    await channel._dispatch_envelope(
+        conn,
+        "static-token-client",
+        {
+            "type": "webui_request",
+            "request_id": "request-3",
+            "action": "settings.agent.update",
+            "payload": {},
+        },
+    )
+
+    channel.gateway.http.dispatch_webui_mutation.assert_not_awaited()
+    assert json.loads(conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": "request-3",
+        "ok": False,
+        "error": {"status": 403, "message": "access_denied"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_webui_persists_sidebar_state_larger_than_http_request_line(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     channel = _ch(bus)
     conn = AsyncMock()
+    conn.request = SimpleNamespace(headers=Headers())
     channel._webui_connections.add(conn)
     session_order = [f"websocket:{index:04d}-{'x' * 48}" for index in range(160)]
+    request_id = "sidebar-large-state"
     envelope = {
-        "type": "set_sidebar_state",
-        "state": {
+        "type": "webui_request",
+        "request_id": request_id,
+        "action": "sidebar.update",
+        "payload": {"state": {
             "session_order": session_order,
             "view": {"sort": "manual"},
-        },
+        }},
     }
     assert len(json.dumps(envelope).encode()) > 8_192
 
     await channel._dispatch_envelope(conn, "webui-client", envelope)
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
 
     saved = json.loads((tmp_path / "webui" / "sidebar-state.json").read_text(encoding="utf-8"))
     assert saved["session_order"] == session_order
     assert saved["view"]["sort"] == "manual"
-    conn.send.assert_not_awaited()
+    assert json.loads(conn.send.await_args.args[0]) == {
+        "event": "webui_response",
+        "request_id": request_id,
+        "ok": True,
+        "result": saved,
+    }
+
+
+@pytest.mark.asyncio
+async def test_webui_sidebar_state_update_broadcasts_workbench_to_other_devices(
+    bus: MagicMock,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
+    channel = _ch(bus)
+    source = AsyncMock()
+    source.request = SimpleNamespace(headers=Headers())
+    other_device = AsyncMock()
+    channel._webui_connections.update({source, other_device})
+    request_id = "sidebar-workbench-state"
+
+    await channel._dispatch_envelope(
+        source,
+        "webui-client",
+        {
+            "type": "webui_request",
+            "request_id": request_id,
+            "action": "sidebar.update",
+            "payload": {
+                "state": {
+                    "workbench": {
+                        "version": 1,
+                        "tabs": {
+                            "tab:websocket:a": {
+                                "explicit": True,
+                                "title": "Research",
+                                "paneKeys": ["websocket:a", "websocket:b"],
+                                "layoutPaneKeys": ["websocket:b", "websocket:a"],
+                                "layout": "columns",
+                                "splitRatios": [0.35],
+                            }
+                        },
+                    }
+                }
+            },
+        },
+    )
+    await asyncio.gather(*tuple(channel._webui_request_tasks.values()))
+
+    event = json.loads(other_device.send.await_args.args[0])
+    assert event["event"] == "sidebar_state_updated"
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["paneKeys"] == [
+        "websocket:a",
+        "websocket:b",
+    ]
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["layoutPaneKeys"] == [
+        "websocket:b",
+        "websocket:a",
+    ]
+    assert event["state"]["workbench"]["tabs"]["tab:websocket:a"]["splitRatios"] == [
+        0.35
+    ]
 
 
 @pytest.mark.asyncio
@@ -1177,7 +1640,7 @@ async def test_remote_webui_scope_allows_access_reduction(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("auto_cut_bot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
+    monkeypatch.setattr("nanobot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
     default_workspace = tmp_path / "default"
     default_workspace.mkdir()
     sessions = SessionManager(tmp_path / "sessions")
@@ -1218,7 +1681,7 @@ async def test_remote_access_reduction_rejects_stale_in_flight_message_scope(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr("auto_cut_bot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
+    monkeypatch.setattr("nanobot.webui.workspaces.get_webui_dir", lambda: tmp_path / "webui")
     default_workspace = tmp_path / "default"
     default_workspace.mkdir()
     sessions = SessionManager(tmp_path / "sessions")
@@ -1432,7 +1895,10 @@ async def test_send_scopes_turn_model_updates_to_the_subscribed_chat() -> None:
             channel="websocket",
             chat_id="chat-1",
             content="",
-            event=TurnModelUpdatedEvent(model="deepseek/deepseek-chat"),
+            event=TurnModelUpdatedEvent(
+                model="deepseek/deepseek-chat",
+                model_preset="Deep Research",
+            ),
         )
     )
 
@@ -1441,6 +1907,7 @@ async def test_send_scopes_turn_model_updates_to_the_subscribed_chat() -> None:
         "event": "turn_model_updated",
         "chat_id": "chat-1",
         "model_name": "deepseek/deepseek-chat",
+        "model_preset": "Deep Research",
     }
     chat_two.send.assert_not_awaited()
 
@@ -1457,7 +1924,7 @@ async def test_send_stages_external_media_as_signed_url(monkeypatch, tmp_path) -
     def fake_media_dir(channel: str | None = None):
         return ws_media if channel == "websocket" else media_root
 
-    monkeypatch.setattr("auto_cut_bot.webui.media_gateway.get_media_dir", fake_media_dir)
+    monkeypatch.setattr("nanobot.webui.media_gateway.get_media_dir", fake_media_dir)
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-1")
@@ -1783,7 +2250,7 @@ async def test_send_delta_stream_end_rewrites_local_markdown_image(monkeypatch, 
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    monkeypatch.setattr("auto_cut_bot.webui.media_gateway.get_media_dir", fake_media_dir)
+    monkeypatch.setattr("nanobot.webui.media_gateway.get_media_dir", fake_media_dir)
     channel = WebSocketChannel(
         {"enabled": True, "allowFrom": ["*"], "streaming": True},
         bus,
@@ -1815,7 +2282,7 @@ async def test_send_delta_stream_end_rewrites_inline_final_text(monkeypatch, tmp
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    monkeypatch.setattr("auto_cut_bot.webui.media_gateway.get_media_dir", fake_media_dir)
+    monkeypatch.setattr("nanobot.webui.media_gateway.get_media_dir", fake_media_dir)
     channel = WebSocketChannel(
         {"enabled": True, "allowFrom": ["*"], "streaming": True},
         bus,
@@ -1918,7 +2385,7 @@ async def test_send_reasoning_without_subscribers_is_noop() -> None:
 
 @pytest.mark.asyncio
 async def test_stream_transcript_persists_without_subscribers() -> None:
-    from auto_cut_bot.webui.transcript import build_webui_thread_response, read_transcript_lines
+    from nanobot.webui.transcript import build_webui_thread_response, read_transcript_lines
 
     bus = MagicMock()
     channel = WebSocketChannel(
@@ -2054,7 +2521,7 @@ async def test_turn_end_persists_and_conditionally_clears_when_fanout_fails(
 async def test_turn_end_keeps_registry_when_transcript_persistence_fails(
     monkeypatch,
 ) -> None:
-    from auto_cut_bot.bus.events import InboundMessage
+    from nanobot.bus.events import InboundMessage
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -2079,7 +2546,7 @@ async def test_turn_end_keeps_registry_when_transcript_persistence_fails(
     )
     await wth.publish_turn_run_status(bus, inbound, "running", started_at=1234.5)
     append = MagicMock(side_effect=OSError("disk full"))
-    monkeypatch.setattr("auto_cut_bot.webui.transcript.append_transcript_object", append)
+    monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", append)
 
     await channel.send(OutboundMessage(
         channel="websocket",
@@ -2118,8 +2585,8 @@ async def test_turn_end_keeps_registry_when_transcript_persistence_fails(
 async def test_durable_incomplete_marker_stays_pending_without_safe_session_recovery(
     monkeypatch,
 ) -> None:
-    from auto_cut_bot.bus.events import InboundMessage
-    from auto_cut_bot.webui.transcript import build_webui_thread_response
+    from nanobot.bus.events import InboundMessage
+    from nanobot.webui.transcript import build_webui_thread_response
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -2156,7 +2623,7 @@ async def test_durable_incomplete_marker_stays_pending_without_safe_session_reco
             raise OSError("transient disk failure")
         original_append(session_key, event)
 
-    monkeypatch.setattr("auto_cut_bot.webui.transcript.append_transcript_object", fail_answer)
+    monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", fail_answer)
 
     await channel.send(OutboundMessage(
         channel="websocket",
@@ -2213,7 +2680,7 @@ async def test_http_replay_recovers_marked_answer_from_session_after_gateway_res
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.bus.events import InboundMessage
+    from nanobot.bus.events import InboundMessage
 
     chat_id = "answer-recovery-after-restart"
     key = f"websocket:{chat_id}"
@@ -2262,7 +2729,7 @@ async def test_http_replay_recovers_marked_answer_from_session_after_gateway_res
             raise OSError("transient disk failure")
         original_append(session_key, event)
 
-    monkeypatch.setattr("auto_cut_bot.webui.transcript.append_transcript_object", fail_answer)
+    monkeypatch.setattr("nanobot.webui.transcript.append_transcript_object", fail_answer)
     await channel.send(OutboundMessage(
         channel="websocket",
         chat_id=chat_id,
@@ -2319,7 +2786,7 @@ async def test_http_replay_recovers_marked_answer_from_session_after_gateway_res
 
 @pytest.mark.asyncio
 async def test_webui_idle_clears_owner_when_no_completion_write_failed() -> None:
-    from auto_cut_bot.bus.events import InboundMessage
+    from nanobot.bus.events import InboundMessage
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -2360,7 +2827,7 @@ async def test_webui_idle_clears_owner_when_no_completion_write_failed() -> None
 async def test_non_webui_transcript_failure_does_not_block_idle_cleanup(
     monkeypatch,
 ) -> None:
-    from auto_cut_bot.bus.events import InboundMessage
+    from nanobot.bus.events import InboundMessage
 
     bus = MagicMock()
     bus.publish_outbound = AsyncMock()
@@ -2380,7 +2847,7 @@ async def test_non_webui_transcript_failure_does_not_block_idle_cleanup(
     )
     await wth.publish_turn_run_status(bus, inbound, "running", started_at=1234.5)
     monkeypatch.setattr(
-        "auto_cut_bot.webui.transcript.append_transcript_object",
+        "nanobot.webui.transcript.append_transcript_object",
         MagicMock(side_effect=OSError("disk full")),
     )
 
@@ -2613,7 +3080,7 @@ async def test_maybe_push_turn_run_wall_clock_skips_when_no_active_turn() -> Non
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-1")
-    from auto_cut_bot.session import webui_turns as wth
+    from nanobot.session import webui_turns as wth
 
     wth._WEBSOCKET_TURN_WALL_STARTED_AT.clear()
     await channel._maybe_push_turn_run_wall_clock("chat-1")
@@ -2626,7 +3093,7 @@ async def test_maybe_push_turn_run_wall_clock_replays_running() -> None:
     channel = WebSocketChannel({"enabled": True, "allowFrom": ["*"]}, bus, gateway=_basic_handler(bus))
     mock_ws = AsyncMock()
     channel._attach(mock_ws, "chat-1")
-    from auto_cut_bot.session import webui_turns as wth
+    from nanobot.session import webui_turns as wth
 
     wth._WEBSOCKET_TURN_WALL_STARTED_AT.clear()
     try:
@@ -2721,10 +3188,13 @@ async def test_end_to_end_client_receives_ready_and_agent_sees_inbound(bus: Magi
     channel = _ch(bus, port=port)
 
     server_task = asyncio.create_task(channel.start())
-    await asyncio.sleep(0.3)
 
     try:
-        async with websockets.connect(f"ws://127.0.0.1:{port}/ws?client_id=tester") as client:
+        client = await asyncio.wait_for(
+            _connect_when_ready(f"ws://127.0.0.1:{port}/ws?client_id=tester"),
+            timeout=5,
+        )
+        async with client:
             ready_raw = await client.recv()
             ready = json.loads(ready_raw)
             assert ready["event"] == "ready"
@@ -2788,7 +3258,7 @@ async def test_wrong_path_returns_404(bus: MagicMock) -> None:
 
 
 def test_registry_discovers_websocket_channel() -> None:
-    from auto_cut_bot.channels.registry import load_channel_class
+    from nanobot.channels.registry import load_channel_class
 
     cls = load_channel_class("websocket")
     assert cls.name == "websocket"
@@ -2859,9 +3329,9 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     config.tools.web.search.api_key = "brave-secret"
     expected_timezone = config.agents.defaults.timezone
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_api._oauth_provider_status",
+        "nanobot.webui.settings_api._oauth_provider_status",
         lambda _spec: {
             "configured": False,
             "account": None,
@@ -2877,7 +3347,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         }
     )
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_routes.request_image_generation_reload",
+        "nanobot.webui.settings_routes.request_image_generation_reload",
         image_reload,
     )
 
@@ -2887,7 +3357,15 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
     server_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.3)
 
+    webui_client = None
     try:
+        webui_token = channel.gateway.tokens.issue_token(300, audience="webui")
+        webui_client = await websockets.connect(
+            f"ws://127.0.0.1:{port}/ws?token={webui_token}&client_id=settings-test"
+        )
+        ready = json.loads(await asyncio.wait_for(webui_client.recv(), timeout=5))
+        assert ready["event"] == "ready"
+
         settings = await _http_get(
             f"http://127.0.0.1:{port}/api/settings",
             headers={"Authorization": "Bearer tok"},
@@ -2911,6 +3389,10 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert providers["azure_openai"]["api_key_required"] is False  # AAD auth supported; no static key required
         assert providers["openrouter"]["configured"] is False
         assert providers["openrouter"]["api_key_required"] is True
+        assert providers["orcarouter"]["label"] == "OrcaRouter"
+        assert providers["orcarouter"]["configured"] is False
+        assert providers["orcarouter"]["api_key_required"] is True
+        assert providers["orcarouter"]["default_api_base"] == "https://api.orcarouter.ai/v1"
         assert providers["skywork"]["label"] == "Skywork"
         assert providers["skywork"]["default_api_base"] == "https://api.apifree.ai/agent/v1"
         assert providers["ant_ling"]["label"] == "Ant Ling"
@@ -2953,7 +3435,7 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_providers["gemini"]["label"] == "Gemini"
         assert body["runtime"]["config_path"] == str(config_path)
         workspace_path = body["runtime"]["workspace_path"].replace("\\", "/")
-        assert workspace_path.endswith("/.auto_cut_bot/workspace")
+        assert workspace_path.endswith("/.nanobot/workspace")
         assert body["runtime"]["gateway_port"] == 18790
         assert body["advanced"]["exec_enabled"] is True
         assert body["advanced"]["webui_allow_local_service_access"] is True
@@ -2971,11 +3453,14 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert unknown_api.status_code == 404
         assert "<!doctype html>" not in unknown_api.text.lower()
 
-        provider_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/provider/update?provider=openrouter"
-            "&api_key=sk-or-test&api_base=https%3A%2F%2Fopenrouter.ai%2Fapi%2Fv1",
-            headers={"Authorization": "Bearer tok"},
+        provider_updated = await _webui_mutate(
+            webui_client,
+            "settings.provider.update",
+            {
+                "provider": "openrouter",
+                "apiKey": "sk-or-test",
+                "apiBase": "https://openrouter.ai/api/v1",
+            },
         )
         assert provider_updated.status_code == 200
         provider_body = provider_updated.json()
@@ -2985,22 +3470,18 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert provider_body["image_generation"]["provider_configured"] is True
         assert "sk-or-test" not in provider_updated.text
 
-        custom_provider_created = await _http_get(
-            f"http://127.0.0.1:{port}/api/settings/provider/create",
-            headers={
-                "Authorization": "Bearer tok",
-                "X-Nanobot-Provider-Values": json.dumps(
-                    {
-                        "name": "Company Gateway",
-                        "apiBase": "https://gateway.example/v1",
-                        "apiKey": "sk-company",
-                        "extraHeaders": json.dumps({"X-Tenant": "engineering"}),
-                        "extraBody": json.dumps({"service_tier": "priority"}),
-                        "extraQuery": json.dumps({"api-version": "2026-01-01"}),
-                        "proxy": "http://127.0.0.1:7890",
-                        "thinkingStyle": "enable_thinking",
-                    }
-                ),
+        custom_provider_created = await _webui_mutate(
+            webui_client,
+            "settings.provider.create",
+            {
+                "name": "Company Gateway",
+                "apiBase": "https://gateway.example/v1",
+                "apiKey": "sk-company",
+                "extraHeaders": json.dumps({"X-Tenant": "engineering"}),
+                "extraBody": json.dumps({"service_tier": "priority"}),
+                "extraQuery": json.dumps({"api-version": "2026-01-01"}),
+                "proxy": "http://127.0.0.1:7890",
+                "thinkingStyle": "enable_thinking",
             },
         )
         assert custom_provider_created.status_code == 200
@@ -3015,11 +3496,10 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         }
         assert "sk-company" not in custom_provider_created.text
 
-        local_provider_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/provider/update?provider=atomic_chat"
-            "&api_base=http%3A%2F%2Flocalhost%3A1337%2Fv1",
-            headers={"Authorization": "Bearer tok"},
+        local_provider_updated = await _webui_mutate(
+            webui_client,
+            "settings.provider.update",
+            {"provider": "atomic_chat", "apiBase": "http://localhost:1337/v1"},
         )
         assert local_provider_updated.status_code == 200
         local_provider_body = local_provider_updated.json()
@@ -3029,38 +3509,44 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert local_provider_rows["atomic_chat"]["configured"] is True
         assert "localhost:1337" in local_provider_updated.text
 
-        updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/update?model=atomic_chat/test"
-            "&provider=atomic_chat&timezone=Asia%2FShanghai"
-            "&bot_name=Nano&bot_icon=N&tool_hint_max_length=120",
-            headers={"Authorization": "Bearer tok"},
+        updated = await _webui_mutate(
+            webui_client,
+            "settings.agent.update",
+            {
+                "model": "atomic_chat/test",
+                "provider": "atomic_chat",
+                "timezone": "Asia/Shanghai",
+                "tool_hint_max_length": 120,
+            },
         )
         assert updated.status_code == 200
         updated_body = updated.json()
         assert updated_body["requires_restart"] is True
         assert updated_body["restart_required_sections"] == ["runtime"]
 
-        preset_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/update?model_preset=deep",
-            headers={"Authorization": "Bearer tok"},
+        preset_updated = await _webui_mutate(
+            webui_client,
+            "settings.agent.update",
+            {"model_preset": "deep"},
         )
         assert preset_updated.status_code == 200
         assert preset_updated.json()["agent"]["model"] == "anthropic/claude-opus-4-5"
 
-        bad_preset = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/update?model_preset=missing",
-            headers={"Authorization": "Bearer tok"},
+        bad_preset = await _webui_mutate(
+            webui_client,
+            "settings.agent.update",
+            {"model_preset": "missing"},
         )
         assert bad_preset.status_code == 400
 
-        created_preset = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/model-configurations/create"
-            "?label=Fast%20writing&provider=openai&model=openai%2Fgpt-4.1-mini",
-            headers={"Authorization": "Bearer tok"},
+        created_preset = await _webui_mutate(
+            webui_client,
+            "settings.model_configuration.create",
+            {
+                "label": "Fast writing",
+                "provider": "openai",
+                "model": "openai/gpt-4.1-mini",
+            },
         )
         assert created_preset.status_code == 200
         created_body = created_preset.json()
@@ -3071,14 +3557,18 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         created_presets = {
             preset["name"]: preset for preset in created_body["model_presets"]
         }
-        assert created_presets["fast-writing"]["label"] == "Fast writing"
+        assert created_presets["fast-writing"]["label"] == "fast-writing"
         assert created_presets["fast-writing"]["provider"] == "openai"
 
-        updated_preset = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/model-configurations/update"
-            "?name=fast-writing&label=Codex&provider=openai&model=openai%2Fgpt-5.5",
-            headers={"Authorization": "Bearer tok"},
+        updated_preset = await _webui_mutate(
+            webui_client,
+            "settings.model_configuration.update",
+            {
+                "name": "fast-writing",
+                "new_name": "Codex",
+                "provider": "openai",
+                "model": "openai/gpt-5.5",
+            },
         )
         assert updated_preset.status_code == 200
         updated_preset_body = updated_preset.json()
@@ -3087,34 +3577,40 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         updated_presets = {
             preset["name"]: preset for preset in updated_preset_body["model_presets"]
         }
-        assert updated_presets["fast-writing"]["label"] == "Codex"
+        assert updated_presets["Codex"]["label"] == "Codex"
 
-        call_order_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/model-call-order/update"
-            "?order=%5B%22fast-writing%22%2C%22deep%22%5D",
-            headers={"Authorization": "Bearer tok"},
+        call_order_updated = await _webui_mutate(
+            webui_client,
+            "settings.model_call_order.update",
+            {"order": ["Codex", "deep"]},
         )
         assert call_order_updated.status_code == 200
         call_order_body = call_order_updated.json()
-        assert call_order_body["agent"]["model_preset"] == "fast-writing"
+        assert call_order_body["agent"]["model_preset"] == "Codex"
         assert call_order_body["agent"]["model"] == "openai/gpt-5.5"
-        assert call_order_body["model_call_order"] == ["fast-writing", "deep"]
+        assert call_order_body["model_call_order"] == ["Codex", "deep"]
 
-        duplicate_preset = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/model-configurations/create"
-            "?label=Fast%20writing&provider=openai&model=openai%2Fgpt-4.1-mini",
-            headers={"Authorization": "Bearer tok"},
+        duplicate_preset = await _webui_mutate(
+            webui_client,
+            "settings.model_configuration.create",
+            {
+                "name": "codex",
+                "provider": "openai",
+                "model": "openai/gpt-4.1-mini",
+            },
         )
         assert duplicate_preset.status_code == 409
 
-        search_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/web-search/update?provider=searxng"
-            "&base_url=https%3A%2F%2Fsearch.example.com"
-            "&max_results=8&timeout=45&use_jina_reader=false",
-            headers={"Authorization": "Bearer tok"},
+        search_updated = await _webui_mutate(
+            webui_client,
+            "settings.web_search.update",
+            {
+                "provider": "searxng",
+                "base_url": "https://search.example.com",
+                "max_results": 8,
+                "timeout": 45,
+                "use_jina_reader": False,
+            },
         )
         assert search_updated.status_code == 200
         search_body = search_updated.json()
@@ -3126,10 +3622,13 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert search_body["web_search"]["max_results"] == 8
         assert search_body["web"]["fetch"]["use_jina_reader"] is False
 
-        network_safety_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/network-safety/update?webui_allow_local_service_access=false&webui_default_access_mode=full",
-            headers={"Authorization": "Bearer tok"},
+        network_safety_updated = await _webui_mutate(
+            webui_client,
+            "settings.network_safety.update",
+            {
+                "webui_allow_local_service_access": False,
+                "webui_default_access_mode": "full",
+            },
         )
         assert network_safety_updated.status_code == 200
         network_safety_body = network_safety_updated.json()
@@ -3139,13 +3638,17 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert network_safety_body["advanced"]["webui_default_access_mode"] == "full"
         assert network_safety_body["advanced"]["private_service_protection_enabled"] is True
 
-        image_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/image-generation/update?enabled=true"
-            "&provider=openrouter&model=openai%2Fgpt-image-1"
-            "&default_aspect_ratio=16%3A9&default_image_size=2K"
-            "&max_images_per_turn=3",
-            headers={"Authorization": "Bearer tok"},
+        image_updated = await _webui_mutate(
+            webui_client,
+            "settings.image_generation.update",
+            {
+                "enabled": True,
+                "provider": "openrouter",
+                "model": "openai/gpt-image-1",
+                "default_aspect_ratio": "16:9",
+                "default_image_size": "2K",
+                "max_images_per_turn": 3,
+            },
         )
         assert image_updated.status_code == 200
         image_body = image_updated.json()
@@ -3157,11 +3660,14 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert image_body["image_generation"]["default_image_size"] == "2K"
         assert image_body["image_generation"]["max_images_per_turn"] == 3
 
-        image_provider_updated = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/provider/update?provider=openrouter"
-            "&api_key=sk-or-next&api_base=https%3A%2F%2Fopenrouter.ai%2Fapi%2Fv1",
-            headers={"Authorization": "Bearer tok"},
+        image_provider_updated = await _webui_mutate(
+            webui_client,
+            "settings.provider.update",
+            {
+                "provider": "openrouter",
+                "apiKey": "sk-or-next",
+                "apiBase": "https://openrouter.ai/api/v1",
+            },
         )
         assert image_provider_updated.status_code == 200
         assert image_provider_updated.json()["requires_restart"] is True
@@ -3169,30 +3675,29 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert "sk-or-next" not in image_provider_updated.text
         assert image_reload.await_count == 2
 
-        bad_web = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/web-search/update?provider=duckduckgo&max_results=99",
-            headers={"Authorization": "Bearer tok"},
+        bad_web = await _webui_mutate(
+            webui_client,
+            "settings.web_search.update",
+            {"provider": "duckduckgo", "max_results": 99},
         )
         assert bad_web.status_code == 400
 
-        bad_image = await _http_get(
-            "http://127.0.0.1:"
-            f"{port}/api/settings/image-generation/update?provider=missing",
-            headers={"Authorization": "Bearer tok"},
+        bad_image = await _webui_mutate(
+            webui_client,
+            "settings.image_generation.update",
+            {"provider": "missing"},
         )
         assert bad_image.status_code == 400
 
         saved = load_config(config_path)
         assert saved.agents.defaults.model == "atomic_chat/test"
         assert saved.agents.defaults.provider == "atomic_chat"
-        assert saved.agents.defaults.model_preset == "fast-writing"
+        assert saved.agents.defaults.model_preset == "Codex"
         assert saved.agents.defaults.fallback_models == ["deep"]
-        assert saved.model_presets["fast-writing"].label == "Codex"
-        assert saved.model_presets["fast-writing"].model == "openai/gpt-5.5"
-        assert saved.model_presets["fast-writing"].provider == "openai"
+        assert saved.model_presets["Codex"].model == "openai/gpt-5.5"
+        assert saved.model_presets["Codex"].provider == "openai"
         assert saved.agents.defaults.timezone == "Asia/Shanghai"
-        assert saved.agents.defaults.bot_name == "auto_cut_bot"
+        assert saved.agents.defaults.bot_name == "nanobot"
         assert saved.agents.defaults.bot_icon == "🐈"
         assert saved.agents.defaults.tool_hint_max_length == 120
         assert saved.providers.openrouter.api_key == "sk-or-next"
@@ -3216,6 +3721,8 @@ async def test_settings_api_returns_safe_subset_and_updates_whitelist(
         assert saved.tools.image_generation.default_image_size == "2K"
         assert saved.tools.image_generation.max_images_per_turn == 3
     finally:
+        if webui_client is not None:
+            await webui_client.close()
         await channel.stop()
         await server_task
 
@@ -3231,7 +3738,7 @@ async def test_image_settings_hot_reload_without_restart(
     config = Config()
     config.providers.openrouter.api_key = "image-key"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     image_reload = AsyncMock(
         return_value={
             "ok": True,
@@ -3240,7 +3747,7 @@ async def test_image_settings_hot_reload_without_restart(
         }
     )
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_routes.request_image_generation_reload",
+        "nanobot.webui.settings_routes.request_image_generation_reload",
         image_reload,
     )
 
@@ -3248,11 +3755,17 @@ async def test_image_settings_hot_reload_without_restart(
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
     server_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.3)
+    webui_client = None
     try:
-        response = await _http_get(
-            f"http://127.0.0.1:{port}/api/settings/image-generation/update"
-            "?enabled=true&provider=openrouter&model=openai%2Fgpt-image-1",
-            headers={"Authorization": "Bearer tok"},
+        webui_token = channel.gateway.tokens.issue_token(300, audience="webui")
+        webui_client = await websockets.connect(
+            f"ws://127.0.0.1:{port}/ws?token={webui_token}&client_id=image-reload-test"
+        )
+        assert json.loads(await webui_client.recv())["event"] == "ready"
+        response = await _webui_mutate(
+            webui_client,
+            "settings.image_generation.update",
+            {"enabled": True, "provider": "openrouter", "model": "openai/gpt-image-1"},
         )
 
         assert response.status_code == 200
@@ -3260,6 +3773,8 @@ async def test_image_settings_hot_reload_without_restart(
         assert response.json()["restart_required_sections"] == []
         image_reload.assert_awaited_once_with(bus)
     finally:
+        if webui_client is not None:
+            await webui_client.close()
         await channel.stop()
         await server_task
 
@@ -3275,9 +3790,9 @@ async def test_image_settings_fall_back_to_restart_when_hot_reload_fails(
     config = Config()
     config.providers.openrouter.api_key = "image-key"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_routes.request_image_generation_reload",
+        "nanobot.webui.settings_routes.request_image_generation_reload",
         AsyncMock(
             return_value={
                 "ok": False,
@@ -3291,17 +3806,25 @@ async def test_image_settings_fall_back_to_restart_when_hot_reload_fails(
     channel.gateway.tokens.api_tokens["tok"] = time.monotonic() + 300
     server_task = asyncio.create_task(channel.start())
     await asyncio.sleep(0.3)
+    webui_client = None
     try:
-        response = await _http_get(
-            f"http://127.0.0.1:{port}/api/settings/image-generation/update"
-            "?enabled=true&provider=openrouter&model=openai%2Fgpt-image-1",
-            headers={"Authorization": "Bearer tok"},
+        webui_token = channel.gateway.tokens.issue_token(300, audience="webui")
+        webui_client = await websockets.connect(
+            f"ws://127.0.0.1:{port}/ws?token={webui_token}&client_id=image-fallback-test"
+        )
+        assert json.loads(await webui_client.recv())["event"] == "ready"
+        response = await _webui_mutate(
+            webui_client,
+            "settings.image_generation.update",
+            {"enabled": True, "provider": "openrouter", "model": "openai/gpt-image-1"},
         )
 
         assert response.status_code == 200
         assert response.json()["requires_restart"] is True
         assert response.json()["restart_required_sections"] == ["image"]
     finally:
+        if webui_client is not None:
+            await webui_client.close()
         await channel.stop()
         await server_task
 
@@ -3392,7 +3915,7 @@ def test_settings_payload_normalizes_camel_case_provider(
     config = Config()
     config.agents.defaults.provider = "minimaxAnthropic"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     body = settings_payload()
 
@@ -3404,7 +3927,7 @@ def test_settings_payload_exposes_api_type_only_for_openai(monkeypatch, tmp_path
     config = Config()
     config.providers.openai.api_type = "responses"
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     body = settings_payload()
     providers = {provider["name"]: provider for provider in body["providers"]}
@@ -3418,8 +3941,8 @@ def test_settings_payload_reports_workspace_sandbox(monkeypatch, tmp_path) -> No
     config = Config()
     config.tools.restrict_to_workspace = True
     save_config(config, config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
-    monkeypatch.setenv("AUTO_CUT_BOT_SANDBOX_ENFORCED", "macos_app_sandbox")
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
+    monkeypatch.setenv("NANOBOT_SANDBOX_ENFORCED", "macos_app_sandbox")
 
     body = settings_payload()
     sandbox = body["advanced"]["workspace_sandbox"]
@@ -3434,7 +3957,7 @@ def test_settings_payload_reports_workspace_sandbox(monkeypatch, tmp_path) -> No
 def test_settings_payload_includes_native_runtime_surface(monkeypatch, tmp_path) -> None:
     config_path = tmp_path / "config.json"
     save_config(Config(), config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     body = settings_payload(
         surface="native",
@@ -3454,7 +3977,7 @@ def test_settings_payload_includes_native_runtime_surface(monkeypatch, tmp_path)
 def test_update_provider_settings_ignores_api_type_for_non_openai(monkeypatch, tmp_path) -> None:
     config_path = tmp_path / "config.json"
     save_config(Config(), config_path)
-    monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.setattr("nanobot.config.loader._current_config_path", config_path)
 
     body = update_provider_settings({
         "provider": ["custom"],
@@ -3541,6 +4064,7 @@ async def test_token_issue_rejects_when_at_capacity(bus: MagicMock) -> None:
             headers={"Authorization": "Bearer s"},
         )
         assert resp.status_code == 429
+        assert resp.headers["Cache-Control"] == "no-store"
         data = resp.json()
         assert "error" in data
     finally:
@@ -3915,7 +4439,7 @@ async def test_fork_chat_copies_only_prefix_session_and_transcript(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     sessions = SessionManager(tmp_path / "sessions")
     source = sessions.get_or_create("websocket:source")
     source.metadata["webui"] = True
@@ -3967,7 +4491,7 @@ async def test_webui_message_envelope_appends_user_transcript(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     sessions = SessionManager(tmp_path / "sessions")
     channel = WebSocketChannel(
         {"enabled": True, "allowFrom": ["*"], "host": "127.0.0.1"},
@@ -4122,8 +4646,8 @@ def test_sessions_list_includes_active_run_started_at(monkeypatch) -> None:
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.session import webui_turns as wth
-    from auto_cut_bot.webui import ws_http as ws_http_module
+    from nanobot.session import webui_turns as wth
+    from nanobot.webui import ws_http as ws_http_module
 
     bus = MagicMock()
     session_manager = MagicMock()
@@ -4203,9 +4727,9 @@ def test_handle_webui_thread_get_returns_json(tmp_path, monkeypatch) -> None:
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     key = "websocket:c1"
     append_transcript_object(key, {"event": "user", "chat_id": "c1", "text": "hi"})
     bus = MagicMock()
@@ -4232,15 +4756,15 @@ def test_handle_webui_thread_get_reports_registered_turn_as_pending(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "auto_cut_bot.session.webui_turns.websocket_turn_wall_started_at",
+        "nanobot.session.webui_turns.websocket_turn_wall_started_at",
         lambda chat_id: 1_700_000_000.0 if chat_id == "running" else None,
     )
     monkeypatch.setattr(
-        "auto_cut_bot.session.webui_turns.websocket_turn_id",
+        "nanobot.session.webui_turns.websocket_turn_id",
         lambda chat_id: "turn-running" if chat_id == "running" else None,
     )
     key = "websocket:running"
@@ -4277,11 +4801,11 @@ async def test_idle_registry_stays_pending_until_turn_end_is_persisted(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.bus.events import InboundMessage
-    from auto_cut_bot.session import webui_turns as wth
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.bus.events import InboundMessage
+    from nanobot.session import webui_turns as wth
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     key = "websocket:idle-order"
     turn_id = "turn-idle-order"
     append_transcript_object(
@@ -4342,7 +4866,7 @@ async def test_webui_thread_api_restores_older_owner_after_latest_completes() ->
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.bus.events import InboundMessage
+    from nanobot.bus.events import InboundMessage
 
     chat_id = "concurrent-projection"
     key = f"websocket:{chat_id}"
@@ -4418,15 +4942,15 @@ def test_handle_webui_thread_get_reconciles_registered_turn_with_turn_end(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     monkeypatch.setattr(
-        "auto_cut_bot.session.webui_turns.websocket_turn_wall_started_at",
+        "nanobot.session.webui_turns.websocket_turn_wall_started_at",
         lambda chat_id: 1_700_000_000.0 if chat_id == "running" else None,
     )
     monkeypatch.setattr(
-        "auto_cut_bot.session.webui_turns.websocket_turn_id",
+        "nanobot.session.webui_turns.websocket_turn_id",
         lambda chat_id: active_turn_id if chat_id == "running" else None,
     )
     key = "websocket:running"
@@ -4477,9 +5001,9 @@ def test_handle_webui_thread_get_accepts_pagination_query(tmp_path, monkeypatch)
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     key = "websocket:paged-route"
     for idx in range(1, 4):
         append_transcript_object(
@@ -4517,7 +5041,7 @@ def test_handle_file_preview_returns_workspace_file(tmp_path) -> None:
     from websockets.http11 import Request
 
     workspace = tmp_path / "workspace"
-    source = workspace / "auto_cut_bot" / "agent" / "hook.py"
+    source = workspace / "nanobot" / "agent" / "hook.py"
     source.parent.mkdir(parents=True)
     source.write_text("print('hello')\n", encoding="utf-8")
 
@@ -4525,7 +5049,7 @@ def test_handle_file_preview_returns_workspace_file(tmp_path) -> None:
     gateway.tokens.api_tokens["tok"] = time.monotonic() + 300.0
     key = "websocket:file-preview"
     enc = quote(key, safe="")
-    path = quote("auto_cut_bot/agent/hook.py:12", safe="")
+    path = quote("nanobot/agent/hook.py:12", safe="")
     req = Request(
         f"/api/sessions/{enc}/file-preview?path={path}",
         Headers([("Authorization", "Bearer tok")]),
@@ -4535,7 +5059,7 @@ def test_handle_file_preview_returns_workspace_file(tmp_path) -> None:
 
     assert resp.status_code == 200
     body = json.loads(resp.body.decode())
-    assert body["display_path"] == "auto_cut_bot/agent/hook.py"
+    assert body["display_path"] == "nanobot/agent/hook.py"
     assert body["language"] == "python"
     assert body["content"].splitlines() == ["print('hello')"]
     assert body["truncated"] is False
@@ -4617,7 +5141,7 @@ def test_handle_file_preview_probe_reports_binary_file_as_unavailable(tmp_path) 
 
 
 def test_file_preview_normalizes_windows_file_url() -> None:
-    from auto_cut_bot.webui.file_preview import _clean_preview_path
+    from nanobot.webui.file_preview import _clean_preview_path
 
     assert _clean_preview_path("file:///C:/Users/me/project/app.py") == (
         "C:/Users/me/project/app.py"
@@ -4696,9 +5220,9 @@ def test_handle_webui_thread_get_backfills_legacy_missing_user_rows(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     workspace = tmp_path / "workspace"
     sessions = SessionManager(workspace)
     key = "websocket:c-legacy"
@@ -4740,10 +5264,10 @@ def test_handle_webui_thread_get_does_not_backfill_cron_internal_prompt(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.cron.session_turns import CRON_HISTORY_META
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.cron.session_turns import CRON_HISTORY_META
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     workspace = tmp_path / "workspace"
     sessions = SessionManager(workspace)
     key = "websocket:c-cron"
@@ -4786,10 +5310,10 @@ def test_handle_webui_thread_get_does_not_backfill_trigger_internal_prompt(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.session.automation_turns import AUTOMATION_HISTORY_META
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.session.automation_turns import AUTOMATION_HISTORY_META
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     workspace = tmp_path / "workspace"
     sessions = SessionManager(workspace)
     key = "websocket:c-trigger"
@@ -4832,10 +5356,10 @@ def test_handle_webui_thread_get_does_not_backfill_hidden_subagent_result(
     from websockets.datastructures import Headers
     from websockets.http11 import Request
 
-    from auto_cut_bot.session.history_visibility import HIDDEN_HISTORY_META
-    from auto_cut_bot.webui.transcript import append_transcript_object
+    from nanobot.session.history_visibility import HIDDEN_HISTORY_META
+    from nanobot.webui.transcript import append_transcript_object
 
-    monkeypatch.setattr("auto_cut_bot.config.paths.get_data_dir", lambda: tmp_path)
+    monkeypatch.setattr("nanobot.config.paths.get_data_dir", lambda: tmp_path)
     workspace = tmp_path / "workspace"
     sessions = SessionManager(workspace)
     key = "websocket:c-subagent"

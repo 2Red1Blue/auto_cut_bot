@@ -1,7 +1,7 @@
-"""Reproduction test for HKUDS/auto_cut_bot#4302.
+"""Reproduction test for HKUDS/nanobot#4302.
 
 This test starts a real FastMCP streamable-http server in a child process,
-lets its idle timeout kill the session, and then exercises auto_cut_bot's MCP
+lets its idle timeout kill the session, and then exercises nanobot's MCP
 reconnect path.  The bug being reproduced is a gateway crash caused by
 improper cleanup of the old ``streamable_http_client`` async generator during
 reconnect / shutdown.
@@ -15,17 +15,15 @@ import asyncio
 import multiprocessing
 import socket
 import time
-from unittest.mock import MagicMock
 
 import httpx
 import pytest
 
-from auto_cut_bot.agent.loop import AgentLoop
-from auto_cut_bot.agent.tools import mcp as mcp_module
-from auto_cut_bot.agent.tools.mcp import MCPToolWrapper
-from auto_cut_bot.bus.queue import MessageBus
-from auto_cut_bot.config.schema import MCPServerConfig
-from auto_cut_bot.security import network as security_network
+from nanobot.agent.tools import mcp as mcp_module
+from nanobot.agent.tools.mcp import MCPProvider, MCPToolWrapper
+from nanobot.agent.tools.registry import ToolRegistry
+from nanobot.config.schema import MCPServerConfig
+from nanobot.security import network as security_network
 
 # Leave enough headroom for reconnect handshakes on slower CI hosts; each test
 # still waits beyond this deadline explicitly before exercising recovery.
@@ -113,23 +111,14 @@ def mcp_server_url():
         process.join(timeout=2.0)
 
 
-def _make_loop(tmp_path, *, mcp_servers: dict) -> AgentLoop:
-    bus = MessageBus()
-    provider = MagicMock()
-    provider.get_default_model.return_value = "test-model"
-    provider.generation.max_tokens = 4096
-    return AgentLoop(
-        bus=bus,
-        provider=provider,
-        workspace=tmp_path,
-        model="test-model",
-        mcp_servers=mcp_servers,
-    )
+def _make_provider(*, mcp_servers: dict) -> tuple[MCPProvider, ToolRegistry]:
+    registry = ToolRegistry()
+    return MCPProvider(mcp_servers, registry), registry
 
 
 @pytest.fixture(autouse=True)
 def allow_loopback_mcp_urls(monkeypatch: pytest.MonkeyPatch):
-    """The repro server runs on 127.0.0.1; allow auto_cut_bot to talk to it."""
+    """The repro server runs on 127.0.0.1; allow nanobot to talk to it."""
     class TestPinnedDNSAsyncTransport(security_network.PinnedDNSAsyncTransport):
         _resolver_lock = asyncio.Lock()
 
@@ -170,12 +159,12 @@ async def test_mcp_reconnect_after_session_timeout(tmp_path, mcp_server_url):
         tool_timeout=_TOOL_TIMEOUT_SECONDS,
         enabled_tools=["*"],
     )
-    loop = _make_loop(tmp_path, mcp_servers={"repro": cfg})
+    provider, registry = _make_provider(mcp_servers={"repro": cfg})
 
-    await asyncio.create_task(loop._connect_mcp())
-    assert "repro" in loop._mcp_stacks
+    await asyncio.create_task(provider.connect())
+    assert provider.connected_server_names == {"repro"}
 
-    tool = loop.tools.get("mcp_repro_greet")
+    tool = registry.get("mcp_repro_greet")
     assert isinstance(tool, MCPToolWrapper)
 
     output = await asyncio.create_task(tool.execute(name="first"))
@@ -187,7 +176,7 @@ async def test_mcp_reconnect_after_session_timeout(tmp_path, mcp_server_url):
     output = await asyncio.create_task(tool.execute(name="second"))
     assert "Hello, second" in output
 
-    await asyncio.create_task(loop.close_mcp())
+    await asyncio.create_task(provider.aclose())
 
 
 @pytest.mark.asyncio
@@ -203,10 +192,10 @@ async def test_mcp_reconnect_during_shutdown_does_not_crash(
         tool_timeout=_TOOL_TIMEOUT_SECONDS,
         enabled_tools=["*"],
     )
-    loop = _make_loop(tmp_path, mcp_servers={"repro": cfg})
+    provider, registry = _make_provider(mcp_servers={"repro": cfg})
 
-    await asyncio.create_task(loop._connect_mcp())
-    tool = loop.tools.get("mcp_repro_greet")
+    await asyncio.create_task(provider.connect())
+    tool = registry.get("mcp_repro_greet")
     assert isinstance(tool, MCPToolWrapper)
 
     await asyncio.create_task(tool.execute(name="first"))
@@ -224,7 +213,7 @@ async def test_mcp_reconnect_during_shutdown_does_not_crash(
     monkeypatch.setattr(mcp_module, "connect_mcp_servers", gated_connect)
     call_task = asyncio.create_task(tool.execute(name="second"))
     await asyncio.wait_for(reconnect_started.wait(), timeout=5)
-    close_task = asyncio.create_task(loop.close_mcp())
+    close_task = asyncio.create_task(provider.aclose())
     await asyncio.sleep(0)
     finish_reconnect.set()
 
@@ -245,4 +234,4 @@ async def test_mcp_reconnect_during_shutdown_does_not_crash(
         unhandled.append(exc)
 
     assert not unhandled, f"Unhandled exception leaked during reconnect/shutdown: {unhandled[0]}"
-    assert loop._mcp_stacks == {}
+    assert provider.connected_server_names == set()

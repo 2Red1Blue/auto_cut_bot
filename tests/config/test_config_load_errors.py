@@ -2,15 +2,30 @@ import json
 
 import pytest
 
-from auto_cut_bot.config.errors import ConfigLoadError
-from auto_cut_bot.config.loader import load_config
-from auto_cut_bot.config.schema import ApiConfig
+from nanobot.config.errors import ConfigLoadError
+from nanobot.config.loader import load_config, resolve_config_env_vars
+from nanobot.config.schema import ApiConfig
 
 
 def test_load_config_missing_file_uses_defaults(tmp_path) -> None:
-    config = load_config(tmp_path / "missing.json")
+    config_path = tmp_path / "instance" / "missing.json"
+    config = load_config(config_path)
 
     assert config.agents.defaults.model
+    assert config.runtime_data_dir == config_path.parent
+
+
+def test_env_resolution_preserves_config_runtime_data_dir(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "instance" / "config.json"
+    config_path.parent.mkdir()
+    config_path.write_text('{"providers": {"openai": {"apiKey": "${TEST_API_KEY}"}}}')
+    monkeypatch.setenv("TEST_API_KEY", "resolved")
+
+    config = resolve_config_env_vars(load_config(config_path), config_path=config_path)
+
+    assert config.runtime_data_dir == config_path.parent
 
 
 def test_load_config_reports_malformed_environment_safely(
@@ -19,7 +34,7 @@ def test_load_config_reports_malformed_environment_safely(
 ) -> None:
     config_path = tmp_path / "missing.json"
     invalid_value = "sensitive-not-json"
-    monkeypatch.setenv("AUTO_CUT_BOT_PROVIDERS", invalid_value)
+    monkeypatch.setenv("NANOBOT_PROVIDERS", invalid_value)
 
     with pytest.raises(ConfigLoadError) as exc_info:
         load_config(config_path)
@@ -27,7 +42,7 @@ def test_load_config_reports_malformed_environment_safely(
     error = exc_info.value
     assert error.kind == "invalid_schema"
     assert error.path == config_path
-    assert "complex AUTO_CUT_BOT_* values use valid JSON" in str(error)
+    assert "complex NANOBOT_* values use valid JSON" in str(error)
     assert invalid_value not in str(error)
 
 
