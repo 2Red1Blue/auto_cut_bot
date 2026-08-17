@@ -111,9 +111,15 @@ class ProviderSpec:
     # Substring match against the wire model name (lowercased).
     implicit_reasoning_models: tuple[str, ...] = ()
 
+    # Force ALL models for this provider to use the Responses API.
+    # When True, _should_use_responses_api() returns True regardless of model name.
+    # Use this for providers where Responses API is the primary/recommended format
+    # (e.g. VolcEngine Ark, which fully supports Responses API for all doubao models).
+    responses_api: bool = False
+
     # Models that expose the OpenAI Responses wire format.  This is model-level
     # because providers may add Responses support incrementally (DeepSeek V4
-    # Flash is supported before V4 Pro).
+    # Flash is supported before V4 Pro).  Can be extended via user config.
     responses_models: tuple[str, ...] = ()
 
     # Provider-hosted Responses tools sent unless extraBody.tools explicitly
@@ -319,7 +325,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="volcengine",
         keywords=("volcengine", "volces", "ark"),
-        env_key="OPENAI_API_KEY",
+        env_key="ARK_API_KEY",
         display_name="VolcEngine",
         backend="openai_compat",
         is_gateway=True,
@@ -327,13 +333,21 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="https://ark.cn-beijing.volces.com/api/v3",
         thinking_style="thinking_type",
         supports_max_completion_tokens=True,
+        responses_api=True,
+        responses_models=(
+            "doubao-seed-2-1-pro-260628",
+            "doubao-seed-2-1-lite-260628",
+            "doubao-1-5-pro-32k-250115",
+            "doubao-1-5-pro-256k-250115",
+            "doubao-1-5-lite-32k-250115",
+        ),
     ),
 
     # VolcEngine Coding Plan (火山引擎 Coding Plan): same key as volcengine
     ProviderSpec(
         name="volcengine_coding_plan",
         keywords=("volcengine-plan",),
-        env_key="OPENAI_API_KEY",
+        env_key="ARK_API_KEY",
         display_name="VolcEngine Coding Plan",
         backend="openai_compat",
         is_gateway=True,
@@ -341,6 +355,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         strip_model_prefix=True,
         thinking_style="thinking_type",
         supports_max_completion_tokens=True,
+        responses_api=True,
     ),
 
     # BytePlus: VolcEngine international, pay-per-use models
@@ -355,6 +370,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         default_api_base="https://ark.ap-southeast.bytepluses.com/api/v3",
         strip_model_prefix=True,
         thinking_style="thinking_type",
+        responses_api=True,
     ),
 
     # BytePlus Coding Plan: same key as byteplus

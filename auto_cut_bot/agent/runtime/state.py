@@ -28,8 +28,8 @@ HUMAN_REVIEW_STAGES = {"story_approval", "story_qc_review"}
 def get_db_client(job_root: str) -> Any | None:
     """Get a StageDBClient if DB is configured, or None."""
     try:
-        from auto_cut_bot.pipeline.core.config import PipelineConfig
-        from auto_cut_bot.pipeline.core.db import StageDBClient
+        from autocut_core.config import PipelineConfig
+        from autocut_core.db.client import StageDBClient
 
         config = PipelineConfig.resolve()
         if config.db_enabled:

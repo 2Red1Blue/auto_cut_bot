@@ -496,7 +496,7 @@ class OpenAICompatProvider(LLMProvider):
         self.extra_headers = extra_headers or {}
         self._spec = spec
         self._extra_body = dict(extra_body or {})
-        self._api_type = api_type if spec and spec.name == "openai" else "auto"
+        self._api_type = api_type if api_type else "auto"
         self._extra_query = extra_query or {}
         self._proxy = proxy or None
         self._native_compaction_available = True
@@ -989,6 +989,11 @@ class OpenAICompatProvider(LLMProvider):
             return False
         spec_name = self._spec.name if self._spec is not None else None
         model_name = self._request_model_name(model or self.default_model).lower()
+
+        # Provider-level force: spec.responses_api=True means all models use Responses
+        # (e.g. VolcEngine Ark where Responses API is the primary format).
+        spec_forces_responses = bool(getattr(self._spec, "responses_api", False))
+
         supported_models = {
             supported.lower()
             for supported in getattr(self._spec, "responses_models", ())
@@ -998,18 +1003,23 @@ class OpenAICompatProvider(LLMProvider):
             for supported in supported_models
         )
         provider_responses = spec_name in ("openai", "github_copilot")
-        if not provider_responses and not model_responses:
+        if not provider_responses and not model_responses and not spec_forces_responses:
             return False
         if self._responses_is_required():
             # Explicit Responses-only request fields are mandatory; do not
             # consult the circuit breaker or fall back to Chat Completions.
             return True
-        if provider_responses and (self._spec is None or self._spec.name != "github_copilot"):
+        # Only enforce direct-OpenAI base URL check for openai official provider.
+        # Third-party providers that explicitly enable responses_api (e.g. VolcEngine Ark)
+        # or use responses_models should bypass this check.
+        if provider_responses and not spec_forces_responses and (self._spec is None or self._spec.name != "github_copilot"):
             if not _is_direct_openai_base(self._effective_base):
                 return False
 
         wants = False
-        if model_responses:
+        if spec_forces_responses:
+            wants = True
+        elif model_responses:
             wants = True
         elif reasoning_effort and reasoning_effort.lower() != "none":
             wants = True
@@ -1192,8 +1202,44 @@ class OpenAICompatProvider(LLMProvider):
 
         if not self._supports_temperature(model_name, reasoning_effort) and not preserve_reasoning:
             body["include"] = ["reasoning.encrypted_content"]
-        if reasoning_effort and reasoning_effort.lower() != "none":
-            body["reasoning"] = {"effort": reasoning_effort}
+
+        # Inject reasoning/thinking controls in the provider's native wire format.
+        # OpenAI uses reasoning:{effort:...}; VolcEngine/DeepSeek/Kimi use thinking:{type:...};
+        # DashScope uses enable_thinking:bool. Reuse the same style mapping as the chat path.
+        if reasoning_effort is not None:
+            # Normalize to semantic form (same logic as _build_kwargs)
+            semantic_effort = reasoning_effort.lower() if isinstance(reasoning_effort, str) else ""
+            thinking_enabled = semantic_effort not in ("none", "minimal")
+
+            spec = self._spec
+            slug = _model_slug(model_name)
+
+            # Determine which thinking style(s) apply for this provider/model
+            thinking_styles = list(_thinking_styles_for(spec, model_name)) if spec else []
+            model_style = _model_thinking_style(model_name)
+            if model_style and model_style not in thinking_styles:
+                thinking_styles.append(model_style)
+
+            if thinking_styles:
+                # Use provider-native thinking format (e.g. {"thinking":{"type":"enabled"}})
+                for style in thinking_styles:
+                    if not thinking_enabled and slug in _KIMI_ALWAYS_THINKING_MODELS:
+                        continue
+                    extra = _thinking_extra_body(style, thinking_enabled)
+                    if extra:
+                        body.setdefault("extra_body", {}).update(extra)
+            else:
+                # OpenAI-native reasoning effort format
+                if reasoning_effort and reasoning_effort.lower() != "none":
+                    body["reasoning"] = {"effort": reasoning_effort}
+
+            # Gateway reasoning style (e.g. OpenRouter)
+            gateway_style = getattr(spec, "gateway_reasoning_style", "") if spec else ""
+            if gateway_style and model_style and (thinking_enabled or slug not in _KIMI_ALWAYS_THINKING_MODELS):
+                gw_extra = _gateway_reasoning_extra_body(gateway_style, semantic_effort)
+                if gw_extra:
+                    body.setdefault("extra_body", {}).update(gw_extra)
+
         if replayed and "gpt-5.6" in model_name.lower():
             body.setdefault("reasoning", {})["context"] = "all_turns"
 
@@ -1840,10 +1886,10 @@ class OpenAICompatProvider(LLMProvider):
                     self._record_responses_success(model, reasoning_effort)
                     return result
                 except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
+                    if self._spec and (self._spec.name == "github_copilot" or getattr(self._spec, "responses_api", False)):
+                        # Providers that force Responses API (github_copilot, volcengine/ark)
+                        # should not fall back to /chat/completions — it would hide
+                        # the real error and lose multimodal support.
                         raise
                     if self._responses_is_required():
                         raise
@@ -1936,10 +1982,10 @@ class OpenAICompatProvider(LLMProvider):
                         )
                     return result
                 except Exception as responses_error:
-                    if self._spec and self._spec.name == "github_copilot":
-                        # Copilot gateway exposes GPT-5/o-series only via /responses;
-                        # falling back to /chat/completions cannot succeed and would
-                        # hide the real error.
+                    if self._spec and (self._spec.name == "github_copilot" or getattr(self._spec, "responses_api", False)):
+                        # Providers that force Responses API (github_copilot, volcengine/ark)
+                        # should not fall back to /chat/completions — it would hide
+                        # the real error and lose multimodal support.
                         raise
                     if self._responses_is_required():
                         raise

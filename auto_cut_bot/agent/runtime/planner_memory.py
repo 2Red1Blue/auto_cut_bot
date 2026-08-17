@@ -13,8 +13,8 @@ Key components:
 
 Usage::
 
-    from auto_cut_bot.pipeline.stategraph import AgentState
-    from auto_cut_bot.pipeline.planner_memory import PlannerMemory, get_next_action
+    from auto_cut_bot.agent.runtime.stategraph import AgentState
+    from auto_cut_bot.agent.runtime.planner_memory import PlannerMemory, get_next_action
 
     planner = PlannerMemory()
     action = get_next_action(state, planner)
@@ -412,7 +412,7 @@ def get_next_action(
 
     playbook = planner.select_playbook(state)
 
-    from auto_cut_bot.pipeline.stategraph import MILESTONE_AGENTS
+    from auto_cut_bot.agent.runtime.stategraph import MILESTONE_AGENTS
 
     agent = MILESTONE_AGENTS.get(milestone)
 

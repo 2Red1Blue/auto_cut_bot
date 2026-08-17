@@ -5,7 +5,7 @@ milestone tracking, and session-level aggregation for pipeline runs.
 
 Usage::
 
-    from auto_cut_bot.pipeline.observability import MetricsCollector
+    from auto_cut_bot.agent.runtime.observability import MetricsCollector
 
     collector = MetricsCollector(session_id="run-42", job_root="/tmp/jobs/42")
     collector.record_milestone("source_windows_start", dt)

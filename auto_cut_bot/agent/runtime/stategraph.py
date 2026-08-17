@@ -24,9 +24,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from auto_cut_bot.pipeline.observability import MetricsCollector
-from auto_cut_bot.pipeline.planner_memory import get_next_action
-from auto_cut_bot.pipeline.conflict_queue import check_and_interrupt
+from auto_cut_bot.agent.runtime.observability import MetricsCollector
+from auto_cut_bot.agent.runtime.planner_memory import get_next_action
+from auto_cut_bot.agent.runtime.conflict_queue import check_and_interrupt
 
 # ── Milestone definitions ──────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ def auto_discover_hitl_milestones(tool_registry: Any = None) -> int:
     count = 0
     try:
         from auto_cut_bot.agent.tools.registry import ToolRegistry
-        from auto_cut_bot.pipeline.state import PIPELINE_ORDER
+        from auto_cut_bot.agent.runtime.state import PIPELINE_ORDER
 
         if tool_registry is None:
             return count

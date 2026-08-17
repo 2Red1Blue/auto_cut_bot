@@ -406,14 +406,15 @@
       "thinkingStyle": null
     },
     "volcengine": {
-      "apiKey": "${OPENAI_API_KEY}",
+      "apiKey": "${ARK_API_KEY}",
       "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
-      "apiType": "auto",
+      "apiType": "responses",
       "extraHeaders": null,
       "extraBody": null,
       "extraQuery": null,
       "proxy": null,
-      "thinkingStyle": null
+      "thinkingStyle": null,
+      "responsesApi": true
     },
     "volcengineCodingPlan": {
       "apiKey": null,
@@ -533,7 +534,7 @@
       "timeout": 60,
       "pathPrepend": "",
       "pathAppend": "",
-      "sandbox": "bwrap",
+      "sandbox": "none",
       "sandboxRoBinds": [],
       "sandboxRwBinds": [],
       "allowedEnvKeys": [],
@@ -562,7 +563,7 @@
       "maxImagesPerTurn": 4,
       "saveDir": "generated"
     },
-    "restrictToWorkspace": true,
+    "restrictToWorkspace": false,
     "webuiAllowLocalServiceAccess": true,
     "webuiAllowRemotePackageInstall": false,
     "mcpServers": {},

@@ -59,6 +59,7 @@ dependencies = [
     "openpyxl>=3.1.0",
     "python-pptx>=0.6.23",
     "python-dotenv>=1.0.0",
+    "autocut-core[pipeline]>=0.0.1",
 ]
 
 [project.optional-dependencies]
@@ -90,9 +91,11 @@ olostep = [
     "olostep>=0.1.0; python_version < '3.14'",
 ]
 pipeline = [
+    "autocut-core @ file:packages/autocut-core",
     "autocut",
     "litellm>=1.80",
     "psycopg2-binary>=2.9.0",
+    "scenedetect[opencv]>=0.6.0",
 ]
 dev = [
     "pytest>=9.0.0,<10.0.0",
@@ -171,6 +174,23 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
 ignore = ["E501"]
+
+# ── Agent Pipeline 配置 ──
+# 由 auto_cut_bot Agent 自动加载，注入到 pipeline stages
+[tool.pipeline]
+backend = "doubao"
+model = "doubao-seed-2-1-pro-260628"
+requests_per_minute = 0
+semantic_retries = 1
+workers = "auto"
+db_url = "postgresql://ac_user:ac_password_2026@localhost:5433/ac_db"
+db_schema = "autocut"
+
+# 环境变量映射: ENV_VAR = "config字段名"
+# 新增 provider 只需加一行
+[tool.pipeline.env]
+ARK_API_KEY = "ark_api_key"
+DASHSCOPE_API_KEY = "dashscope_api_key"
 
 [tool.basedpyright]
 include = ["auto_cut_bot"]

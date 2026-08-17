@@ -1,4 +1,4 @@
-"""pipeline/contracts/ — Multi-source conflict resolution layer.
+"""agent/runtime/contracts/ — Multi-source conflict resolution layer.
 
 This package provides field classification and deterministic merge logic
 for reconciling data from multiple sources (API, LLM, VLM) without requiring

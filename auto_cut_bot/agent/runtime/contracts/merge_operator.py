@@ -31,8 +31,8 @@ The result is a MergeResult containing:
 
 Usage
 -----
-    from autocut_core.pipeline.contracts.merge_operator import merge
-    from autocut_core.pipeline.contracts.field_registry import classify_field
+    from auto_cut_bot.agent.runtime.contracts.merge_operator import merge
+    from auto_cut_bot.agent.runtime.contracts.field_registry import classify_field
 
     src_a = {"book_name": "The Journey", "duration": 120.0, "genre": "romance"}
     src_b = {"book_name": "The Journey", "duration": 125.0, "genre": "fantasy"}

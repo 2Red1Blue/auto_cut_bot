@@ -211,6 +211,8 @@ class ProviderConfig(Base):
     api_key: str | None = Field(default=None, repr=False)
     api_base: str | None = None
     api_type: Literal["auto", "chat_completions", "responses"] = "auto"  # Request API surface
+    responses_api: bool | None = None  # Force Responses API for all models (None = follow spec default)
+    responses_models: list[str] | None = None  # Additional model names that support Responses API
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
     extra_body: dict[str, Any] | None = None  # Extra provider request fields; shape depends on provider/API surface
     extra_query: dict[str, str] | None = None  # Extra query params (e.g. api-version for Azure-style gateways)
@@ -320,15 +322,9 @@ class ProvidersConfig(Base):
 
     @model_validator(mode="after")
     def _validate_api_type_scope(self) -> "ProvidersConfig":
-        for name in self.__class__.model_fields:
-            if name == "openai":
-                continue
-            provider = getattr(self, name, None)
-            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
-                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
-        for provider in (self.model_extra or {}).values():
-            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
-                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
+        # api_type and responses_api are now supported for all providers,
+        # not just openai. Any provider whose backend is openai_compat can
+        # opt into Responses API via these config fields.
         return self
 
 
@@ -442,6 +438,7 @@ class Config(BaseSettings):
         validation_alias=AliasChoices("modelPresets", "model_presets"),
         serialization_alias="modelPresets",
     )
+    pipeline: dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, **values: Any) -> None:
         if not type(self).__pydantic_complete__:

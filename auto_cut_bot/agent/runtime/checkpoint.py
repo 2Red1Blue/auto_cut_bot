@@ -188,7 +188,7 @@ class CheckpointManager:
         Returns the DB row id on success, or 0 if the database is unavailable.
         """
         # Late import to avoid circular dependency at module level.
-        from auto_cut_bot.pipeline.stategraph import AgentState
+        from auto_cut_bot.agent.runtime.stategraph import AgentState
 
         if not isinstance(state, AgentState):
             logger.warning(
@@ -305,7 +305,7 @@ class CheckpointManager:
         Handles both dict (already parsed by psycopg2) and str (raw JSON)
         formats.
         """
-        from auto_cut_bot.pipeline.stategraph import AgentState
+        from auto_cut_bot.agent.runtime.stategraph import AgentState
 
         try:
             if isinstance(state_snapshot, str):

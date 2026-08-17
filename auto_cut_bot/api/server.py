@@ -565,7 +565,7 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
 
     # Use PipelineOrchestratorTool directly — no LLM round-trips needed
     from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
-    from auto_cut_bot.pipeline.observability import MetricsCollector
+    from auto_cut_bot.agent.runtime.observability import MetricsCollector
 
     tool = PipelineOrchestratorTool()
     collector = MetricsCollector(session_id=f"pipeline:{book_id}", job_root=str(job_root))
@@ -649,12 +649,12 @@ async def handle_pipeline_resume(request: web.Request) -> web.Response:
     project_root = Path(workspace) / "jobs" / book_id
 
     # Create CheckpointManager and load latest checkpoint.
-    from auto_cut_bot.pipeline.stategraph import (
+    from auto_cut_bot.agent.runtime.stategraph import (
         AgentState,
         CheckpointManager as FileCheckpointManager,
         StateGraphEngine,
     )
-    from auto_cut_bot.pipeline.checkpoint import CheckpointManager
+    from auto_cut_bot.agent.runtime.checkpoint import CheckpointManager
 
     # Determine which checkpoint backend to use.
     db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
@@ -686,7 +686,7 @@ async def handle_pipeline_resume(request: web.Request) -> web.Response:
     await ckpt.save(result_state, result_state.status, result_state.current_milestone)
 
     # Suggest next action based on current state
-    from auto_cut_bot.pipeline.planner_memory import get_next_action
+    from auto_cut_bot.agent.runtime.planner_memory import get_next_action
 
     next_action = get_next_action(result_state)
 
@@ -787,10 +787,10 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
         # Derive session_id from book_id to match checkpoint scope.
         session_id = f"pipeline:{book_id or ''}:latest"
 
-        from auto_cut_bot.pipeline.stategraph import (
+        from auto_cut_bot.agent.runtime.stategraph import (
             CheckpointManager as FileCheckpointManager,
         )
-        from auto_cut_bot.pipeline.checkpoint import CheckpointManager
+        from auto_cut_bot.agent.runtime.checkpoint import CheckpointManager
 
         db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
         if db_url:
@@ -829,8 +829,8 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
         response_payload["v2_state"] = v2_state
 
     # ── Data layer status ──────────────────────────────────────────────────
-    from auto_cut_bot.pipeline.conflict_queue import ConflictQueue
-    from auto_cut_bot.pipeline.artifact_cache import ArtifactCache
+    from auto_cut_bot.agent.runtime.conflict_queue import ConflictQueue
+    from auto_cut_bot.agent.runtime.artifact_cache import ArtifactCache
 
     conflict_queue = ConflictQueue()
     pending_conflicts = conflict_queue.count(status="pending")
