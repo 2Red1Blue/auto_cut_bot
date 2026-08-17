@@ -1,7 +1,7 @@
 
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
-from autocut_core.agent.entities import NodeType
+from auto_cut_bot.agent.state_graph.entities import NodeType
 from auto_cut_bot.agent.plugins.review_agent_plugin import ReviewAgentPlugin
 
 

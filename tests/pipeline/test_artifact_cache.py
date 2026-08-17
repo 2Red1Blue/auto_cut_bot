@@ -4,7 +4,7 @@ import json
 import time
 import pytest
 from pathlib import Path
-from auto_cut_bot.pipeline.artifact_cache import ArtifactCache, compute_cache_key
+from auto_cut_bot.agent.runtime.artifact_cache import ArtifactCache, compute_cache_key
 
 
 class TestComputeCacheKey:

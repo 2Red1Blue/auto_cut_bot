@@ -18,14 +18,14 @@ import autocut_core
 
 autocut_core.get_logger = lambda name: logging.getLogger(name)
 
-from autocut_core.agent.adapters.in_memory import (  # noqa: E402
+from auto_cut_bot.agent.state_graph.adapters.in_memory import (  # noqa: E402
     FeatureFlagGateway,
     InMemoryCheckpointRepository,
     InMemoryEventEmitter,
     InMemorySessionStore,
 )
-from autocut_core.agent.engine import StateGraphEngine  # noqa: E402
-from autocut_core.agent.entities import (  # noqa: E402
+from auto_cut_bot.agent.state_graph.engine import StateGraphEngine  # noqa: E402
+from auto_cut_bot.agent.state_graph.entities import (  # noqa: E402
     Checkpoint,
     Edge,
     HumanDecision,
@@ -36,7 +36,7 @@ from autocut_core.agent.entities import (  # noqa: E402
     SessionStatus,
     StateGraph,
 )
-from autocut_core.agent.ports import INodePlugin  # noqa: E402
+from auto_cut_bot.agent.state_graph.ports import INodePlugin  # noqa: E402
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

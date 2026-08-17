@@ -3,17 +3,17 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock, PropertyMock
 
-from autocut_core.agent.entities import (
+from auto_cut_bot.agent.state_graph.entities import (
     Edge, HumanDecision, Node, NodeType,
     Session, SessionStatus, StateGraph,
 )
-from autocut_core.agent.engine import StateGraphEngine
-from autocut_core.agent.adapters.in_memory import (
+from auto_cut_bot.agent.state_graph.engine import StateGraphEngine
+from auto_cut_bot.agent.state_graph.adapters.in_memory import (
     InMemoryCheckpointRepository,
     InMemorySessionStore,
     InMemoryEventEmitter,
 )
-from autocut_core.agent.plugins.nodes import (
+from auto_cut_bot.agent.state_graph.plugins.nodes import (
     SubAgentPlugin,
     HITLGatePlugin,
 )
