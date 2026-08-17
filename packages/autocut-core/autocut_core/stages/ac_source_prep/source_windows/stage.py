@@ -1,0 +1,1388 @@
+"""SourceWindowsStage — 扫描视频源并生成滑动窗口清单 (流水线第一站)。
+
+职责: 发现本地/远程视频源 → ffprobe 探测 → 按配置的窗口时长/
+重叠时长切分滑动窗口 → 产出三个落盘清单:
+  - source_manifest.json: 视频源清单 (时长/流信息/SHA);
+  - window_manifest.json: 窗口清单 (起止时间 + 前后窗口链);
+  - window-analysis-batch.json: 下游 vlm_analysis 的语义批处理任务单。
+
+在流水线中的位置: _PIPELINE_ORDER 第一个 Stage, 无上游依赖;
+下游 vlm_analysis 消费 window_batch 产物。
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+import subprocess
+import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from autocut_core import (
+    ArtifactBus,
+    Artifact,
+    PipelineConfig,
+    Stage,
+    StageContract,
+    Task,
+    atomic_write_json,
+    get_logger,
+)
+
+logger = get_logger(__name__)
+
+from autocut_core.errors import ConfigError
+from autocut_core.io import update_project_stage
+from autocut_core.version import STAGE_VERSIONS
+
+from .contracts import (
+    VIDEO_SUFFIXES,
+    sliding_windows,
+)
+
+# 版本集中在 autocut_core.version 管理
+WINDOW_ANALYSIS_STAGE_VERSION = STAGE_VERSIONS["source_windows"]
+
+
+class SourceWindowsStage(Stage):
+    """扫描本地或远程视频源 → 窗口清单 + 语义批处理任务单。"""
+
+    @property
+    def contract(self) -> StageContract:
+        return StageContract(
+            stage_name="source_windows",
+            output_artifacts=["source_manifest", "window_manifest", "window_batch", "scene_boundaries", "silence_intervals", "speech_intervals", "asr_anchor_results"],
+            description="Scan video sources, detect scene cuts, and generate sliding-window manifest",
+            db_reads=[],
+            db_writes=[],
+        )
+
+    def prepare(self, bus: ArtifactBus) -> list[Task]:
+        """本 Stage 无上游依赖 — 直接摄入外部视频源。"""
+        return [Task(type="source_scan", payload={})]
+
+    def execute(self, bus: ArtifactBus, tasks: list[Task]) -> list[Artifact]:
+        """执行流程: 扫描源 → 参数校验 → 构建清单/切窗 → 发布产物 → 更新 project.json。"""
+        cfg = self.config
+
+        sources = _scan_sources(cfg)
+        _validate(sources, cfg)
+
+        job_root = cfg.job_root
+        if job_root is None:
+            raise ConfigError("job_root 未设置")
+
+        # ── 场景检测: PySceneDetect 逐帧检测镜头切换点 ──
+        # 复用已有场景边界 — 场景检测是确定性算法，结果不会变
+        existing_scene_path = job_root / "scene_boundaries.json"
+        if existing_scene_path.is_file():
+            import json as _json
+            scene_boundaries = _json.loads(existing_scene_path.read_text())
+            logger.info(
+                "复用已有场景边界: %d 集, %d 个切点",
+                len(scene_boundaries.get("episodes", {})),
+                scene_boundaries.get("total_cuts", 0),
+            )
+        else:
+            scene_boundaries = _detect_all_scenes(
+                sources,
+                job_root=job_root,
+                threshold=cfg.extra.get("scene_threshold", 30.0),
+                min_scene_len=cfg.extra.get("scene_min_length", 1.0),
+            )
+
+        # ── 静音区间检测: ffmpeg silencedetect 生成全片静音间隙 ──
+        fusion_cfg = cfg.extra.get("fusion", {})
+        silence_noise_db = float(fusion_cfg.get("silence_noise_db", -25))
+        silence_min_duration = float(fusion_cfg.get("silence_min_duration", 0.2))
+        existing_silence_path = job_root / "silence_intervals.json"
+        if existing_silence_path.is_file():
+            import json as _json2
+            silence_intervals = _json2.loads(existing_silence_path.read_text())
+            # 参数一致性校验
+            if (abs(silence_intervals.get("noise_db", -999) - silence_noise_db) < 0.1
+                    and abs(silence_intervals.get("min_silence_duration", 0) - silence_min_duration) < 0.01):
+                logger.info(
+                    "复用已有静音区间: %d 集, noise=%.0fdB, min_dur=%.2fs",
+                    len(silence_intervals.get("episodes", {})),
+                    silence_noise_db, silence_min_duration,
+                )
+            else:
+                logger.info("静音区间参数变更，重新检测")
+                silence_intervals = _detect_all_silence(
+                    sources,
+                    job_root=job_root,
+                    ffmpeg=cfg.extra.get("ffmpeg", "ffmpeg"),
+                    noise_db=silence_noise_db,
+                    min_silence_duration=silence_min_duration,
+                )
+        else:
+            silence_intervals = _detect_all_silence(
+                sources,
+                job_root=job_root,
+                ffmpeg=cfg.extra.get("ffmpeg", "ffmpeg"),
+                noise_db=silence_noise_db,
+                min_silence_duration=silence_min_duration,
+            )
+
+        # ── VAD 语音区间检测: Demucs+Silero (优先于 silencedetect) ──
+        use_vad = cfg.vad_enabled or fusion_cfg.get("use_vad", False)
+        speech_intervals = None
+        if use_vad:
+            existing_speech_path = job_root / "speech_intervals.json"
+            if existing_speech_path.is_file():
+                import json as _json3
+                try:
+                    speech_intervals = _json3.loads(existing_speech_path.read_text())
+                    # Check if cached anchor results exist alongside
+                    cached_anchor = job_root / "asr_anchor_results.json"
+                    if cached_anchor.is_file() and "_anchor_results_path" not in speech_intervals:
+                        speech_intervals["_anchor_results_path"] = str(cached_anchor)
+                    logger.info(
+                        "复用已有VAD语音区间: %d 集, detector=%s",
+                        len(speech_intervals.get("episodes", {})),
+                        speech_intervals.get("detector", "?"),
+                    )
+                except Exception as exc:
+                    logger.warning("读取已有VAD缓存失败，重新检测: %s", exc)
+                    speech_intervals = None
+
+            if speech_intervals is None:
+                speech_intervals = _detect_all_speech(
+                    sources,
+                    job_root=job_root,
+                    cfg=cfg,
+                    fusion_cfg=fusion_cfg,
+                )
+
+        # ── 场景边界写入 DB (best-effort) ──
+        if cfg.db_url:
+            try:
+                from autocut_core.db.client import StageDBClient
+                _db = StageDBClient(db_url=cfg.db_url, schema=cfg.db_schema)
+                if _db.is_available:
+                    _book_id = cfg.extra.get("book_id", "")
+                    if not _book_id:
+                        # 尝试从 DB books 表获取
+                        _conn = _db._ensure_connection()
+                        if _conn:
+                            with _conn.cursor() as _cur:
+                                _cur.execute(f"SELECT book_id FROM {_db._schema}.books LIMIT 1")
+                                _row = _cur.fetchone()
+                                if _row:
+                                    _book_id = _row[0]
+                    if _book_id:
+                        _n = _write_scene_boundaries_to_db(_db, _book_id, scene_boundaries, sources)
+                        logger.info("场景边界写入 DB: %d 条", _n)
+                    _db.close()
+            except Exception as exc:
+                logger.warning("场景边界写入 DB 失败 (非阻塞): %s", exc)
+
+        refs = _build_manifests(
+            sources,
+            job_root=job_root,
+            window_seconds=cfg.window_seconds,
+            overlap_seconds=cfg.overlap_seconds,
+            backend=cfg.backend,
+            extract_local=cfg.extra.get("extract_local", True),
+            ffmpeg=cfg.extra.get("ffmpeg", "ffmpeg"),
+            overwrite=cfg.extra.get("overwrite", False),
+            compress_to_480p=cfg.extra.get("compress_to_480p", True),
+        )
+
+        # 先记录产物 SHA — project.json 输出语义统一为 {名称: sha256}
+        outputs = {ref.name: ref.sha256 for ref in refs}
+
+        # 注册产物到 ArtifactBus — 下游 vlm_analysis.prepare() 通过
+        # bus.latest("source_windows") 消费; 与其他 Stage 的 put 签名一致
+        published: list[Artifact] = []
+        for ref in refs:
+            data: dict[str, Any] = {"path": str(ref.path)}
+            if ref.name == "window_batch":
+                # 嵌套键兼容下游 prepare() 按 artifacts["window_batch"]["path"] 解析
+                data["window_batch"] = {"path": str(ref.path)}
+            published.append(bus.put(ref.name, data, stage="source_windows"))
+
+        # 发布场景边界产物
+        scene_ref = bus.put("scene_boundaries", scene_boundaries, stage="source_windows")
+        published.append(scene_ref)
+        outputs["scene_boundaries"] = scene_ref.sha256
+
+        # 发布静音区间产物
+        silence_ref = bus.put("silence_intervals", silence_intervals, stage="source_windows")
+        published.append(silence_ref)
+        outputs["silence_intervals"] = silence_ref.sha256
+
+        # 发布 VAD 语音区间产物（如果已检测）
+        speech_ref = None
+        anchor_ref = None
+        if speech_intervals is not None:
+            speech_ref = bus.put("speech_intervals", speech_intervals, stage="source_windows")
+            published.append(speech_ref)
+            outputs["speech_intervals"] = speech_ref.sha256
+
+            # 发布 ASR anchor results（如果存在，用于 three-tier snap）
+            anchor_path_str = speech_intervals.get("_anchor_results_path")
+            if anchor_path_str:
+                anchor_file = Path(anchor_path_str)
+                if anchor_file.is_file():
+                    try:
+                        import json as _jsonA
+                        anchor_data = _jsonA.loads(anchor_file.read_text())
+                        anchor_ref = bus.put("asr_anchor_results", anchor_data, stage="source_windows")
+                        published.append(anchor_ref)
+                        outputs["asr_anchor_results"] = anchor_ref.sha256
+                        logger.info("ASR anchor results published on bus (%d episodes)", len(anchor_data.get("episodes", {})))
+                    except Exception as exc:
+                        logger.warning("加载/发布 ASR anchor results 失败: %s", exc)
+
+        # 状态写入枚举合法值 "completed" — 断点续传时
+        # _build_checkpoint 需要能用 StageStatus 解析该值
+        update_project_stage(
+            job_root / "project.json",
+            "source_windows",
+            "completed",
+            outputs=outputs,
+        )
+
+        return published
+
+
+# ── 视频源扫描 ──────────────────────────────────────────────────────
+
+
+def _scan_sources(cfg: PipelineConfig) -> list[dict[str, Any]]:
+    """发现并探测视频源 — local 模式扫目录, remote 模式读 URL 清单。"""
+    job_root = cfg.job_root
+
+    if cfg.source_kind == "remote":
+        url_path = cfg.extra.get("url_list")
+        if not url_path:
+            raise ValueError("remote mode requires --url-list")
+        if job_root is None:
+            raise ConfigError("job_root 未设置")
+        return _scan_remote(Path(url_path), job_root)
+    else:
+        input_root = cfg.extra.get("input_root")
+        if not input_root:
+            raise ValueError("local mode requires --input-root")
+        return _scan_local(Path(input_root))
+
+
+def _scan_local(input_root: Path) -> list[dict[str, Any]]:
+    """递归扫描本地目录下的视频文件, 逐个 ffprobe 探测并计算 SHA。
+
+    排序保证多次运行源 ID (source-001...) 稳定 — 幂等重跑时
+    同一文件获得同一 ID, 下游引用不断裂。
+    """
+    paths = sorted(
+        p
+        for p in Path(input_root).expanduser().resolve().rglob("*")
+        if p.is_file() and p.suffix.lower() in VIDEO_SUFFIXES
+    )
+    if not paths:
+        raise FileNotFoundError("no supported video files found")
+
+    sources: list[dict[str, Any]] = []
+    for index, path in enumerate(paths, start=1):
+        episode = _infer_episode(path, index)
+        info = _probe(str(path))
+        sha = _sha256(path)
+        sources.append(
+            {
+                "id": f"source-{index:03d}",
+                "episode": episode,
+                "path": str(path.resolve()),
+                "duration_seconds": info["duration_seconds"],
+                "streams": info["streams"],
+                "sha256": sha,
+            }
+        )
+    return sources
+
+
+def _scan_remote(url_path: Path, job_root: Path) -> list[dict[str, Any]]:
+    """解析远程 URL 清单文件 — 兼容 JSON 数组/对象与逐行纯文本格式。
+
+    安全处理: 清单中同时保留 exact_url (执行用) 与 redacted_url
+    (去 query/fragment, 落盘公开清单用) — 避免带签名参数的 URL 泄露。
+    """
+    text = url_path.expanduser().resolve().read_text(encoding="utf-8-sig")
+    if text.lstrip().startswith(("[", "{")):
+        value = json.loads(text)
+        if isinstance(value, dict):
+            for key in ("sources", "urls", "video_urls"):
+                if key in value:
+                    value = value[key]
+                    break
+        records = value if isinstance(value, list) else []
+    else:
+        records = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    sources: list[dict[str, Any]] = []
+    for index, item in enumerate(records, start=1):
+        raw = {"url": item} if isinstance(item, str) else item
+        url = raw.get("url", "")
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"item {index}: invalid URL")
+        redacted = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "")
+        )
+        episode = raw.get("episode", index)
+        duration = raw.get("duration_seconds", 0.0)
+        try:
+            duration_value = float(duration)
+        except (TypeError, ValueError):
+            duration_value = 0.0
+        sources.append(
+            {
+                "id": f"source-{index:03d}",
+                "episode": episode,
+                "exact_url": url,
+                "redacted_url": redacted,
+                "duration_seconds": duration_value if duration_value > 0 else None,
+            }
+        )
+    return sources
+
+
+# ── 探测/切窗辅助 ───────────────────────────────────────────────────────────────
+
+
+def _probe(source: str) -> dict[str, Any]:
+    """ffprobe 探测视频: 时长/格式/大小/流信息; 时长非法时报错。"""
+    completed = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration,format_name,size:"
+            "stream=index,codec_type,codec_name,width,height,r_frame_rate",
+            "-of", "json", source,
+        ],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {source}")
+    payload = json.loads(completed.stdout)
+    duration = float(payload["format"]["duration"])
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError(f"invalid duration: {source}")
+    return {
+        "duration_seconds": duration,
+        "format_name": payload.get("format", {}).get("format_name"),
+        "size_bytes": int(payload.get("format", {}).get("size", 0) or 0),
+        "streams": payload.get("streams", []),
+    }
+
+
+def _sha256(path: Path) -> str:
+    """计算源文件 SHA-256 — 内容指纹, 源文件变化时下游缓存失效。"""
+    from autocut_core.io import sha256_file
+    return sha256_file(path)
+
+
+# ── 已知命名模式（高置信度，按优先级排序）──────────────────
+_EPISODE_PATTERNS = [
+    re.compile(r"[Ss]\d+[Ee](\d+)"),           # S02E07, s03e12
+    re.compile(r"[Ee][Pp](\d+)"),              # ep07, EP07, Ep07
+    re.compile(r"第(\d+)集"),                   # 第7集, 第07集
+    re.compile(r"episode[_\.\-]?(\d+)", re.I), # episode.7, episode_7
+    re.compile(r"season[\-_]?(\d+)", re.I),    # season-2, season2, Season_3
+    re.compile(r"(?<!\d)[\-_](\d{2,3})[\.\-_](?!\d)"),  # -07., _07_ (非日期上下文)
+]
+
+# ── 不应作为集数的数字 ──────────────────────────────────
+_RESOLUTION_NUMBERS = frozenset({
+    360, 480, 540, 576, 720, 1080, 1440, 2160, 4320,
+})
+
+
+def _year_blacklist() -> frozenset:
+    """当前年份 ± 5 年，这些数字几乎不可能是集数。"""
+    y = datetime.now().year
+    return frozenset(range(y - 5, y + 3))
+
+
+_MIN_EP = 1
+_MAX_EP = 999
+
+
+def _infer_episode(path: Path, fallback: int) -> int:
+    """从文件名推断集数。
+
+    分层策略:
+      1. 文件名已知模式匹配 (ep07 / S02E07 / 第7集 / episode.7)
+      2. 父目录名模式匹配 (最多向上 3 层)
+      3. 智能数字提取: 排除分辨率和年份后取最后一个数字
+      4. 回退到文件扫描序号
+
+    Args:
+        path: 视频文件路径
+        fallback: 无数字时的回退值（通常为扫描序号，从 1 开始）
+
+    Returns:
+        推断的集数 (正整数)
+    """
+    stem = path.stem
+    blacklist = _RESOLUTION_NUMBERS | _year_blacklist()
+
+    # ── 优先级 1: 文件名已知模式 ──
+    for pattern in _EPISODE_PATTERNS:
+        m = pattern.search(stem)
+        if m:
+            ep = int(m.group(1))
+            if _MIN_EP <= ep <= _MAX_EP:
+                return ep
+
+    # ── 优先级 2: 父目录名匹配（最多向上 3 层）──
+    for parent in path.parents[:3]:
+        for pattern in _EPISODE_PATTERNS:
+            m = pattern.search(parent.name)
+            if m:
+                ep = int(m.group(1))
+                if _MIN_EP <= ep <= _MAX_EP:
+                    return ep
+
+    # ── 优先级 3: 智能数字提取 + 黑名单 ──
+    all_numbers = re.findall(r"\d+", stem)
+    candidates = [
+        int(s) for s in all_numbers
+        if int(s) > 0 and int(s) not in blacklist
+    ]
+    if candidates:
+        return candidates[-1]
+
+    # ── 优先级 4: 扫描序号兜底 ──
+    return fallback
+
+
+def _cut_window(
+    source: Path,
+    destination: Path,
+    start: float,
+    end: float,
+    *,
+    ffmpeg: str,
+    overwrite: bool,
+) -> None:
+    """用 ffmpeg 从源视频切出窗口片段: 限宽 720 + h264 压缩,
+    控制单窗口体积以适配 VLM 上传限制; 目标已存在且未指定
+    overwrite 时直接跳过 (幂等)。"""
+    if destination.is_file() and not overwrite:
+        logger.info("切片已存在, 跳过: %s", destination.name)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    duration = end - start
+    logger.info(
+        "ffmpeg 切片: %s (%.1fs)",
+        destination.name, duration,
+    )
+    command = [
+        ffmpeg,
+        "-hide_banner", "-loglevel", "error",
+        "-y" if overwrite else "-n",
+        "-ss", f"{start:.6f}",
+        "-t", f"{end - start:.6f}",
+        "-i", str(source),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", "scale='min(720,iw)':-2,format=yuv420p",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
+        "-c:a", "aac", "-b:a", "64k",
+        "-movflags", "+faststart",
+        str(destination),
+    ]
+    try:
+        completed = subprocess.run(command, check=False)
+    except FileNotFoundError as exc:
+        # ffmpeg 可执行文件不存在 — 抛配置类异常并给出安装指引
+        raise ConfigError(
+            f"ffmpeg 不可用 (命令: {ffmpeg}) — 窗口切片依赖 ffmpeg, 请先安装 "
+            "(macOS: brew install ffmpeg; Debian/Ubuntu: apt-get install ffmpeg)"
+        ) from exc
+    if completed.returncode != 0 or not destination.is_file():
+        raise RuntimeError(f"ffmpeg window extraction failed: {destination}")
+
+
+def _compress_480p(
+    input_path: Path,
+    output_path: Path,
+    *,
+    ffmpeg: str = "ffmpeg",
+    overwrite: bool = False,
+) -> None:
+    """Compress a window video to 480p H.264 CRF32 for VLM upload.
+
+    Uses scale filter to cap resolution at 854x480 while preserving
+    aspect ratio.  Encodes video-only (no audio) to minimize file size.
+    Skips if output already exists and overwrite is False (idempotent).
+    """
+    if output_path.is_file() and not overwrite:
+        logger.info("480p compressed already exists, skip: %s", output_path.name)
+        return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("ffmpeg 480p compress: %s", output_path.name)
+    command = [
+        ffmpeg,
+        "-hide_banner", "-loglevel", "error",
+        "-y" if overwrite else "-n",
+        "-i", str(input_path),
+        "-vf", "scale='min(854,iw)':'min(480,ih)':force_original_aspect_ratio=decrease",
+        "-c:v", "libx264", "-crf", "32", "-preset", "fast",
+        "-c:a", "copy",  # 保留音频
+        str(output_path),
+    ]
+    try:
+        completed = subprocess.run(command, check=False)
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"ffmpeg 不可用 (命令: {ffmpeg}) — 480p 压缩依赖 ffmpeg"
+        ) from exc
+    if completed.returncode != 0 or not output_path.is_file():
+        raise RuntimeError(f"ffmpeg 480p compression failed: {output_path}")
+
+
+def _validate(sources: list[dict[str, Any]], cfg: PipelineConfig) -> None:
+    """窗口参数合法性校验 — 窗口时长在允许区间内, 重叠时长
+    至少 8 秒且小于窗口时长 (重叠不足会导致跨窗事件丢失)。"""
+    if not (cfg.window_min_seconds <= cfg.window_seconds <= cfg.window_max_seconds):
+        raise ValueError(
+            f"window_seconds must be {cfg.window_min_seconds}..{cfg.window_max_seconds}"
+        )
+    if cfg.overlap_seconds < 8 or cfg.overlap_seconds >= cfg.window_seconds:
+        raise ValueError("overlap must be ≥8s and < window_seconds")
+
+
+def _build_manifests(
+    sources: list[dict[str, Any]],
+    *,
+    job_root: Path,
+    window_seconds: float,
+    overlap_seconds: float,
+    backend: str,
+    extract_local: bool = True,
+    ffmpeg: str = "ffmpeg",
+    overwrite: bool = False,
+    compress_to_480p: bool = True,
+) -> list[Artifact]:
+    """构建三个产物: source_manifest、window_manifest 和 window-analysis 批次。
+
+    核心循环: 按集数排序逐源处理 → 滑动窗口切分 → 为每个窗口
+    写上下文文件 (含前后窗口链, 支撑跨窗事件合并) 和批处理 job。
+    集数重复直接报错 — 同一集多份源会导致下游归并歧义。
+    """
+    source_entries: list[dict[str, Any]] = []
+    window_records: list[dict[str, Any]] = []
+    jobs: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    contexts_dir = job_root / "intermediate" / "window-contexts"
+    outputs_dir = job_root / "window-results"
+    assets_dir = job_root / "window-assets"
+
+    # 收集 480p 压缩任务: (input_asset, output_480p)
+    compress_480p_tasks: list[tuple[Path, Path]] = []
+    # 反查: window_id -> 480p path (用于更新 job dict)
+    compress_480p_map: dict[str, str] = {}
+
+    for s_idx, source in enumerate(sorted(sources, key=lambda s: (s["episode"], s["id"])), start=1):
+        ep = source["episode"]
+        logger.info(
+            "处理 source %d/%d: %s (episode %d, %.0fs)",
+            s_idx, len(sources), source["id"], ep, source["duration_seconds"],
+        )
+        if ep in seen:
+            raise ValueError(f"duplicate episode: {ep}")
+        seen.add(ep)
+
+        public: dict[str, Any] = {
+            "id": source["id"],
+            "episode": ep,
+            "duration_seconds": source["duration_seconds"],
+            "streams": source.get("streams", []),
+        }
+        if source.get("path"):
+            public["path"] = source["path"]
+            public["sha256"] = source["sha256"]
+        else:
+            public["url"] = source["redacted_url"]
+        source_entries.append(public)
+
+        ranges = sliding_windows(source["duration_seconds"], window_seconds, overlap_seconds)
+        for idx, (start, end) in enumerate(ranges, start=1):
+            wid = f"{source['id']}-w{idx:03d}"
+            prev_id = f"{source['id']}-w{idx - 1:03d}" if idx > 1 else None
+            next_id = f"{source['id']}-w{idx + 1:03d}" if idx < len(ranges) else None
+
+            context = {
+                "schema_version": "1.0",
+                "source_id": source["id"],
+                "episode": ep,
+                "window_id": wid,
+                "window": {"start": start, "end": end},
+                "previous_window_id": prev_id,
+                "next_window_id": next_id,
+            }
+            ctx_path = contexts_dir / f"{wid}.json"
+            atomic_write_json(ctx_path, context)
+
+            out_path = outputs_dir / f"{wid}.json"
+            job: dict[str, Any] = {
+                "id": wid,
+                "task": "vlm_analysis",
+                "stage_version": WINDOW_ANALYSIS_STAGE_VERSION,
+                "source_id": source["id"],
+                "episode": ep,
+                "window_id": wid,
+                "start": start,
+                "end": end,
+                "context_file": str(ctx_path.resolve()),
+                "output": str(out_path.resolve()),
+            }
+            if source.get("path"):
+                # 本地源: media_file 指向切出的窗口视频片段 (window-assets),
+                # 而非整源视频 — 控制 VLM 单次输入体积。
+                asset = assets_dir / source["id"] / f"{wid}.mp4"
+                if extract_local:
+                    _cut_window(
+                        Path(source["path"]),
+                        asset,
+                        start,
+                        end,
+                        ffmpeg=ffmpeg,
+                        overwrite=overwrite,
+                    )
+                    job["media_file"] = str(asset.resolve())
+                    if compress_to_480p:
+                        asset_480p = assets_dir / source["id"] / f"{wid}-480p.mp4"
+                        compress_480p_tasks.append((asset, asset_480p))
+                        compress_480p_map[wid] = str(asset_480p.resolve())
+                else:
+                    # extract_local=False 时, media_file 指向整源视频,
+                    # 而非不存在的 window-assets 切片 (下游读不到会报 media file not found)
+                    job["media_file"] = str(Path(source["path"]).resolve())
+                    job["media_file_mode"] = "full_source"
+            else:
+                job["media_url"] = source.get("exact_url", source.get("redacted_url", ""))
+                job["media_url_mode"] = "full_source"
+
+            jobs.append(job)
+            window_records.append(
+                {
+                    "id": wid,
+                    "source_id": source["id"],
+                    "episode": ep,
+                    "start": start,
+                    "end": end,
+                    "previous_window_id": prev_id,
+                    "next_window_id": next_id,
+                }
+            )
+
+    # ── 480p 并行压缩 ──
+    if _compress_480p and compress_480p_tasks:
+        logger.info(
+            "480p 并行压缩: %d 个窗口 (workers=%d)",
+            len(compress_480p_tasks),
+            min(8, len(compress_480p_tasks)),
+        )
+        with ThreadPoolExecutor(max_workers=min(8, len(compress_480p_tasks))) as executor:
+            futures = {
+                executor.submit(
+                    _compress_480p,
+                    input_path=src,
+                    output_path=dst,
+                    ffmpeg=ffmpeg,
+                    overwrite=overwrite,
+                ): (src, dst)
+                for src, dst in compress_480p_tasks
+            }
+            for future in as_completed(futures):
+                src, dst = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error("480p 压缩失败: %s -> %s: %s", src.name, dst.name, exc)
+                    raise
+        # 更新 job dict 添加 480p 路径
+        for job in jobs:
+            wid = job.get("window_id", "")
+            if wid in compress_480p_map:
+                job["media_file_480p"] = compress_480p_map[wid]
+
+    # 落盘三个产物文件
+    source_path = job_root / "source_manifest.json"
+    window_path = job_root / "window_manifest.json"
+    batch_path = job_root / "window-analysis-batch.json"
+
+    atomic_write_json(source_path, {
+        "schema_version": "1.0",
+        "sources": source_entries,
+    })
+    atomic_write_json(window_path, {
+        "schema_version": "1.0",
+        "window_seconds": window_seconds,
+        "overlap_seconds": overlap_seconds,
+        "windows": window_records,
+    })
+    atomic_write_json(batch_path, {
+        "schema_version": "1.0",
+        "backend": backend,
+        "jobs": jobs,
+    })
+
+    # 返回 Artifact 引用 — 注册到 ArtifactBus 由 execute() 统一完成
+    from autocut_core.io import sha256_file as _sf
+    return [
+        Artifact(
+            stage="source_windows", name="source_manifest",
+            sha256=_sf(source_path), path=source_path,
+        ),
+        Artifact(
+            stage="source_windows", name="window_manifest",
+            sha256=_sf(window_path), path=window_path,
+        ),
+        Artifact(
+            stage="source_windows", name="window_batch",
+            sha256=_sf(batch_path), path=batch_path,
+        ),
+    ]
+
+
+# ── 场景检测 ──────────────────────────────────────────────────────────────
+
+
+def _write_scene_boundaries_to_db(
+    db: Any,
+    book_id: str,
+    scene_boundaries: dict[str, Any],
+    sources: list[dict[str, Any]] | None = None,
+) -> int:
+    """将 PySceneDetect 场景范围写入 boundaries 表。
+
+    支持两种格式:
+    - v1.1 (场景范围): {"episodes": {"1": [[0.0, 2.68], [2.68, 3.96], ...]}}
+    - v1.0 (切点列表): {"episodes": {"1": [0.0, 2.68, 3.96, ...]}} (向后兼容)
+
+    event_type='scene_change' 表示该区间由场景检测算法产出。
+    使用 insert_boundaries() 的 ON CONFLICT DO NOTHING 保证幂等。
+
+    Returns: 写入条数
+    """
+    episodes = scene_boundaries.get("episodes", {})
+    if not episodes:
+        return 0
+
+    # per-episode precision (v1.2+), 回退到全局或默认
+    precision_map = scene_boundaries.get("precision", {})
+    default_precision = scene_boundaries.get("default_precision", 0.04)
+
+    # 构建 episode → 视频时长映射（用于 v1.0 格式的尾部场景）
+    duration_map: dict[str, float] = {}
+    if sources:
+        for src in sources:
+            ep_key = str(src.get("episode", src.get("id", "")))
+            dur = src.get("duration_seconds", 0)
+            if ep_key and dur:
+                duration_map[ep_key] = dur
+
+    boundaries: list[dict[str, Any]] = []
+    for ep_key, ep_data in episodes.items():
+        if not ep_data:
+            continue
+        try:
+            episode_id = int(ep_key)
+        except (ValueError, TypeError):
+            episode_id = 0
+
+        video_duration = duration_map.get(ep_key, 0)
+        precision = precision_map.get(ep_key, default_precision)
+        scene_idx = 0
+
+        # 检测格式: v1.1 (场景范围) vs v1.0 (切点)
+        is_range_format = (
+            isinstance(ep_data[0], (list, tuple)) and len(ep_data[0]) >= 2
+        )
+
+        if is_range_format:
+            # v1.1: 直接使用场景范围
+            for scene_range in ep_data:
+                start_time = float(scene_range[0])
+                end_time = float(scene_range[1])
+                if end_time <= start_time:
+                    continue
+                scene_idx += 1
+                duration = end_time - start_time
+                boundaries.append({
+                    "boundary_id": f"scenedetect-{ep_key}-{scene_idx:04d}",
+                    "episode_id": episode_id,
+                    "event_type": "scene_change",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "description": f"Scene {scene_idx}: {start_time:.1f}s-{end_time:.1f}s ({duration:.1f}s)",
+                    "subjects": [],
+                    "source_table": "source_windows",
+                    "source_id": f"scenedetect-{ep_key}-{scene_idx:04d}",
+                    "confidence": "high",
+                    "precision": precision,
+                })
+        else:
+            # v1.0 向后兼容: 从切点推导场景范围
+            for i in range(len(ep_data)):
+                start_time = float(ep_data[i])
+                if i + 1 < len(ep_data):
+                    end_time = float(ep_data[i + 1])
+                elif video_duration > 0:
+                    # 最后一个场景使用视频时长
+                    end_time = video_duration
+                else:
+                    # 没有视频时长信息，跳过最后一个场景
+                    logger.warning(
+                        "v1.0 格式: 第 %s 集最后一个场景无法确定 end_time (缺少 video_duration)",
+                        ep_key,
+                    )
+                    continue
+                if end_time <= start_time:
+                    continue
+                scene_idx += 1
+                duration = end_time - start_time
+                boundaries.append({
+                    "boundary_id": f"scenedetect-{ep_key}-{scene_idx:04d}",
+                    "episode_id": episode_id,
+                    "event_type": "scene_change",
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "description": f"Scene {scene_idx}: {start_time:.1f}s-{end_time:.1f}s ({duration:.1f}s)",
+                    "subjects": [],
+                    "source_table": "source_windows",
+                    "source_id": f"scenedetect-{ep_key}-{scene_idx:04d}",
+                    "confidence": "high",
+                    "precision": precision,
+                })
+
+    if boundaries:
+        db.insert_boundaries(book_id, boundaries)
+    return len(boundaries)
+
+
+def _detect_all_scenes(
+    sources: list[dict[str, Any]],
+    *,
+    job_root: Path,
+    threshold: float = 27.0,
+    min_scene_len: float = 1.0,
+) -> dict[str, Any]:
+    """对每个视频源运行 PySceneDetect 检测场景范围。
+
+    PySceneDetect 逐帧计算相邻帧的视觉差异（直方图/亮度/内容变化），
+    当差异超过阈值时判定为镜头切换。这是确定性算法，不依赖 AI 模型，
+    时间戳精度为帧级（~40ms）。
+
+    Args:
+        sources: 视频源列表
+        job_root: job 根目录
+        threshold: 场景检测阈值 (0-100), 默认 27.0。
+                   值越低越敏感 (检测到更多切点)。
+        min_scene_len: 最小场景长度 (秒), 默认 1.0。
+
+    Returns:
+        {"episodes": {"1": [[0.0, 2.68], [2.68, 3.96], ...], ...}, "threshold": 27.0, ...}
+    """
+    logger.info(
+        "场景检测: %d 个源, threshold=%.1f, min_scene_len=%.1fs",
+        len(sources), threshold, min_scene_len,
+    )
+
+    episodes: dict[str, list[list[float]]] = {}
+    precision_map: dict[str, float] = {}  # ep → precision (1/fps)
+    total_scenes = 0
+
+    for source in sources:
+        video_path = source.get("path")
+        if not video_path or not Path(video_path).is_file():
+            logger.warning("跳过非本地源: %s", source.get("id", "?"))
+            continue
+
+        episode = str(source.get("episode", source.get("id", "?")))
+        scene_ranges, precision = _detect_scene_cuts(
+            video_path,
+            threshold=threshold,
+            min_scene_len=min_scene_len,
+        )
+        # 将 tuple 转为 list 以便 JSON 序列化
+        episodes[episode] = [list(r) for r in scene_ranges]
+        precision_map[episode] = precision
+        total_scenes += len(scene_ranges)
+
+        logger.info(
+            "  场景检测: ep=%s scenes=%d precision=%.4fs duration=%.0fs",
+            episode, len(scene_ranges), precision, source.get("duration_seconds", 0),
+        )
+
+    result = {
+        "schema_version": "1.2",  # 1.2: 新增 per-episode precision
+        "detector": "PySceneDetect",
+        "threshold": threshold,
+        "min_scene_len": min_scene_len,
+        "total_scenes": total_scenes,
+        "episodes": episodes,
+        "precision": precision_map,
+    }
+
+    # 落盘产物
+    output_path = job_root / "scene_boundaries.json"
+    atomic_write_json(output_path, result)
+
+    return result
+
+
+def _detect_scene_cuts(
+    video_path: str,
+    *,
+    threshold: float = 27.0,
+    min_scene_len: float = 1.0,
+) -> tuple[list[tuple[float, float]], float]:
+    """对单个视频文件运行 PySceneDetect, 返回**场景范围**列表和帧精度。
+
+    使用 ContentDetector (基于 HSV 直方图差异) 检测画面内容突变。
+    返回 ((start, end), ...) 元组列表 + precision (1/fps, 秒)。
+
+    PySceneDetect 的 get_scene_list() 直接返回场景范围,
+    无需手动从切点推导。
+    """
+    from scenedetect import open_video, SceneManager, ContentDetector
+
+    video = open_video(video_path)
+    scene_manager = SceneManager()
+    scene_manager.add_detector(
+        ContentDetector(threshold=threshold, min_scene_len=min_scene_len)
+    )
+    scene_manager.detect_scenes(video)
+
+    # 从视频帧率计算时间精度: precision = 1/fps
+    fps = video.frame_rate
+    precision = round(1.0 / fps, 4) if fps > 0 else 0.04
+
+    scene_list = scene_manager.get_scene_list()
+    if not scene_list:
+        # 无切点: 整段视频是一个镜头, 使用视频总时长作为 end
+        duration = video.duration.get_seconds()
+        return [(0.0, round(duration, 3))], precision
+
+    # 保留完整的 (start, end) 场景范围
+    ranges = [
+        (round(s[0].get_seconds(), 3), round(s[1].get_seconds(), 3))
+        for s in scene_list
+    ]
+    return ranges, precision
+
+
+def _detect_all_silence(
+    sources: list[dict[str, Any]],
+    *,
+    job_root: Path,
+    ffmpeg: str = "ffmpeg",
+    noise_db: float = -25.0,
+    min_silence_duration: float = 0.2,
+) -> dict[str, Any]:
+    """对每个视频源运行 ffmpeg silencedetect 检测静音区间。
+
+    使用 ffmpeg 的 silencedetect 音频滤波器分析全片音频，
+    输出所有满足阈值的静音区间（安静段落）。这些区间在
+    scene_boundary_fusion 阶段用于判断镜头切点是否安全
+    （切点是否落在语音中）。
+
+    这是轻量级检测（ffmpeg 单次遍历），每集耗时通常 <5s，
+    远快于 Demucs+Silero VAD。
+
+    Args:
+        sources: 视频源列表
+        job_root: job 根目录
+        ffmpeg: ffmpeg 可执行文件路径
+        noise_db: 静音判定阈值 (dB)，默认 -25dB。值越大越严格（只认非常安静的段落）
+        min_silence_duration: 最短静音时长 (秒)，默认 0.2s（语音间隙检测）
+
+    Returns:
+        {
+            "episodes": {
+                "1": [{"start": float, "end": float, "duration": float}, ...],
+                ...
+            },
+            "noise_db": -25,
+            "min_silence_duration": 0.2,
+            "total_silence_intervals": int,
+        }
+    """
+    logger.info(
+        "静音区间检测: %d 个源, noise=%.0fdB, min_dur=%.2fs",
+        len(sources), noise_db, min_silence_duration,
+    )
+
+    episodes: dict[str, list[dict[str, float]]] = {}
+    total_intervals = 0
+    anchor_results: dict[str, dict] = {}  # episode -> serialized AudioAnchorResult
+
+    for source in sources:
+        video_path = source.get("path")
+        if not video_path or not Path(video_path).is_file():
+            logger.warning("跳过非本地源的静音检测: %s", source.get("id", "?"))
+            continue
+
+        episode = str(source.get("episode", source.get("id", "?")))
+        intervals = _detect_silence_intervals(
+            video_path,
+            ffmpeg=ffmpeg,
+            noise_db=noise_db,
+            min_silence_duration=min_silence_duration,
+        )
+        episodes[episode] = intervals
+        total_intervals += len(intervals)
+
+        total_silence = sum(iv["duration"] for iv in intervals)
+        logger.info(
+            "  静音检测: ep=%s intervals=%d total_silence=%.1fs",
+            episode, len(intervals), total_silence,
+        )
+
+    result = {
+        "schema_version": "1.0",
+        "detector": "ffmpeg-silencedetect",
+        "noise_db": noise_db,
+        "min_silence_duration": min_silence_duration,
+        "total_silence_intervals": total_intervals,
+        "episodes": episodes,
+    }
+
+    # 落盘缓存
+    output_path = job_root / "silence_intervals.json"
+    atomic_write_json(output_path, result)
+
+    return result
+
+
+def _detect_silence_intervals(
+    video_path: str,
+    *,
+    ffmpeg: str = "ffmpeg",
+    noise_db: float = -25.0,
+    min_silence_duration: float = 0.2,
+) -> list[dict[str, float]]:
+    """对单个视频文件运行 ffmpeg silencedetect，返回静音区间列表。
+
+    解析 ffmpeg stderr 输出:
+      silence_start: 79.84
+      silence_end: 80.20 | silence_duration: 0.36
+
+    Args:
+        video_path: 视频文件路径
+        ffmpeg: ffmpeg 可执行文件路径
+        noise_db: 静音判定阈值 (dB)
+        min_silence_duration: 最短静音时长 (秒)
+
+    Returns:
+        [{"start": float, "end": float, "duration": float}, ...]
+        按 start 排序。
+    """
+    filter_value = f"silencedetect=noise={noise_db}dB:d={min_silence_duration:.3f}"
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-i", str(video_path),
+        "-vn",  # 不要视频流，加速处理
+        "-af", filter_value,
+        "-f", "null", "-",
+    ]
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning("ffmpeg 未找到，跳过静音检测")
+        return []
+
+    if result.returncode != 0:
+        stderr_tail = (result.stderr or "").strip()[-300:]
+        logger.warning("silencedetect 失败 (rc=%d): %s", result.returncode, stderr_tail)
+        return []
+
+    # 解析 stderr 中的静音区间
+    # ffmpeg 输出模式:
+    #   [silencedetect ...] silence_start: 10.52
+    #   [silencedetect ...] silence_end: 10.92 | silence_duration: 0.40
+    intervals: list[dict[str, float]] = []
+    starts = re.findall(r"silence_start:\s*([0-9.]+)", result.stderr)
+    ends = re.findall(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:\s*([0-9.]+)", result.stderr)
+
+    # starts 和 ends 应该一一对应
+    for i, (start_s, (end_s, dur_s)) in enumerate(zip(starts, ends)):
+        start = float(start_s)
+        end = float(end_s)
+        duration = float(dur_s)
+        intervals.append({
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "duration": round(duration, 3),
+        })
+
+    # 处理边界情况：如果只有 silence_start 没有 silence_end（视频结尾是静音）
+    if len(starts) > len(ends):
+        # 最后一个静音段一直延续到视频结尾
+        last_start = float(starts[-1])
+        # 用 ffprobe 获取视频时长
+        try:
+            probe_cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(video_path),
+            ]
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, check=False)
+            if probe_result.returncode == 0:
+                duration = float(probe_result.stdout.strip())
+                intervals.append({
+                    "start": round(last_start, 3),
+                    "end": round(duration, 3),
+                    "duration": round(duration - last_start, 3),
+                })
+        except Exception:
+            pass
+
+    return intervals
+
+
+def _detect_all_speech(
+    sources: list[dict[str, Any]],
+    *,
+    job_root: Path,
+    cfg: PipelineConfig,
+    fusion_cfg: dict[str, Any],
+) -> dict[str, Any]:
+    """对每个视频源运行 Demucs+Silero VAD 检测语音区间。
+
+    使用独立 VAD venv (含 demucs + torch + silero-vad)，通过 subprocess 调用
+    vad_worker.py 完成人声分离和语音检测。结果缓存到 job_root/vad_cache/，
+    按 source SHA256 + VAD config hash 做 key。
+
+    语音区间（speech_intervals）与静音区间（silence_intervals）互补：
+    - silencedetect 快（<5s/集）但在 BGM 重的集上失效（0个静音区）
+    - VAD 准（人声分离后检测）但慢（40-90s/集CPU），是 silencedetect 的升级方案
+    - fusion 阶段优先使用 speech_intervals，silence_intervals 作为 fallback
+
+    Args:
+        sources: 视频源列表
+        job_root: job 根目录
+        cfg: PipelineConfig
+        fusion_cfg: fusion 配置段（含 vad_threshold 等覆盖参数）
+
+    Returns:
+        {
+            "schema_version": "1.0",
+            "detector": "demucs-silero-vad",
+            "episodes": {
+                "1": [{"start": float, "end": float}, ...],
+                ...
+            },
+            "total_speech_intervals": int,
+        }
+    """
+    from autocut_core.audio.vad import get_vad_detector
+    from autocut_core.contracts.audio_boundary import AudioBoundaryPolicy
+
+    # 解析 VAD 参数：fusion cfg 覆盖 PipelineConfig 默认值
+    # Default fusion threshold 0.20 (vs story_qc's 0.50): more sensitive to quiet
+    # speech in action/BGM-heavy scenes. See docs/vad-parameters.md.
+    vad_threshold = float(fusion_cfg.get("vad_threshold", 0.25))
+    vad_device = fusion_cfg.get("vad_device", cfg.vad_device)
+    vad_venv_path = fusion_cfg.get("vad_venv", cfg.vad_venv)
+
+    # 确定 VAD Python 路径（搜索多个候选位置）
+    vad_python = cfg.vad_python or cfg.audio_boundary_python
+    if vad_python is None:
+        # 搜索候选位置：cfg.vad_venv（相对/绝对）、cwd、项目根
+        candidates = []
+        if vad_venv_path:
+            vpath = Path(vad_venv_path)
+            if vpath.is_absolute():
+                candidates.append(vpath / "bin" / "python")
+            else:
+                # 相对于 job_root
+                candidates.append(job_root / vad_venv_path / "bin" / "python")
+                # 相对于 cwd
+                candidates.append(Path.cwd() / vad_venv_path / "bin" / "python")
+                # 相对于 autocut_core 包的项目根（packages/../../）
+                import autocut_core
+                pkg_root = Path(autocut_core.__file__).parent.parent.parent.parent
+                candidates.append(pkg_root / vad_venv_path / "bin" / "python")
+        # 也直接搜索常见位置
+        candidates.append(Path.cwd() / ".venv-audio-boundary" / "bin" / "python")
+        candidates.append(job_root / ".venv-audio-boundary" / "bin" / "python")
+
+        for candidate in candidates:
+            if candidate.is_file():
+                vad_python = candidate
+                break
+
+        if vad_python is None:
+            logger.warning(
+                "VAD venv Python 未找到（搜索了 %d 个位置），VAD 将不可用。"
+                "请设置 vad_python 或 vad_venv 配置。",
+                len(candidates),
+            )
+
+    if vad_python is None:
+        logger.warning("VAD 未配置 (vad_python 未找到), 跳过语音区间检测")
+        return {
+            "schema_version": "1.0",
+            "detector": "disabled",
+            "episodes": {},
+            "total_speech_intervals": 0,
+        }
+
+    # 构建 VAD policy（fusion 场景使用更敏感的阈值）
+    # Fusion VAD uses more sensitive parameters than story_qc defaults.
+    # Rationale: fusion needs to catch quiet speech onsets (e.g., ep07@80s "Go confess"
+    # where the first syllable is buried under BGM at -27~-30dB).
+    # See packages/autocut-core/docs/vad-parameters.md for full tuning notes.
+    policy = AudioBoundaryPolicy(
+        vad_threshold=vad_threshold,
+        min_speech_duration_ms=int(fusion_cfg.get("vad_min_speech_ms", 80)),
+        min_silence_duration_ms=int(fusion_cfg.get("vad_min_silence_ms", 200)),
+        speech_pad_ms=int(fusion_cfg.get("vad_speech_pad_ms", 150)),
+    )
+
+    # VAD 缓存目录
+    vad_cache_dir = job_root / "vad_cache"
+
+    # Smart merge parameters for demucs/original interval merging
+    merge_extend_window = float(fusion_cfg.get("vad_extend_window", 1.5))
+    merge_phrase_gap = float(fusion_cfg.get("vad_phrase_gap", 0.15))
+    merge_min_gap = float(fusion_cfg.get("vad_merge_min_gap", 0.15))
+
+    # VAD backend: "asr_anchor" (SenseVoice+VAD, recommended, ~100x faster) or "demucs_silero" (legacy)
+    vad_backend = fusion_cfg.get("vad_backend", "asr_anchor")
+    word_gap_threshold = float(fusion_cfg.get("word_gap_threshold", 0.7))
+    vad_merge_gap = float(fusion_cfg.get("vad_merge_gap_asr", 0.35))
+
+    if vad_backend == "asr_anchor":
+        detector = get_vad_detector(
+            backend="asr_anchor",
+            vad_python=vad_python,
+            cache_dir=vad_cache_dir,
+            device=vad_device,
+            policy=policy,
+        )
+        detector.word_gap_threshold = word_gap_threshold
+        detector.vad_merge_gap = vad_merge_gap
+    else:
+        detector = get_vad_detector(
+            backend=vad_backend,
+            vad_python=vad_python,
+            cache_dir=vad_cache_dir,
+            device=vad_device,
+            policy=policy,
+            extend_window=merge_extend_window,
+            phrase_gap=merge_phrase_gap,
+            merge_min_gap=merge_min_gap,
+        )
+
+    logger.info(
+        "VAD 语音区间检测: %d 个源, device=%s, threshold=%.2f, python=%s",
+        len(sources), vad_device, vad_threshold, vad_python,
+    )
+
+    episodes: dict[str, list[dict[str, float]]] = {}
+    total_intervals = 0
+    anchor_results: dict[str, dict] = {}  # episode -> serialized AudioAnchorResult
+
+    for source in sources:
+        video_path = source.get("path")
+        if not video_path or not Path(video_path).is_file():
+            logger.warning("跳过非本地源的VAD检测: %s", source.get("id", "?"))
+            continue
+
+        episode = str(source.get("episode", source.get("id", "?")))
+        source_path = Path(video_path)
+
+        try:
+            result = detector.detect(source_path)
+        except Exception as exc:
+            logger.error("VAD 检测失败 ep=%s: %s", episode, exc)
+            episodes[episode] = []
+            continue
+
+        if result.status == "no_audio":
+            logger.info("  VAD: ep=%s 无音轨，跳过", episode)
+            episodes[episode] = []
+            continue
+        elif result.status == "error":
+            logger.warning("  VAD: ep=%s 错误: %s", episode, result.error)
+            episodes[episode] = []
+            continue
+
+        # Convert SpeechInterval objects to dicts for JSON serialization
+        interval_dicts = [
+            {"start": round(iv.start, 3), "end": round(iv.end, 3)}
+            for iv in result.speech_intervals
+        ]
+        episodes[episode] = interval_dicts
+        total_intervals += len(interval_dicts)
+
+        # Save rich ASR anchor results if available (for three-tier snap)
+        if vad_backend == "asr_anchor":
+            try:
+                from autocut_core.audio.asr_anchor import AudioAnchorResult, result_to_dict
+                if isinstance(result, AudioAnchorResult) and result.status == "ready":
+                    anchor_results[episode] = result_to_dict(result)
+            except Exception as exc:
+                logger.warning("  VAD: 序列化 ASR anchor 结果失败 ep=%s: %s", episode, exc)
+
+        total_speech = sum(iv.end - iv.start for iv in result.speech_intervals)
+        logger.info(
+            "  VAD: ep=%s intervals=%d total_speech=%.1fs backend=%s",
+            episode, len(interval_dicts), total_speech,
+            vad_backend,
+        )
+
+    detector_name = "asr-anchor-sensevoice" if vad_backend == "asr_anchor" else "demucs-silero-vad"
+    result_dict = {
+        "schema_version": "1.0",
+        "detector": detector_name,
+        "vad_backend": vad_backend,
+        "vad_threshold": vad_threshold,
+        "vad_device": vad_device,
+        "total_speech_intervals": total_intervals,
+        "episodes": episodes,
+    }
+
+    # 落盘缓存 speech_intervals
+    output_path = job_root / "speech_intervals.json"
+    atomic_write_json(output_path, result_dict)
+
+    # 落盘 ASR anchor results (rich data for three-tier snap)
+    if anchor_results:
+        anchor_path = job_root / "asr_anchor_results.json"
+        anchor_data = {
+            "schema_version": "1.0",
+            "model": "SenseVoiceSmall+fsmn-vad",
+            "episodes": anchor_results,
+        }
+        atomic_write_json(anchor_path, anchor_data)
+        result_dict["_anchor_results_path"] = str(anchor_path)
+        logger.info(
+            "VAD: ASR anchor results saved to %s (%d episodes)",
+            anchor_path, len(anchor_results),
+        )
+
+    return result_dict

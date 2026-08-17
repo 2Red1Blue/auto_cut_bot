@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "case_id": "generic-revenge-v1",
+  "genre_profile": "revenge",
+  "purpose": "非重生复仇题材的通用复仇主线适配器",
+  "transferable_contract": {
+    "primary_thread": "复仇/清算",
+    "integrated_support_thread": false,
+    "support_roles": ["感情", "盟友", "身份"],
+    "ending_rule": "停在下一次清算或对手反制之前"
+  },
+  "positive_templates": [
+    "明确受害、复仇目标和当前风险",
+    "复仇行动必须有起因、升级和可观察后果",
+    "关系与身份只保留改变复仇动机、能力或选择的桥段"
+  ],
+  "approved_story_sequence": ["受害与目标", "行动升级", "阶段性清算", "对手反制悬念"],
+  "required_bridge_beats": ["复仇动机和行动后果不得被删除"],
+  "approved_cut": "沿复仇因果链保留最小充分证据",
+  "negative_examples": [
+    {"id": "revenge-unmotivated-attack", "expected_status": "blocked", "violations": ["删除受害起因后直接攻击"]},
+    {"id": "revenge-support-takeover", "expected_status": "blocked", "violations": ["盟友或感情线取代复仇高潮"]},
+    {"id": "revenge-future-arc", "expected_status": "blocked", "violations": ["为凑时长接入后续完整清算弧"]}
+  ],
+  "regression_assertions": ["revenge_cause_requires_evidence", "support_line_cannot_own_primary_payoff", "future_arc_injection_forbidden"]
+}

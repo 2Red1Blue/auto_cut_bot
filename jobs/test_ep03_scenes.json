@@ -1,0 +1,495 @@
+{
+  "video": "/Users/liuzx/Code/python/work_ai/ac_auto_cut/jobs/when-lucifer-kneels/videos/ep03.mp4",
+  "total_shots": 81,
+  "avg_duration_s": 1.9,
+  "min_duration_s": 0.64,
+  "max_duration_s": 6.04,
+  "boundaries": [
+    {
+      "shot_id": 1,
+      "start": 0.0,
+      "end": 1.16,
+      "duration": 1.16
+    },
+    {
+      "shot_id": 2,
+      "start": 1.16,
+      "end": 2.28,
+      "duration": 1.12
+    },
+    {
+      "shot_id": 3,
+      "start": 2.28,
+      "end": 3.48,
+      "duration": 1.2
+    },
+    {
+      "shot_id": 4,
+      "start": 3.48,
+      "end": 5.24,
+      "duration": 1.76
+    },
+    {
+      "shot_id": 5,
+      "start": 5.24,
+      "end": 7.16,
+      "duration": 1.92
+    },
+    {
+      "shot_id": 6,
+      "start": 7.16,
+      "end": 9.56,
+      "duration": 2.4
+    },
+    {
+      "shot_id": 7,
+      "start": 9.56,
+      "end": 11.88,
+      "duration": 2.32
+    },
+    {
+      "shot_id": 8,
+      "start": 11.88,
+      "end": 13.68,
+      "duration": 1.8
+    },
+    {
+      "shot_id": 9,
+      "start": 13.68,
+      "end": 15.32,
+      "duration": 1.64
+    },
+    {
+      "shot_id": 10,
+      "start": 15.32,
+      "end": 17.48,
+      "duration": 2.16
+    },
+    {
+      "shot_id": 11,
+      "start": 17.48,
+      "end": 19.56,
+      "duration": 2.08
+    },
+    {
+      "shot_id": 12,
+      "start": 19.56,
+      "end": 22.88,
+      "duration": 3.32
+    },
+    {
+      "shot_id": 13,
+      "start": 22.88,
+      "end": 24.0,
+      "duration": 1.12
+    },
+    {
+      "shot_id": 14,
+      "start": 24.0,
+      "end": 24.64,
+      "duration": 0.64
+    },
+    {
+      "shot_id": 15,
+      "start": 24.64,
+      "end": 26.84,
+      "duration": 2.2
+    },
+    {
+      "shot_id": 16,
+      "start": 26.84,
+      "end": 28.84,
+      "duration": 2.0
+    },
+    {
+      "shot_id": 17,
+      "start": 28.84,
+      "end": 30.08,
+      "duration": 1.24
+    },
+    {
+      "shot_id": 18,
+      "start": 30.08,
+      "end": 31.36,
+      "duration": 1.28
+    },
+    {
+      "shot_id": 19,
+      "start": 31.36,
+      "end": 33.08,
+      "duration": 1.72
+    },
+    {
+      "shot_id": 20,
+      "start": 33.08,
+      "end": 34.04,
+      "duration": 0.96
+    },
+    {
+      "shot_id": 21,
+      "start": 34.04,
+      "end": 35.28,
+      "duration": 1.24
+    },
+    {
+      "shot_id": 22,
+      "start": 35.28,
+      "end": 36.52,
+      "duration": 1.24
+    },
+    {
+      "shot_id": 23,
+      "start": 36.52,
+      "end": 38.2,
+      "duration": 1.68
+    },
+    {
+      "shot_id": 24,
+      "start": 38.2,
+      "end": 41.04,
+      "duration": 2.84
+    },
+    {
+      "shot_id": 25,
+      "start": 41.04,
+      "end": 42.36,
+      "duration": 1.32
+    },
+    {
+      "shot_id": 26,
+      "start": 42.36,
+      "end": 44.16,
+      "duration": 1.8
+    },
+    {
+      "shot_id": 27,
+      "start": 44.16,
+      "end": 45.2,
+      "duration": 1.04
+    },
+    {
+      "shot_id": 28,
+      "start": 45.2,
+      "end": 46.84,
+      "duration": 1.64
+    },
+    {
+      "shot_id": 29,
+      "start": 46.84,
+      "end": 48.76,
+      "duration": 1.92
+    },
+    {
+      "shot_id": 30,
+      "start": 48.76,
+      "end": 50.76,
+      "duration": 2.0
+    },
+    {
+      "shot_id": 31,
+      "start": 50.76,
+      "end": 53.76,
+      "duration": 3.0
+    },
+    {
+      "shot_id": 32,
+      "start": 53.76,
+      "end": 55.96,
+      "duration": 2.2
+    },
+    {
+      "shot_id": 33,
+      "start": 55.96,
+      "end": 56.96,
+      "duration": 1.0
+    },
+    {
+      "shot_id": 34,
+      "start": 56.96,
+      "end": 59.32,
+      "duration": 2.36
+    },
+    {
+      "shot_id": 35,
+      "start": 59.32,
+      "end": 60.24,
+      "duration": 0.92
+    },
+    {
+      "shot_id": 36,
+      "start": 60.24,
+      "end": 61.24,
+      "duration": 1.0
+    },
+    {
+      "shot_id": 37,
+      "start": 61.24,
+      "end": 63.48,
+      "duration": 2.24
+    },
+    {
+      "shot_id": 38,
+      "start": 63.48,
+      "end": 65.16,
+      "duration": 1.68
+    },
+    {
+      "shot_id": 39,
+      "start": 65.16,
+      "end": 66.76,
+      "duration": 1.6
+    },
+    {
+      "shot_id": 40,
+      "start": 66.76,
+      "end": 68.36,
+      "duration": 1.6
+    },
+    {
+      "shot_id": 41,
+      "start": 68.36,
+      "end": 70.16,
+      "duration": 1.8
+    },
+    {
+      "shot_id": 42,
+      "start": 70.16,
+      "end": 71.04,
+      "duration": 0.88
+    },
+    {
+      "shot_id": 43,
+      "start": 71.04,
+      "end": 71.8,
+      "duration": 0.76
+    },
+    {
+      "shot_id": 44,
+      "start": 71.8,
+      "end": 72.92,
+      "duration": 1.12
+    },
+    {
+      "shot_id": 45,
+      "start": 72.92,
+      "end": 77.0,
+      "duration": 4.08
+    },
+    {
+      "shot_id": 46,
+      "start": 77.0,
+      "end": 78.68,
+      "duration": 1.68
+    },
+    {
+      "shot_id": 47,
+      "start": 78.68,
+      "end": 82.76,
+      "duration": 4.08
+    },
+    {
+      "shot_id": 48,
+      "start": 82.76,
+      "end": 85.28,
+      "duration": 2.52
+    },
+    {
+      "shot_id": 49,
+      "start": 85.28,
+      "end": 87.52,
+      "duration": 2.24
+    },
+    {
+      "shot_id": 50,
+      "start": 87.52,
+      "end": 90.72,
+      "duration": 3.2
+    },
+    {
+      "shot_id": 51,
+      "start": 90.72,
+      "end": 92.8,
+      "duration": 2.08
+    },
+    {
+      "shot_id": 52,
+      "start": 92.8,
+      "end": 94.72,
+      "duration": 1.92
+    },
+    {
+      "shot_id": 53,
+      "start": 94.72,
+      "end": 96.68,
+      "duration": 1.96
+    },
+    {
+      "shot_id": 54,
+      "start": 96.68,
+      "end": 99.32,
+      "duration": 2.64
+    },
+    {
+      "shot_id": 55,
+      "start": 99.32,
+      "end": 102.24,
+      "duration": 2.92
+    },
+    {
+      "shot_id": 56,
+      "start": 102.24,
+      "end": 105.36,
+      "duration": 3.12
+    },
+    {
+      "shot_id": 57,
+      "start": 105.36,
+      "end": 107.64,
+      "duration": 2.28
+    },
+    {
+      "shot_id": 58,
+      "start": 107.64,
+      "end": 109.4,
+      "duration": 1.76
+    },
+    {
+      "shot_id": 59,
+      "start": 109.4,
+      "end": 111.04,
+      "duration": 1.64
+    },
+    {
+      "shot_id": 60,
+      "start": 111.04,
+      "end": 117.08,
+      "duration": 6.04
+    },
+    {
+      "shot_id": 61,
+      "start": 117.08,
+      "end": 119.08,
+      "duration": 2.0
+    },
+    {
+      "shot_id": 62,
+      "start": 119.08,
+      "end": 122.16,
+      "duration": 3.08
+    },
+    {
+      "shot_id": 63,
+      "start": 122.16,
+      "end": 124.32,
+      "duration": 2.16
+    },
+    {
+      "shot_id": 64,
+      "start": 124.32,
+      "end": 126.68,
+      "duration": 2.36
+    },
+    {
+      "shot_id": 65,
+      "start": 126.68,
+      "end": 131.12,
+      "duration": 4.44
+    },
+    {
+      "shot_id": 66,
+      "start": 131.12,
+      "end": 133.2,
+      "duration": 2.08
+    },
+    {
+      "shot_id": 67,
+      "start": 133.2,
+      "end": 134.88,
+      "duration": 1.68
+    },
+    {
+      "shot_id": 68,
+      "start": 134.88,
+      "end": 136.0,
+      "duration": 1.12
+    },
+    {
+      "shot_id": 69,
+      "start": 136.0,
+      "end": 136.68,
+      "duration": 0.68
+    },
+    {
+      "shot_id": 70,
+      "start": 136.68,
+      "end": 138.36,
+      "duration": 1.68
+    },
+    {
+      "shot_id": 71,
+      "start": 138.36,
+      "end": 141.16,
+      "duration": 2.8
+    },
+    {
+      "shot_id": 72,
+      "start": 141.16,
+      "end": 142.4,
+      "duration": 1.24
+    },
+    {
+      "shot_id": 73,
+      "start": 142.4,
+      "end": 143.96,
+      "duration": 1.56
+    },
+    {
+      "shot_id": 74,
+      "start": 143.96,
+      "end": 145.48,
+      "duration": 1.52
+    },
+    {
+      "shot_id": 75,
+      "start": 145.48,
+      "end": 146.6,
+      "duration": 1.12
+    },
+    {
+      "shot_id": 76,
+      "start": 146.6,
+      "end": 147.36,
+      "duration": 0.76
+    },
+    {
+      "shot_id": 77,
+      "start": 147.36,
+      "end": 148.28,
+      "duration": 0.92
+    },
+    {
+      "shot_id": 78,
+      "start": 148.28,
+      "end": 149.28,
+      "duration": 1.0
+    },
+    {
+      "shot_id": 79,
+      "start": 149.28,
+      "end": 150.68,
+      "duration": 1.4
+    },
+    {
+      "shot_id": 80,
+      "start": 150.68,
+      "end": 151.48,
+      "duration": 0.8
+    },
+    {
+      "shot_id": 81,
+      "start": 151.48,
+      "end": 153.72,
+      "duration": 2.24
+    }
+  ]
+}

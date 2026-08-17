@@ -1,0 +1,19 @@
+{
+  "pid": 69837,
+  "identity": 69837,
+  "started_at": "2026-08-12T19:33:06.716313Z",
+  "platform": "Darwin",
+  "port": 8767,
+  "workspace": null,
+  "config_path": null,
+  "command": [
+    "/Users/liuzx/miniconda3/bin/python3.13",
+    "-m",
+    "auto_cut_bot",
+    "gateway",
+    "--foreground",
+    "--port",
+    "8767"
+  ],
+  "log_path": "/Users/liuzx/Code/python/work_ai/auto_cut_bot/logs/gateway.log"
+}

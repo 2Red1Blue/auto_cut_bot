@@ -1,0 +1,701 @@
+"""PySceneDetect 边界修正与 VLM 结果融合。
+
+将 VLM 分析结果中的事件时间戳对齐到 PySceneDetect 检测到的镜头边界，
+提升时间精度。
+
+支持两种 scene_boundaries 格式:
+- v1.1 (场景范围): {"episodes": {"1": [[0.0, 2.68], [2.68, 3.96], ...]}}
+- v1.0 (切点列表): {"episodes": {"1": [0.0, 2.68, 3.96, ...]}}
+
+修正后的事件时间戳会更新到 result["start"]/result["end"] 字段，
+原始值保留在 result["original_start"]/result["original_end"]。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from autocut_core.logging import get_logger
+
+
+logger = get_logger(__name__)
+
+
+# ── 静音区间辅助函数 ──────────────────────────────────────────────
+
+
+def _extract_silence_intervals(
+    silence_data: dict[str, Any] | None,
+    episode_id: str,
+) -> list[dict[str, float]]:
+    """从 silence_intervals 数据中提取指定集的静音区间列表。
+
+    Args:
+        silence_data: silence_intervals 产物 (包含 episodes 字段)
+        episode_id: 集数 ID
+
+    Returns:
+        静音区间列表 [{"start": float, "end": float, "duration": float}, ...]
+        按 start 排序；无数据时返回空列表。
+    """
+    if not silence_data or not isinstance(silence_data, dict):
+        return []
+    episodes = silence_data.get("episodes", {})
+    intervals = episodes.get(str(episode_id), [])
+    if not isinstance(intervals, list):
+        return []
+    return intervals
+
+
+def _is_in_silence(
+    timestamp: float,
+    silence_intervals: list[dict[str, float]],
+    margin: float = 0.05,
+) -> bool:
+    """检查时间戳是否落在某个静音区间内（含 margin 容差）。
+
+    Args:
+        timestamp: 待检查的时间点
+        silence_intervals: 静音区间列表
+        margin: 前后容差 (秒)，默认 0.05s
+
+    Returns:
+        True 如果 timestamp 在静音区间内
+    """
+    for iv in silence_intervals:
+        if iv["start"] - margin <= timestamp <= iv["end"] + margin:
+            return True
+    return False
+
+
+def _find_safe_snap_point_start(
+    candidate_time: float,
+    silence_intervals: list[dict[str, float]],
+    max_shift: float = 3.0,
+    lead_in: float = 0.3,
+    *,
+    original_timestamp: float | None = None,
+) -> float | None:
+    """为高光开始时间寻找安全的 snap 目标点。
+
+    从 candidate_time 向前搜索 ≤max_shift 范围，寻找一个静音区间的
+    结束点（语音起始处），返回 end_of_silence + lead_in。
+
+    策略：向前找静音结束点 = 语音开始前的安静点，这是最自然的切点。
+
+    Args:
+        candidate_time: 候选 snap 时间（切点+lead_in 后的位置）
+        silence_intervals: 静音区间列表
+        max_shift: 相对于原始 VLM 时间戳的最大偏移距离 (秒)
+        lead_in: lead_in 偏移量
+        original_timestamp: 原始 VLM 时间戳（用于约束 max_shift 边界）；
+            为 None 时以 candidate_time 为基准（向后兼容）
+
+    Returns:
+        安全的 snap 目标时间，或 None 如果找不到合适的静音间隙
+    """
+    # max_shift 相对于原始 VLM timestamp 约束
+    anchor = original_timestamp if original_timestamp is not None else candidate_time
+    search_start = anchor - max_shift
+    search_end = anchor + 0.5  # 允许稍微向后一点
+
+    # 找所有落在搜索范围内的静音区间，优先选最靠近 candidate_time 的
+    candidates = []
+    for iv in silence_intervals:
+        iv_start = iv["start"]
+        iv_end = iv["end"]
+        # 静音区间的结束点在搜索范围内
+        if search_start <= iv_end <= search_end:
+            candidates.append(iv)
+
+    if not candidates:
+        return None
+
+    # 选择距离 candidate_time 最近的静音结束点（但不超过 candidate_time 太多）
+    # 优先选在 candidate_time 之前的静音结束点（避免把高光推迟太多）
+    # 同时最终结果必须在 anchor ± max_shift 范围内
+    best = None
+    best_dist = float("inf")
+    for iv in candidates:
+        target = iv["end"] + lead_in
+        # 硬约束：最终结果不超过 anchor ± max_shift
+        if abs(target - anchor) > max_shift:
+            continue
+        dist = abs(target - candidate_time)
+        # 如果静音结束点在 candidate_time 之前，这是最理想的（语音开始处）
+        if iv["end"] <= candidate_time + 0.1:
+            if dist < best_dist:
+                best_dist = dist
+                best = target
+        elif best is None:
+            # 如果没有之前的点，才考虑之后的
+            if dist < best_dist:
+                best_dist = dist
+                best = target
+
+    return best
+
+
+def _find_safe_snap_point_end(
+    candidate_time: float,
+    silence_intervals: list[dict[str, float]],
+    max_shift: float = 3.0,
+    lead_out: float = 0.0,
+    *,
+    original_timestamp: float | None = None,
+) -> float | None:
+    """为高光结束时间寻找安全的 snap 目标点。
+
+    从 candidate_time 向后搜索 ≤max_shift 范围，寻找一个静音区间的
+    开始点（语音结束处），返回 start_of_silence + lead_out。
+
+    Args:
+        candidate_time: 候选 snap 时间
+        silence_intervals: 静音区间列表
+        max_shift: 相对于原始 VLM 时间戳的最大偏移距离 (秒)
+        lead_out: lead_out 偏移量
+        original_timestamp: 原始 VLM 时间戳（用于约束 max_shift 边界）；
+            为 None 时以 candidate_time 为基准（向后兼容）
+
+    Returns:
+        安全的 snap 目标时间，或 None 如果找不到合适的静音间隙
+    """
+    # max_shift 相对于原始 VLM timestamp 约束
+    anchor = original_timestamp if original_timestamp is not None else candidate_time
+    search_start = anchor - 0.5
+    search_end = anchor + max_shift
+
+    candidates = []
+    for iv in silence_intervals:
+        iv_start = iv["start"]
+        iv_end = iv["end"]
+        # 静音区间的开始点在搜索范围内
+        if search_start <= iv_start <= search_end:
+            candidates.append(iv)
+
+    if not candidates:
+        return None
+
+    best = None
+    best_dist = float("inf")
+    for iv in candidates:
+        target = iv["start"] + lead_out
+        # 硬约束：最终结果不超过 anchor ± max_shift
+        if abs(target - anchor) > max_shift:
+            continue
+        dist = abs(target - candidate_time)
+        if iv["start"] >= candidate_time - 0.1:
+            if dist < best_dist:
+                best_dist = dist
+                best = target
+        elif best is None:
+            if dist < best_dist:
+                best_dist = dist
+                best = target
+
+    return best
+
+
+def validate_scene_boundaries(
+    scene_boundaries: dict[str, Any],
+    *,
+    min_scene_duration: float = 1.0,
+    max_scene_duration: float = 600.0,
+    max_gap_ratio: float = 0.3,
+) -> dict[str, Any]:
+    """验证场景边界数据的质量。
+    
+    检查项：
+    1. 数据格式是否正确 (v1.0 或 v1.1)
+    2. 场景数量是否合理
+    3. 场景时长是否合理 (不过短或过长)
+    4. 场景覆盖是否连续 (gap 比例)
+    
+    Args:
+        scene_boundaries: PySceneDetect 场景边界数据
+        min_scene_duration: 最小场景时长 (秒)，低于此值视为异常
+        max_scene_duration: 最大场景时长 (秒)，高于此值视为异常
+        max_gap_ratio: 最大 gap 比例 (0-1)，超过此比例视为覆盖不足
+    
+    Returns:
+        验证结果字典:
+        {
+            "valid": bool,           # 整体是否有效
+            "issues": list[str],     # 发现的问题列表
+            "stats": dict,           # 统计信息
+            "episodes_quality": dict # 每集的质量信息
+        }
+    """
+    result = {
+        "valid": True,
+        "issues": [],
+        "stats": {
+            "total_episodes": 0,
+            "total_scenes": 0,
+        },
+        "episodes_quality": {},
+    }
+    
+    if not scene_boundaries or not isinstance(scene_boundaries, dict):
+        result["valid"] = False
+        result["issues"].append("scene_boundaries 为空或格式错误")
+        return result
+    
+    episodes = scene_boundaries.get("episodes", {})
+    if not episodes or not isinstance(episodes, dict):
+        result["valid"] = False
+        result["issues"].append("episodes 字段缺失或格式错误")
+        return result
+    
+    result["stats"]["total_episodes"] = len(episodes)
+    
+    for episode_id, scene_data in episodes.items():
+        ep_quality = {
+            "valid": True,
+            "issues": [],
+            "scene_count": 0,
+            "duration_range": None,
+            "gap_ratio": 0.0,
+        }
+        
+        if not scene_data or not isinstance(scene_data, list):
+            ep_quality["valid"] = False
+            ep_quality["issues"].append(f"episode {episode_id}: 场景数据为空或格式错误")
+            result["episodes_quality"][episode_id] = ep_quality
+            result["issues"].append(f"episode {episode_id}: 场景数据为空或格式错误")
+            continue
+        
+        # 判断格式 (v1.0 或 v1.1)
+        first_item = scene_data[0]
+        is_range_format = isinstance(first_item, (list, tuple))
+        
+        # 提取场景范围
+        scene_ranges = []
+        if is_range_format:
+            # v1.1: [[start, end], ...]
+            for item in scene_data:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    try:
+                        start, end = float(item[0]), float(item[1])
+                        if start < end:
+                            scene_ranges.append((start, end))
+                    except (ValueError, TypeError):
+                        ep_quality["issues"].append(f"无效的场景范围: {item}")
+        else:
+            # v1.0: [cut_point, ...]，需要转换为范围
+            cut_points = []
+            for item in scene_data:
+                try:
+                    cut_points.append(float(item))
+                except (ValueError, TypeError):
+                    ep_quality["issues"].append(f"无效的切点: {item}")
+            
+            cut_points = sorted(set(cut_points))
+            for i in range(len(cut_points) - 1):
+                scene_ranges.append((cut_points[i], cut_points[i + 1]))
+        
+        ep_quality["scene_count"] = len(scene_ranges)
+        result["stats"]["total_scenes"] += len(scene_ranges)
+        
+        if not scene_ranges:
+            ep_quality["valid"] = False
+            ep_quality["issues"].append("没有有效的场景范围")
+            result["episodes_quality"][episode_id] = ep_quality
+            result["issues"].append(f"episode {episode_id}: 没有有效的场景范围")
+            continue
+        
+        # 检查场景时长
+        durations = [end - start for start, end in scene_ranges]
+        min_dur = min(durations)
+        max_dur = max(durations)
+        ep_quality["duration_range"] = (min_dur, max_dur)
+        
+        short_scenes = sum(1 for d in durations if d < min_scene_duration)
+        long_scenes = sum(1 for d in durations if d > max_scene_duration)
+        
+        if short_scenes > 0:
+            ep_quality["issues"].append(
+                f"{short_scenes} 个场景过短 (< {min_scene_duration}s)"
+            )
+        
+        if long_scenes > 0:
+            ep_quality["issues"].append(
+                f"{long_scenes} 个场景过长 (> {max_scene_duration}s)"
+            )
+        
+        # 检查覆盖连续性
+        scene_ranges_sorted = sorted(scene_ranges, key=lambda x: x[0])
+        total_gap = 0.0
+        for i in range(1, len(scene_ranges_sorted)):
+            prev_end = scene_ranges_sorted[i - 1][1]
+            curr_start = scene_ranges_sorted[i][0]
+            if curr_start > prev_end:
+                total_gap += curr_start - prev_end
+        
+        total_duration = scene_ranges_sorted[-1][1] - scene_ranges_sorted[0][0]
+        gap_ratio = total_gap / total_duration if total_duration > 0 else 0.0
+        ep_quality["gap_ratio"] = gap_ratio
+        
+        if gap_ratio > max_gap_ratio:
+            ep_quality["issues"].append(
+                f"场景覆盖不连续 (gap 比例 {gap_ratio:.1%} > {max_gap_ratio:.1%})"
+            )
+        
+        # 判断该集是否有效
+        if ep_quality["issues"]:
+            ep_quality["valid"] = False
+            result["issues"].extend(
+                f"episode {episode_id}: {issue}" for issue in ep_quality["issues"]
+            )
+        
+        result["episodes_quality"][episode_id] = ep_quality
+    
+    # 整体有效性
+    if result["issues"]:
+        result["valid"] = False
+    
+    return result
+
+
+def apply_scene_boundary_fusion(
+    vlm_result: dict[str, Any],
+    scene_boundaries: dict[str, Any],
+    episode_id: str,
+    *,
+    snap_tolerance: float = 0.5,
+    lead_in: float = 0.3,
+    lead_out: float = 0.0,
+    silence_intervals: dict[str, Any] | None = None,
+    audio_max_shift: float = 3.0,
+) -> dict[str, Any]:
+    """对齐 VLM 结果到 PySceneDetect 边界。
+
+    使用 forward-snap + lead_in 策略（而非 nearest-cut），避免
+    将高光开头 snap 到上一个场景的尾部。
+
+    音频门控（silence_intervals 不为 None 时生效）：
+    如果候选切点处正在语音中（不在静音区间内），则搜索附近的静音间隙
+    作为安全切点；如果 max_shift 范围内找不到静音间隙，则保持 VLM
+    原始时间戳（不 snap），避免切点落在半句话中间。
+
+    Args:
+        vlm_result: VLM 分析结果 (包含 candidates 列表)
+        scene_boundaries: PySceneDetect 场景边界数据
+        episode_id: 集数 ID (字符串)
+        snap_tolerance: 对齐容差 (秒)，事件时间戳与最近边界的距离超过此值则不对齐
+        lead_in: 切点后偏移 (秒)，跳过转场残影/尾音 (默认 0.3)
+        lead_out: 切点后偏移 (秒)，结束侧 (默认 0.0)
+        silence_intervals: ffmpeg silencedetect 静音区间数据，为 None 时纯视觉模式
+        audio_max_shift: 音频门控最大调整距离 (秒)，默认 3.0s
+
+    Returns:
+        修正后的 vlm_result (原始数据会被修改)
+    """
+    if not vlm_result or not scene_boundaries:
+        return vlm_result
+
+    episodes = scene_boundaries.get("episodes", {})
+    if not episodes or episode_id not in episodes:
+        return vlm_result
+
+    scene_data = episodes[episode_id]
+    if not scene_data:
+        return vlm_result
+
+    # 从场景边界提取切点列表 (按时间排序的唯一切点)
+    cut_points = extract_cut_points(scene_data)
+    if not cut_points:
+        return vlm_result
+
+    # 对齐 candidates 列表中的事件
+    candidates = vlm_result.get("candidates", [])
+    if not isinstance(candidates, list):
+        return vlm_result
+
+    for event in candidates:
+        if not isinstance(event, dict):
+            continue
+
+        event_type = event.get("type", "")
+        if event_type not in ("highlight", "hook", "scene"):
+            continue
+
+        original_start = event.get("start")
+        original_end = event.get("end")
+
+        if original_start is None or original_end is None:
+            continue
+
+        # 提取当前集的静音区间（音频门控）
+        ep_silence = _extract_silence_intervals(silence_intervals, episode_id) if silence_intervals is not None else None
+
+        # 使用 forward-snap + lead_in (而非 nearest-cut)
+        # 音频门控：如果切点在语音中，寻找安全静音间隙
+        snapped_start = snap_highlight_start(
+            original_start, cut_points,
+            tolerance=snap_tolerance, lead_in=lead_in,
+            silence_intervals=ep_silence,
+            max_shift=audio_max_shift,
+        )
+        snapped_end = snap_highlight_end(
+            original_end, cut_points,
+            tolerance=snap_tolerance, lead_out=lead_out,
+            silence_intervals=ep_silence,
+            max_shift=audio_max_shift,
+        )
+
+        # 确保对齐后 start < end
+        if snapped_start < snapped_end:
+            # 只在 original_start 尚未被保存时记录 VLM 原始值
+            if "original_start" not in event:
+                event["original_start"] = original_start
+            if "original_end" not in event:
+                event["original_end"] = original_end
+            event["start"] = snapped_start
+            event["end"] = snapped_end
+            # 标注音频门控效果（仅在音频模式启用时）
+            if silence_intervals is not None:
+                # 计算纯视觉模式下的 snap 结果用于对比
+                visual_start = snap_highlight_start(
+                    original_start, cut_points,
+                    tolerance=snap_tolerance, lead_in=lead_in,
+                )
+                visual_end = snap_highlight_end(
+                    original_end, cut_points,
+                    tolerance=snap_tolerance, lead_out=lead_out,
+                )
+                audio_start_skipped = abs(snapped_start - original_start) < 0.001 and abs(visual_start - original_start) > 0.001
+                audio_end_skipped = abs(snapped_end - original_end) < 0.001 and abs(visual_end - original_end) > 0.001
+                if audio_start_skipped or audio_end_skipped:
+                    event["audio_snap_skipped"] = True
+                    if audio_start_skipped:
+                        event["audio_snap_skipped_start"] = True
+                    if audio_end_skipped:
+                        event["audio_snap_skipped_end"] = True
+
+    return vlm_result
+
+
+def extract_cut_points(scene_data: Any) -> list[float]:
+    """从场景边界数据提取切点列表。
+
+    支持两种格式:
+    - v1.1 范围格式: [[0.0, 2.68], [2.68, 3.96], ...]
+    - v1.0 切点列表: [0.0, 2.68, 3.96, ...]
+
+    Returns:
+        排序后的唯一切点列表
+    """
+    if not scene_data:
+        return []
+
+    cut_points: set[float] = set()
+
+    first_item = scene_data[0]
+    is_range_format = isinstance(first_item, (list, tuple))
+
+    if is_range_format:
+        # v1.1: 范围格式，提取所有 start 和 end
+        for scene_range in scene_data:
+            if isinstance(scene_range, (list, tuple)) and len(scene_range) >= 2:
+                cut_points.add(float(scene_range[0]))
+                cut_points.add(float(scene_range[1]))
+    else:
+        # v1.0: 切点列表
+        for point in scene_data:
+            cut_points.add(float(point))
+
+    return sorted(cut_points)
+
+
+def snap_to_boundary(
+    timestamp: float,
+    cut_points: list[float],
+    tolerance: float,
+) -> float:
+    """将时间戳对齐到最近的切点。
+
+    如果时间戳与最近切点的距离超过 tolerance，则保持不变。
+
+    Args:
+        timestamp: 原始时间戳
+        cut_points: 排序后的切点列表
+        tolerance: 容差 (秒)
+
+    Returns:
+        对齐后的时间戳
+    """
+    if not cut_points:
+        return timestamp
+
+    # 二分查找最近的切点
+    import bisect
+
+    idx = bisect.bisect_left(cut_points, timestamp)
+
+    # 检查 idx 和 idx-1 位置，取更近的
+    best_point = timestamp
+    best_dist = float("inf")
+
+    for check_idx in (idx - 1, idx, idx + 1):
+        if 0 <= check_idx < len(cut_points):
+            point = cut_points[check_idx]
+            dist = abs(timestamp - point)
+            if dist < best_dist:
+                best_dist = dist
+                best_point = point
+
+    # 超过容差则不对齐
+    if best_dist > tolerance:
+        return timestamp
+
+    return best_point
+
+
+def snap_highlight_start(
+    timestamp: float,
+    cut_points: list[float],
+    tolerance: float = 0.5,
+    lead_in: float = 0.3,
+    *,
+    silence_intervals: list[dict[str, float]] | None = None,
+    max_shift: float = 3.0,
+) -> float:
+    """对齐高光开始时间：向前 snap + 固定偏移 + 音频门控。
+
+    策略：
+    1. 找到 >= timestamp 的最近切点（向前 snap）
+    2. 如果距离 <= tolerance，检查切点是否在静音区间内：
+       - 在静音中（安全）→ 返回 cut_point + lead_in
+       - 在语音中（危险）→ 搜索附近静音间隙，找到则 snap 到安全点
+       - 找不到静音间隙 → 返回原始 timestamp（不 snap）
+    3. 如果向前偏移 > tolerance，回退到前一个切点（同样做音频门控检查）
+    4. 两个方向都超出 tolerance，返回原始 timestamp（不对齐）
+
+    Args:
+        timestamp: VLM 输出的开始时间
+        cut_points: 排序后的切点列表
+        tolerance: 容差 (秒)
+        lead_in: 切点后的偏移量 (秒)，跳过转场残影
+        silence_intervals: 静音区间列表（None 时纯视觉模式，向后兼容）
+        max_shift: 音频门控最大调整距离 (秒)
+
+    Returns:
+        对齐后的开始时间；如果没有切点在 tolerance 内或切点在语音中
+        且找不到安全间隙，则返回原始 timestamp
+    """
+    import bisect
+
+    if not cut_points:
+        return timestamp
+
+    # 找到 >= timestamp 的第一个切点位置
+    idx = bisect.bisect_left(cut_points, timestamp)
+
+    def _check_cut(cut_point: float) -> float | None:
+        """检查切点是否安全，返回 snap 结果或 None（需要继续搜索）。"""
+        candidate = cut_point + lead_in
+        if silence_intervals is None:
+            # 纯视觉模式（未启用音频门控）：直接 snap
+            return candidate
+        # 音频门控：检查切点处是否在静音中
+        if _is_in_silence(cut_point, silence_intervals):
+            return candidate
+        # 切点在语音中，搜索附近静音间隙
+        safe = _find_safe_snap_point_start(candidate, silence_intervals, max_shift=max_shift, lead_in=lead_in, original_timestamp=timestamp)
+        if safe is not None:
+            return safe
+        # 找不到安全间隙，返回 None 表示不 snap
+        return None
+
+    # 尝试 forward cut (>= timestamp)
+    if idx < len(cut_points):
+        forward_cut = cut_points[idx]
+        if forward_cut - timestamp <= tolerance:
+            result = _check_cut(forward_cut)
+            if result is not None:
+                return result
+
+    # 尝试 backward cut (< timestamp)
+    if idx > 0:
+        backward_cut = cut_points[idx - 1]
+        if timestamp - backward_cut <= tolerance:
+            result = _check_cut(backward_cut)
+            if result is not None:
+                return result
+
+    # 两个方向都超出 tolerance 或不安全，返回原始值
+    return timestamp
+
+
+def snap_highlight_end(
+    timestamp: float,
+    cut_points: list[float],
+    tolerance: float = 0.5,
+    lead_out: float = 0.0,
+    *,
+    silence_intervals: list[dict[str, float]] | None = None,
+    max_shift: float = 3.0,
+) -> float:
+    """对齐高光结束时间：向后 snap + 音频门控。
+
+    策略：
+    1. 找到 <= timestamp 的最近切点（向后 snap）
+    2. 如果距离 <= tolerance，检查切点是否在静音区间内：
+       - 在静音中（安全）→ 返回 cut_point + lead_out
+       - 在语音中（危险）→ 搜索附近静音间隙
+       - 找不到 → 返回原始 timestamp
+    3. 如果向后偏移 > tolerance，前进到下一个切点（同样做音频门控检查）
+    4. 两个方向都超出 tolerance，返回原始 timestamp（不对齐）
+
+    Args:
+        timestamp: VLM 输出的结束时间
+        cut_points: 排序后的切点列表
+        tolerance: 容差 (秒)
+        lead_out: 切点后的偏移量 (秒)
+        silence_intervals: 静音区间列表（None 时纯视觉模式，向后兼容）
+        max_shift: 音频门控最大调整距离 (秒)
+
+    Returns:
+        对齐后的结束时间；如果没有切点在 tolerance 内或切点在语音中
+        且找不到安全间隙，则返回原始 timestamp
+    """
+    import bisect
+
+    if not cut_points:
+        return timestamp
+
+    # 找到 <= timestamp 的最近切点
+    idx = bisect.bisect_right(cut_points, timestamp)
+
+    def _check_cut_end(cut_point: float) -> float | None:
+        """检查切点是否安全，返回 snap 结果或 None。"""
+        candidate = cut_point + lead_out
+        if silence_intervals is None:
+            # 纯视觉模式（未启用音频门控）：直接 snap
+            return candidate
+        if _is_in_silence(cut_point, silence_intervals):
+            return candidate
+        safe = _find_safe_snap_point_end(candidate, silence_intervals, max_shift=max_shift, lead_out=lead_out, original_timestamp=timestamp)
+        if safe is not None:
+            return safe
+        return None
+
+    # 尝试 backward cut (<= timestamp)
+    if idx > 0:
+        backward_cut = cut_points[idx - 1]
+        if timestamp - backward_cut <= tolerance:
+            result = _check_cut_end(backward_cut)
+            if result is not None:
+                return result
+
+    # 尝试 forward cut (> timestamp)
+    if idx < len(cut_points):
+        forward_cut = cut_points[idx]
+        if forward_cut - timestamp <= tolerance:
+            result = _check_cut_end(forward_cut)
+            if result is not None:
+                return result
+
+    # 两个方向都超出 tolerance 或不安全，返回原始值
+    return timestamp
