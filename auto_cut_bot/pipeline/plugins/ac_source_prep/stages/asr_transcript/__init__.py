@@ -1,1 +1,0 @@
-"""asr_transcript stage — FunASR Paraformer transcription + speaker diarization."""
