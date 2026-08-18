@@ -114,13 +114,20 @@ def _load_vlm_summaries(job_root: "_Path | str | None") -> "dict[int, list[dict]
                         "function": beat.get("function", ""),
                     })
                 for cand in w.get("candidates", []):
-                    ep_data[ep].append({
+                    entry: dict = {
                         "start": cand.get("start", 0),
                         "end": cand.get("end", 0),
                         "text": cand.get("reason", cand.get("summary", "")),
                         "vlm_candidate_score": cand.get("strength", 5),
                         "is_vlm_candidate": True,
-                    })
+                    }
+                    # 透传新增多模态字段（VLM输出则携带，缺失则为None/空）
+                    for fld in ("anchor_ts", "tags", "emotion", "shot_size",
+                                "camera_move", "lead_in_seconds", "characters"):
+                        val = cand.get(fld)
+                        if val is not None and val != [] and val != "":
+                            entry[fld] = val
+                    ep_data[ep].append(entry)
                 for seg in w.get("timeline_segments", []):
                     if seg.get("mode") in ("flashback", "recall"):
                         ep_data[ep].append({"type": "flashback", "start": seg.get("start", 0)})
@@ -130,12 +137,28 @@ def _load_vlm_summaries(job_root: "_Path | str | None") -> "dict[int, list[dict]
     return ep_data
 
 
+# emotion → 基础加分映射（VLM直出emotion时使用）
+_EMOTION_BONUS: dict[str, float] = {
+    "badass": 1.5, "shock": 1.2, "sad": 1.0,
+    "angry": 0.8, "tense": 0.8, "sweet": 0.5,
+}
+# shot_size → 加权因子
+_SHOT_SIZE_FACTOR: dict[str, float] = {
+    "closeup": 1.3, "medium": 1.0, "wide": 1.15,
+}
+# camera_move 中的高价值信号
+_CAMERA_BOOST_MOVES = {"slowmo", "zoom_in"}
+
+
 def _calc_visual_score(
     start: float,
     ep: int,
     vlm_data: "dict[int, list[dict]]",
 ) -> tuple[float, list[str]]:
-    """计算视觉冲击分 (0-10) + 标签列表。"""
+    """计算视觉冲击分 (0-10) + 标签列表。
+
+    优先级：VLM 直出 tags/emotion/shot_size/camera_move > 关键词匹配兜底。
+    """
     tags: set[str] = set()
     max_score = 0.0
     if ep not in vlm_data:
@@ -149,18 +172,51 @@ def _calc_visual_score(
         b_end = beat.get("end", b_start + 10)
         if not (b_start - 15 <= start <= b_end + 15):
             continue
+
+        # ── VLM candidate 打分 ──
         if beat.get("is_vlm_candidate"):
-            max_score = max(max_score, beat.get("vlm_candidate_score", 5))
+            base_score = float(beat.get("vlm_candidate_score", 5))
+
+            # 1) VLM 直出 tags → 直接使用，跳过关键词匹配
+            vlm_tags = beat.get("tags")
+            if vlm_tags and isinstance(vlm_tags, list):
+                tags.update(vlm_tags)
+            else:
+                # 兜底：关键词匹配生成标签
+                beat_text = beat.get("text", "")
+                for tag_group in _SCORING_CONFIG.get("special_tags", []):
+                    if any(kw in beat_text for kw in tag_group.get("keywords", [])):
+                        tags.update(tag_group.get("tags", []))
+
+            # 2) emotion 加分
+            emotion = beat.get("emotion", "")
+            if emotion in _EMOTION_BONUS:
+                base_score += _EMOTION_BONUS[emotion]
+
+            # 3) shot_size 加权
+            shot = beat.get("shot_size", "")
+            if shot in _SHOT_SIZE_FACTOR:
+                base_score *= _SHOT_SIZE_FACTOR[shot]
+
+            # 4) camera_move 加分（slowmo/zoom_in 是顶级名场面信号）
+            cam_moves = beat.get("camera_move")
+            if cam_moves and isinstance(cam_moves, list):
+                boost = sum(0.5 for m in cam_moves if m in _CAMERA_BOOST_MOVES)
+                base_score += boost
+
+            max_score = max(max_score, base_score)
         else:
+            # ── 非 candidate（story_beat）走关键词匹配 ──
             beat_text = beat.get("text", "") + beat.get("function", "")
             for kw_group in _SCORING_CONFIG.get("visual_keywords", []):
                 if any(kw in beat_text for kw in kw_group.get("keywords", [])):
                     max_score = max(max_score, kw_group.get("score", 5))
                     tags.update(kw_group.get("tags", []))
                     break
-        for tag_group in _SCORING_CONFIG.get("special_tags", []):
-            if any(kw in beat.get("text", "") for kw in tag_group.get("keywords", [])):
-                tags.update(tag_group.get("tags", []))
+            for tag_group in _SCORING_CONFIG.get("special_tags", []):
+                if any(kw in beat.get("text", "") for kw in tag_group.get("keywords", [])):
+                    tags.update(tag_group.get("tags", []))
+
     final_score = min(10.0, max_score if max_score > 0 else 5.0)
     return final_score, sorted(tags)
 
@@ -172,6 +228,9 @@ def multimodal_score_highlight(
     global_turning_points: "list[dict] | None" = None,
 ) -> tuple[float, list[str]]:
     """多模态高光打分: VLM视觉分 + 语义分 + 全局叙事分。
+
+    读取 highlight 和 vlm_data 中的新字段 (tags/emotion/shot_size/camera_move)
+    参与打分和标签生成。切点对齐逻辑不受影响。
 
     Returns:
         (加权总分, 标签列表)
@@ -185,6 +244,20 @@ def multimodal_score_highlight(
     visual_score, tags_list = _calc_visual_score(highlight.get("start", 0), ep, vlm_data)
     tags: set[str] = set(tags_list)
 
+    # 合并 highlight 自身携带的 VLM 直出标签（candidate 级别）
+    hl_tags = highlight.get("tags")
+    if hl_tags and isinstance(hl_tags, list):
+        tags.update(hl_tags)
+
+    # emotion 补充标签
+    hl_emotion = highlight.get("emotion", "")
+    _EMOTION_TAG_MAP = {
+        "badass": "燃/爽", "sad": "泪点", "shock": "反转",
+        "sweet": "甜", "angry": "怒", "tense": "紧张",
+    }
+    if hl_emotion in _EMOTION_TAG_MAP:
+        tags.add(_EMOTION_TAG_MAP[hl_emotion])
+
     narrative_score = 5.0
     if global_turning_points:
         for tp in global_turning_points:
@@ -193,13 +266,15 @@ def multimodal_score_highlight(
                 tags.add("全局转折点")
                 break
 
-    dialogue_len = len(highlight.get("dialogue_excerpt", "").strip())
-    if dialogue_len < 8 and visual_score >= 7:
-        tags.add("动作爽点")
-    elif dialogue_len >= 8 and visual_score >= 7:
-        tags.add("情感高光")
+    # 兜底标签（仅在没有任何标签时添加）
     if not tags:
-        tags.add("剧情点")
+        dialogue_len = len(highlight.get("dialogue_excerpt", "").strip())
+        if dialogue_len < 8 and visual_score >= 7:
+            tags.add("动作爽点")
+        elif dialogue_len >= 8 and visual_score >= 7:
+            tags.add("情感高光")
+        else:
+            tags.add("剧情点")
 
     total_score = semantic_score * w_sem + visual_score * w_vlm + narrative_score * w_global
     return round(total_score, 2), sorted(tags)
