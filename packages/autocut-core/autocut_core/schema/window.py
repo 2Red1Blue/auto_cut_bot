@@ -156,6 +156,12 @@ class VisualEvent(BaseModel):
 
 
 class HighlightCandidate(BaseModel):
+    """高光/钩子候选。
+
+    VLM 输出的结构化高光信息。anchor/lead_in 保留原始文本字段向后兼容，
+    新增的 _ts/_seconds/tags/emotion/shot_size/camera_move/characters 字段
+    供后续打分和切点优化使用，当前阶段仅存储不消费。
+    """
     id: str = Field(..., min_length=1)
     start: float
     end: float
@@ -166,6 +172,14 @@ class HighlightCandidate(BaseModel):
     lead_in: str = ""
     payoff_or_open_question: str = ""
     dialogue_excerpt: str = ""
+    # ── 新增多模态字段（VLM 输出，下游暂不消费） ──
+    anchor_ts: float | None = Field(default=None, description="爆点精确时间戳(秒)，从anchor文本中提取或VLM直出")
+    tags: list[str] = Field(default_factory=list, description="结构化高光标签，如['名场面','爽点','黑翼爆发']")
+    emotion: str = Field(default="", description="核心情绪: badass/sad/shock/sweet/angry/tense")
+    shot_size: str = Field(default="", description="景别: closeup/medium/wide")
+    camera_move: list[str] = Field(default_factory=list, description="镜头运动: static/zoom_in/zoom_out/pan/follow/slowmo")
+    lead_in_seconds: float | None = Field(default=None, description="建议前摇时长(秒)，动作0.5-1s/情绪2-3s/反转3-5s")
+    characters: list[str] = Field(default_factory=list, description="核心出场主角列表")
 
 
 class CharacterAppearance(BaseModel):
@@ -393,6 +407,14 @@ def as_dict_schema() -> dict[str, Any]:
                         "lead_in": {"type": "string"},
                         "payoff_or_open_question": {"type": "string"},
                         "dialogue_excerpt": {"type": "string"},
+                        # 新增多模态字段（可选，VLM输出，下游暂不消费）
+                        "anchor_ts": {"type": "number"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "emotion": {"type": "string"},
+                        "shot_size": {"type": "string"},
+                        "camera_move": {"type": "array", "items": {"type": "string"}},
+                        "lead_in_seconds": {"type": "number"},
+                        "characters": {"type": "array", "items": {"type": "string"}},
                     },
                     "required": ["id", "start", "end", "type", "strength", "reason", "anchor", "lead_in", "payoff_or_open_question", "dialogue_excerpt"],
                     "additionalProperties": False,

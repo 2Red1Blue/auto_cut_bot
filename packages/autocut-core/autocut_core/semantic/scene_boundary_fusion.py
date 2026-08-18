@@ -33,6 +33,178 @@ except ImportError:
 logger = get_logger(__name__)
 
 
+# ── 可配置多模态高光打分排序模块 ──────────────────────────────────────
+import json as _json
+from pathlib import Path as _Path
+from collections import defaultdict as _defaultdict
+
+
+def _load_scoring_config() -> dict:
+    """加载外置打分配置，找不到就用默认值。"""
+    default_config: dict = {
+        "weights": {
+            "vlm_visual_score": 0.5,
+            "semantic_score": 0.35,
+            "global_narrative_score": 0.15,
+        },
+        "visual_keywords": [
+            {"keywords": ["黑翼", "神力", "神火", "爆发", "变身", "全屏闪光", "冲击波"], "score": 10, "tags": ["名场面", "爽点", "视觉奇观"]},
+            {"keywords": ["怒吼", "宣战", "决裂", "崩溃", "哭", "牺牲", "死亡", "重逢", "告白", "对峙"], "score": 9, "tags": ["情感高光", "名场面"]},
+            {"keywords": ["揭露", "反转", "真相", "决定", "承诺", "发现"], "score": 7, "tags": ["剧情点", "反转"]},
+            {"keywords": ["对话", "走路", "过场", "铺垫"], "score": 4, "tags": ["普通剧情"]},
+        ],
+        "special_tags": [
+            {"keywords": ["刺中", "打斗", "战斗", "打飞", "击退"], "tags": ["动作爽点"]},
+            {"keywords": ["闪回", "回忆", "过去"], "tags": ["闪回"]},
+            {"keywords": ["项链", "吊坠", "三周年"], "tags": ["伏笔回收"]},
+        ],
+        "vlm_candidate_guarantee": {"enabled": True, "min_vlm_strength": 7},
+    }
+    config_path = _Path(__file__).parent.parent / "config" / "highlight_scoring.yaml"
+    if config_path.exists():
+        try:
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+                if loaded and isinstance(loaded, dict):
+                    for k, v in default_config.items():
+                        if k not in loaded:
+                            loaded[k] = v
+                    # 校验权重之和
+                    w = loaded.get("weights", {})
+                    w_sum = sum(w.values())
+                    if abs(w_sum - 1.0) > 0.01:
+                        logger.warning(
+                            "highlight_scoring weights sum=%.3f (expected 1.0), auto-normalizing",
+                            w_sum,
+                        )
+                        if w_sum > 0:
+                            loaded["weights"] = {k: v / w_sum for k, v in w.items()}
+                    return loaded
+        except Exception as e:
+            logger.warning("加载打分配置失败，用默认值: %s", e)
+    return default_config
+
+
+_SCORING_CONFIG = _load_scoring_config()
+
+
+def _load_vlm_summaries(job_root: "_Path | str | None") -> "dict[int, list[dict]]":
+    """加载 VLM window summaries，按集数聚合。无 VLM 数据时返回空字典。"""
+    if not job_root:
+        return {}
+    summary_path = _Path(job_root) / "window-summaries.jsonl"
+    if not summary_path.exists():
+        return {}
+    ep_data: dict[int, list[dict]] = _defaultdict(list)
+    try:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                w = _json.loads(line)
+                ep = w.get("episode")
+                if not ep:
+                    continue
+                for beat in w.get("story_beats", []):
+                    ep_data[ep].append({
+                        "start": beat.get("start", 0),
+                        "end": beat.get("end", 0),
+                        "text": beat.get("summary", ""),
+                        "function": beat.get("function", ""),
+                    })
+                for cand in w.get("candidates", []):
+                    ep_data[ep].append({
+                        "start": cand.get("start", 0),
+                        "end": cand.get("end", 0),
+                        "text": cand.get("reason", cand.get("summary", "")),
+                        "vlm_candidate_score": cand.get("strength", 5),
+                        "is_vlm_candidate": True,
+                    })
+                for seg in w.get("timeline_segments", []):
+                    if seg.get("mode") in ("flashback", "recall"):
+                        ep_data[ep].append({"type": "flashback", "start": seg.get("start", 0)})
+    except Exception as e:
+        logger.warning("加载VLM摘要失败，降级为纯文本模式: %s", e)
+        return {}
+    return ep_data
+
+
+def _calc_visual_score(
+    start: float,
+    ep: int,
+    vlm_data: "dict[int, list[dict]]",
+) -> tuple[float, list[str]]:
+    """计算视觉冲击分 (0-10) + 标签列表。"""
+    tags: set[str] = set()
+    max_score = 0.0
+    if ep not in vlm_data:
+        return 5.0, []
+    beats = vlm_data[ep]
+    for beat in beats:
+        if beat.get("type") == "flashback" and abs(beat.get("start", 0) - start) < 30:
+            tags.add("闪回")
+            continue
+        b_start = beat.get("start", 0)
+        b_end = beat.get("end", b_start + 10)
+        if not (b_start - 15 <= start <= b_end + 15):
+            continue
+        if beat.get("is_vlm_candidate"):
+            max_score = max(max_score, beat.get("vlm_candidate_score", 5))
+        else:
+            beat_text = beat.get("text", "") + beat.get("function", "")
+            for kw_group in _SCORING_CONFIG.get("visual_keywords", []):
+                if any(kw in beat_text for kw in kw_group.get("keywords", [])):
+                    max_score = max(max_score, kw_group.get("score", 5))
+                    tags.update(kw_group.get("tags", []))
+                    break
+        for tag_group in _SCORING_CONFIG.get("special_tags", []):
+            if any(kw in beat.get("text", "") for kw in tag_group.get("keywords", [])):
+                tags.update(tag_group.get("tags", []))
+    final_score = min(10.0, max_score if max_score > 0 else 5.0)
+    return final_score, sorted(tags)
+
+
+def multimodal_score_highlight(
+    highlight: dict,
+    ep: int,
+    vlm_data: "dict[int, list[dict]]",
+    global_turning_points: "list[dict] | None" = None,
+) -> tuple[float, list[str]]:
+    """多模态高光打分: VLM视觉分 + 语义分 + 全局叙事分。
+
+    Returns:
+        (加权总分, 标签列表)
+    """
+    weights = _SCORING_CONFIG.get("weights", {})
+    w_vlm = weights.get("vlm_visual_score", 0.5)
+    w_sem = weights.get("semantic_score", 0.35)
+    w_global = weights.get("global_narrative_score", 0.15)
+
+    semantic_score = float(highlight.get("strength", 5))
+    visual_score, tags_list = _calc_visual_score(highlight.get("start", 0), ep, vlm_data)
+    tags: set[str] = set(tags_list)
+
+    narrative_score = 5.0
+    if global_turning_points:
+        for tp in global_turning_points:
+            if abs(tp.get("ep", 0) - ep) <= 1 and abs(tp.get("time", 0) - highlight.get("start", 0)) < 60:
+                narrative_score = 10.0
+                tags.add("全局转折点")
+                break
+
+    dialogue_len = len(highlight.get("dialogue_excerpt", "").strip())
+    if dialogue_len < 8 and visual_score >= 7:
+        tags.add("动作爽点")
+    elif dialogue_len >= 8 and visual_score >= 7:
+        tags.add("情感高光")
+    if not tags:
+        tags.add("剧情点")
+
+    total_score = semantic_score * w_sem + visual_score * w_vlm + narrative_score * w_global
+    return round(total_score, 2), sorted(tags)
+
+
 # ── 静音区间辅助函数 ──────────────────────────────────────────────
 
 
