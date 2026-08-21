@@ -856,6 +856,165 @@ STORY_SCRIPT_DRAFT_SCHEMA = obj(
 )
 
 
+_FINAL_SCRIPT_ANCESTOR_RANGE_SCHEMA = obj(
+    {
+        "min_episode": {"type": "integer", "minimum": 1},
+        "max_episode": {"type": "integer", "minimum": 1},
+        "reason": STR,
+    }
+)
+
+
+# Materialized only by ``script_preflight``. Drafts remain free of these
+# finalization-only fields, while a persisted legacy script may carry an empty
+# compatibility object produced before this contract was introduced.
+_FINAL_SCRIPT_SCOPE_POLICY_SCHEMA = obj(
+    {
+        "analysis_unit_policy": {"type": "string", "const": "processing_only"},
+        "story_scope_policy": {"type": "string", "const": "series_global"},
+        "cross_unit_retrieval_allowed": {"type": "boolean", "const": True},
+        "cross_unit_retrieval_required_for_montage": {"type": "boolean", "const": True},
+        "unresolved_dependency_action": {"type": "string", "const": "blocked"},
+        "policy_version": NONEMPTY,
+    },
+    required=[],
+)
+
+
+_FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA = obj(
+    {
+        "primary_story_thread_id": STR,
+        "secondary_thread_ids": STRINGS,
+        "integrated_support_thread_ids": STRINGS,
+        "mainline_type": STR,
+        "required_bridge_beat_ids": STRINGS,
+        "same_line_extension_only": BOOL,
+        "future_arc_injection_forbidden": BOOL,
+        "continuity_contract": obj(
+            {
+                "same_primary_thread_across_opening_body_ending": BOOL,
+                "cross_segment_bridge_required": BOOL,
+                "allowed_bridge_types": STRINGS,
+                "lookback_allowed_only_for": STRINGS,
+                "lookback_must_return_to_mainline": BOOL,
+                "future_complete_arc_injection_forbidden": BOOL,
+                "unexplained_jump_status": {"type": "string", "const": "blocked"},
+            },
+            required=[],
+        ),
+        "ending_policy": obj(
+            {
+                "preferred_landing": STR,
+                "hook_types": STRINGS,
+                "no_hook_fallback": STR,
+                "no_hook_is_allowed": BOOL,
+                "invented_hook_forbidden": BOOL,
+                "future_arc_after_hook_forbidden": BOOL,
+            },
+            required=[],
+        ),
+        "duration_extension_policy": obj(
+            {
+                "trigger": STR,
+                "minimum_seconds": {"type": "number", "minimum": 0},
+                "order": STRINGS,
+                "after_threshold": STR,
+                "same_primary_thread_only": BOOL,
+                "must_be_forward_chronological": BOOL,
+                "no_cross_thread_fill": BOOL,
+                "no_duplicate_or_functionless_fill": BOOL,
+                "stop_without_evidence": BOOL,
+            },
+            required=[],
+        ),
+        "ending_hook_type": STR,
+        "golden_sample_reference": STR,
+    },
+    required=[],
+)
+
+
+_EDITORIAL_DIAGNOSTIC_FINDING_SCHEMA = obj(
+    {
+        "code": NONEMPTY,
+        "status": {"type": "string", "enum": ["blocked", "review"]},
+        "description": NONEMPTY,
+        "repair_route": NONEMPTY,
+    }
+)
+_EDITORIAL_DIAGNOSTIC_STATUS_SCHEMA = {
+    "type": "string",
+    "enum": ["pass", "review", "blocked"],
+}
+_NULLABLE_STRING_SCHEMA = {"anyOf": [STR, {"type": "null"}]}
+_NULLABLE_BOOLEAN_SCHEMA = {"anyOf": [BOOL, {"type": "null"}]}
+_NULLABLE_NUMBER_SCHEMA = {"anyOf": [NUM, {"type": "null"}]}
+_EDITORIAL_DIAGNOSTIC_OPENING_AUDIT_SCHEMA = obj(
+    {
+        "signal_types": STRINGS,
+        "first_three_seconds_signal": _NULLABLE_BOOLEAN_SCHEMA,
+        "action_or_speech_complete": _NULLABLE_BOOLEAN_SCHEMA,
+        "context_within_8_seconds": _NULLABLE_BOOLEAN_SCHEMA,
+        "lead_in_artifact": _NULLABLE_STRING_SCHEMA,
+        "lead_in_duration_seconds": _NULLABLE_NUMBER_SCHEMA,
+        "source_start_is_effective_opening_frame": _NULLABLE_BOOLEAN_SCHEMA,
+        "effective_opening_frame_note": STR,
+        "cut_risk": _NULLABLE_STRING_SCHEMA,
+    }
+)
+_EDITORIAL_DIAGNOSTIC_OPENING_STRATEGY_SCHEMA = obj(
+    {
+        "strategy": STR,
+        "edit_mode": STR,
+        "explanation_beat_ids": STRINGS,
+        "repeated_in_body": BOOL,
+        "first_repeated_beat_id": STR,
+        "findings": arr(_EDITORIAL_DIAGNOSTIC_FINDING_SCHEMA),
+        "status": _EDITORIAL_DIAGNOSTIC_STATUS_SCHEMA,
+    },
+    required=["strategy", "findings", "status"],
+)
+_EDITORIAL_DIAGNOSTIC_CONTINUITY_SCHEMA = obj(
+    {
+        "status": _EDITORIAL_DIAGNOSTIC_STATUS_SCHEMA,
+        "enforced": BOOL,
+        "lookback_positions": arr({"type": "integer", "minimum": 0}),
+        "findings": arr(_EDITORIAL_DIAGNOSTIC_FINDING_SCHEMA),
+    }
+)
+_EDITORIAL_DIAGNOSTICS_SCHEMA = obj(
+    {
+        "policy_version": NONEMPTY,
+        "status": _EDITORIAL_DIAGNOSTIC_STATUS_SCHEMA,
+        "mainline": STR,
+        "primary_story_thread_id": STR,
+        "thread_sequence": STRINGS,
+        "thread_switch_count": {"type": "integer", "minimum": 0},
+        "secondary_line_share": {"type": "number", "minimum": 0},
+        "secondary_line_shares": obj({}, required=[], additional={"type": "number", "minimum": 0}),
+        "independent_secondary_line_share": {"type": "number", "minimum": 0},
+        "integrated_support_line_share": {"type": "number", "minimum": 0},
+        "integrated_support_thread_ids": STRINGS,
+        "arc_nodes_present": STRINGS,
+        "hook_strength": obj(
+            {
+                "conflict_is_observable": BOOL,
+                "relationship_and_stakes_are_understandable": BOOL,
+                "open_question_remains": BOOL,
+                "signals": {"type": "integer", "minimum": 0},
+            }
+        ),
+        "opening_signal_audit": _EDITORIAL_DIAGNOSTIC_OPENING_AUDIT_SCHEMA,
+        "opening_strategy": _EDITORIAL_DIAGNOSTIC_OPENING_STRATEGY_SCHEMA,
+        "continuity_contract": _EDITORIAL_DIAGNOSTIC_CONTINUITY_SCHEMA,
+        "findings": arr(_EDITORIAL_DIAGNOSTIC_FINDING_SCHEMA),
+        "failure_codes": STRINGS,
+        "repair_routes": STRINGS,
+        "duration_policy_applied": NONEMPTY,
+    }
+)
+
+
 STORY_FEASIBILITY_SCHEMA = obj(
     {
         "status": {
@@ -868,7 +1027,10 @@ STORY_FEASIBILITY_SCHEMA = obj(
         },
         "method": {
             "type": "string",
-            "const": "functional-evidence-duration-v4-direct-atomic-compaction",
+            "enum": [
+                "functional-evidence-duration-v4-direct-atomic-compaction",
+                "functional-evidence-duration-v3-story-coherence",
+            ],
         },
         "assumptions": obj(
             {
@@ -886,6 +1048,12 @@ STORY_FEASIBILITY_SCHEMA = obj(
         ),
         "estimated_source_duration_min_seconds": {"type": "number", "minimum": 0},
         "estimated_source_duration_max_seconds": {"type": "number", "minimum": 0},
+        "meets_5_minimum": BOOL,
+        "meets_10_preferred": BOOL,
+        "soft_target_seconds": {"type": "number", "minimum": 0},
+        "meets_soft_target": BOOL,
+        "soft_target_gap_seconds": {"type": "number", "minimum": 0},
+        "editorial_diagnostics": _EDITORIAL_DIAGNOSTICS_SCHEMA,
         "covered_beat_ids": STRINGS,
         "partial_beat_ids": STRINGS,
         "missing_beat_ids": STRINGS,
@@ -940,6 +1108,8 @@ STORY_FEASIBILITY_SCHEMA = obj(
                 # 保持 shape，具体值为占位（primary_highlight_candidate_id
                 # 空串，duration 0）。
                 "mode": {"type": "string", "enum": ["single_highlight", "none"]},
+                "opening_strategy": STR,
+                "edit_mode": STR,
                 "treatment_option_id": STR,
                 "strategy": {
                     "type": "string",
@@ -965,7 +1135,7 @@ STORY_FEASIBILITY_SCHEMA = obj(
                     "type": "number",
                     # Plan 3: 20s 绝对上限 → 60s DFS 剪枝上界（最终由
                     # ratio 10% 硬合同裁决，见 materialize_story_plans）
-                    "const": 60,
+                    "minimum": 0,
                 },
                 "repeat_contract_status": {
                     "type": "string",
@@ -982,7 +1152,21 @@ STORY_FEASIBILITY_SCHEMA = obj(
                     "type": "string",
                     "enum": ["story_script", "span_compiler"],
                 },
-            }
+            },
+            required=[
+                "mode",
+                "primary_highlight_candidate_id",
+                "candidate_duration_seconds",
+                "physical_obligation_duration_seconds",
+                "mandatory_reprise_event_ids",
+                "maximum_repeat_seconds",
+                "repeat_contract_status",
+                "must_show_ids",
+                "outside_candidate_must_show_ids",
+                "status",
+                "failure_codes",
+                "repair_route",
+            ],
         ),
     },
     required=[
@@ -1000,7 +1184,6 @@ STORY_FEASIBILITY_SCHEMA = obj(
         "highlight_candidate_ids",
         "hook_candidate_ids",
         "material_risks",
-        "treatment_viability",
         "teaser_diagnostics",
     ],
 )
@@ -1014,10 +1197,51 @@ STORY_SCRIPT_SCHEMA = obj(
             if key not in {"beats", "status"}
         },
         "beats": arr(STORY_SCRIPT_BEAT_SCHEMA, min_items=4, max_items=14),
+        "primary_story_thread_id_source": {
+            "type": "string",
+            "enum": [
+                "model",
+                "preflight_inferred",
+                "story_catalog",
+                "treatment_options",
+                "fallback_mainline",
+            ],
+        },
+        "genre_profile": STR,
+        "golden_case_ids": STRINGS,
+        "integrated_support_thread_ids": STRINGS,
+        "editorial_contract": _FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA,
+        "causal_ancestor_episode_range": _FINAL_SCRIPT_ANCESTOR_RANGE_SCHEMA,
+        "required_context_ids": STRINGS,
+        "scope_policy": _FINAL_SCRIPT_SCOPE_POLICY_SCHEMA,
+        "edit_mode": {"type": "string", "enum": ["montage", "original_chronological"]},
+        "edit_mode_reason": STR,
         "feasibility": STORY_FEASIBILITY_SCHEMA,
         "status": {"type": "string", "const": "awaiting_approval"},
     }
 )
+
+# Current preflight materializes these fields as its V3 contract, while
+# persisted V4 records predate them. Keep static validation closed when a
+# field is present; `_validate_v3_finalization_contract` is the version gate
+# that requires the complete set for new V3 output.
+STORY_SCRIPT_SCHEMA["required"] = [
+    field
+    for field in STORY_SCRIPT_SCHEMA["required"]
+    if field
+    not in {
+        "primary_story_thread_id_source",
+        "genre_profile",
+        "golden_case_ids",
+        "integrated_support_thread_ids",
+        "editorial_contract",
+        "causal_ancestor_episode_range",
+        "required_context_ids",
+        "scope_policy",
+        "edit_mode",
+        "edit_mode_reason",
+    }
+]
 
 
 # Reserve replenishment is optional for original Primary Scripts and required
@@ -4327,7 +4551,8 @@ def validate_schema(
             for key in required:
                 if key not in value:
                     errors.append(f"{where}: missing required property {key!r}")
-        if schema.get("additionalProperties") is False and isinstance(properties, dict):
+        additional = schema.get("additionalProperties")
+        if additional is False and isinstance(properties, dict):
             unknown = sorted(set(value) - set(properties))
             if unknown:
                 errors.append(f"{where}: unknown properties {unknown}")
@@ -4338,6 +4563,90 @@ def validate_schema(
                     errors.extend(
                         validate_schema(item, child, where=f"{where}.{key}")
                     )
+                elif isinstance(additional, dict):
+                    errors.extend(validate_schema(item, additional, where=f"{where}.{key}"))
+    return errors
+
+
+def _validate_v3_finalization_contract(value: dict[str, Any]) -> list[str]:
+    """Gate the current preflight generation without invalidating v4 history.
+
+    V3 is emitted by the current ``script_preflight`` and therefore must carry
+    the materialized scope, editorial and diagnostic records. V4 remains the
+    historical persisted format and may lack those records; it is not a path
+    for newly generated output because the producer no longer emits it.
+    """
+    feasibility = value.get("feasibility")
+    if not isinstance(feasibility, dict):
+        return []
+    if feasibility.get("method") != "functional-evidence-duration-v3-story-coherence":
+        return []
+    errors: list[str] = []
+    for name in (
+        "primary_story_thread_id_source",
+        "genre_profile",
+        "golden_case_ids",
+        "integrated_support_thread_ids",
+        "causal_ancestor_episode_range",
+        "required_context_ids",
+    ):
+        if name not in value:
+            errors.append(f"response.{name}: required for v3 preflight finalization")
+    for name in (
+        "meets_5_minimum",
+        "meets_10_preferred",
+        "soft_target_seconds",
+        "meets_soft_target",
+        "soft_target_gap_seconds",
+    ):
+        if name not in feasibility:
+            errors.append(
+                f"response.feasibility.{name}: required for v3 preflight finalization"
+            )
+    required_objects = {
+        "scope_policy": _FINAL_SCRIPT_SCOPE_POLICY_SCHEMA,
+        "editorial_contract": _FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA,
+    }
+    for name, schema in required_objects.items():
+        record = value.get(name)
+        properties = schema["properties"]
+        if not isinstance(record, dict) or not record:
+            errors.append(f"response.{name}: required for v3 preflight finalization")
+            continue
+        if isinstance(properties, dict):
+            missing = sorted(set(properties) - set(record))
+            if missing:
+                errors.append(f"response.{name}: missing v3 finalization fields {missing}")
+    editorial = value.get("editorial_contract")
+    nested_editorial = {
+        "continuity_contract": _FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA["properties"][
+            "continuity_contract"
+        ],
+        "ending_policy": _FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA["properties"][
+            "ending_policy"
+        ],
+        "duration_extension_policy": _FINAL_SCRIPT_EDITORIAL_CONTRACT_SCHEMA[
+            "properties"
+        ]["duration_extension_policy"],
+    }
+    if isinstance(editorial, dict):
+        for name, schema in nested_editorial.items():
+            record = editorial.get(name)
+            properties = schema["properties"]
+            if not isinstance(record, dict) or not record:
+                errors.append(
+                    f"response.editorial_contract.{name}: required for v3 preflight finalization"
+                )
+                continue
+            if isinstance(properties, dict):
+                missing = sorted(set(properties) - set(record))
+                if missing:
+                    errors.append(
+                        f"response.editorial_contract.{name}: missing v3 finalization fields {missing}"
+                    )
+    diagnostics = feasibility.get("editorial_diagnostics")
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        errors.append("response.feasibility.editorial_diagnostics: required for v3 preflight finalization")
     return errors
 
 
@@ -4348,6 +4657,7 @@ def validate_task_response(task: str, value: Any) -> list[str]:
         raise ValueError(f"no response schema for task {task!r}") from exc
     errors = validate_schema(value, schema)
     if task == "story_script" and isinstance(value, dict):
+        errors.extend(_validate_v3_finalization_contract(value))
         beats = value.get("beats")
         if isinstance(beats, list):
             for index, beat in enumerate(beats):
