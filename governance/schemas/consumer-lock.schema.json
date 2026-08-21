@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/consumer-lock/1.0.0",
+  "title": "ConsumerLockReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "authority_governance_commit",
+    "authority_bundle_hash",
+    "kernel_build_receipt_hash",
+    "consumer_lock_blob_hash",
+    "consumer_lock_document_hash",
+    "consumer_repository_commit",
+    "consumer_commit_tree_oid",
+    "eligibility_profile",
+    "profile_policy_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "consumer_lock"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority_governance_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "authority_bundle_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "kernel_build_receipt_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "consumer_lock_blob_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "consumer_lock_document_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "consumer_repository_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "consumer_commit_tree_oid": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "eligibility_profile": {
+      "enum": [
+        "bootstrap_consumable",
+        "execution_eligible",
+        "shadow_eligible",
+        "publication_eligible"
+      ]
+    },
+    "profile_policy_hash": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

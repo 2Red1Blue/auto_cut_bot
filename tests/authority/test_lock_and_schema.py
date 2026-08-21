@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 from authority.common import canonical_hash
+from authority.consumer_lock import validate_consumer_lock_policy
 from authority.errors import GateViolation
 from authority.lock import (
     build_authority_lock,
@@ -98,6 +99,7 @@ def test_governance_manifests_validate_against_closed_schemas() -> None:
         ("authority-sources.yaml", "authority-sources.schema.json"),
         ("blocking-fixtures.manifest.yaml", "blocking-fixtures-manifest.schema.json"),
         ("activation-profiles.yaml", "activation-profiles.schema.json"),
+        ("consumer-lock-policy.yaml", "consumer-lock-policy.schema.json"),
         ("task-authorizations.yaml", "task-authorizations.schema.json"),
         ("model-role-policy.yaml", "model-role-policy.schema.json"),
         ("protected-paths.yaml", "protected-paths.schema.json"),
@@ -111,6 +113,9 @@ def test_governance_manifests_validate_against_closed_schemas() -> None:
         document = yaml.safe_load((REPO_ROOT / "governance" / document_name).read_text())
         schema = json.loads((REPO_ROOT / "governance/schemas" / schema_name).read_text())
         Draft202012Validator(schema).validate(document)
+    validate_consumer_lock_policy(
+        yaml.safe_load((REPO_ROOT / "governance/consumer-lock-policy.yaml").read_text())
+    )
 
 
 def test_git_blob_lock_is_deterministic_and_ignores_dirty_checkout(tmp_path: Path) -> None:

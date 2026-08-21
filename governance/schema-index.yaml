@@ -1,5 +1,10 @@
 schema_version: 1.0.0
 schemas:
+  AuthorityConsumerLock: schemas/authority-consumer-lock.schema.json
+  ConsumerLockPolicy: schemas/consumer-lock-policy.schema.json
+  ConsumerLockReadinessReceipt: schemas/consumer-lock-readiness.schema.json
+  KernelBuildReceipt: schemas/kernel-build.schema.json
+  ConsumerLockReceipt: schemas/consumer-lock.schema.json
   SourceCandidateReceipt: schemas/source-candidate.schema.json
   AuthorityLock: schemas/authority-lock.schema.json
   AuthoritySources: schemas/authority-sources.schema.json

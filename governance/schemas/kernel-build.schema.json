@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/kernel-build/1.0.0",
+  "title": "KernelBuildReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "authority_governance_commit",
+    "authority_lock_document_hash",
+    "authority_bundle_hash",
+    "kernel_source_commit",
+    "kernel_source_subtree_hash",
+    "distribution_name",
+    "distribution_version",
+    "wheel_filename",
+    "wheel_tag",
+    "wheel_size_bytes",
+    "wheel_sha256",
+    "build_recipe_hash",
+    "environment_lock_hash",
+    "provenance_receipt_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "kernel_build"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority_governance_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "authority_lock_document_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_bundle_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "kernel_source_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "kernel_source_subtree_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "distribution_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "distribution_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wheel_filename": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wheel_tag": {
+      "type": "string",
+      "minLength": 1
+    },
+    "wheel_size_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "wheel_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_recipe_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "environment_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "provenance_receipt_hash": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

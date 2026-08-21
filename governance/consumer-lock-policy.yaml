@@ -1,0 +1,72 @@
+schema_version: 1.0.0
+profiles:
+  bootstrap_consumable:
+    materialization_required_receipt_types:
+      - KernelBuildReceipt
+    post_commit_required_receipt_types:
+      - ConsumerLockReceipt
+    capability_ceiling:
+      kernel_import: true
+      packaging_smoke: true
+      command_dispatch: false
+      authority_store_write: false
+      business_execution: false
+      shadow_output: false
+      publication: false
+  execution_eligible:
+    materialization_required_receipt_types:
+      - ArtifactStoreKernelReceipt
+      - CommandAdmissionReceipt
+      - ContractRegistryReceipt
+      - KernelBuildReceipt
+    post_commit_required_receipt_types:
+      - ConsumerLockReceipt
+    capability_ceiling:
+      kernel_import: true
+      packaging_smoke: true
+      command_dispatch: true
+      authority_store_write: true
+      business_execution: true
+      shadow_output: false
+      publication: false
+  shadow_eligible:
+    materialization_required_receipt_types:
+      - ArtifactStoreKernelReceipt
+      - CommandAdmissionReceipt
+      - ContractRegistryReceipt
+      - DualRuntimeConformanceReceipt
+      - KernelBuildReceipt
+      - MediaPreflightCalibrationReceipt
+      - RuntimeConformanceReceipt
+    post_commit_required_receipt_types:
+      - ConsumerLockReceipt
+    capability_ceiling:
+      kernel_import: true
+      packaging_smoke: true
+      command_dispatch: true
+      authority_store_write: true
+      business_execution: true
+      shadow_output: true
+      publication: false
+  publication_eligible:
+    materialization_required_receipt_types:
+      - ArtifactStoreKernelReceipt
+      - CommandAdmissionReceipt
+      - ContractRegistryReceipt
+      - DualRuntimeConformanceReceipt
+      - KernelBuildReceipt
+      - MediaPreflightCalibrationReceipt
+      - PlatformPublicationCertificationReceipt
+      - PublicationQCReceipt
+      - ReleaseAdmissionReceipt
+      - RuntimeConformanceReceipt
+    post_commit_required_receipt_types:
+      - ConsumerLockReceipt
+    capability_ceiling:
+      kernel_import: true
+      packaging_smoke: true
+      command_dispatch: true
+      authority_store_write: true
+      business_execution: true
+      shadow_output: true
+      publication: true

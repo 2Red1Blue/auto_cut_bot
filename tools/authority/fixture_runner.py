@@ -21,6 +21,14 @@ from .common import (
     sha256_file,
 )
 from .conformance_gates import audit_candidate_tree, verify_validation_receipt_set
+from .consumer_lock import (
+    CONSUMER_LOCK_PATH,
+    assert_phase00_consumer_lock_absent,
+    authorize_consumer_lock_use,
+    build_authority_consumer_lock,
+    make_kernel_build_receipt,
+    validate_authority_consumer_lock,
+)
 from .errors import GateViolation
 from .lock import verify_bootstrap_commit_chain
 from .receipts import make_typed_receipt
@@ -151,6 +159,9 @@ def _execute_fixture(runner_id: str, path: Path, model_policy: dict[str, Any]) -
             command_results=[],
         )
         return
+    if runner_id == "consumer_lock_negative":
+        _execute_consumer_lock_fixture(payload, path.parents[4])
+        return
     if runner_id in {
         "candidate_secret",
         "candidate_collision",
@@ -172,6 +183,92 @@ def _execute_fixture(runner_id: str, path: Path, model_policy: dict[str, Any]) -
         validate_model_role(manifest, model_policy)
     else:
         raise GateViolation("AUTH-FIXTURE-RUNNER", f"unknown runner: {runner_id}")
+
+
+def _consumer_lock_fixture_values(
+    repository_root: Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    policy = load_mapping(repository_root / "governance/consumer-lock-policy.yaml")
+    authority_hash = "sha256:" + "1" * 64
+    receipt = make_kernel_build_receipt(
+        authority_bundle_hash=authority_hash,
+        task_id="protected-fixture",
+        authority_governance_commit="a" * 40,
+        authority_lock_document_hash="sha256:" + "2" * 64,
+        kernel_source_commit="b" * 40,
+        kernel_source_subtree_hash="sha256:" + "3" * 64,
+        distribution_name="autocut-kernel",
+        distribution_version="2.1.3.dev1",
+        wheel_filename="autocut_kernel-2.1.3.dev1-py3-none-any.whl",
+        wheel_tag="py3-none-any",
+        wheel_size_bytes=4096,
+        wheel_sha256="sha256:" + "4" * 64,
+        build_recipe_hash="sha256:" + "5" * 64,
+        environment_lock_hash="sha256:" + "6" * 64,
+        provenance_receipt_hash="sha256:" + "7" * 64,
+    )
+    lock = build_authority_consumer_lock(
+        kernel_build_receipt=receipt,
+        eligibility_profile="bootstrap_consumable",
+        profile_policy=policy,
+        verified_materialization_receipt_hashes={"KernelBuildReceipt": str(receipt["receipt_id"])},
+    )
+    return policy, receipt, lock
+
+
+def _execute_consumer_lock_fixture(payload: dict[str, Any], repository_root: Path) -> None:
+    case = payload.get("case")
+    policy, receipt, lock = _consumer_lock_fixture_values(repository_root)
+    if case == "phase00_materialized":
+        with tempfile.TemporaryDirectory(prefix="consumer-lock-phase00-") as raw_root:
+            root = Path(raw_root)
+            target = root / CONSUMER_LOCK_PATH
+            target.parent.mkdir(parents=True)
+            target.write_text("state: pending\n", encoding="utf-8")
+            assert_phase00_consumer_lock_absent(consumer_repository_root=root)
+        return
+    if case in {
+        "pending_placeholder",
+        "authority_hash_mismatch",
+        "kernel_source_hash_mismatch",
+        "wheel_hash_mismatch",
+        "self_reference",
+    }:
+        mutated = copy.deepcopy(lock)
+        if case == "pending_placeholder":
+            mutated["distribution_version"] = str(payload.get("value", "pending"))
+        elif case == "authority_hash_mismatch":
+            mutated["authority_bundle_hash"] = "sha256:" + "8" * 64
+        elif case == "kernel_source_hash_mismatch":
+            mutated["kernel_source_subtree_hash"] = "sha256:" + "8" * 64
+        elif case == "wheel_hash_mismatch":
+            mutated["wheel_sha256"] = "sha256:" + "8" * 64
+        else:
+            mutated["consumer_repository_commit"] = "c" * 40
+        validate_authority_consumer_lock(
+            mutated, profile_policy=policy, kernel_build_receipt=receipt
+        )
+        return
+    if case in {
+        "bootstrap_writer",
+        "bootstrap_business",
+        "bootstrap_shadow",
+        "bootstrap_publish",
+    }:
+        capability = {
+            "bootstrap_writer": "authority_store_write",
+            "bootstrap_business": "business_execution",
+            "bootstrap_shadow": "shadow_output",
+            "bootstrap_publish": "publication",
+        }[str(case)]
+        authorize_consumer_lock_use(
+            lock=lock,
+            profile_policy=policy,
+            requested_capabilities=[capability],
+            verified_post_commit_receipts=[],
+        )
+        return
+    raise GateViolation("AUTH-FIXTURE-RUNNER", f"unknown consumer lock case: {case}")
 
 
 def _git(root: Path, *args: str, input_text: str | None = None) -> str:

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/authority-consumer-lock/1.0.0",
+  "title": "AuthorityConsumerLock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "contract_version", "authority_governance_commit",
+    "authority_lock_document_hash", "authority_bundle_hash", "kernel_source_commit",
+    "kernel_source_subtree_hash", "distribution_name", "distribution_version",
+    "wheel_filename", "wheel_tag", "wheel_size_bytes", "wheel_sha256",
+    "build_recipe_hash", "environment_lock_hash", "provenance_receipt_hash",
+    "eligibility_profile", "profile_policy_hash", "materialization_receipts"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "contract_version": {"const": "2.1.3"},
+    "authority_governance_commit": {"$ref": "#/$defs/git_oid"},
+    "authority_lock_document_hash": {"$ref": "#/$defs/sha256"},
+    "authority_bundle_hash": {"$ref": "#/$defs/sha256"},
+    "kernel_source_commit": {"$ref": "#/$defs/git_oid"},
+    "kernel_source_subtree_hash": {"$ref": "#/$defs/sha256"},
+    "distribution_name": {"type": "string", "minLength": 1},
+    "distribution_version": {"type": "string", "minLength": 1},
+    "wheel_filename": {"type": "string", "pattern": "^[^/\\\\]+\\.whl$"},
+    "wheel_tag": {"type": "string", "minLength": 1},
+    "wheel_size_bytes": {"type": "integer", "minimum": 1},
+    "wheel_sha256": {"$ref": "#/$defs/sha256"},
+    "build_recipe_hash": {"$ref": "#/$defs/sha256"},
+    "environment_lock_hash": {"$ref": "#/$defs/sha256"},
+    "provenance_receipt_hash": {"$ref": "#/$defs/sha256"},
+    "eligibility_profile": {"$ref": "#/$defs/profile"},
+    "profile_policy_hash": {"$ref": "#/$defs/sha256"},
+    "materialization_receipts": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["receipt_type", "receipt_hash"],
+        "properties": {
+          "receipt_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]+Receipt$"},
+          "receipt_hash": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "git_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "profile": {"enum": ["bootstrap_consumable", "execution_eligible", "shadow_eligible", "publication_eligible"]}
+  }
+}

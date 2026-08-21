@@ -343,6 +343,7 @@ def validate_task_manifest(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
     require_sha256(manifest["authority_lock_hash"], where="authority_lock_hash")
     if manifest["activation_profile"] not in {
         "authority_bootstrap",
+        "authority_package_skeleton",
         "contract_foundation",
         "kernel_execution",
         "stage_business",

@@ -23,7 +23,7 @@ verify_history(remote_snapshot, candidate_commit, policy) -> push_decision
 - `unknown|not_run|stale|input_mismatch` 全部 deny；已激活 predicate 不能标记 not_applicable。
 - 未激活业务 predicate 只能由 authority-locked activation profile 产生 `not_applicable` receipt；task manifest 自填 N/A 不构成证据。
 - authority task 的 protected-path 许可只来自 authority-locked `task-authorizations.yaml`；task 自己的 `authority_change` 字段只描述影响，不授予权限。
-- 只有 `RuntimeConformanceReceipt` 在 authority-locked activation predicate 尚未启用时可使用 `not_applicable`；Task/Scope/Candidate/Commit/History/Push 等 receipt 的 decision 封闭为 `allow|deny`。
+- 只有 `RuntimeConformanceReceipt` 和 Phase-00 专用的 `ConsumerLockReadinessReceipt` 可在 authority-locked activation predicate 尚未启用时使用 `not_applicable`；后者必须同时证明 reserved lock path 不存在且 reason 为 `kernel_build_not_yet_available`。Task/Scope/Candidate/Commit/History/Push 等 receipt 的 decision 封闭为 `allow|deny`。
 - `verify-change` 必须重新运行 task、scope、reference、reuse、candidate、validation 与 independent-check leaf gate，并以真实 per-repository Git tree OID 闭合 receipt；禁止把 SHA-256 截断或重编码成 Git OID。
 - `verify-push` 必须在 commit-tree 等同性后重新调用 authority-approved live provider collector，再扫描 outgoing history；离线/self-reported remote snapshot 只能产生 deny。
 - activation/model/protected/remote policy 均从 authority lock 指向的 Git blob 加载。validation 必须由隔离 command runner 执行，checker 必须来自 approved live checker-run collector；collector 不可用时明确 deny，不能降级为 caller JSON。
@@ -33,6 +33,9 @@ verify_history(remote_snapshot, candidate_commit, policy) -> push_decision
 - Aggregate gate 必须证明 `IndependentCheckReceipt.checker_command_results_hash == ValidationReceiptSet.command_results_hash`，并在签发前重新读取 task manifest、context bytes/hash 与 index tree，任何 TOCTOU 漂移都 deny。
 - authority bootstrap 固定为 A（reviewed sources）→ B（唯一变更 inventory）→ C（唯一变更 generated lock），且 B/C 都必须是单父提交。
 - A 之前先对真实 Git index 执行 `verify-source-candidate`；A 不得混入 inventory 或 generated lock。`verify-change` 与 `verify-push` CLI 是最终许可入口，leaf receipt 不能替代 aggregate decision。
+- Phase -1 顺序固定为 `00 → 02 → 01`：`00` 使用 `authority_bootstrap` profile，只冻结 consumer-lock/readiness/kernel-build/post-commit receipt schemas 与 generator/verifier，签发 `not_materialized:kernel_build_not_yet_available`，且 reserved consumer lock path 必须不存在；`02` 必须切换到 `authority_package_skeleton` profile，此时 materialization predicate 已激活，必须从 exact source/subtree isolated wheel 首次物化 `bootstrap_consumable` lock，不能继续 N/A。
+- consumer lock 不允许 `pending|placeholder`，也不得包含 consumer commit/tree/hash。它必须闭合 authority governance/lock/bundle、kernel source/subtree、distribution/wheel、build recipe/environment/provenance 与 eligibility required receipts；commit 后另由 `ConsumerLockReceipt` 绑定 lock blob 与 consumer commit tree。
+- `bootstrap_consumable` 只允许 build/install/import smoke；authority writer、业务 Command、Store write、shadow 与 publication 都 deny。`execution_eligible|shadow_eligible|publication_eligible` 必须由 authority-locked profile 和 closed receipts 升级。
 
 ## 4. Validation & Error Matrix
 
@@ -45,6 +48,8 @@ verify_history(remote_snapshot, candidate_commit, policy) -> push_decision
 | upstream capability 无 mapping/disposition | merge deny |
 | baseline 失败不可复算或 changed-scope 新失败 | commit deny |
 | remote protection 缺失、可绕过或 attestation stale | push deny |
+| Phase 00 出现 consumer lock、pending/placeholder 或 self-reference | task/commit deny |
+| consumer lock authority/source/wheel/build hash 不匹配或 eligibility 越权 | startup/commit deny |
 
 ## 5. Good / Base / Bad Cases
 
@@ -61,6 +66,7 @@ verify_history(remote_snapshot, candidate_commit, policy) -> push_decision
 - sync/drift/package shims；
 - commit/push 独立状态和 unprotected remote；
 - activation profile not_applicable 合法与越权反例。
+- consumer lock premature materialization、placeholder、hash mismatch、bootstrap capability escalation、自引用与 canonical post-commit binding。
 
 ## 7. Wrong vs Correct
 

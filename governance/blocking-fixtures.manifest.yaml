@@ -97,3 +97,69 @@ fixtures:
     sha256: sha256:e84ae68aaec5373716f2c37833ae317c668d83f4e8920579603617c9a43b960b
     expected_decision: deny
     expected_reason_code: AUTH-PRE-A-PHASE-MIX
+  - fixture_id: AUTH-CONSUMER-PHASE00-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-phase00.json
+    sha256: sha256:6279144b3de1f7eb99705d28b29655273c2cf8c5ab722d0fef370de181e4c2f1
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-LOCK-PREMATURE
+  - fixture_id: AUTH-CONSUMER-PENDING-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-pending.json
+    sha256: sha256:cdc3c6d44a218fe747b1d28e482ea988e0a906904776295399ebe39ae6764c98
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-LOCK-PLACEHOLDER
+  - fixture_id: AUTH-CONSUMER-PLACEHOLDER-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-placeholder.json
+    sha256: sha256:64ed64b71cc8e2c499f342edcc497d9f96abb83995bf3c6c01da5476e00be1e0
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-LOCK-PLACEHOLDER
+  - fixture_id: AUTH-CONSUMER-AUTH-HASH-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-authority-hash.json
+    sha256: sha256:dccd317fd1279f063f00033bc50fe35a2c810b346b3642c8155f556993666be0
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-AUTHORITY-HASH
+  - fixture_id: AUTH-CONSUMER-SOURCE-HASH-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-source-hash.json
+    sha256: sha256:04ccdf97852ee6243004327e189a986b5e867018bba9810c286304cc4912f48e
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-KERNEL-MISMATCH
+  - fixture_id: AUTH-CONSUMER-WHEEL-HASH-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-wheel-hash.json
+    sha256: sha256:0b6b2924c0b6ff725b7d9ff13e5dff3911de19147d3c1295c3d289f00979a34f
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-KERNEL-MISMATCH
+  - fixture_id: AUTH-CONSUMER-BOOTSTRAP-WRITE-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-writer.json
+    sha256: sha256:55224ce9b4344f982d11f8db425d71d494ac7c183fac0f0a0f6b9d587ee99e7f
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-CAPABILITY-DENY
+  - fixture_id: AUTH-CONSUMER-BOOTSTRAP-BUSINESS-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-business.json
+    sha256: sha256:7df990de5eea1fd7aa45b029e35edc3d9618e238e7c6704b8ae3126b2c4dbc4f
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-CAPABILITY-DENY
+  - fixture_id: AUTH-CONSUMER-BOOTSTRAP-SHADOW-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-shadow.json
+    sha256: sha256:83284f7761a1113b9b5acc5d4dcb4c85f15fa7ec5025489b2d38df628eccdb35
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-CAPABILITY-DENY
+  - fixture_id: AUTH-CONSUMER-BOOTSTRAP-PUBLISH-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-publish.json
+    sha256: sha256:77f021ed3de8e1bc2a998b6522e4c0e6f795257c31d68b5a17a34fdd9d505d48
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-CAPABILITY-DENY
+  - fixture_id: AUTH-CONSUMER-SELF-REF-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-self-reference.json
+    sha256: sha256:e14ea1da1a681c4ca0c1e0c126da3fe4d65f20384f19b6a65b844ee09eac7875
+    expected_decision: deny
+    expected_reason_code: AUTH-SCHEMA-EXTRA

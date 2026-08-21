@@ -15,7 +15,7 @@
         "required": ["fixture_id", "runner_id", "path", "sha256", "expected_decision", "expected_reason_code"],
         "properties": {
           "fixture_id": {"type": "string", "pattern": "^AUTH-[A-Z0-9-]+$"},
-          "runner_id": {"enum": ["task_manifest_mutation", "model_role_mutation", "context_content", "receipt_decision", "offline_remote_evidence", "candidate_secret", "candidate_collision", "candidate_legal_session", "candidate_synthetic_profile", "candidate_synthetic_outside", "bootstrap_chain", "pre_a_phase_mix", "fake_tree_oid", "validation_self_report"]},
+          "runner_id": {"enum": ["task_manifest_mutation", "model_role_mutation", "context_content", "receipt_decision", "offline_remote_evidence", "candidate_secret", "candidate_collision", "candidate_legal_session", "candidate_synthetic_profile", "candidate_synthetic_outside", "bootstrap_chain", "pre_a_phase_mix", "fake_tree_oid", "validation_self_report", "consumer_lock_negative"]},
           "path": {"type": "string", "minLength": 1},
           "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
           "expected_decision": {"enum": ["allow", "deny"]},

@@ -9,7 +9,7 @@
   ],
   "files": [
     {"path": "backend/authority-bootstrap-block.md", "sha256": "sha256:f19f185dd34aa0f6f12ef88a8e77ca4afe9bc1e4acabf2802941b64e2fb46cbe"},
-    {"path": "backend/implementation-conformance-gates.md", "sha256": "sha256:41f13d633130863e6cb69e664f8e47769db8a5db32d874010c29f77ac77b9423"},
+    {"path": "backend/implementation-conformance-gates.md", "sha256": "sha256:30d0ce4619c38c905f5de4a16e9c6c0771d715bd704138f3a7111d23041d86c9"},
     {"path": "backend/index.md", "sha256": "sha256:c343a2fd7def1dc014f68203e7f37b8bf1f4625ecf1072fda69ca7a675c78884"},
     {"path": "auto_cut_bot/backend/index.md", "sha256": "sha256:db256e0d66e068de543197343ab00e87d6f3d00d510ec88b465377560e52a3ff"},
     {"path": "ac_auto_cut/backend/index.md", "sha256": "sha256:6c4911f8b0529d5fe40ab0589e026f851f20e007c53711607c1efd4180ef7f00"}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/consumer-lock-policy/1.0.0",
+  "title": "ConsumerLockPolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bootstrap_consumable", "execution_eligible", "shadow_eligible", "publication_eligible"],
+      "properties": {
+        "bootstrap_consumable": {"$ref": "#/$defs/profile"},
+        "execution_eligible": {"$ref": "#/$defs/profile"},
+        "shadow_eligible": {"$ref": "#/$defs/profile"},
+        "publication_eligible": {"$ref": "#/$defs/profile"}
+      }
+    }
+  },
+  "$defs": {
+    "receipt_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]+Receipt$"},
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["materialization_required_receipt_types", "post_commit_required_receipt_types", "capability_ceiling"],
+      "properties": {
+        "materialization_required_receipt_types": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/receipt_type"}
+        },
+        "post_commit_required_receipt_types": {
+          "type": "array", "minItems": 1, "maxItems": 1, "uniqueItems": true,
+          "items": {"const": "ConsumerLockReceipt"}
+        },
+        "capability_ceiling": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kernel_import", "packaging_smoke", "command_dispatch", "authority_store_write", "business_execution", "shadow_output", "publication"],
+          "properties": {
+            "kernel_import": {"type": "boolean"},
+            "packaging_smoke": {"type": "boolean"},
+            "command_dispatch": {"type": "boolean"},
+            "authority_store_write": {"type": "boolean"},
+            "business_execution": {"type": "boolean"},
+            "shadow_output": {"type": "boolean"},
+            "publication": {"type": "boolean"}
+          }
+        }
+      }
+    }
+  }
+}

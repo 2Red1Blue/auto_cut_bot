@@ -17,7 +17,7 @@
     "task_id": {"type": "string", "minLength": 1},
     "task_type": {"enum": ["implementation", "authority_change"]},
     "risk_class": {"enum": ["authority", "high", "bounded", "mechanical"]},
-    "activation_profile": {"enum": ["authority_bootstrap", "contract_foundation", "kernel_execution", "stage_business", "cutover"]},
+    "activation_profile": {"enum": ["authority_bootstrap", "authority_package_skeleton", "contract_foundation", "kernel_execution", "stage_business", "cutover"]},
     "authority_lock_hash": {"$ref": "#/$defs/sha256"},
     "registry_binding": {
       "oneOf": [
@@ -31,7 +31,7 @@
           "required": ["kind", "profile", "minimum_phase", "current_phase", "reason", "authority_hash"],
           "properties": {
             "kind": {"const": "not_applicable"},
-            "profile": {"enum": ["authority_bootstrap", "contract_foundation", "kernel_execution", "stage_business", "cutover"]},
+            "profile": {"enum": ["authority_bootstrap", "authority_package_skeleton", "contract_foundation", "kernel_execution", "stage_business", "cutover"]},
             "minimum_phase": {"$ref": "#/$defs/phase"},
             "current_phase": {"$ref": "#/$defs/phase"},
             "reason": {"type": "string", "minLength": 1},

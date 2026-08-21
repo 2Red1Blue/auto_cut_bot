@@ -3,25 +3,36 @@ profiles:
   authority_bootstrap:
     current_phase: phase_minus_1
     predicates:
+      consumer_lock_materialized: {minimum_phase: phase_0}
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}
+  authority_package_skeleton:
+    current_phase: phase_minus_1
+    predicates:
+      consumer_lock_materialized: {minimum_phase: phase_minus_1}
       registry_conformance: {minimum_phase: phase_0}
       runtime_conformance: {minimum_phase: phase_4}
   contract_foundation:
     current_phase: phase_0
     predicates:
+      consumer_lock_materialized: {minimum_phase: phase_0}
       registry_conformance: {minimum_phase: phase_0}
       runtime_conformance: {minimum_phase: phase_4}
   kernel_execution:
     current_phase: phase_1
     predicates:
+      consumer_lock_materialized: {minimum_phase: phase_0}
       registry_conformance: {minimum_phase: phase_0}
       runtime_conformance: {minimum_phase: phase_4}
   stage_business:
     current_phase: phase_4
     predicates:
+      consumer_lock_materialized: {minimum_phase: phase_0}
       registry_conformance: {minimum_phase: phase_0}
       runtime_conformance: {minimum_phase: phase_4}
   cutover:
     current_phase: phase_6
     predicates:
+      consumer_lock_materialized: {minimum_phase: phase_0}
       registry_conformance: {minimum_phase: phase_0}
       runtime_conformance: {minimum_phase: phase_4}

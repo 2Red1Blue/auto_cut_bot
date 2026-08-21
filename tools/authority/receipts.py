@@ -26,6 +26,45 @@ from .errors import GateViolation
 FieldKind = str
 
 RECEIPT_FIELDS: dict[str, dict[str, FieldKind]] = {
+    "consumer_lock_readiness": {
+        "task_id": "string",
+        "authority_governance_commit": "git_oid",
+        "authority_bundle_hash": "sha256",
+        "consumer_repository_commit": "git_oid",
+        "consumer_lock_path": "string",
+        "state": "consumer_lock_readiness_state",
+        "reason": "consumer_lock_readiness_reason",
+        "profile_policy_hash": "sha256",
+    },
+    "kernel_build": {
+        "task_id": "string",
+        "authority_governance_commit": "git_oid",
+        "authority_lock_document_hash": "sha256",
+        "authority_bundle_hash": "sha256",
+        "kernel_source_commit": "git_oid",
+        "kernel_source_subtree_hash": "sha256",
+        "distribution_name": "string",
+        "distribution_version": "string",
+        "wheel_filename": "string",
+        "wheel_tag": "string",
+        "wheel_size_bytes": "positive_integer",
+        "wheel_sha256": "sha256",
+        "build_recipe_hash": "sha256",
+        "environment_lock_hash": "sha256",
+        "provenance_receipt_hash": "sha256",
+    },
+    "consumer_lock": {
+        "task_id": "string",
+        "authority_governance_commit": "git_oid",
+        "authority_bundle_hash": "sha256",
+        "kernel_build_receipt_hash": "sha256",
+        "consumer_lock_blob_hash": "sha256",
+        "consumer_lock_document_hash": "sha256",
+        "consumer_repository_commit": "git_oid",
+        "consumer_commit_tree_oid": "git_oid",
+        "eligibility_profile": "consumer_lock_profile",
+        "profile_policy_hash": "sha256",
+    },
     "source_candidate": {
         "task_id": "string",
         "predecessor_commit": "git_oid",
@@ -176,6 +215,9 @@ RECEIPT_FIELDS: dict[str, dict[str, FieldKind]] = {
 }
 
 TITLES = {
+    "consumer_lock_readiness": "ConsumerLockReadinessReceipt",
+    "kernel_build": "KernelBuildReceipt",
+    "consumer_lock": "ConsumerLockReceipt",
     "source_candidate": "SourceCandidateReceipt",
     "task_admission": "TaskAdmissionReceipt",
     "authority_reference": "AuthorityReferenceReceipt",
@@ -194,7 +236,7 @@ TITLES = {
     "push_verification": "PushVerificationReceipt",
 }
 
-NOT_APPLICABLE_RECEIPT_TYPES = frozenset({"runtime_conformance"})
+NOT_APPLICABLE_RECEIPT_TYPES = frozenset({"consumer_lock_readiness", "runtime_conformance"})
 
 PHASES = [
     "phase_minus_1",
@@ -227,6 +269,21 @@ def _schema_for_kind(kind: FieldKind) -> dict[str, Any]:
         return {"enum": PHASES}
     if kind == "predicate_status":
         return {"enum": ["pass", "fail", "not_applicable"]}
+    if kind == "positive_integer":
+        return {"type": "integer", "minimum": 1}
+    if kind == "consumer_lock_readiness_state":
+        return {"const": "not_materialized"}
+    if kind == "consumer_lock_readiness_reason":
+        return {"const": "kernel_build_not_yet_available"}
+    if kind == "consumer_lock_profile":
+        return {
+            "enum": [
+                "bootstrap_consumable",
+                "execution_eligible",
+                "shadow_eligible",
+                "publication_eligible",
+            ]
+        }
     raise AssertionError(f"unregistered field kind: {kind}")
 
 
@@ -237,13 +294,17 @@ def receipt_schema(receipt_type: str) -> dict[str, Any]:
         "receipt_type": {"const": receipt_type},
         "receipt_id": {"$ref": "#/$defs/sha256"},
         "authority_lock_hash": {"$ref": "#/$defs/sha256"},
-        "decision": {
-            "enum": (
-                ["allow", "deny", "not_applicable"]
-                if receipt_type in NOT_APPLICABLE_RECEIPT_TYPES
-                else ["allow", "deny"]
-            )
-        },
+        "decision": (
+            {"const": "not_applicable"}
+            if receipt_type == "consumer_lock_readiness"
+            else {
+                "enum": (
+                    ["allow", "deny", "not_applicable"]
+                    if receipt_type in NOT_APPLICABLE_RECEIPT_TYPES
+                    else ["allow", "deny"]
+                )
+            }
+        ),
         "reason_codes": {
             "type": "array",
             "items": {"type": "string", "minLength": 1},
@@ -302,6 +363,26 @@ def _validate_field(kind: FieldKind, value: Any, *, where: str) -> None:
     elif kind == "predicate_status":
         if value not in {"pass", "fail", "not_applicable"}:
             raise GateViolation("AUTH-RECEIPT-FIELD", f"{where} has unknown status")
+    elif kind == "positive_integer":
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise GateViolation("AUTH-RECEIPT-FIELD", f"{where} must be a positive integer")
+    elif kind == "consumer_lock_readiness_state":
+        if value != "not_materialized":
+            raise GateViolation("AUTH-RECEIPT-FIELD", f"{where} must be not_materialized")
+    elif kind == "consumer_lock_readiness_reason":
+        if value != "kernel_build_not_yet_available":
+            raise GateViolation(
+                "AUTH-RECEIPT-FIELD",
+                f"{where} must be kernel_build_not_yet_available",
+            )
+    elif kind == "consumer_lock_profile":
+        if value not in {
+            "bootstrap_consumable",
+            "execution_eligible",
+            "shadow_eligible",
+            "publication_eligible",
+        }:
+            raise GateViolation("AUTH-RECEIPT-FIELD", f"{where} has unknown profile")
     else:  # pragma: no cover - registry and generator are co-located
         raise AssertionError(kind)
 
@@ -326,9 +407,13 @@ def validate_typed_receipt(receipt: Mapping[str, Any], *, expected_type: str | N
     require_sha256(receipt["receipt_id"], where="receipt_id")
     require_sha256(receipt["authority_lock_hash"], where="authority_lock_hash")
     allowed_decisions = (
-        {"allow", "deny", "not_applicable"}
-        if receipt_type in NOT_APPLICABLE_RECEIPT_TYPES
-        else {"allow", "deny"}
+        {"not_applicable"}
+        if receipt_type == "consumer_lock_readiness"
+        else (
+            {"allow", "deny", "not_applicable"}
+            if receipt_type in NOT_APPLICABLE_RECEIPT_TYPES
+            else {"allow", "deny"}
+        )
     )
     if receipt["decision"] not in allowed_decisions:
         raise GateViolation(
@@ -350,6 +435,17 @@ def validate_typed_receipt(receipt: Mapping[str, Any], *, expected_type: str | N
         raise GateViolation("AUTH-RECEIPT-ALLOW-REASONS", "allow receipt cannot contain failures")
     if receipt["decision"] == "deny" and not reason_codes:
         raise GateViolation("AUTH-RECEIPT-DENY-REASONS", "deny receipt needs a reason code")
+    if receipt_type == "consumer_lock_readiness" and reason_codes:
+        raise GateViolation(
+            "AUTH-RECEIPT-READINESS-REASONS",
+            "not-materialized readiness uses its closed reason field, not failure codes",
+        )
+    if receipt_type in {"consumer_lock_readiness", "kernel_build", "consumer_lock"}:
+        if receipt["authority_lock_hash"] != receipt["authority_bundle_hash"]:
+            raise GateViolation(
+                "AUTH-RECEIPT-AUTHORITY-MISMATCH",
+                "consumer-bound receipt authority hashes differ",
+            )
 
 
 def make_typed_receipt(
