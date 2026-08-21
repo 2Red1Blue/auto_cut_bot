@@ -11,6 +11,9 @@ from autocut_core.contracts.teaser_contract import (
     TEASER_MAXIMUM_SECONDS,
     TEASER_PREFERRED_MINIMUM_SECONDS,
 )
+from autocut_core.contracts.story_script_causal import (
+    validate_story_script_causal_dependency,
+)
 from autocut_core.schema.window import WINDOW_ANALYSIS_SCHEMA
 
 # 共享的 helper 函数 (与旧 story_schemas.py 完全一致)
@@ -640,6 +643,30 @@ STORY_SCRIPT_BEAT_SCHEMA = obj(
             ],
         },
         "material_risks": STRINGS,
+        # preflight 物化的因果依赖（开场高光解释合同，结构对齐 script_preflight 实现）
+        "causal_dependency": obj(
+            {
+                "explains_opening_highlight": BOOL,
+                "required_before_fact_ids": STRINGS,
+                "required_relationship_ids": STRINGS,
+                "required_event_ids": STRINGS,
+                "required_thread_beat_ids": STRINGS,
+                "causal_ancestor_episode_range": obj(
+                    {
+                        "min_episode": {"type": "integer", "minimum": 1},
+                        "max_episode": {"type": "integer", "minimum": 1},
+                        "reason": STR,
+                    }
+                ),
+                "cross_unit_retrieval": obj(
+                    {
+                        "required": BOOL,
+                        "source_unit_ids": STRINGS,
+                        "retrieval_status": STR,
+                    }
+                ),
+            }
+        ),
         "physical_evidence": obj(
             {
                 "physical_ranges": arr(
@@ -4293,6 +4320,16 @@ def validate_task_response(task: str, value: Any) -> list[str]:
         schema = SCHEMAS[task]
     except KeyError as exc:
         raise ValueError(f"no response schema for task {task!r}") from exc
-    return validate_schema(value, schema)
-
-
+    errors = validate_schema(value, schema)
+    if task == "story_script" and isinstance(value, dict):
+        beats = value.get("beats")
+        if isinstance(beats, list):
+            for index, beat in enumerate(beats):
+                if isinstance(beat, dict):
+                    errors.extend(
+                        validate_story_script_causal_dependency(
+                            beat.get("causal_dependency"),
+                            where=f"response.beats[{index}].causal_dependency",
+                        )
+                    )
+    return errors
