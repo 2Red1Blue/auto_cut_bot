@@ -102,7 +102,7 @@ fixtures:
     path: tests/authority/fixtures/protected/bad-consumer-lock-phase00.json
     sha256: sha256:6279144b3de1f7eb99705d28b29655273c2cf8c5ab722d0fef370de181e4c2f1
     expected_decision: deny
-    expected_reason_code: AUTH-CONSUMER-LOCK-PREMATURE
+    expected_reason_code: AUTH-CONSUMER-LOCK-WORKTREE
   - fixture_id: AUTH-CONSUMER-PENDING-001
     runner_id: consumer_lock_negative
     path: tests/authority/fixtures/protected/bad-consumer-lock-pending.json
@@ -163,3 +163,51 @@ fixtures:
     sha256: sha256:e14ea1da1a681c4ca0c1e0c126da3fe4d65f20384f19b6a65b844ee09eac7875
     expected_decision: deny
     expected_reason_code: AUTH-SCHEMA-EXTRA
+  - fixture_id: AUTH-CONSUMER-COMMIT-DIVERGENCE-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-commit-divergence.json
+    sha256: sha256:c2e991b33618665d25bae2a0ec53f9bebec2b26ad0fbb803bb6334ceb69fe2c1
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-LOCK-COMMITTED
+  - fixture_id: AUTH-CONSUMER-INDEX-DIVERGENCE-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-index-divergence.json
+    sha256: sha256:e336c00a945965b4959335902580602782ac86cf189f52258c184a2a127a2b14
+    expected_decision: deny
+    expected_reason_code: AUTH-CONSUMER-LOCK-INDEXED
+  - fixture_id: AUTH-CONSUMER-RESERVED-PATH-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-reserved-path.json
+    sha256: sha256:cfcb17fdbfb5e759ccfa081a194a61e3a9fd9773767e3c0a6d183d4ddb5558d6
+    expected_decision: deny
+    expected_reason_code: AUTH-RECEIPT-FIELD
+  - fixture_id: AUTH-CONSUMER-FABRICATED-BUILD-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-fabricated-build-receipt.json
+    sha256: sha256:98892046683eb835e6e6c59f2f8e07500abd09d59bef30e4a34ab4b0186f731a
+    expected_decision: deny
+    expected_reason_code: AUTH-KERNEL-EVIDENCE-UNVERIFIED
+  - fixture_id: AUTH-CONSUMER-ALTERED-WHEEL-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-altered-wheel.json
+    sha256: sha256:9af77859c12006a5fc725aacd3a2c6d79a3aad1ef99f03bfe8b4bfa4ec323645
+    expected_decision: deny
+    expected_reason_code: AUTH-KERNEL-WHEEL-SOURCE-MISMATCH
+  - fixture_id: AUTH-CONSUMER-ALTERED-BUILD-INPUT-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-altered-build-input.json
+    sha256: sha256:a988c36a2f24f44ffe60c38ad28c1feda39437a43ea0b67ab6b24fb04d8f2073
+    expected_decision: deny
+    expected_reason_code: AUTH-KERNEL-PROVENANCE
+  - fixture_id: AUTH-CONSUMER-CHILD02-PROFILE-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-child02-wrong-profile.json
+    sha256: sha256:8a9fb649c357081076a0e7ad3c80f6ddc7c3e92dcfa24c64f3ae9cbf54fcda2d
+    expected_decision: deny
+    expected_reason_code: AUTH-TASK-PROFILE-DOWNGRADE
+  - fixture_id: AUTH-CONSUMER-STALE-TASK-REVISION-001
+    runner_id: consumer_lock_negative
+    path: tests/authority/fixtures/protected/bad-consumer-lock-stale-task-revision.json
+    sha256: sha256:a0e97b5b217fa23b9a047c6eb614b4ac6b5be5f19c157f64abd787a0eecc640c
+    expected_decision: deny
+    expected_reason_code: AUTH-TASK-PROFILE-REVISION

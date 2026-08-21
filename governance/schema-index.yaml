@@ -4,6 +4,8 @@ schemas:
   ConsumerLockPolicy: schemas/consumer-lock-policy.schema.json
   ConsumerLockReadinessReceipt: schemas/consumer-lock-readiness.schema.json
   KernelBuildReceipt: schemas/kernel-build.schema.json
+  KernelBuildEvidencePolicy: schemas/kernel-build-evidence-policy.schema.json
+  KernelBuildProvenance: schemas/kernel-build-provenance.schema.json
   ConsumerLockReceipt: schemas/consumer-lock.schema.json
   SourceCandidateReceipt: schemas/source-candidate.schema.json
   AuthorityLock: schemas/authority-lock.schema.json

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import yaml
 from authority.aggregate_gate import verify_change
-from authority.common import canonical_hash, sha256_bytes, sha256_file
+from authority.common import canonical_hash, load_mapping, sha256_bytes, sha256_file
 from authority.conformance_gates import (
     _CHECKER_RUN_COLLECTORS,
     _CheckerRunObservation,
@@ -26,7 +26,12 @@ from authority.conformance_gates import (
 from authority.errors import GateViolation
 from authority.lock import build_authority_lock
 from authority.receipts import make_typed_receipt
-from authority.task_gate import admit_task, check_change_scope, validate_task_manifest
+from authority.task_gate import (
+    admit_task,
+    check_change_scope,
+    validate_task_activation_profile,
+    validate_task_manifest,
+)
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -86,6 +91,15 @@ def _fixture_repository(tmp_path: Path) -> tuple[Path, dict[str, Any], Path, Pat
     authorizations = {
         "schema_version": "1.0.0",
         "authority_revision": 1,
+        "activation_profile_bindings": [
+            {
+                "task_id": "08-21-02-import-firewall-and-package-skeleton",
+                "required_profile": "authority_package_skeleton",
+            },
+            {"task_id": "authority-task", "required_profile": "authority_bootstrap"},
+            {"task_id": "ordinary-task", "required_profile": "authority_bootstrap"},
+            {"task_id": "task", "required_profile": "authority_bootstrap"},
+        ],
         "authorizations": [
             {
                 "authorization_id": "fixture-grant",
@@ -113,7 +127,14 @@ def _fixture_repository(tmp_path: Path) -> tuple[Path, dict[str, Any], Path, Pat
                             "registry_conformance": {"minimum_phase": "phase_0"},
                             "runtime_conformance": {"minimum_phase": "phase_4"},
                         },
-                    }
+                    },
+                    "authority_package_skeleton": {
+                        "current_phase": "phase_minus_1",
+                        "predicates": {
+                            "registry_conformance": {"minimum_phase": "phase_0"},
+                            "runtime_conformance": {"minimum_phase": "phase_4"},
+                        },
+                    },
                 },
             }
         ),
@@ -274,7 +295,7 @@ def test_authority_task_requires_independent_locked_authorization(tmp_path: Path
         protected_paths_path=protected_path,
         repository_roots={"fixture": root},
     )
-    manifest["task_id"] = "self-declared-but-ungranted"
+    manifest["task_id"] = "ordinary-task"
     with pytest.raises(GateViolation, match="AUTH-TASK-AUTHORIZATION-MISSING"):
         admit_task(
             manifest_path=_write_manifest(root, manifest),
@@ -282,6 +303,55 @@ def test_authority_task_requires_independent_locked_authorization(tmp_path: Path
             model_policy_path=model_path,
             protected_paths_path=protected_path,
             repository_roots={"fixture": root},
+        )
+
+
+def test_task_profile_binding_rejects_child02_bootstrap_and_stale_revision() -> None:
+    policy = load_mapping(REPO_ROOT / "governance/task-authorizations.yaml")
+    validate_task_activation_profile(
+        task_id="08-21-02-import-firewall-and-package-skeleton",
+        activation_profile="authority_package_skeleton",
+        task_authorizations=policy,
+        authority_revision=3,
+    )
+    with pytest.raises(GateViolation, match="AUTH-TASK-PROFILE-DOWNGRADE"):
+        validate_task_activation_profile(
+            task_id="08-21-02-import-firewall-and-package-skeleton",
+            activation_profile="authority_bootstrap",
+            task_authorizations=policy,
+            authority_revision=3,
+        )
+    stale = copy.deepcopy(policy)
+    stale["authority_revision"] = 2
+    with pytest.raises(GateViolation, match="AUTH-TASK-PROFILE-REVISION"):
+        validate_task_activation_profile(
+            task_id="08-21-00-trellis-authority-sync",
+            activation_profile="authority_bootstrap",
+            task_authorizations=stale,
+            authority_revision=3,
+        )
+
+
+def test_admission_and_runtime_recompute_child02_profile_binding(tmp_path: Path) -> None:
+    root, lock, lock_path, model_path, protected_path = _fixture_repository(tmp_path)
+    manifest = _manifest(root, lock)
+    manifest["task_id"] = "08-21-02-import-firewall-and-package-skeleton"
+    with pytest.raises(GateViolation, match="AUTH-TASK-PROFILE-DOWNGRADE"):
+        admit_task(
+            manifest_path=_write_manifest(root, manifest),
+            authority_lock_path=lock_path,
+            model_policy_path=model_path,
+            protected_paths_path=protected_path,
+            repository_roots={"fixture": root},
+        )
+    with pytest.raises(GateViolation, match="AUTH-TASK-PROFILE-DOWNGRADE"):
+        verify_runtime_predicate(
+            task_id="08-21-02-import-firewall-and-package-skeleton",
+            authority_lock=lock,
+            repository_roots={"fixture": root},
+            profile="authority_bootstrap",
+            predicate_id="runtime_conformance",
+            observed_pass=None,
         )
 
 

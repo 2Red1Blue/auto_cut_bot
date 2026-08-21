@@ -37,6 +37,7 @@ from .common import (
 )
 from .errors import GateViolation
 from .receipts import make_typed_receipt, validate_typed_receipt
+from .task_gate import TASK_AUTHORIZATIONS_PATH, validate_task_activation_profile
 
 ZERO_HASH = "sha256:" + "0" * 64
 CONFLICT_MARKERS = re.compile(rb"(?m)^(?:<<<<<<< |=======\s*$|>>>>>>> )")
@@ -551,6 +552,17 @@ def verify_runtime_predicate(
     observed_pass: bool | None,
     profile_policy_path: str = "governance/activation-profiles.yaml",
 ) -> dict[str, Any]:
+    task_authorizations, _task_authorizations_hash = _locked_mapping(
+        authority_lock=authority_lock,
+        repository_roots=repository_roots,
+        path=TASK_AUTHORIZATIONS_PATH,
+    )
+    validate_task_activation_profile(
+        task_id=task_id,
+        activation_profile=profile,
+        task_authorizations=task_authorizations,
+        authority_revision=int(authority_lock["authority_revision"]),
+    )
     profile_policy, locked_policy_hash = _locked_mapping(
         authority_lock=authority_lock,
         repository_roots=repository_roots,

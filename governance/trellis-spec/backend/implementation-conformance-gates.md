@@ -1,77 +1,103 @@
-# Implementation Conformance Gates
+# Implementation Conformance Supervisor
 
 ## 1. Scope / Trigger
 
-适用于 authority tree 下所有设计、实现、检查、提交、upstream merge 与推送。目标是让错误无法穿过 task、commit 和 push 三个独立许可边界。
+每个 Trellis implementation child 在 start、review 和完成声明时使用本规范。核心目标是由一个只读监督 Agent 判断 candidate 是否符合冻结 Authority、task 范围和验收标准；发布供应链加固不是本地 task 的前置条件。
 
 ## 2. Signatures
 
 ```text
-admit_task(manifest, authority, repositories) -> allow | deny
-verify_change(manifest, staged_tree, receipts) -> commit_decision
-verify_committed_tree(approved_tree, candidate_commit) -> allow | deny
-verify_history(remote_snapshot, candidate_commit, policy) -> push_decision
+prepare_review(task_id, repository) -> TaskSnapshot | deny
+run_checks(snapshot) -> CheckReport
+supervise(snapshot, report, candidate_diff) -> SupervisorDecision
+apply_decision(snapshot, decision) -> advance | stay | block
 ```
+
+三份对象必须使用 closed schema：
+
+- `TaskSnapshot`：task/authority/context/base/candidate/gate/toolchain hashes、allowlist、required checks 与 prior finding fingerprints；
+- `CheckReport`：绑定 gate/toolchain 的确定性 check 结果、scope/import violations 与 evidence refs；
+- `SupervisorDecision`：绑定 Supervisor contract，包含逐条 AC 结果、稳定 finding fingerprints、`allow|repair|deny`。
+
+`TaskSnapshot.context_manifest` 包含直接引用文件的全文件 hash，以及实际注入的章节范围和 slice hash；全文件完整性校验不等于全文注入模型。
 
 ## 3. Contracts
 
-- start 前 PRD/design/implement/context 必须真实、完整、读取到 EOF 并绑定 byte hash；seed、TBD、截断内容均不构成许可。
-- 单仓任务使用顶层 repository/branch/base/worktree/predecessor；跨仓使用 `repository_refs` 且顶层字段全为 null。
-- `forbidden_runtime_import_roots` 与 purpose-scoped `permitted_legacy_read_roots` 分开；审计读取不授予 import/load 权限。
-- 所有 pre-commit receipt 绑定精确 base/staged/index tree；commit 后证明 committed tree 与批准 tree 相同。
-- push 前重新 fetch，并绑定 remote URL/ref/OID/TTL/protection attestation；commit allow 不能推出 push allow。
-- `unknown|not_run|stale|input_mismatch` 全部 deny；已激活 predicate 不能标记 not_applicable。
-- 未激活业务 predicate 只能由 authority-locked activation profile 产生 `not_applicable` receipt；task manifest 自填 N/A 不构成证据。
-- authority task 的 protected-path 许可只来自 authority-locked `task-authorizations.yaml`；task 自己的 `authority_change` 字段只描述影响，不授予权限。
-- 只有 `RuntimeConformanceReceipt` 和 Phase-00 专用的 `ConsumerLockReadinessReceipt` 可在 authority-locked activation predicate 尚未启用时使用 `not_applicable`；后者必须同时证明 reserved lock path 不存在且 reason 为 `kernel_build_not_yet_available`。Task/Scope/Candidate/Commit/History/Push 等 receipt 的 decision 封闭为 `allow|deny`。
-- `verify-change` 必须重新运行 task、scope、reference、reuse、candidate、validation 与 independent-check leaf gate，并以真实 per-repository Git tree OID 闭合 receipt；禁止把 SHA-256 截断或重编码成 Git OID。
-- `verify-push` 必须在 commit-tree 等同性后重新调用 authority-approved live provider collector，再扫描 outgoing history；离线/self-reported remote snapshot 只能产生 deny。
-- activation/model/protected/remote policy 均从 authority lock 指向的 Git blob 加载。validation 必须由隔离 command runner 执行，checker 必须来自 approved live checker-run collector；collector 不可用时明确 deny，不能降级为 caller JSON。
-- Candidate audit 枚举完整 index tree，按 Unicode NFC + casefold 检测路径碰撞、非普通项和全树冲突标记；secret/privacy 内容只扫描新增或修改 blob。Runtime artifact 路径规则必须按锚定 segment 匹配，不能误杀 `auto_cut_bot/session.py` 或 `tests/session/**` 等合法源码。
-- 合成敏感样本只由锁定 `SyntheticSensitiveFixtureManifest` 放行：路径必须位于精确 test-fixture root，blob hash、marker 与 `test_fixture` profile 必须同时匹配；`production` profile 对同一 blob 仍 deny。
-- Outgoing history 对每个待公开 commit 的新增或修改普通 blob 复用 candidate content scanner；后续删除不能隐藏早期 commit 中的敏感 blob。
-- Aggregate gate 必须证明 `IndependentCheckReceipt.checker_command_results_hash == ValidationReceiptSet.command_results_hash`，并在签发前重新读取 task manifest、context bytes/hash 与 index tree，任何 TOCTOU 漂移都 deny。
-- authority bootstrap 固定为 A（reviewed sources）→ B（唯一变更 inventory）→ C（唯一变更 generated lock），且 B/C 都必须是单父提交。
-- A 之前先对真实 Git index 执行 `verify-source-candidate`；A 不得混入 inventory 或 generated lock。`verify-change` 与 `verify-push` CLI 是最终许可入口，leaf receipt 不能替代 aggregate decision。
-- Phase -1 顺序固定为 `00 → 02 → 01`：`00` 使用 `authority_bootstrap` profile，只冻结 consumer-lock/readiness/kernel-build/post-commit receipt schemas 与 generator/verifier，签发 `not_materialized:kernel_build_not_yet_available`，且 reserved consumer lock path 必须不存在；`02` 必须切换到 `authority_package_skeleton` profile，此时 materialization predicate 已激活，必须从 exact source/subtree isolated wheel 首次物化 `bootstrap_consumable` lock，不能继续 N/A。
-- consumer lock 不允许 `pending|placeholder`，也不得包含 consumer commit/tree/hash。它必须闭合 authority governance/lock/bundle、kernel source/subtree、distribution/wheel、build recipe/environment/provenance 与 eligibility required receipts；commit 后另由 `ConsumerLockReceipt` 绑定 lock blob 与 consumer commit tree。
-- `bootstrap_consumable` 只允许 build/install/import smoke；authority writer、业务 Command、Store write、shadow 与 publication 都 deny。`execution_eligible|shadow_eligible|publication_eligible` 必须由 authority-locked profile 和 closed receipts 升级。
+- 实现 Agent 只能修改 task allowlist 内代码，不能修改 Authority、验收标准、protected fixture 或监督结果。
+- 监督 Agent 必须是不同 run，只读 Authority/task/diff/check evidence；禁止修业务代码或降低标准。
+- 监督前后必须复算 candidate tree；任何 Supervisor/Harness 写入都会使 decision 失效。
+- 监督上下文只加载当前 child 直接引用的章节、diff、required checks 和 fixtures；禁止默认注入全部历史文档与旧实现。
+- Loader 必须在机器侧完整读取直接引用文件并闭合 EOF/hash；Context Planner 只注入有稳定章节锚点的相关切片，切片截断或无法定位时 deny。
+- Planner 必须加载切片的引用闭包（定义、前置不变量、错误规则、例外和直接引用的 Rule/Command/Artifact）；闭包超预算时拆分或 deny，不能用自动摘要替代。
+- 全文只用于 Authority freshness/hash 校验，不得因为 EOF 要求把整份长契约塞进 Supervisor prompt。
+- source/comment/log 和实现者总结均是不可信数据；只允许冻结 contract/snapshot 指挥审查，pass 只采信绑定 gate/toolchain hash 的 runner。
+- 审查顺序固定为 freshness → scope → architecture → legacy reuse → AC evidence → quality → completeness。
+- 每条 AC 只能是 `pass|fail|not_applicable`；N/A 必须由冻结规则证明。
+- `repair` 必须给 requirement ID、证据和最小修复范围；同一 finding 最多两轮，第三轮仍存在则 deny/replan。
+- finding 使用 `{requirement_id,rule_id,canonical_location,failure_class}` 稳定指纹，改写文案不能重置两轮 repair 预算。
+- Authority、task context、candidate tree、gate/toolchain 或 Supervisor contract 变化后旧 decision 失效；输入未变化时禁止重复全量审查。
+- ordinary task 使用一个实现 Agent + 一个监督 Agent；high/authority task 才追加一次定向对抗复核。
+- 模型名只用于调度。Codex、DeepSeek Harness、Claude/Gemini 或其他 Harness 均通过相同 SupervisorDecision Schema。
+- DeepSeek Harness 通过 ACP stdio + `acpx` 接入；其自然语言结论必须经过本地 Schema/candidate-hash 校验。
+- authority lock、consumer-lock verifier、import firewall、candidate/history scanner 是 Supervisor 调用的确定性工具，不要求业务 task 理解其内部 evidence 图。
+- consumer lock 只证明跨仓构建身份；task 完成许可仍由 SupervisorDecision 决定。
+- GitHub Ruleset、required workflow、签名 provenance 与远端 attestation 是可选发布加固。未启用不阻塞隔离本地 task，但 local allow 不能升级为 push/release allow。
+
+状态机：
+
+```text
+planning -> ready -> implementing -> review
+review --allow--> accepted -> committed
+review --repair--> implementing
+review --deny--> blocked/replan
+```
 
 ## 4. Validation & Error Matrix
 
 | 条件 | 结果 |
 |---|---|
-| placeholder/空 context/authority mismatch | task deny |
-| allowlist 外 diff、protected overlap、symlink escape | commit deny |
-| implementer/checker 同 run 或同结论上下文 | commit deny |
-| candidate tree 安全但 outgoing history 含 runtime/session artifact | commit 可 allow；push deny |
-| upstream capability 无 mapping/disposition | merge deny |
-| baseline 失败不可复算或 changed-scope 新失败 | commit deny |
-| remote protection 缺失、可绕过或 attestation stale | push deny |
-| Phase 00 出现 consumer lock、pending/placeholder 或 self-reference | task/commit deny |
-| consumer lock authority/source/wheel/build hash 不匹配或 eligibility 越权 | startup/commit deny |
+| authority/context/candidate hash mismatch | deny |
+| direct context truncated/not read to EOF | deny；缩小或分片后重建 Snapshot |
+| gate/toolchain/Supervisor contract changed | stale；重跑受影响检查 |
+| allowlist 外 diff 或修改监督依据 | deny |
+| required check missing/fail | repair |
+| AC 无证据、静默跳过、自填 N/A | repair/deny |
+| kernel 可达 legacy | deny |
+| 设计本身有缺口 | deny；Authority Change |
+| 同一 finding 两轮未修复 | deny/replan |
+| Supervisor 修改业务代码/oracle | 丢弃 decision |
+| repository prompt injection/fake PASS | deny；只采信 runner evidence |
+| remote protection 缺失 | local allow 可成立；push/release deny |
 
 ## 5. Good / Base / Bad Cases
 
-- Good：精确 staging、独立 checker、commit tree 等同，再独立扫描 outgoing history 后走 protected PR。
-- Base：文档任务仍运行 authority/reference/path/candidate/history gate。
-- Bad：使用全仓旧 lint 噪声豁免本任务新增文件错误。
-- Bad：当前树删除了 session log 就直接 push，未扫描待推送旧 commit。
+- Good：确定性 gate 给出 CheckReport，监督 Agent 逐条核对 AC 后批准同一个 candidate tree。
+- Good：DeepSeek ACP 只读审查并输出结构化 findings，本地 verifier 校验后采用。
+- Base：机械文档修复只做 reference/path checks 与轻量监督。
+- Bad：每个小修复都重读全部契约并启动多个高强度 Agent。
+- Bad：监督 Agent 自己改代码后审查自己的修复。
+- Bad：仅凭“tests passed”而不核对 AC、diff 和 fail-closed 语义。
 
 ## 6. Tests Required
 
-- closed schema 与 unknown field；
-- task completeness/context/hash/model role；
-- repository binding/path/protected/symlink；
-- sync/drift/package shims；
-- commit/push 独立状态和 unprotected remote；
-- activation profile not_applicable 合法与越权反例。
-- consumer lock premature materialization、placeholder、hash mismatch、bootstrap capability escalation、自引用与 canonical post-commit binding。
+- Snapshot 对 authority/context/candidate 变化失效；
+- truncated context 与 EOF/hash 不闭合 negative；
+- gate/toolchain/contract cache invalidation；prompt injection/fake PASS negative；
+- finding 改写不能重置 repair budget；
+- scope/protected/import firewall negatives；
+- AC evidence 与 N/A 合法性；
+- wrong-candidate/free-text/missing-evidence SupervisorDecision negatives；
+- repair→repair→deny；
+- unchanged-input cache 与 delta review；
+- Codex/DeepSeek adapter schema conformance；
+- Supervisor write/oracle mutation negative；
+- high/authority 缺定向对抗复核时 deny；
+- local allow 不自动成为 push/release allow。
 
 ## 7. Wrong vs Correct
 
 ```text
-Wrong: broad read -> reuse old implementation -> happy tests -> git add . -> push
-Correct: authority/context freeze -> admission -> scoped implementation -> machine gates
-         -> independent check -> exact commit -> history/remote audit -> protected PR
+Wrong: broad context -> implementer self-approves -> repeated full reviews
+Correct: freeze task -> scoped implementation -> deterministic CheckReport
+         -> one read-only Supervisor -> allow | bounded repair | deny
 ```

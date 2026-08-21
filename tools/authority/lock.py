@@ -10,6 +10,8 @@ from typing import Any
 from .common import (
     canonical_hash,
     git_bytes,
+    git_index_bytes,
+    git_index_paths,
     git_output,
     load_mapping,
     load_mapping_bytes,
@@ -227,6 +229,60 @@ def validate_authority_lock(lock: Mapping[str, Any]) -> None:
 def verify_authority_lock(lock_path: Path, repository_roots: Mapping[str, Path]) -> dict[str, str]:
     lock = load_mapping(lock_path)
     return verify_authority_lock_data(lock, repository_roots)
+
+
+def verify_staged_authority_lock_candidate(
+    *,
+    lock_path: Path,
+    repository_roots: Mapping[str, Path],
+    predecessor_commits: Mapping[str, str],
+) -> dict[str, str]:
+    """Fail closed when an indexed phase-C candidate drifts from its lock.
+
+    Plain lock verification intentionally reads immutable commits.  This
+    companion check binds the *index* and therefore cannot approve a staged
+    modification of a locked/governed source using the previous lock.
+    """
+    roots = {name: root.resolve(strict=True) for name, root in repository_roots.items()}
+    if set(roots) != set(predecessor_commits):
+        raise GateViolation("AUTH-LOCK-CANDIDATE-REPOSITORIES", "predecessor bindings mismatch")
+    for name, commit in predecessor_commits.items():
+        require_commit(commit, where=f"predecessor_commits[{name}]")
+    owner: str | None = None
+    relative: str | None = None
+    for name, root in roots.items():
+        try:
+            relative = validate_relative_path(
+                str(lock_path.resolve().relative_to(root)), where="authority lock path"
+            )
+            owner = name
+            break
+        except ValueError:
+            continue
+    if owner is None or relative is None:
+        raise GateViolation("AUTH-LOCK-CANDIDATE-PATH", "lock is outside bound repositories")
+    staged = load_mapping_bytes(
+        git_index_bytes(roots[owner], relative), where=f"index:{relative}", suffix=lock_path.suffix
+    )
+    validate_authority_lock(staged)
+    for name, root in roots.items():
+        paths = git_index_paths(root, predecessor_commits[name])
+        permitted = {relative} if name == owner else set()
+        if set(paths) - permitted:
+            raise GateViolation(
+                "AUTH-LOCK-CANDIDATE-DRIFT",
+                f"staged authority input changed without lock upgrade: {name}:{','.join(paths)}",
+            )
+    inventory = staged["inventory"]
+    generated = build_authority_lock(
+        source_manifest_repository=str(inventory["repository"]),
+        source_manifest_commit=str(inventory["manifest_commit"]),
+        source_manifest_path=str(inventory["path"]),
+        repository_roots=roots,
+    )
+    if staged != generated:
+        raise GateViolation("AUTH-LOCK-CANDIDATE-CONTENT", "staged lock is not regenerated")
+    return verify_authority_lock_data(staged, roots)
 
 
 def verify_authority_lock_data(

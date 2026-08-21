@@ -3,16 +3,22 @@
 
 from __future__ import annotations
 
+import base64
 import copy
+import csv
+import hashlib
+import io
 import json
 import subprocess
 import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .common import (
+    canonical_hash,
     load_mapping,
     require_closed,
     require_git_object_oid,
@@ -22,12 +28,16 @@ from .common import (
 )
 from .conformance_gates import audit_candidate_tree, verify_validation_receipt_set
 from .consumer_lock import (
+    AUTHORITY_SYNC_TASK_ID,
     CONSUMER_LOCK_PATH,
+    KERNEL_BUILD_EVIDENCE_POLICY_PATH,
     assert_phase00_consumer_lock_absent,
     authorize_consumer_lock_use,
     build_authority_consumer_lock,
-    make_kernel_build_receipt,
+    compute_kernel_source_subtree_hash,
     validate_authority_consumer_lock,
+    validate_authority_consumer_lock_structure,
+    verify_kernel_build_evidence,
 )
 from .errors import GateViolation
 from .lock import verify_bootstrap_commit_chain
@@ -37,6 +47,7 @@ from .source_candidate_gate import verify_pre_a_source_candidate
 from .task_gate import (
     validate_context_content,
     validate_model_role,
+    validate_task_activation_profile,
     validate_task_manifest,
 )
 
@@ -185,89 +196,259 @@ def _execute_fixture(runner_id: str, path: Path, model_policy: dict[str, Any]) -
         raise GateViolation("AUTH-FIXTURE-RUNNER", f"unknown runner: {runner_id}")
 
 
+def _wheel_record_hash(raw: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
+    return f"sha256={digest}"
+
+
+def _write_fixture_wheel(path: Path, *, package_bytes: bytes = b"VALUE = 2\n") -> None:
+    dist_info = "autocut_kernel-2.1.3.dev1.dist-info"
+    files = {
+        "autocut_kernel/__init__.py": package_bytes,
+        f"{dist_info}/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: protected-fixture\nRoot-Is-Purelib: true\n"
+            b"Tag: py3-none-any\n"
+        ),
+        f"{dist_info}/METADATA": (
+            b"Metadata-Version: 2.1\nName: autocut-kernel\nVersion: 2.1.3.dev1\n"
+        ),
+    }
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for name, raw in files.items():
+        writer.writerow((name, _wheel_record_hash(raw), str(len(raw))))
+    record_path = f"{dist_info}/RECORD"
+    writer.writerow((record_path, "", ""))
+    files[record_path] = output.getvalue().encode()
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, raw in files.items():
+            archive.writestr(name, raw)
+
+
 def _consumer_lock_fixture_values(
-    repository_root: Path,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    repository_root: Path, scratch: Path
+) -> tuple[dict[str, Any], object, dict[str, Any], dict[str, Path | str]]:
     policy = load_mapping(repository_root / "governance/consumer-lock-policy.yaml")
-    authority_hash = "sha256:" + "1" * 64
-    receipt = make_kernel_build_receipt(
-        authority_bundle_hash=authority_hash,
-        task_id="protected-fixture",
-        authority_governance_commit="a" * 40,
-        authority_lock_document_hash="sha256:" + "2" * 64,
-        kernel_source_commit="b" * 40,
-        kernel_source_subtree_hash="sha256:" + "3" * 64,
-        distribution_name="autocut-kernel",
+    root = scratch / "authority"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    policy_path = root / KERNEL_BUILD_EVIDENCE_POLICY_PATH
+    policy_path.parent.mkdir(parents=True)
+    policy_raw = (repository_root / KERNEL_BUILD_EVIDENCE_POLICY_PATH).read_bytes()
+    policy_path.write_bytes(policy_raw)
+    kernel_file = root / "packages/autocut-kernel/src/autocut_kernel/__init__.py"
+    kernel_file.parent.mkdir(parents=True)
+    kernel_file.write_text("VALUE = 1\n", encoding="utf-8")
+    marker = root / "authority-source.txt"
+    marker.write_text("authority source\n", encoding="utf-8")
+    seed = _fixture_commit(root, "authority source")
+    authority_lock: dict[str, Any] = {
+        "schema_version": "1.0.0",
+        "authority_id": "fixture-authority",
+        "authority_revision": 3,
+        "contract_version": "2.1.3",
+        "seed_source_commit": seed,
+        "inventory": {
+            "repository": "auto_cut_bot",
+            "manifest_commit": seed,
+            "path": "authority-source.txt",
+            "sha256": sha256_bytes(marker.read_bytes()),
+        },
+        "repositories": {"auto_cut_bot": {"source_commit": seed}},
+        "entries": [
+            {
+                "class": "architecture_gate",
+                "repository": "auto_cut_bot",
+                "path": KERNEL_BUILD_EVIDENCE_POLICY_PATH,
+                "sha256": sha256_bytes(policy_raw),
+            }
+        ],
+    }
+    authority_lock["bundle_hash"] = canonical_hash(authority_lock)
+    authority_lock_path = root / "governance/authority-lock.yaml"
+    authority_lock_path.write_text(
+        yaml.safe_dump(authority_lock, sort_keys=False), encoding="utf-8"
+    )
+    authority_commit = _fixture_commit(root, "authority lock")
+    kernel_file.write_text("VALUE = 2\n", encoding="utf-8")
+    kernel_commit = _fixture_commit(root, "kernel source")
+
+    evidence_root = scratch / "evidence"
+    evidence_root.mkdir()
+    wheel_path = evidence_root / "autocut_kernel-2.1.3.dev1-py3-none-any.whl"
+    _write_fixture_wheel(wheel_path)
+    recipe_path = evidence_root / "build-recipe.json"
+    recipe_path.write_text('{"command":["python","-m","build"]}\n', encoding="utf-8")
+    environment_path = evidence_root / "environment.lock"
+    environment_path.write_text("python==3.11.13\nbuild==1.3.0\n", encoding="utf-8")
+    provenance = {
+        "schema_version": "1.0.0",
+        "receipt_type": "kernel_build_provenance",
+        "builder_id": "autocut-isolated-wheel-builder-v1",
+        "decision": "allow",
+        "build_evidence_policy_hash": sha256_bytes(policy_raw),
+        "kernel_source_commit": kernel_commit,
+        "kernel_source_subtree_hash": compute_kernel_source_subtree_hash(root, kernel_commit),
+        "wheel_sha256": sha256_bytes(wheel_path.read_bytes()),
+        "build_recipe_hash": sha256_bytes(recipe_path.read_bytes()),
+        "environment_lock_hash": sha256_bytes(environment_path.read_bytes()),
+    }
+    provenance_path = evidence_root / "provenance.json"
+    provenance_path.write_text(json.dumps(provenance, sort_keys=True) + "\n", encoding="utf-8")
+    evidence = verify_kernel_build_evidence(
+        authority_repository_root=root,
+        authority_governance_commit=authority_commit,
+        kernel_repository_root=root,
+        kernel_source_commit=kernel_commit,
+        wheel_path=wheel_path,
         distribution_version="2.1.3.dev1",
-        wheel_filename="autocut_kernel-2.1.3.dev1-py3-none-any.whl",
-        wheel_tag="py3-none-any",
-        wheel_size_bytes=4096,
-        wheel_sha256="sha256:" + "4" * 64,
-        build_recipe_hash="sha256:" + "5" * 64,
-        environment_lock_hash="sha256:" + "6" * 64,
-        provenance_receipt_hash="sha256:" + "7" * 64,
+        build_recipe_path=recipe_path,
+        environment_lock_path=environment_path,
+        provenance_receipt_path=provenance_path,
     )
     lock = build_authority_consumer_lock(
-        kernel_build_receipt=receipt,
+        kernel_build_evidence=evidence,
         eligibility_profile="bootstrap_consumable",
         profile_policy=policy,
-        verified_materialization_receipt_hashes={"KernelBuildReceipt": str(receipt["receipt_id"])},
     )
-    return policy, receipt, lock
+    paths: dict[str, Path | str] = {
+        "root": root,
+        "authority_commit": authority_commit,
+        "kernel_commit": kernel_commit,
+        "wheel": wheel_path,
+        "recipe": recipe_path,
+        "environment": environment_path,
+        "provenance": provenance_path,
+    }
+    return policy, evidence, lock, paths
 
 
 def _execute_consumer_lock_fixture(payload: dict[str, Any], repository_root: Path) -> None:
     case = payload.get("case")
-    policy, receipt, lock = _consumer_lock_fixture_values(repository_root)
-    if case == "phase00_materialized":
-        with tempfile.TemporaryDirectory(prefix="consumer-lock-phase00-") as raw_root:
-            root = Path(raw_root)
+    with tempfile.TemporaryDirectory(prefix="consumer-lock-protected-") as raw_root:
+        scratch = Path(raw_root)
+        policy, evidence, lock, paths = _consumer_lock_fixture_values(repository_root, scratch)
+        if case in {
+            "phase00_materialized",
+            "commit_worktree_divergence",
+            "index_worktree_divergence",
+        }:
+            root = scratch / "consumer"
+            root.mkdir()
+            _git(root, "init", "-b", "main")
+            (root / "seed.txt").write_text("seed\n", encoding="utf-8")
+            seed = _fixture_commit(root, "consumer seed")
             target = root / CONSUMER_LOCK_PATH
             target.parent.mkdir(parents=True)
-            target.write_text("state: pending\n", encoding="utf-8")
-            assert_phase00_consumer_lock_absent(consumer_repository_root=root)
-        return
-    if case in {
-        "pending_placeholder",
-        "authority_hash_mismatch",
-        "kernel_source_hash_mismatch",
-        "wheel_hash_mismatch",
-        "self_reference",
-    }:
-        mutated = copy.deepcopy(lock)
-        if case == "pending_placeholder":
-            mutated["distribution_version"] = str(payload.get("value", "pending"))
-        elif case == "authority_hash_mismatch":
-            mutated["authority_bundle_hash"] = "sha256:" + "8" * 64
-        elif case == "kernel_source_hash_mismatch":
-            mutated["kernel_source_subtree_hash"] = "sha256:" + "8" * 64
-        elif case == "wheel_hash_mismatch":
-            mutated["wheel_sha256"] = "sha256:" + "8" * 64
-        else:
-            mutated["consumer_repository_commit"] = "c" * 40
-        validate_authority_consumer_lock(
-            mutated, profile_policy=policy, kernel_build_receipt=receipt
-        )
-        return
-    if case in {
-        "bootstrap_writer",
-        "bootstrap_business",
-        "bootstrap_shadow",
-        "bootstrap_publish",
-    }:
-        capability = {
-            "bootstrap_writer": "authority_store_write",
-            "bootstrap_business": "business_execution",
-            "bootstrap_shadow": "shadow_output",
-            "bootstrap_publish": "publication",
-        }[str(case)]
-        authorize_consumer_lock_use(
-            lock=lock,
-            profile_policy=policy,
-            requested_capabilities=[capability],
-            verified_post_commit_receipts=[],
-        )
-        return
+            target.write_text("forbidden: true\n", encoding="utf-8")
+            commit = seed
+            if case == "commit_worktree_divergence":
+                commit = _fixture_commit(root, "commit forbidden lock")
+                target.unlink()
+            elif case == "index_worktree_divergence":
+                _git(root, "add", CONSUMER_LOCK_PATH)
+                _git(root, "update-index", "--skip-worktree", CONSUMER_LOCK_PATH)
+                target.unlink()
+            assert_phase00_consumer_lock_absent(
+                consumer_repository_root=root, consumer_repository_commit=commit
+            )
+            return
+        if case == "reserved_path_override":
+            make_typed_receipt(
+                "consumer_lock_readiness",
+                authority_lock_hash="sha256:" + "1" * 64,
+                decision="not_applicable",
+                reason_codes=[],
+                task_id=AUTHORITY_SYNC_TASK_ID,
+                authority_governance_commit="a" * 40,
+                authority_bundle_hash="sha256:" + "1" * 64,
+                consumer_repository_commit="b" * 40,
+                consumer_commit_tree_oid="c" * 40,
+                consumer_index_tree_oid="d" * 40,
+                consumer_lock_path="governance/caller-selected.lock.yaml",
+                state="not_materialized",
+                reason="kernel_build_not_yet_available",
+                profile_policy_hash=canonical_hash(policy),
+            )
+            return
+        if case == "fabricated_build_receipt":
+            build_authority_consumer_lock(
+                kernel_build_evidence={"receipt_type": "kernel_build"},  # type: ignore[arg-type]
+                eligibility_profile="bootstrap_consumable",
+                profile_policy=policy,
+            )
+            return
+        if case in {"altered_wheel", "altered_build_recipe"}:
+            changed = Path(paths["wheel"] if case == "altered_wheel" else paths["recipe"])
+            if case == "altered_wheel":
+                _write_fixture_wheel(changed, package_bytes=b"VALUE = 999\n")
+            else:
+                changed.write_bytes(changed.read_bytes() + b"altered\n")
+            build_authority_consumer_lock(
+                kernel_build_evidence=evidence,
+                eligibility_profile="bootstrap_consumable",
+                profile_policy=policy,
+            )
+            return
+        if case in {
+            "pending_placeholder",
+            "authority_hash_mismatch",
+            "kernel_source_hash_mismatch",
+            "wheel_hash_mismatch",
+            "self_reference",
+        }:
+            mutated = copy.deepcopy(lock)
+            if case == "pending_placeholder":
+                mutated["distribution_version"] = str(payload.get("value", "pending"))
+            elif case == "authority_hash_mismatch":
+                mutated["authority_bundle_hash"] = "sha256:" + "8" * 64
+            elif case == "kernel_source_hash_mismatch":
+                mutated["kernel_source_subtree_hash"] = "sha256:" + "8" * 64
+            elif case == "wheel_hash_mismatch":
+                mutated["wheel_sha256"] = "sha256:" + "8" * 64
+            else:
+                mutated["consumer_repository_commit"] = "c" * 40
+            validate_authority_consumer_lock_structure(mutated, profile_policy=policy)
+            if case not in {"pending_placeholder", "self_reference"}:
+                validate_authority_consumer_lock(
+                    mutated, profile_policy=policy, kernel_build_evidence=evidence
+                )
+            return
+        if case in {
+            "bootstrap_writer",
+            "bootstrap_business",
+            "bootstrap_shadow",
+            "bootstrap_publish",
+        }:
+            capability = {
+                "bootstrap_writer": "authority_store_write",
+                "bootstrap_business": "business_execution",
+                "bootstrap_shadow": "shadow_output",
+                "bootstrap_publish": "publication",
+            }[str(case)]
+            authorize_consumer_lock_use(
+                lock=lock,
+                profile_policy=policy,
+                requested_capabilities=[capability],
+                verified_post_commit_receipts=[],
+                kernel_build_evidence=evidence,
+            )
+            return
+        if case in {"child02_wrong_profile_na", "stale_task_authorization_revision"}:
+            task_policy = load_mapping(repository_root / "governance/task-authorizations.yaml")
+            if case == "stale_task_authorization_revision":
+                task_policy["authority_revision"] = 2
+            validate_task_activation_profile(
+                task_id="08-21-02-import-firewall-and-package-skeleton",
+                activation_profile=(
+                    "authority_bootstrap"
+                    if case == "child02_wrong_profile_na"
+                    else "authority_package_skeleton"
+                ),
+                task_authorizations=task_policy,
+                authority_revision=3,
+            )
+            return
     raise GateViolation("AUTH-FIXTURE-RUNNER", f"unknown consumer lock case: {case}")
 
 

@@ -4,10 +4,21 @@
   "title": "TaskAuthorizations",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "authority_revision", "authorizations"],
+  "required": ["schema_version", "authority_revision", "activation_profile_bindings", "authorizations"],
   "properties": {
     "schema_version": {"const": "1.0.0"},
     "authority_revision": {"type": "integer", "minimum": 1},
+    "activation_profile_bindings": {
+      "type": "array", "minItems": 2,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["task_id", "required_profile"],
+        "properties": {
+          "task_id": {"type": "string", "minLength": 1},
+          "required_profile": {"enum": ["authority_bootstrap", "authority_package_skeleton", "contract_foundation", "kernel_execution", "stage_business", "cutover"]}
+        }
+      }
+    },
     "authorizations": {
       "type": "array",
       "items": {

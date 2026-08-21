@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/kernel-build-provenance/1.0.0",
+  "title": "KernelBuildProvenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "receipt_type", "builder_id", "decision", "build_evidence_policy_hash", "kernel_source_commit", "kernel_source_subtree_hash", "wheel_sha256", "build_recipe_hash", "environment_lock_hash"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "receipt_type": {"const": "kernel_build_provenance"},
+    "builder_id": {"type": "string", "minLength": 1},
+    "decision": {"const": "allow"},
+    "build_evidence_policy_hash": {"$ref": "#/$defs/sha256"},
+    "kernel_source_commit": {"$ref": "#/$defs/git_oid"},
+    "kernel_source_subtree_hash": {"$ref": "#/$defs/sha256"},
+    "wheel_sha256": {"$ref": "#/$defs/sha256"},
+    "build_recipe_hash": {"$ref": "#/$defs/sha256"},
+    "environment_lock_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "git_oid": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

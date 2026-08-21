@@ -31,7 +31,9 @@ RECEIPT_FIELDS: dict[str, dict[str, FieldKind]] = {
         "authority_governance_commit": "git_oid",
         "authority_bundle_hash": "sha256",
         "consumer_repository_commit": "git_oid",
-        "consumer_lock_path": "string",
+        "consumer_commit_tree_oid": "git_oid",
+        "consumer_index_tree_oid": "git_oid",
+        "consumer_lock_path": "reserved_consumer_lock_path",
         "state": "consumer_lock_readiness_state",
         "reason": "consumer_lock_readiness_reason",
         "profile_policy_hash": "sha256",
@@ -41,6 +43,7 @@ RECEIPT_FIELDS: dict[str, dict[str, FieldKind]] = {
         "authority_governance_commit": "git_oid",
         "authority_lock_document_hash": "sha256",
         "authority_bundle_hash": "sha256",
+        "build_evidence_policy_hash": "sha256",
         "kernel_source_commit": "git_oid",
         "kernel_source_subtree_hash": "sha256",
         "distribution_name": "string",
@@ -284,6 +287,8 @@ def _schema_for_kind(kind: FieldKind) -> dict[str, Any]:
                 "publication_eligible",
             ]
         }
+    if kind == "reserved_consumer_lock_path":
+        return {"const": "governance/authority-consumer.lock.yaml"}
     raise AssertionError(f"unregistered field kind: {kind}")
 
 
@@ -383,6 +388,11 @@ def _validate_field(kind: FieldKind, value: Any, *, where: str) -> None:
             "publication_eligible",
         }:
             raise GateViolation("AUTH-RECEIPT-FIELD", f"{where} has unknown profile")
+    elif kind == "reserved_consumer_lock_path":
+        if value != "governance/authority-consumer.lock.yaml":
+            raise GateViolation(
+                "AUTH-RECEIPT-FIELD", f"{where} must be the reserved consumer lock path"
+            )
     else:  # pragma: no cover - registry and generator are co-located
         raise AssertionError(kind)
 

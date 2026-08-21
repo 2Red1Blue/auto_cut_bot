@@ -49,6 +49,69 @@ TASK_AUTHORIZATIONS_PATH = "governance/task-authorizations.yaml"
 ACTIVATION_PROFILES_PATH = "governance/activation-profiles.yaml"
 MODEL_ROLE_POLICY_PATH = "governance/model-role-policy.yaml"
 PROTECTED_PATHS_PATH = "governance/protected-paths.yaml"
+SPECIAL_ACTIVATION_PROFILES = {"authority_bootstrap", "authority_package_skeleton"}
+
+
+def validate_task_activation_profile(
+    *,
+    task_id: str,
+    activation_profile: str,
+    task_authorizations: Mapping[str, Any],
+    authority_revision: int,
+) -> None:
+    """Bind sensitive activation profiles to exact task IDs from locked policy."""
+
+    require_closed(
+        task_authorizations,
+        required=(
+            "schema_version",
+            "authority_revision",
+            "activation_profile_bindings",
+            "authorizations",
+        ),
+        where="task authorizations",
+    )
+    bindings = require_list(
+        task_authorizations["activation_profile_bindings"],
+        where="activation_profile_bindings",
+        non_empty=True,
+    )
+    if task_authorizations["authority_revision"] != authority_revision:
+        raise GateViolation(
+            "AUTH-TASK-PROFILE-REVISION",
+            "task activation bindings are stale for the authority revision",
+        )
+    matches: list[str] = []
+    seen_tasks: set[str] = set()
+    for index, item in enumerate(bindings):
+        if not isinstance(item, dict):
+            raise GateViolation("AUTH-TASK-PROFILE-POLICY", f"binding {index} is invalid")
+        require_closed(
+            item,
+            required=("task_id", "required_profile"),
+            where=f"activation profile binding {index}",
+        )
+        bound_task = require_non_empty_string(item["task_id"], where="binding.task_id")
+        bound_profile = require_non_empty_string(
+            item["required_profile"], where="binding.required_profile"
+        )
+        if bound_task in seen_tasks:
+            raise GateViolation("AUTH-TASK-PROFILE-POLICY", "duplicate task profile binding")
+        seen_tasks.add(bound_task)
+        if bound_task == task_id:
+            matches.append(bound_profile)
+    if len(matches) != 1:
+        if activation_profile in SPECIAL_ACTIVATION_PROFILES or matches:
+            raise GateViolation(
+                "AUTH-TASK-PROFILE-BINDING",
+                "sensitive activation profile needs one exact task binding",
+            )
+        return
+    if matches[0] != activation_profile:
+        raise GateViolation(
+            "AUTH-TASK-PROFILE-DOWNGRADE",
+            f"task {task_id} requires {matches[0]}, not {activation_profile}",
+        )
 
 
 def _validate_repository_binding(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -421,6 +484,17 @@ def admit_task(
         repository_roots=resolved_roots,
         path=ACTIVATION_PROFILES_PATH,
     )
+    task_authorizations, _task_authorizations_hash = _locked_mapping(
+        lock=lock,
+        repository_roots=resolved_roots,
+        path=TASK_AUTHORIZATIONS_PATH,
+    )
+    validate_task_activation_profile(
+        task_id=str(manifest["task_id"]),
+        activation_profile=str(manifest["activation_profile"]),
+        task_authorizations=task_authorizations,
+        authority_revision=int(lock["authority_revision"]),
+    )
     _validate_registry_binding(
         manifest["registry_binding"],
         lock["bundle_hash"],
@@ -575,9 +649,19 @@ def _validate_locked_authority_authorization(
     )
     require_closed(
         source,
-        required=("schema_version", "authority_revision", "authorizations"),
+        required=(
+            "schema_version",
+            "authority_revision",
+            "activation_profile_bindings",
+            "authorizations",
+        ),
         where="task authorizations",
     )
+    if source["authority_revision"] != lock["authority_revision"]:
+        raise GateViolation(
+            "AUTH-TASK-AUTHORIZATION-REVISION",
+            "protected-write authorization is stale for the authority revision",
+        )
     matches: list[Mapping[str, Any]] = []
     for index, item in enumerate(require_list(source["authorizations"], where="authorizations")):
         if not isinstance(item, dict):

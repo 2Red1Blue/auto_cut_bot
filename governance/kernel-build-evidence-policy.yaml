@@ -1,0 +1,13 @@
+schema_version: 1.0.0
+policy_id: autocut-kernel-isolated-wheel-v1
+kernel_repository: auto_cut_bot
+authority_lock_path: governance/authority-lock.yaml
+kernel_source_subtree_path: packages/autocut-kernel
+kernel_package_source_path: packages/autocut-kernel/src/autocut_kernel
+wheel_package_path: autocut_kernel
+distribution_name: autocut-kernel
+approved_builder_ids:
+  - autocut-isolated-wheel-builder-v1
+allowed_wheel_tags:
+  - py3-none-any
+require_authority_ancestor: true

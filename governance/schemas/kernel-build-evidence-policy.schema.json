@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/kernel-build-evidence-policy/1.0.0",
+  "title": "KernelBuildEvidencePolicy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_id", "kernel_repository", "authority_lock_path", "kernel_source_subtree_path", "kernel_package_source_path", "wheel_package_path", "distribution_name", "approved_builder_ids", "allowed_wheel_tags", "require_authority_ancestor"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "policy_id": {"const": "autocut-kernel-isolated-wheel-v1"},
+    "kernel_repository": {"const": "auto_cut_bot"},
+    "authority_lock_path": {"const": "governance/authority-lock.yaml"},
+    "kernel_source_subtree_path": {"const": "packages/autocut-kernel"},
+    "kernel_package_source_path": {"const": "packages/autocut-kernel/src/autocut_kernel"},
+    "wheel_package_path": {"const": "autocut_kernel"},
+    "distribution_name": {"const": "autocut-kernel"},
+    "approved_builder_ids": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "allowed_wheel_tags": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9_.]+-[A-Za-z0-9_.]+-[A-Za-z0-9_.]+$"}
+    },
+    "require_authority_ancestor": {"const": true}
+  }
+}

@@ -1,5 +1,10 @@
 schema_version: 1.0.0
-authority_revision: 1
+authority_revision: 3
+activation_profile_bindings:
+  - task_id: 08-21-00-trellis-authority-sync
+    required_profile: authority_bootstrap
+  - task_id: 08-21-02-import-firewall-and-package-skeleton
+    required_profile: authority_package_skeleton
 authorizations:
   - authorization_id: user-approved-v213-authority-bootstrap-20260821
     task_id: 08-21-00-trellis-authority-sync

@@ -16,6 +16,7 @@
     "authority_governance_commit",
     "authority_lock_document_hash",
     "authority_bundle_hash",
+    "build_evidence_policy_hash",
     "kernel_source_commit",
     "kernel_source_subtree_hash",
     "distribution_name",
@@ -70,6 +71,9 @@
       "$ref": "#/$defs/sha256"
     },
     "authority_bundle_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "build_evidence_policy_hash": {
       "$ref": "#/$defs/sha256"
     },
     "kernel_source_commit": {

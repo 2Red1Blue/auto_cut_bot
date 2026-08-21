@@ -14,6 +14,7 @@ from authority.lock import (
     validate_authority_lock,
     verify_authority_lock,
     verify_bootstrap_commit_chain,
+    verify_staged_authority_lock_candidate,
 )
 from authority.receipts import RECEIPT_FIELDS, make_typed_receipt, validate_typed_receipt
 from jsonschema import Draft202012Validator
@@ -100,6 +101,7 @@ def test_governance_manifests_validate_against_closed_schemas() -> None:
         ("blocking-fixtures.manifest.yaml", "blocking-fixtures-manifest.schema.json"),
         ("activation-profiles.yaml", "activation-profiles.schema.json"),
         ("consumer-lock-policy.yaml", "consumer-lock-policy.schema.json"),
+        ("kernel-build-evidence-policy.yaml", "kernel-build-evidence-policy.schema.json"),
         ("task-authorizations.yaml", "task-authorizations.schema.json"),
         ("model-role-policy.yaml", "model-role-policy.schema.json"),
         ("protected-paths.yaml", "protected-paths.schema.json"),
@@ -155,6 +157,28 @@ def test_bootstrap_is_seed_then_inventory_then_lock_without_self_reference(tmp_p
         repository_roots={"fixture": root},
     )
     assert verified["bundle_hash"] == generated["bundle_hash"]
+
+
+def test_staged_locked_source_change_cannot_be_approved_by_old_lock(tmp_path: Path) -> None:
+    """A real index candidate must not inherit approval from immutable blobs."""
+    root, _seed_commit, inventory_commit = _authority_repository(tmp_path)
+    lock_path = root / "authority-lock.yaml"
+    lock_path.write_text(
+        yaml.safe_dump(_build(root, inventory_commit), sort_keys=False), encoding="utf-8"
+    )
+    lock_commit = _commit(root, "commit generated lock")
+    (root / "contract.md").write_text("unreviewed staged contract change\n", encoding="utf-8")
+    _git(root, "add", "contract.md")
+
+    # Immutable verification remains useful for the committed authority, but
+    # cannot be treated as candidate approval.
+    assert verify_authority_lock(lock_path, {"fixture": root})
+    with pytest.raises(GateViolation, match="AUTH-LOCK-CANDIDATE-DRIFT"):
+        verify_staged_authority_lock_candidate(
+            lock_path=lock_path,
+            repository_roots={"fixture": root},
+            predecessor_commits={"fixture": lock_commit},
+        )
 
 
 def test_lock_rejects_dirty_only_source_and_unknown_field(tmp_path: Path) -> None:

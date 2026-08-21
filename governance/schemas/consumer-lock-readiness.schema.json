@@ -16,6 +16,8 @@
     "authority_governance_commit",
     "authority_bundle_hash",
     "consumer_repository_commit",
+    "consumer_commit_tree_oid",
+    "consumer_index_tree_oid",
     "consumer_lock_path",
     "state",
     "reason",
@@ -62,9 +64,14 @@
     "consumer_repository_commit": {
       "$ref": "#/$defs/git_oid"
     },
+    "consumer_commit_tree_oid": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "consumer_index_tree_oid": {
+      "$ref": "#/$defs/git_oid"
+    },
     "consumer_lock_path": {
-      "type": "string",
-      "minLength": 1
+      "const": "governance/authority-consumer.lock.yaml"
     },
     "state": {
       "const": "not_materialized"
