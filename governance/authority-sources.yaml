@@ -1,13 +1,13 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 1
+authority_revision: 2
 contract_version: 2.1.3
-seed_source_commit: b4ff62b7111468db8bfd94c6cad25f0862bf55bb
+seed_source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
 repositories:
   auto_cut_bot:
-    source_commit: b4ff62b7111468db8bfd94c6cad25f0862bf55bb
+    source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
   ac_auto_cut:
-    source_commit: dbaf408786b637708e343120e628929b79a8410a
+    source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
   - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-production-system-contracts.md}
   - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-stage-01-knowledge-chain-v2.md}
@@ -29,6 +29,11 @@ entries:
   - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/11-compatible-algorithm-principles-and-reuse-boundaries.md}
   - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/12-implementation-conformance-and-ai-drift-prevention.md}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schema-index.yaml}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-consumer-lock.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/consumer-lock-policy.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/consumer-lock-readiness.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/consumer-lock.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/kernel-build.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-lock.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/source-candidate.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-sources.schema.json}
@@ -57,6 +62,7 @@ entries:
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/upstream-parity.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/validation-receipt-set.schema.json}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/activation-profiles.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/consumer-lock-policy.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/model-role-policy.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/protected-paths.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/remote-protection-policy.yaml}
@@ -73,6 +79,7 @@ entries:
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/cli.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/common.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/conformance_gates.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/consumer_lock.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/errors.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/fixture_runner.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/lock.py}
@@ -98,4 +105,15 @@ entries:
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-synthetic-production.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-synthetic-outside.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-pre-a-phase-mix.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-phase00.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-pending.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-placeholder.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-authority-hash.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-source-hash.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-wheel-hash.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-writer.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-business.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-shadow.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-bootstrap-publish.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-self-reference.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/synthetic-sensitive/literal-api-key.txt}
