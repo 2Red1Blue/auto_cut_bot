@@ -1,16 +1,16 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 2
+authority_revision: 3
 contract_version: 2.1.3
-seed_source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
+seed_source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
 inventory:
   repository: auto_cut_bot
-  manifest_commit: 91db8b6aead57e7335a6538e3100956a1d59b909
+  manifest_commit: f074947e7c76fb85b046d61062c4e500dcd788de
   path: governance/authority-sources.yaml
-  sha256: sha256:64b71e71995008e4cf05356111d1513ebd1a8eebff7cd0e5161ed041c1ca76e0
+  sha256: sha256:a09a7d7888c3db349b72e5b94761ce0ce997efd1baf97d5d7053c73c197c58b9
 repositories:
   auto_cut_bot:
-    source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
+    source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
@@ -97,11 +97,15 @@ entries:
 - class: blocking_fixture
   repository: auto_cut_bot
   path: governance/blocking-fixtures.manifest.yaml
-  sha256: sha256:863beba76b0e34568ace21eb26275d52de86e974f47de4a3672cb26393863c37
+  sha256: sha256:564a4eeb96a7e8c2ec203289fd043ddc8c4e141b3c14328236e9a4d702c660bc
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/consumer-lock-policy.yaml
   sha256: sha256:ed7a9c2322842d116bcec1a27d7385698e7c4cc353658ede3a64d24c3819cc4a
+- class: architecture_gate
+  repository: auto_cut_bot
+  path: governance/kernel-build-evidence-policy.yaml
+  sha256: sha256:c25a082d647458120eada7c19bc0273aedeb4f1198b5a5c3100bbd8cb036b02b
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/model-role-policy.yaml
@@ -117,7 +121,7 @@ entries:
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schema-index.yaml
-  sha256: sha256:5158cc8038fc5013304d5cbef513056c2bb9a80c5ed8c7b90fd814876175d632
+  sha256: sha256:aef52f7d6920b4bbf293b51902fa242d8b87d0bb7874eca29f234bdc79c801c1
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/activation-profiles.schema.json
@@ -125,7 +129,7 @@ entries:
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/authority-consumer-lock.schema.json
-  sha256: sha256:8d26a39795d57d70c11ff791e6d0b1225a3eeb1008a9d17c59242660b4e62c9a
+  sha256: sha256:87ea82464df8bef20bb6b27f5937ea86e411cecf5e043771e967fd539057f7ab
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/authority-lock.schema.json
@@ -169,7 +173,7 @@ entries:
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/consumer-lock-readiness.schema.json
-  sha256: sha256:86907165d68499f5102eeb4a4b34540c4ef55fd1b2aaa71cf4582745b9f43ca4
+  sha256: sha256:879dcdadfb4641fe0c2de44e1484dec034570055427b97f9864dae88fc246a3b
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/consumer-lock.schema.json
@@ -184,8 +188,16 @@ entries:
   sha256: sha256:00bb92076c4458fc9396d0018e707bca22b1572b7ba0169e580134ff5b8d059e
 - class: schema_source
   repository: auto_cut_bot
+  path: governance/schemas/kernel-build-evidence-policy.schema.json
+  sha256: sha256:d889f671ac2c198a88cf682ecb3f3126cdeeb0f27c243781e73ad807d8e078ad
+- class: schema_source
+  repository: auto_cut_bot
+  path: governance/schemas/kernel-build-provenance.schema.json
+  sha256: sha256:4e7af844598201a66ec16d04426ae9e06a98ee534fd89b62bafad65347cd4b06
+- class: schema_source
+  repository: auto_cut_bot
   path: governance/schemas/kernel-build.schema.json
-  sha256: sha256:d2a7986fe8b1600e8e2d885d2979a0cb21d40599d50b239a38c93d5d31383802
+  sha256: sha256:971d06ef0a0280b4bba2659c5926f0178ccdc5cf4af8c9ca4982d786a725d184
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/model-role-policy.schema.json
@@ -229,7 +241,7 @@ entries:
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/task-authorizations.schema.json
-  sha256: sha256:06fa3c7b1ab0e698d8e5a7ea50dc6f4da54fb7685b00f5bd322f219d2de96071
+  sha256: sha256:ac376318c5f8c4b0966066f8959bfb65f2217dc9ab9cfe04c31d6931641541d6
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/task-conformance-manifest.schema.json
@@ -253,7 +265,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/task-authorizations.yaml
-  sha256: sha256:35e2fa0a5f552713efe90214924326e40bd7bb41659588488fa721f5894d4d0a
+  sha256: sha256:c8a8b6b582e345423f2a43eac7a040ee210046b1ab8940c818a10d4918250758
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/ac_auto_cut/backend/index.md
@@ -269,7 +281,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/backend/implementation-conformance-gates.md
-  sha256: sha256:30d0ce4619c38c905f5de4a16e9c6c0771d715bd704138f3a7111d23041d86c9
+  sha256: sha256:8f324c6b2050c2378824037f961f3386a4bd18d16f10f2571a34ce026611f24a
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/backend/index.md
@@ -277,7 +289,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/managed-files.json
-  sha256: sha256:70ff2fb74d5452ab78c401f6bf5e5800545cdefa1b5ee042fa875f9ba1418582
+  sha256: sha256:e65531e566b338dd4d0babd34b01eaff7ae6037dba7cf88a4c2826613b27abf0
 - class: blocking_fixture
   repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-bootstrap-chain.json
@@ -294,6 +306,14 @@ entries:
   repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-candidate-secret.json
   sha256: sha256:909316634d005225bc914bc972d283162539fdf2e4d3bd2cfff8560b30d27b93
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-altered-build-input.json
+  sha256: sha256:a988c36a2f24f44ffe60c38ad28c1feda39437a43ea0b67ab6b24fb04d8f2073
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-altered-wheel.json
+  sha256: sha256:9af77859c12006a5fc725aacd3a2c6d79a3aad1ef99f03bfe8b4bfa4ec323645
 - class: blocking_fixture
   repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-consumer-lock-authority-hash.json
@@ -316,6 +336,22 @@ entries:
   sha256: sha256:55224ce9b4344f982d11f8db425d71d494ac7c183fac0f0a0f6b9d587ee99e7f
 - class: blocking_fixture
   repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-child02-wrong-profile.json
+  sha256: sha256:8a9fb649c357081076a0e7ad3c80f6ddc7c3e92dcfa24c64f3ae9cbf54fcda2d
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-commit-divergence.json
+  sha256: sha256:c2e991b33618665d25bae2a0ec53f9bebec2b26ad0fbb803bb6334ceb69fe2c1
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-fabricated-build-receipt.json
+  sha256: sha256:98892046683eb835e6e6c59f2f8e07500abd09d59bef30e4a34ab4b0186f731a
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-index-divergence.json
+  sha256: sha256:e336c00a945965b4959335902580602782ac86cf189f52258c184a2a127a2b14
+- class: blocking_fixture
+  repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-consumer-lock-pending.json
   sha256: sha256:cdc3c6d44a218fe747b1d28e482ea988e0a906904776295399ebe39ae6764c98
 - class: blocking_fixture
@@ -328,12 +364,20 @@ entries:
   sha256: sha256:64ed64b71cc8e2c499f342edcc497d9f96abb83995bf3c6c01da5476e00be1e0
 - class: blocking_fixture
   repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-reserved-path.json
+  sha256: sha256:cfcb17fdbfb5e759ccfa081a194a61e3a9fd9773767e3c0a6d183d4ddb5558d6
+- class: blocking_fixture
+  repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-consumer-lock-self-reference.json
   sha256: sha256:e14ea1da1a681c4ca0c1e0c126da3fe4d65f20384f19b6a65b844ee09eac7875
 - class: blocking_fixture
   repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-consumer-lock-source-hash.json
   sha256: sha256:04ccdf97852ee6243004327e189a986b5e867018bba9810c286304cc4912f48e
+- class: blocking_fixture
+  repository: auto_cut_bot
+  path: tests/authority/fixtures/protected/bad-consumer-lock-stale-task-revision.json
+  sha256: sha256:a0e97b5b217fa23b9a047c6eb614b4ac6b5be5f19c157f64abd787a0eecc640c
 - class: blocking_fixture
   repository: auto_cut_bot
   path: tests/authority/fixtures/protected/bad-consumer-lock-wheel-hash.json
@@ -409,11 +453,11 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/conformance_gates.py
-  sha256: sha256:8eb431dedbe83d8963fe91f5b4389b34a7cec8ae569df7e11bda14f5644dc573
+  sha256: sha256:5a3eacb7f5efa697e9fab17d80215d6e2afe4c871958dd84de310e367eddae46
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/consumer_lock.py
-  sha256: sha256:d5a9e561c87573839a37632803ad629dec6397bc60a6d264252a16434202f591
+  sha256: sha256:545b42d5a4e16404a2aa9e08603876c6f5d74adb1df08eb7a4c30a7462b95d54
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/errors.py
@@ -421,15 +465,15 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/fixture_runner.py
-  sha256: sha256:4ad4ddee86f67f72685cd7ad15e6095bc3a2228d2733845c0bb765dc2baeece3
+  sha256: sha256:03c5b0f0305052465007479c9f684d7b39cb4e4b948f4eda5bad401fb4c64405
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/lock.py
-  sha256: sha256:b5bdf885606b0f9cd3a0f383604e2374a6c960410ab8ad428a8df40af195fe0d
+  sha256: sha256:2a570127724b912a2716f1464345ce6a27095055def0e1c85ef2ce7ac2025566
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/receipts.py
-  sha256: sha256:1e00a20385bf3cc41b8142c1507bdfa5df6110ae48088f8b77cff60326f2a7c9
+  sha256: sha256:81304f0d74693280ac873fdc3ba9a62cc3d373cf3912f0f404180593711a633f
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/remote_gate.py
@@ -441,9 +485,9 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/task_gate.py
-  sha256: sha256:c625ba9b435cc76f866210af1c1f097cc9bcb44a3d0cd875bdddb6ed1737fff8
+  sha256: sha256:fb7f7362e10f9056ad0531ae5e00418b368ab8a5a8de47c83cf5698a63cbc451
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/trellis_sync.py
   sha256: sha256:f31bde7ca0d47d3da54d59bf9ab032a4f0277ba469d995d5c3215519ef804126
-bundle_hash: sha256:89c4ccfb2efee620281a8b4a553a64a3861f5dc7faf1d751fab192296b396325
+bundle_hash: sha256:452327d58fb00fe7c8f34e76008e2e6695667640a05e19b2ea8743fe2525c457
