@@ -17,12 +17,12 @@
     <a href="https://auto-cut-bot.wiki/vi/docs/latest/getting-started/auto_cut_bot-overview">Tiếng Việt</a>
   </p>
   <p>
-    <a href="https://github.com/HKUDS/auto_cut_bot"><img src="https://img.shields.io/github/stars/HKUDS/auto_cut_bot?style=flat&logo=github" alt="GitHub stars"></a>
+    <a href="https://github.com/2Red1Blue/auto_cut_bot"><img src="https://img.shields.io/github/stars/2Red1Blue/auto_cut_bot?style=flat&logo=github" alt="GitHub stars"></a>
     <a href="https://pypi.org/project/auto-cut-bot-ai/"><img src="https://img.shields.io/pypi/v/auto-cut-bot-ai" alt="PyPI version"></a>
     <a href="https://pepy.tech/project/auto-cut-bot-ai"><img src="https://static.pepy.tech/badge/auto-cut-bot-ai" alt="PyPI downloads"></a>
-    <a href="https://github.com/HKUDS/auto_cut_bot/actions/workflows/ci.yml"><img src="https://github.com/HKUDS/auto_cut_bot/actions/workflows/ci.yml/badge.svg?branch=main" alt="Test Suite"></a>
+    <a href="https://github.com/2Red1Blue/auto_cut_bot/actions/workflows/ci.yml"><img src="https://github.com/2Red1Blue/auto_cut_bot/actions/workflows/ci.yml/badge.svg?branch=main" alt="Test Suite"></a>
     <a href="https://pypi.org/project/auto-cut-bot-ai/"><img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11 or newer"></a>
-    <a href="./LICENSE"><img src="https://img.shields.io/github/license/HKUDS/auto_cut_bot" alt="MIT License"></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/github/license/2Red1Blue/auto_cut_bot" alt="MIT License"></a>
     <a href="https://auto-cut-bot.wiki/docs/latest/getting-started/auto_cut_bot-overview"><img src="https://img.shields.io/badge/docs-auto-cut-bot.wiki-blue" alt="auto_cut_bot documentation"></a>
   </p>
   <p>
@@ -77,7 +77,12 @@ auto_cut_bot is a self-hosted personal AI agent runtime. It can:
 
 Pick **one** install method:
 
-Prerequisites: Python 3.11 or newer. Git is only needed for a source install. Published packages already include the WebUI; a current-source install needs `bun` or `npm` to build it.
+| Track | Install with | Update with | What runs |
+|---|---|---|---|
+| Stable | installer, `uv`, or pip | the same package tool | one released Python/WebUI/TUI version |
+| Current source | editable Git checkout | `git pull --ff-only` + editable dependency sync | Python, WebUI, and TUI from that checkout |
+
+Prerequisites: Python 3.11 or newer. Git and [Bun](https://bun.sh/) are only needed for a source install. Published packages include the WebUI and fetch a checksummed, version-matched TUI archive—with its licenses, notices, corresponding application source, source offer, and relinking instructions—on first use.
 
 If terminals, API keys, or config files are new to you, use the guided zero-background walkthrough in [Start Without Technical Background](./docs/start-without-technical-background.md) instead of this compact README path.
 
@@ -86,35 +91,25 @@ If terminals, API keys, or config files are new to you, use the guided zero-back
 macOS / Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/2Red1Blue/auto_cut_bot/main/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/2Red1Blue/auto_cut_bot/main/scripts/install.ps1 | iex
 ```
 
 The default command installs or upgrades `auto-cut-bot-ai` from PyPI. On a fresh local desktop, it then starts `auto_cut_bot webui` so you can configure the first provider and model in **Settings → Models**. SSH, headless, existing-config, and older-release paths keep the terminal setup wizard. The installer avoids system-wide pip installs by using an active virtual environment, `uv`, `pipx`, or a managed venv under `~/.auto_cut_bot/venv`. It also prints the exact command it used to run auto_cut_bot; reuse that full command below if `auto_cut_bot` is not on `PATH`.
 
-To preview the plan without changing your environment, pass `--dry-run`; combine it with `--dev` when you want to preview the main-branch install.
+To preview the plan without changing your environment, pass `--dry-run`.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/2Red1Blue/auto_cut_bot/main/scripts/install.sh | sh -s -- --dry-run
 ```
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.ps1))) --dry-run
-```
-
-To install the current `main` branch instead, pass `--dev`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.sh | sh -s -- --dev
-```
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.ps1))) --dev
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/2Red1Blue/auto_cut_bot/main/scripts/install.ps1))) --dry-run
 ```
 
 If you prefer to inspect the script first, open [`scripts/install.sh`](./scripts/install.sh) or [`scripts/install.ps1`](./scripts/install.ps1).
@@ -135,15 +130,27 @@ If pip reports `externally-managed-environment` on macOS or Linux, use the one-c
 
 **Install from source**
 
-`bun` or `npm` must be available. From an activated virtual environment:
+Clone the repository and install it in editable mode. Bun is required because the source
+checkout runs the matching TUI directly instead of downloading an older release binary.
 
 ```bash
-git clone https://github.com/HKUDS/auto_cut_bot.git
+git clone https://github.com/2Red1Blue/auto_cut_bot.git
 cd auto_cut_bot
-python -m pip install .
+python -m venv .venv
 ```
 
-On Windows, if pip reports that it cannot launch `npm`, run `cd webui`, `npm.cmd install --package-lock=false`, `npm.cmd run build`, and `cd ..` in order, then retry the install. Contributors who need an editable checkout should follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`webui/README.md`](./webui/README.md).
+Activate it with `source .venv/bin/activate` on macOS/Linux or
+`.venv\Scripts\Activate.ps1` in Windows PowerShell, then run:
+
+```bash
+python -m pip install -e .
+```
+
+After that, the normal commands are identical to a stable install. `auto_cut_bot agent` runs the TUI
+from this checkout, and `auto_cut_bot webui` rebuilds stale frontend assets automatically. A later
+`git pull --ff-only` updates the Python, TUI, and WebUI source together; rerun
+`python -m pip install -e .` when Python dependencies change. Contributors should also read
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 Verify the install:
 
@@ -161,7 +168,7 @@ If `auto_cut_bot` is not on `PATH`, invoke it through the method that installed 
 auto_cut_bot webui
 ```
 
-This is the recommended first run. The launcher creates the config and workspace when needed, safely enables the local WebSocket channel after confirmation, starts the gateway, and opens [`http://127.0.0.1:8765`](http://127.0.0.1:8765). A fresh install can open before a model is configured, so setup continues in the browser instead of beginning in a JSON file. The first-run WebUI binds to localhost by default and is not exposed to your LAN.
+This is the recommended first run. The launcher creates the config and workspace when needed, safely enables the local WebSocket channel after confirmation, starts or joins the shared local gateway, and opens [`http://127.0.0.1:8765`](http://127.0.0.1:8765). A fresh install can open before a model is configured, so setup continues in the browser instead of beginning in a JSON file. The first-run WebUI binds to localhost by default and is not exposed to your LAN.
 
 **Your first three steps**
 
@@ -174,10 +181,10 @@ Any normal reply means the provider, model, workspace, and browser gateway are w
 **Keep auto_cut_bot running after you close the terminal**
 
 ```bash
-auto_cut_bot webui --background
+auto_cut_bot gateway --background
 ```
 
-This starts the same full gateway as `auto_cut_bot webui`, opens the browser, and leaves channels and automations running after the launcher exits. Complete first-time model setup with foreground `auto_cut_bot webui` before switching to background mode.
+This is the only command that promotes the shared gateway to persistent background mode. It leaves channels and automations running after every local TUI and WebUI launcher exits. Complete first-time model setup with `auto_cut_bot webui` before switching to background mode; open the same localhost WebUI again afterward.
 
 ```bash
 auto_cut_bot gateway status
@@ -202,7 +209,7 @@ Use `auto_cut_bot gateway --background` for the same direct entry point without 
 auto_cut_bot agent
 ```
 
-This opens an interactive terminal chat with the same configured model, workspace, and tools while keeping its own CLI session history. It does not open a browser or keep chat channels and automations running after you exit. Type `exit` or press `Ctrl+C` when you are done.
+This opens the native terminal client with the configured model and tools, using the launch directory as its workspace. Use `/sessions` to switch saved conversations, `/new-chat` to preserve this conversation and start another one, `/branch` to fork from a completed reply, `/context` to inspect the compacted summary and raw message suffix available to the agent, or `/diff` to review the latest turn's file changes. Type `@` to mention an installed app, configured MCP server, or saved session. While auto_cut_bot is working, `Enter` steers the current turn, `Tab` queues a visible follow-up for the next turn, and `Option+Up` on macOS (`Alt+Up` on Windows/Linux) returns the latest queued message for editing. Press `Shift+Enter` to add a newline; `Ctrl+J` is the universal fallback for terminals that cannot distinguish modified Enter keys. Use `PageUp` at the top to load earlier transcript pages. Each launch starts a new session; `--session` selects an existing WebSocket session, while `--workspace` overrides the launch directory. Use `--classic` to resume a session from another channel. The existing auto_cut_bot `/new` command keeps its original behavior: it resets the current chat. `auto_cut_bot agent` and `auto_cut_bot webui` share one on-demand local gateway: either command can start it, each launcher releases only its own client, and the last interactive launcher to exit stops it. Use `/detach` to close the TUI while keeping the gateway and any active agent turn running in the background; after the terminal is restored, auto_cut_bot prints the exact `auto_cut_bot gateway stop` command for that config and workspace. Use `auto_cut_bot gateway --background` to start persistently before opening a client. Type `exit` or press `Ctrl+C` when you are done; after the terminal is restored, auto_cut_bot prints a ready-to-run `auto_cut_bot agent --session ...` command that resumes the session. Use `auto_cut_bot agent --classic` for the legacy Python prompt.
 
 For one request and an immediate exit, use:
 
@@ -231,7 +238,7 @@ If auto_cut_bot worked for you, a star on GitHub is the simplest way to support 
 
 Deploy auto_cut_bot's gateway and bundled WebUI from the repository's ready-to-use Blueprint:
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/HKUDS/auto_cut_bot)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/2Red1Blue/auto_cut_bot)
 
 Render will ask for `ANTHROPIC_API_KEY` and a private `AUTO_CUT_BOT_WEB_TOKEN`, then provision persistent storage for sessions, memory, and WebUI history. Persistent disks require a paid Render service.
 
@@ -285,7 +292,7 @@ Browse the [repo docs](./docs/README.md) for the latest features and GitHub deve
 
 ## Releases
 
-**Latest release: [v0.3.0 - The Agency Release](https://github.com/HKUDS/auto_cut_bot/releases/tag/v0.3.0)**
+**Latest release: [v0.3.0 - The Agency Release](https://github.com/2Red1Blue/auto_cut_bot/releases/tag/v0.3.0)**
 
 The Agency Release turns auto_cut_bot from a durable workbench into an agent runtime that can coordinate helpers, switch models per session, and carry authorized work through to completion.
 
@@ -294,7 +301,7 @@ The Agency Release turns auto_cut_bot from a durable workbench into an agent run
 - Start from a guided WebUI setup with clearer execution controls
 - Apply configuration changes live across a more reliable provider, channel, and tool runtime
 
-[Read the v0.3.0 release notes](https://github.com/HKUDS/auto_cut_bot/releases/tag/v0.3.0)
+[Read the v0.3.0 release notes](https://github.com/2Red1Blue/auto_cut_bot/releases/tag/v0.3.0)
 
 ## Recent Updates
 
@@ -304,7 +311,7 @@ The Agency Release turns auto_cut_bot from a durable workbench into an agent run
 - **2026-07-21** Codex fast mode, visible skill references, safer configuration saves, and sturdier task cleanup.
 - **2026-07-20** Cleaner code blocks and copy actions, self-contained channels, and steadier QQ reconnects.
 
-For older updates, see the [release archive](./docs/release-archive.md) or [GitHub releases](https://github.com/HKUDS/auto_cut_bot/releases).
+For older updates, see the [release archive](./docs/release-archive.md) or [GitHub releases](https://github.com/2Red1Blue/auto_cut_bot/releases).
 
 ## Open Source Partners
 
@@ -318,8 +325,8 @@ For older updates, see the [release archive](./docs/release-archive.md) or [GitH
 Use auto_cut_bot for a real task, report what broke, and then pick a focused improvement.
 
 - Read [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow.
-- Browse [open issues](https://github.com/HKUDS/auto_cut_bot/issues) for problems to investigate.
-- Open a [pull request](https://github.com/HKUDS/auto_cut_bot/pulls) for a focused fix or integration.
+- Browse [open issues](https://github.com/2Red1Blue/auto_cut_bot/issues) for problems to investigate.
+- Open a [pull request](https://github.com/2Red1Blue/auto_cut_bot/pulls) for a focused fix or integration.
 
 ## Contact
 
@@ -327,8 +334,8 @@ Nanobot was started by [Xubin Ren](https://github.com/re-bin) as a personal open
 
 ### Contributors
 
-<a href="https://github.com/HKUDS/auto_cut_bot/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=HKUDS/auto_cut_bot&max=100&columns=12&updated=20260210" alt="Contributors" />
+<a href="https://github.com/2Red1Blue/auto_cut_bot/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=2Red1Blue/auto_cut_bot&max=100&columns=12&updated=20260210" alt="Contributors" />
 </a>
 
 <p align="center">

@@ -10,7 +10,12 @@ import pytest
 from auto_cut_bot.agent.goal_permission import goal_mutation_allowed, goal_mutation_permission
 from auto_cut_bot.bus.outbound_events import StreamedResponseEvent
 from auto_cut_bot.config.schema import AgentDefaults
-from auto_cut_bot.providers.base import GenerationSettings, LLMProvider, LLMResponse, ToolCallRequest
+from auto_cut_bot.providers.base import (
+    GenerationSettings,
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+)
 from auto_cut_bot.runtime_context import (
     RUNTIME_CONTEXT_INPUT_META,
     WEBUI_QUOTE_METADATA,
@@ -146,6 +151,16 @@ async def test_runtime_context_is_persisted_as_next_turn_prompt_prefix(tmp_path)
     from auto_cut_bot.bus.events import InboundMessage
     from auto_cut_bot.bus.queue import MessageBus
 
+    skill_dir = tmp_path / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: review\n"
+        "description: Review changes.\n"
+        "---\n\n"
+        "Follow the unique review checklist.",
+        encoding="utf-8",
+    )
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
     provider.generation = GenerationSettings()
@@ -169,7 +184,7 @@ async def test_runtime_context_is_persisted_as_next_turn_prompt_prefix(tmp_path)
         channel="cli",
         sender_id="user",
         chat_id="direct",
-        content="first turn",
+        content="first turn $review",
     ))
     await loop._process_message(InboundMessage(
         channel="cli",
@@ -184,6 +199,9 @@ async def test_runtime_context_is_persisted_as_next_turn_prompt_prefix(tmp_path)
     second_wire = LLMProvider._sanitize_empty_content(second_request)
     assert second_wire[: len(first_wire)] == first_wire
     assert first_wire[1] == second_wire[1]
+    assert first_wire[0] == second_wire[0]
+    assert "Follow the unique review checklist." not in first_wire[0]["content"]
+    assert "Follow the unique review checklist." in first_wire[1]["content"]
     assert second_wire[2]["role"] == "assistant"
     assert second_wire[2]["content"] == "first answer"
     assert second_wire[3]["content"].startswith("second turn")
@@ -191,7 +209,7 @@ async def test_runtime_context_is_persisted_as_next_turn_prompt_prefix(tmp_path)
 
     persisted_first_user = session.messages[0]
     assert persisted_first_user["content"] == first_wire[1]["content"]
-    assert public_history_message(persisted_first_user)["content"] == "first turn"
+    assert public_history_message(persisted_first_user)["content"] == "first turn $review"
 
 
 @pytest.mark.asyncio

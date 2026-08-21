@@ -146,7 +146,7 @@ export function WeixinPanel({
       touchedFieldsRef.current = remainingFields;
       setTouchedFields(remainingFields);
       setSaveState(remainingFields.size ? "idle" : "saved");
-      if (payload.nanobot_features) context.onFeaturesUpdate(payload.nanobot_features);
+      if (payload.auto_cut_bot_features) context.onFeaturesUpdate(payload.auto_cut_bot_features);
     } catch (err) {
       setSaveError((err as Error).message);
     } finally {
@@ -206,7 +206,7 @@ export function WeixinPanel({
               {displayName}
             </h3>
             <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
-              {channelTx("description", "Use nanobot from WeChat conversations.")}
+              {channelTx("description", "Use auto_cut_bot from WeChat conversations.")}
             </p>
             {missingSupport && feature.install_supported ? (
               <Button
@@ -222,7 +222,7 @@ export function WeixinPanel({
                 ) : (
                   <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden />
                 )}
-                {tx("settings.nanobotFeatures.installSupport", "Install support")}
+                {tx("settings.auto_cut_botFeatures.installSupport", "Install support")}
               </Button>
             ) : null}
           </div>

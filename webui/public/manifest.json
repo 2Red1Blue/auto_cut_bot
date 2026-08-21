@@ -9,22 +9,22 @@
   "orientation": "any",
   "icons": [
     {
-      "src": "/brand/nanobot_apple_touch.png",
+      "src": "/brand/auto_cut_bot_apple_touch.png",
       "sizes": "180x180",
       "type": "image/png"
     },
     {
-      "src": "/brand/nanobot_icon_192.png",
+      "src": "/brand/auto_cut_bot_icon_192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/brand/nanobot_icon_512.png",
+      "src": "/brand/auto_cut_bot_icon_512.png",
       "sizes": "512x512",
       "type": "image/png"
     },
     {
-      "src": "/brand/nanobot_icon_maskable.png",
+      "src": "/brand/auto_cut_bot_icon_maskable.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"

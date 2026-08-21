@@ -1,4 +1,4 @@
-const CACHE_PREFIX = "nanobot-static-";
+const CACHE_PREFIX = "auto_cut_bot-static-";
 const CACHE_NAME = `${CACHE_PREFIX}v2`;
 const ASSET_MANIFEST_PATH = "/asset-manifest.json";
 const PRECACHE = ["/", "/manifest.json", ASSET_MANIFEST_PATH];
@@ -6,12 +6,12 @@ const NETWORK_FIRST_STATIC_PATHS = new Set([
   "/",
   "/manifest.json",
   ASSET_MANIFEST_PATH,
-  "/brand/nanobot_apple_touch.png",
-  "/brand/nanobot_favicon_32.png",
-  "/brand/nanobot_icon_192.png",
-  "/brand/nanobot_icon_512.png",
-  "/brand/nanobot_icon_maskable.png",
-  "/brand/nanobot_mark.svg",
+  "/brand/auto_cut_bot_apple_touch.png",
+  "/brand/auto_cut_bot_favicon_32.png",
+  "/brand/auto_cut_bot_icon_192.png",
+  "/brand/auto_cut_bot_icon_512.png",
+  "/brand/auto_cut_bot_icon_maskable.png",
+  "/brand/auto_cut_bot_mark.svg",
 ]);
 
 function responseMayBeCached(response) {

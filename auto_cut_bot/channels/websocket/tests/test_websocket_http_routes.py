@@ -23,6 +23,7 @@ from auto_cut_bot.optional_features import InstallResult
 from auto_cut_bot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY
 from auto_cut_bot.session.manager import Session, SessionManager
+from auto_cut_bot.session.session_handles import SessionHandleResolver
 from auto_cut_bot.triggers.local_store import LocalTriggerStore
 from auto_cut_bot.webui.gateway_services import GatewayServices, build_gateway_services
 
@@ -2212,10 +2213,6 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
     }
     sm.save(scoped)
 
-    def fail_metadata_read(_key: str) -> None:
-        raise AssertionError("the session list must use its own index metadata")
-
-    monkeypatch.setattr(sm, "read_session_metadata", fail_metadata_read)
     channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=29906)
     server_task = asyncio.create_task(channel.start())
     try:
@@ -2232,6 +2229,16 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
         # Slack / Lark rows would be non-resumable from the browser.
         assert keys == {"websocket:alpha", "websocket:beta"}
         rows = {row["key"]: row for row in sessions}
+        handles = {
+            handle.session_key: handle
+            for handle in SessionHandleResolver(sm).list_all()
+        }
+        assert rows["websocket:alpha"]["handle"] == handles[
+            "websocket:alpha"
+        ].public_payload()
+        assert rows["websocket:beta"]["handle"] == handles[
+            "websocket:beta"
+        ].public_payload()
         assert rows["websocket:beta"]["workspace_scope"]["project_path"] == str(
             project.resolve()
         )
@@ -3425,7 +3432,7 @@ def test_trusted_proxy_bootstrap_has_no_tokens(
         _LOCAL,
         _FakeReq(
             {
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "X-Forwarded-For": "203.0.113.42",
                 "Forwarded": "for=203.0.113.42;host=auto_cut_bot.example",
                 "X-Real-IP": "203.0.113.42",
@@ -3451,7 +3458,7 @@ async def test_trusted_proxy_authorizes_rest_without_api_token(bus: MagicMock) -
         _LOCAL,
         _FakeReq(
             {
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "Cf-Access-Jwt-Assertion": "present",
             },
             path="/api/sessions",
@@ -3605,14 +3612,14 @@ def test_bootstrap_ws_url_uses_forwarded_https_host(bus: MagicMock) -> None:
         _FakeReq(
             {
                 "Authorization": "Bearer s3cret",
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "X-Forwarded-Proto": "https",
             }
         ),
     )
     assert resp.status_code == 200
     body = json.loads(resp.body)
-    assert body["ws_url"] == "wss://auto_cut_bot.example/"
+    assert body["ws_url"] == "wss://auto-cut-bot.example/"
 
 
 def test_bootstrap_ws_url_uses_configured_public_url(bus: MagicMock) -> None:

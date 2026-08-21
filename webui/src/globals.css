@@ -33,6 +33,8 @@
     --input: 40 8% 90.5%;
     --ring: 0 0% 3.9%;
     --inline-token-highlight: #ef8e30;
+    --session-handle-lightness: 0.5;
+    --session-handle-chroma: 0.12;
     --temporary-control-active: #ef8e30;
     --temporary-accent: 24 95% 53%;
     --temporary-foreground: 17 88% 32%;
@@ -81,6 +83,8 @@
     --input: var(--border);
     --ring: 0 0% 83.1%;
     --inline-token-highlight: #ef8e30;
+    --session-handle-lightness: 0.75;
+    --session-handle-chroma: 0.11;
     --temporary-control-active: #ef8e30;
     --temporary-accent: 24 95% 53%;
     --temporary-foreground: 32 98% 73%;
@@ -670,7 +674,7 @@
 /*
  * Composer controls compress against their actual container, not the viewport.
  * Permission state has priority over the model label; both retain their full
- * accessible names and title text when their visible labels are shortened.
+ * accessible names and tooltip text when their visible labels are shortened.
  */
 .thread-composer-surface {
   container-name: thread-composer;

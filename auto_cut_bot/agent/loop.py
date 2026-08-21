@@ -14,7 +14,6 @@ from collections.abc import Coroutine, Iterable, Mapping
 from contextlib import AbstractContextManager, ExitStack, nullcontext, suppress
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar, cast
 
@@ -24,14 +23,18 @@ from auto_cut_bot.agent import context as agent_context
 from auto_cut_bot.agent import model_presets as preset_helpers
 from auto_cut_bot.agent.autocompact import AutoCompact
 from auto_cut_bot.agent.automation_turns import publish_next_deferred_turn
-from auto_cut_bot.agent.context import ContextBuilder
+from auto_cut_bot.agent.context import ContextBuilder, PersistedPromptContextResolver
 from auto_cut_bot.agent.cron_turns import CronTurnCoordinator
 from auto_cut_bot.agent.hook import AgentHook, AgentTurnHookFactory
 from auto_cut_bot.agent.memory import Consolidator
 from auto_cut_bot.agent.model_runtime import ModelRuntimeResolver
 from auto_cut_bot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from auto_cut_bot.agent.subagent import SubagentManager
-from auto_cut_bot.agent.tools.context import RequestContext, bind_request_context, reset_request_context
+from auto_cut_bot.agent.tools.context import (
+    RequestContext,
+    bind_request_context,
+    reset_request_context,
+)
 from auto_cut_bot.agent.tools.exec_session import ExecSessionManager
 from auto_cut_bot.agent.tools.file_state import FileStateStore, bind_file_states, reset_file_states
 from auto_cut_bot.agent.tools.message import MessageTool
@@ -44,7 +47,7 @@ from auto_cut_bot.agent.turn_delivery import (
 )
 from auto_cut_bot.agent.turn_delivery import TurnRoute as TurnRoute
 from auto_cut_bot.agent.turn_hooks import AgentTurnHookSpec, build_agent_turn_hook
-from auto_cut_bot.bus.events import InboundMessage, OutboundMessage
+from auto_cut_bot.bus.events import INBOUND_META_USER_SHELL, InboundMessage, OutboundMessage
 from auto_cut_bot.bus.outbound_events import StreamedResponseEvent
 from auto_cut_bot.bus.queue import MessageBus
 from auto_cut_bot.bus.runtime_events import RuntimeEventBus
@@ -85,6 +88,7 @@ from auto_cut_bot.session.model_selection import (
     SESSION_MODEL_PRESET_METADATA_KEY,
     model_preset_from_metadata,
 )
+from auto_cut_bot.session.summary import SessionSummary
 from auto_cut_bot.triggers.local_turns import LocalTriggerTurnCoordinator
 from auto_cut_bot.utils.cancellation import task_is_cancelling
 from auto_cut_bot.utils.document import reference_non_image_attachments
@@ -151,7 +155,7 @@ class TurnContext:
     on_retry_wait: Callable[[str], Awaitable[None]] | None = None
 
     pending_queue: asyncio.Queue[InboundMessage] | None = None
-    pending_summary: str | None = None
+    pending_summary: SessionSummary | None = None
 
     ephemeral: bool = False
     run_extra_hooks_for_ephemeral: bool = False
@@ -163,6 +167,7 @@ class TurnContext:
     turn_wall_started_at: float = field(default_factory=time.time)
     visible_run_started_at: float | None = None
     turn_latency_ms: int | None = None
+    usage: dict[str, int] = field(default_factory=dict)
 
     def require_runtime(self) -> LLMRuntime:
         """Return the runtime established by the BUILD stage."""
@@ -384,7 +389,6 @@ class AgentLoop:
         # WebUI and fork rollback paths.  Observe that boundary once instead of
         # duplicating cleanup in each consumer.
         self.sessions.set_delete_observer(self._file_state_store.discard)
-        self.sessions.set_file_cap_archiver(self.context.memory.raw_archive)
         self.tools = tool_registry if tool_registry is not None else ToolRegistry()
         self._exec_session_manager = ExecSessionManager()
         self.runner = AgentRunner()
@@ -441,6 +445,10 @@ class AgentLoop:
             sessions=self.sessions,
             build_messages=self.context.build_messages,
             get_tool_definitions=self.tools.get_definitions,
+            resolve_prompt_context=PersistedPromptContextResolver(
+                workspace_scopes=self.workspace_scopes,
+                unified_session=unified_session,
+            ),
             consolidation_ratio=consolidation_ratio,
             unified_session=unified_session,
         )
@@ -791,6 +799,11 @@ class AgentLoop:
         ]
         blocks = runtime_context_blocks_from_metadata(request.metadata)
         blocks.extend(await resolve_runtime_context(providers, request))
+        skill_context = self.context.skills.build_explicit_skill_runtime_context(
+            request.original_user_text or ""
+        )
+        if skill_context is not None and skill_context not in blocks:
+            blocks.append(skill_context)
         return blocks
 
     async def _dispatch_command_inline(
@@ -801,12 +814,66 @@ class AgentLoop:
         dispatch_fn: Callable[[CommandContext], Awaitable[OutboundMessage | None]],
     ) -> None:
         """Dispatch a command directly from the run() loop and publish the result."""
-        ctx = CommandContext(msg=msg, session=None, key=key, raw=raw, loop=self)
-        result = await dispatch_fn(ctx)
-        if result:
-            await self.bus.publish_outbound(result)
+        async def dispatch_and_publish() -> None:
+            ctx = CommandContext(msg=msg, session=None, key=key, raw=raw, loop=self)
+            result = await dispatch_fn(ctx)
+            if result:
+                await self.bus.publish_outbound(result)
+            else:
+                logger.warning("Command '{}' matched but dispatch returned None", raw)
+
+        # A shell command may run for up to the configured exec timeout. Keep
+        # the inbound consumer responsive when it runs beside an active turn.
+        if (msg.metadata or {}).get(INBOUND_META_USER_SHELL) is True:
+            self.schedule_background(dispatch_and_publish())
+            return
+        await dispatch_and_publish()
+
+    async def execute_user_shell_command(self, ctx: CommandContext) -> OutboundMessage:
+        """Execute one trusted user command with the active workspace policy."""
+        metadata = dict(ctx.msg.metadata or {})
+        tool = self.tools.get("exec")
+        if tool is None:
+            content = "Shell execution is disabled in this auto_cut_bot configuration."
         else:
-            logger.warning("Command '{}' matched but dispatch returned None", raw)
+            session = ctx.session or self.sessions.get_or_create(ctx.key)
+            scope = self.workspace_scopes.for_turn(
+                channel=ctx.msg.channel,
+                message_metadata=metadata,
+                session_metadata=session.metadata,
+            )
+            request_token = bind_request_context(RequestContext(
+                channel=ctx.msg.channel,
+                chat_id=ctx.msg.chat_id,
+                message_id=metadata.get("message_id"),
+                session_key=ctx.key,
+                original_user_text=f"!{ctx.args.strip()}",
+                runtime=ctx.runtime,
+                metadata=metadata,
+                sender_id=ctx.msg.sender_id,
+                turn_id=metadata.get("webui_turn_id"),
+                workspace=scope.project_path,
+            ))
+            workspace_token = bind_workspace_scope(scope)
+            turn_scope_stack = ExitStack()
+            try:
+                for turn_scope in ctx.turn_scopes:
+                    turn_scope_stack.enter_context(turn_scope)
+                result = await tool.execute(
+                    command=ctx.args.strip(),
+                    working_dir=str(scope.project_path),
+                )
+                content = str(result)
+            finally:
+                turn_scope_stack.close()
+                reset_workspace_scope(workspace_token)
+                reset_request_context(request_token)
+        return OutboundMessage(
+            channel=ctx.msg.channel,
+            chat_id=ctx.msg.chat_id,
+            content=content,
+            metadata={**metadata, "render_as": "text"},
+        )
 
     async def _cancel_active_tasks(self, key: str) -> int:
         """Cancel and await all active work for *key*.
@@ -961,7 +1028,7 @@ class AgentLoop:
                     if isinstance(metadata_value, dict)
                     else {}
                 )
-                if pending_msg.channel != "system":
+                if pending_msg.is_user_input:
                     scope = self.workspace_scopes.for_turn(
                         channel=pending_msg.channel,
                         message_metadata=metadata,
@@ -1203,7 +1270,9 @@ class AgentLoop:
                     and self.sessions.get_cached(effective_key) is None
                 ):
                     continue
-                if self.commands.is_priority(raw):
+                if msg.is_user_input:
+                    await self.runtime_event_publisher.user_input_accepted(msg, effective_key)
+                if msg.channel != "system" and self.commands.is_priority(raw):
                     await self._dispatch_command_inline(
                         msg, effective_key, raw,
                         self.commands.dispatch_priority,
@@ -1231,7 +1300,7 @@ class AgentLoop:
                 if effective_key in self._pending_queues:
                     # Non-priority commands must not be queued for injection;
                     # dispatch them directly (same pattern as priority commands).
-                    if self.commands.is_dispatchable_command(raw):
+                    if msg.channel != "system" and self.commands.is_dispatchable_command(raw):
                         await self._dispatch_command_inline(
                             msg, effective_key, raw,
                             self.commands.dispatch,
@@ -1462,7 +1531,7 @@ class AgentLoop:
         attributes: Mapping[str, Any] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
-        kind = TurnKind.SYSTEM if msg.channel == "system" else TurnKind.USER
+        kind = TurnKind.USER if msg.is_user_input else TurnKind.SYSTEM
         if kind is TurnKind.SYSTEM:
             destination = (
                 msg.chat_id.split(":", 1) if ":" in msg.chat_id else ("cli", msg.chat_id)
@@ -1690,7 +1759,7 @@ class AgentLoop:
         ctx.pending_summary = pending
 
     async def _dispatch_command(self, ctx: TurnContext) -> bool:
-        if ctx.kind is TurnKind.SYSTEM:
+        if ctx.kind is TurnKind.SYSTEM or ctx.msg.channel == "system":
             return False
         session = ctx.require_session()
         raw = ctx.msg.content.strip()
@@ -1752,14 +1821,10 @@ class AgentLoop:
             )
         if ctx.on_runtime_admitted is not None:
             await ctx.on_runtime_admitted(runtime)
-        replay_max_messages = replay_max_messages_for_context(
-            runtime.context_window_tokens
-        )
         if not ctx.ephemeral:
             await self.consolidator.maybe_consolidate_by_tokens(
                 session,
                 runtime=runtime,
-                replay_max_messages=replay_max_messages,
             )
         is_subagent = ctx.kind is TurnKind.SYSTEM and ctx.msg.sender_id == "subagent"
 
@@ -1768,7 +1833,9 @@ class AgentLoop:
                 message_tool.start_turn()
 
         _hist_kwargs: dict[str, Any] = {
-            "max_messages": replay_max_messages,
+            "max_messages": replay_max_messages_for_context(
+                runtime.context_window_tokens
+            ),
             "max_tokens": self._replay_token_budget(runtime),
             "extend_to_user": is_subagent,
         }
@@ -1897,6 +1964,8 @@ class AgentLoop:
         ctx.all_messages = all_msgs
         ctx.stop_reason = stop_reason
         ctx.had_injections = had_injections
+        ctx.usage = dict(self._last_usage)
+        ctx.delivery.record_usage(ctx.usage)
         if ctx.kind is TurnKind.USER:
             await turn_continuation.maybe_continue_turn(ctx)
 
@@ -1922,22 +1991,18 @@ class AgentLoop:
             else ctx.turn_wall_started_at
         )
         ctx.turn_latency_ms = max(0, int((time.time() - latency_started_at) * 1000))
+        if ctx.usage and not ctx.ephemeral:
+            session.metadata["_last_usage"] = dict(ctx.usage)
         self._save_turn(
             session, ctx.all_messages, ctx.save_skip,
             turn_latency_ms=ctx.turn_latency_ms,
         )
         ctx.delivery.record_latency(ctx.turn_latency_ms)
         if not ctx.ephemeral:
-            session.enforce_file_cap(
-                on_archive=partial(self.context.memory.raw_archive, session_key=ctx.session_key)
-            )
             self.schedule_background(
                 self.consolidator.maybe_consolidate_by_tokens(
                     session,
                     runtime=runtime,
-                    replay_max_messages=replay_max_messages_for_context(
-                        runtime.context_window_tokens
-                    ),
                 )
             )
         self._clear_pending_user_turn(session)
@@ -1964,7 +2029,7 @@ class AgentLoop:
             )
             return
         ctx.outbound = self._assemble_outbound(
-            ctx.msg,
+            ctx.delivery.delivery_message,
             cast(str, ctx.final_content),
             ctx.stop_reason,
             ctx.had_injections,

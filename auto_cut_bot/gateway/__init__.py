@@ -1,6 +1,9 @@
 """Lightweight background runtime for the auto_cut_bot gateway."""
 
 from auto_cut_bot.gateway.runtime import (
+    GatewayAlreadyRunningError,
+    GatewayClientLease,
+    GatewayInstance,
     GatewayRuntime,
     GatewayRuntimePaths,
     GatewayStartOptions,
@@ -10,6 +13,9 @@ from auto_cut_bot.gateway.runtime import (
 )
 
 __all__ = [
+    "GatewayAlreadyRunningError",
+    "GatewayClientLease",
+    "GatewayInstance",
     "GatewayRuntime",
     "GatewayRuntimePaths",
     "GatewayStartOptions",

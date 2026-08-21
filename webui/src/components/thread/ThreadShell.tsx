@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 
 import { FilePreviewAvailabilityProvider } from "@/components/FilePreviewAvailabilityContext";
 import { FilePreviewPanel } from "@/components/FilePreviewPanel";
+import { SessionHandleLabel } from "@/components/SessionHandleLabel";
 import { PromptNavigator } from "@/components/thread/PromptNavigator";
 import { SessionInfoPopover } from "@/components/thread/SessionInfoPopover";
 import { ThreadComposer } from "@/components/thread/ThreadComposer";
@@ -399,7 +400,7 @@ function toModelBadgeInfo(
   );
   return {
     label,
-    model: toModelBadgeLabel(model),
+    model: model?.trim() || null,
     provider,
     providerLabel: provider ? providerDisplayLabel(settings?.providers ?? [], provider) : null,
     needsSetup,
@@ -638,14 +639,8 @@ export function ThreadShell({
   const chatId = session?.chatId ?? null;
   const historyKey = temporary ? null : session?.key ?? null;
   const mentionSessions = useMemo(
-    () => sessions.filter((candidate) => (
-      candidate.key !== historyKey
-      && (
-        workspaceScope?.access_mode !== "restricted"
-        || candidate.workspaceScope?.project_path === workspaceScope.project_path
-      )
-    )),
-    [historyKey, sessions, workspaceScope],
+    () => sessions.filter((candidate) => candidate.key !== historyKey),
+    [historyKey, sessions],
   );
   const {
     messages: historical,
@@ -964,9 +959,12 @@ export function ThreadShell({
     setFallbackModelName(null);
     return client.onChat(chatId, (event) => {
       if (event.event !== "turn_model_updated") return;
-      setFallbackModelName(event.model_name);
+      const activeModel = event.model_name.trim();
+      setFallbackModelName(
+        modelBadge.model && activeModel !== modelBadge.model ? activeModel : null,
+      );
     });
-  }, [chatId, client]);
+  }, [chatId, client, modelBadge.model]);
 
   useEffect(() => {
     if (!historyKey || !chatId || loading) return;
@@ -1456,7 +1454,7 @@ export function ThreadShell({
               : t("thread.composer.placeholderThread")
           }
           modelLabel={modelBadgeLabel}
-          modelDetail={modelBadge.model}
+          modelDetail={toModelBadgeLabel(modelBadge.model)}
           modelPreset={activeModelPreset}
           modelPresets={modelPresetOptions}
           onModelPresetChange={handleModelPresetChange}
@@ -1503,7 +1501,7 @@ export function ThreadShell({
               : t("thread.composer.placeholderHero")
           }
           modelLabel={modelBadgeLabel}
-          modelDetail={modelBadge.model}
+          modelDetail={toModelBadgeLabel(modelBadge.model)}
           modelPreset={activeModelPreset}
           modelPresets={modelPresetOptions}
           onModelPresetChange={handleModelPresetChange}
@@ -1560,6 +1558,7 @@ export function ThreadShell({
   const threadHeader = !hideHeader ? (
     <ThreadHeader
       title={title}
+      handle={temporary || hideHeaderTitle ? null : session?.handle}
       onToggleSidebar={onToggleSidebar}
       theme={theme}
       onToggleTheme={onToggleTheme}
@@ -1583,6 +1582,20 @@ export function ThreadShell({
   return (
     <section ref={shellRef} className="relative flex min-h-0 flex-1 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+        {hideHeaderTitle && !temporary && session?.handle ? (
+          <div
+            aria-label={`Session @${session.handle.name}`}
+            className="flex h-8 shrink-0 items-center px-3 text-[12px]"
+          >
+            <span
+              className="shrink-0"
+            >
+              <SessionHandleLabel id={session.handle.id}>
+                @{session.handle.name}
+              </SessionHandleLabel>
+            </span>
+          </div>
+        ) : null}
         {headerPortalTarget === undefined ? threadHeader : null}
         <FilePreviewAvailabilityProvider
           resolve={historyKey ? resolveFilePreviewAvailability : undefined}

@@ -569,6 +569,7 @@ class TestEphemeralHooks:
         from auto_cut_bot.agent.hook import AgentHook
         from auto_cut_bot.agent.loop import AgentLoop
         from auto_cut_bot.bus.queue import MessageBus
+        from auto_cut_bot.providers.base import LLMResponse
 
         bus = MessageBus()
         provider = MagicMock()
@@ -576,7 +577,7 @@ class TestEphemeralHooks:
         provider.supports_tools = True
         provider.generation = MagicMock(max_tokens=4096)
         provider.chat_with_retry = AsyncMock(
-            return_value=MagicMock(
+            return_value=LLMResponse(
                 content="done", finish_reason="stop", tool_calls=[], usage={},
             )
         )
