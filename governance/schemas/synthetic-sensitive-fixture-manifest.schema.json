@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/synthetic-sensitive-fixture-manifest/1.0.0",
+  "title": "SyntheticSensitiveFixtureManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "allowed_root", "marker", "fixtures"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "allowed_root": {"const": "tests/authority/fixtures/synthetic-sensitive"},
+    "marker": {"const": "AUTOCUT_SYNTHETIC_SECRET_FIXTURE_V1"},
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fixture_id", "path", "sha256", "profile"],
+        "properties": {
+          "fixture_id": {"type": "string", "pattern": "^AUTH-SYNTHETIC-[A-Z0-9-]+$"},
+          "path": {"type": "string", "pattern": "^tests/authority/fixtures/synthetic-sensitive/[^/]+$"},
+          "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "profile": {"const": "test_fixture"}
+        }
+      }
+    }
+  }
+}

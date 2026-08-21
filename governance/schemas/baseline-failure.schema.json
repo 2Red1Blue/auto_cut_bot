@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/baseline-failure/1.0.0",
+  "title": "BaselineFailureManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "baseline_commit",
+    "candidate_commit",
+    "command_hash",
+    "environment_hash",
+    "failure_signature_hash",
+    "baseline_signature_hash",
+    "related_inputs_hash",
+    "changed_scope_hash",
+    "classification_owner",
+    "classification"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "baseline_failure"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "baseline_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "candidate_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "command_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "environment_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "failure_signature_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "baseline_signature_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "related_inputs_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "changed_scope_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "classification_owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "classification": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

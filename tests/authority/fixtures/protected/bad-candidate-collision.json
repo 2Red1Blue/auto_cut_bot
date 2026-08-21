@@ -1,0 +1,4 @@
+{
+  "fixture_id": "AUTH-CANDIDATE-COLLISION-001",
+  "paths": ["Docs/A.md", "docs/a.md"]
+}

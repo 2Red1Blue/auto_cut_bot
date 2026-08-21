@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/trellis-sync-manifest/1.0.0",
+  "title": "TrellisSyncManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_root", "destination_root", "managed_roots", "files"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "source_root": {"const": "governance/trellis-spec"},
+    "destination_root": {"const": ".trellis/spec"},
+    "managed_roots": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/path"}},
+    "files": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
+        "properties": {"path": {"$ref": "#/$defs/path"}, "sha256": {"$ref": "#/$defs/sha256"}}
+      }
+    }
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"},
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

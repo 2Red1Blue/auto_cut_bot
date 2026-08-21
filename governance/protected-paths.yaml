@@ -1,0 +1,17 @@
+schema_version: 1.0.0
+repositories:
+  auto_cut_bot:
+    patterns:
+      - governance/**
+      - tools/authority/**
+      - tests/authority/fixtures/protected/**
+      - packages/autocut-kernel/src/autocut_kernel/contracts/**
+      - packages/autocut-kernel/src/autocut_kernel/registry/**
+      - packages/autocut-kernel/src/autocut_kernel/admission/**
+      - packages/autocut-kernel/src/autocut_kernel/release/**
+  ac_auto_cut:
+    patterns:
+      - governance/**
+      - 原理/v2.1-production-spec/**
+      - 原理/v2.1-implementation-design/**
+      - tests/authority_consumer/**

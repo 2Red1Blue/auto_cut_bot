@@ -1,0 +1,4 @@
+{
+  "fixture_id": "AUTH-CANDIDATE-LEGAL-SESSION-001",
+  "path": "tests/session/test_api.py"
+}

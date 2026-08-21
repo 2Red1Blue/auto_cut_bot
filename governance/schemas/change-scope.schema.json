@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/change-scope/1.0.0",
+  "title": "ChangeScopeReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "repository",
+    "base_commit",
+    "staged_tree_hash",
+    "index_tree_hash",
+    "changed_paths_hash",
+    "worktree_policy_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "change_scope"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "staged_tree_hash": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "index_tree_hash": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "changed_paths_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "worktree_policy_hash": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

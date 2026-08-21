@@ -1,0 +1,29 @@
+schema_version: 1.0.0
+schemas:
+  SourceCandidateReceipt: schemas/source-candidate.schema.json
+  AuthorityLock: schemas/authority-lock.schema.json
+  AuthoritySources: schemas/authority-sources.schema.json
+  TaskConformanceManifest: schemas/task-conformance-manifest.schema.json
+  TaskAdmissionReceipt: schemas/task-admission.schema.json
+  AuthorityReferenceReceipt: schemas/authority-reference.schema.json
+  ReuseAdmissionReceipt: schemas/reuse-admission.schema.json
+  ChangeScopeReceipt: schemas/change-scope.schema.json
+  ValidationReceiptSet: schemas/validation-receipt-set.schema.json
+  CandidateTreeAudit: schemas/candidate-tree-audit.schema.json
+  IndependentCheckReceipt: schemas/independent-check.schema.json
+  CommitTreeReceipt: schemas/commit-tree.schema.json
+  HistoryPublicationAudit: schemas/history-publication-audit.schema.json
+  UpstreamParityManifest: schemas/upstream-parity.schema.json
+  BaselineFailureManifest: schemas/baseline-failure.schema.json
+  RuntimeConformanceReceipt: schemas/runtime-conformance.schema.json
+  RemoteProtectionAttestation: schemas/remote-protection.schema.json
+  ChangeVerificationReceipt: schemas/change-verification.schema.json
+  PushVerificationReceipt: schemas/push-verification.schema.json
+  ProtectedPaths: schemas/protected-paths.schema.json
+  BlockingFixturesManifest: schemas/blocking-fixtures-manifest.schema.json
+  TrellisSyncManifest: schemas/trellis-sync-manifest.schema.json
+  ModelRolePolicy: schemas/model-role-policy.schema.json
+  RemoteProtectionPolicy: schemas/remote-protection-policy.schema.json
+  TaskAuthorizations: schemas/task-authorizations.schema.json
+  ActivationProfiles: schemas/activation-profiles.schema.json
+  SyntheticSensitiveFixtureManifest: schemas/synthetic-sensitive-fixture-manifest.schema.json

@@ -1,0 +1,5 @@
+{
+  "fixture_id": "AUTH-REPO-CROSS-001",
+  "mutation": {"field": "repository", "value": "auto_cut_bot"},
+  "expected_reason_code": "AUTH-TASK-CROSS-REPO-TOPLEVEL"
+}

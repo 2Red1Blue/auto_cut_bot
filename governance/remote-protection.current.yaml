@@ -1,0 +1,11 @@
+schema_version: 1.0.0
+collector_id: github-rulesets-live-v1
+canonical_remote_url: https://github.com/2Red1Blue/auto_cut_bot
+target_ref: refs/heads/main
+observed_remote_oid: 28c0c0d4ed1762aa36e66a8cd742b5622954b9af
+protection_enabled: false
+direct_push_disabled: false
+codeowners_required: false
+required_check_ids: []
+bypass_test_passed: false
+collected_at: "2026-08-21T00:00:00.000Z"

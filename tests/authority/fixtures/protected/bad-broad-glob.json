@@ -1,0 +1,5 @@
+{
+  "fixture_id": "AUTH-PATH-BROAD-001",
+  "mutation": {"field": "allowed_write_paths[0].pattern", "value": "**"},
+  "expected_reason_code": "AUTH-GLOB-BROAD"
+}

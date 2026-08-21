@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/upstream-parity/1.0.0",
+  "title": "UpstreamParityManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "upstream_base",
+    "upstream_head",
+    "local_base",
+    "local_candidate",
+    "capability_inventory_hash",
+    "mapping_set_hash",
+    "unmapped_capabilities",
+    "protected_zero_diff"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "upstream_parity"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "upstream_base": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "upstream_head": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "local_base": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "local_candidate": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "capability_inventory_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "mapping_set_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "unmapped_capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "protected_zero_diff": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

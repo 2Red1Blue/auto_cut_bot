@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/remote-protection/1.0.0",
+  "title": "RemoteProtectionAttestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "receipt_type",
+    "receipt_id",
+    "authority_lock_hash",
+    "decision",
+    "reason_codes",
+    "produced_at",
+    "task_id",
+    "remote_canonical_url",
+    "target_ref",
+    "expected_remote_oid",
+    "candidate_commit",
+    "policy_hash",
+    "collector_evidence_hash",
+    "collector_id",
+    "protection_enabled",
+    "required_checks_hash",
+    "fetched_at",
+    "expires_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "receipt_type": {
+      "const": "remote_protection"
+    },
+    "receipt_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_lock_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ]
+    },
+    "reason_codes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "produced_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "remote_canonical_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expected_remote_oid": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "candidate_commit": {
+      "$ref": "#/$defs/git_oid"
+    },
+    "policy_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "collector_evidence_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "collector_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "protection_enabled": {
+      "type": "boolean"
+    },
+    "required_checks_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "git_oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    }
+  }
+}

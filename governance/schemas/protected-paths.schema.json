@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/protected-paths/1.0.0",
+  "title": "ProtectedPaths",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repositories"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "repositories": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false, "required": ["patterns"],
+        "properties": {"patterns": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}
+      }
+    }
+  }
+}

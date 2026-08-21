@@ -1,0 +1,8 @@
+schema_version: 1.0.0
+allowed_root: tests/authority/fixtures/synthetic-sensitive
+marker: AUTOCUT_SYNTHETIC_SECRET_FIXTURE_V1
+fixtures:
+  - fixture_id: AUTH-SYNTHETIC-LITERAL-API-KEY-001
+    path: tests/authority/fixtures/synthetic-sensitive/literal-api-key.txt
+    sha256: sha256:7db100395545aebe0498bdccf3cb2cde63683941179b6d94bac2692b12940c42
+    profile: test_fixture

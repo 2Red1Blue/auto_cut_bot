@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/authority-lock/1.0.0",
+  "title": "AuthorityLock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "authority_id", "authority_revision", "contract_version", "seed_source_commit", "inventory", "repositories", "entries", "bundle_hash"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "authority_id": {"type": "string", "minLength": 1},
+    "authority_revision": {"type": "integer", "minimum": 1},
+    "contract_version": {"const": "2.1.3"},
+    "seed_source_commit": {"$ref": "#/$defs/commit"},
+    "inventory": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "manifest_commit", "path", "sha256"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "manifest_commit": {"$ref": "#/$defs/commit"},
+        "path": {"$ref": "#/$defs/relative_path"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "repositories": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_commit"],
+        "properties": {"source_commit": {"$ref": "#/$defs/commit"}}
+      }
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class", "repository", "path", "sha256"],
+        "properties": {
+          "class": {"enum": ["production_contract", "implementation_contract", "schema_source", "registry_source", "architecture_gate", "blocking_fixture"]},
+          "repository": {"type": "string", "minLength": 1},
+          "path": {"$ref": "#/$defs/relative_path"},
+          "sha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "bundle_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"}
+  }
+}

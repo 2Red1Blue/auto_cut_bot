@@ -1,0 +1,27 @@
+schema_version: 1.0.0
+profiles:
+  authority_bootstrap:
+    current_phase: phase_minus_1
+    predicates:
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}
+  contract_foundation:
+    current_phase: phase_0
+    predicates:
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}
+  kernel_execution:
+    current_phase: phase_1
+    predicates:
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}
+  stage_business:
+    current_phase: phase_4
+    predicates:
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}
+  cutover:
+    current_phase: phase_6
+    predicates:
+      registry_conformance: {minimum_phase: phase_0}
+      runtime_conformance: {minimum_phase: phase_4}

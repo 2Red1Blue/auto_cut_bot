@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/activation-profiles/1.0.0",
+  "title": "ActivationProfiles",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "profiles"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "profiles": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["current_phase", "predicates"],
+        "properties": {
+          "current_phase": {"$ref": "#/$defs/phase"},
+          "predicates": {
+            "type": "object", "minProperties": 1,
+            "additionalProperties": {
+              "type": "object", "additionalProperties": false,
+              "required": ["minimum_phase"],
+              "properties": {"minimum_phase": {"$ref": "#/$defs/phase"}}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {"phase": {"enum": ["phase_minus_1", "phase_0", "phase_1", "phase_2", "phase_3", "phase_4", "phase_5", "phase_6"]}}
+}

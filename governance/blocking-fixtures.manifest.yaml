@@ -1,0 +1,99 @@
+schema_version: 1.0.0
+activation_profile: authority_bootstrap
+fixtures:
+  - fixture_id: AUTH-PATH-BROAD-001
+    runner_id: task_manifest_mutation
+    path: tests/authority/fixtures/protected/bad-broad-glob.json
+    sha256: sha256:92c5f5f62f4d3ceb2172c4c0712d16bca34931cee09449ba5d231b80f9f7dcfb
+    expected_decision: deny
+    expected_reason_code: AUTH-GLOB-BROAD
+  - fixture_id: AUTH-REPO-CROSS-001
+    runner_id: task_manifest_mutation
+    path: tests/authority/fixtures/protected/bad-cross-repo-top-level.json
+    sha256: sha256:c412a2f1741c0051cc009a3995aa3de8c98b71fd13fa2c46bbf7535bb92c54cd
+    expected_decision: deny
+    expected_reason_code: AUTH-TASK-CROSS-REPO-TOPLEVEL
+  - fixture_id: AUTH-MODEL-SPARK-001
+    runner_id: model_role_mutation
+    path: tests/authority/fixtures/protected/bad-spark-authority.json
+    sha256: sha256:c0e8f0a57c786c8e6ff70d6dc2c9c6c0b59427af6a215974d89c37a5385e5215
+    expected_decision: deny
+    expected_reason_code: AUTH-MODEL-FAMILY
+  - fixture_id: AUTH-PATH-ESCAPE-001
+    runner_id: task_manifest_mutation
+    path: tests/authority/fixtures/protected/bad-path-escape.json
+    sha256: sha256:8c60fac4fe199e1e4e956b9a1eff78cbb0fef79d1e24b45adc36300416f3d697
+    expected_decision: deny
+    expected_reason_code: AUTH-PATH-ESCAPE
+  - fixture_id: AUTH-CONTEXT-TBD-001
+    runner_id: context_content
+    path: tests/authority/fixtures/protected/tbd-design.md
+    sha256: sha256:65255c0d7077c111af66deb750229d3977e3edecb53c7983589f146001cf0ec3
+    expected_decision: deny
+    expected_reason_code: AUTH-TASK-CONTEXT-PLACEHOLDER
+  - fixture_id: AUTH-RECEIPT-NA-001
+    runner_id: receipt_decision
+    path: tests/authority/fixtures/protected/bad-nonruntime-na.json
+    sha256: sha256:af397fdc28931017345550432042824fba307b98a975dfc3df2c533169493357
+    expected_decision: deny
+    expected_reason_code: AUTH-RECEIPT-DECISION
+  - fixture_id: AUTH-REMOTE-OFFLINE-001
+    runner_id: offline_remote_evidence
+    path: tests/authority/fixtures/protected/bad-offline-remote.json
+    sha256: sha256:e52bd6ff41dbdd3ecd5126379cc0edd2f25b159cf01ccafcc64c8ed37ccaaa48
+    expected_decision: deny
+    expected_reason_code: AUTH-PUSH-OFFLINE-EVIDENCE
+  - fixture_id: AUTH-CANDIDATE-SECRET-001
+    runner_id: candidate_secret
+    path: tests/authority/fixtures/protected/bad-candidate-secret.json
+    sha256: sha256:909316634d005225bc914bc972d283162539fdf2e4d3bd2cfff8560b30d27b93
+    expected_decision: deny
+    expected_reason_code: AUTH-CANDIDATE-UNSAFE
+  - fixture_id: AUTH-CANDIDATE-COLLISION-001
+    runner_id: candidate_collision
+    path: tests/authority/fixtures/protected/bad-candidate-collision.json
+    sha256: sha256:3e1b5a6f6e71d850e90d544a2530611dd5dcf0380f4073a4cef7ce2ba15d8193
+    expected_decision: deny
+    expected_reason_code: AUTH-CANDIDATE-UNSAFE
+  - fixture_id: AUTH-BOOTSTRAP-CHAIN-001
+    runner_id: bootstrap_chain
+    path: tests/authority/fixtures/protected/bad-bootstrap-chain.json
+    sha256: sha256:a0d469dabd117afef3cd5ebac8433ab52f8d9030a25ca43adadf450693614550
+    expected_decision: deny
+    expected_reason_code: AUTH-BOOTSTRAP-INVENTORY-DIFF
+  - fixture_id: AUTH-GIT-OID-001
+    runner_id: fake_tree_oid
+    path: tests/authority/fixtures/protected/bad-fake-tree-oid.json
+    sha256: sha256:c83c6aba679411efa78c0f6f00423a3522787a708ba04b47f8fd6c3b8b3d7ffb
+    expected_decision: deny
+    expected_reason_code: AUTH-GIT-OID-MISSING
+  - fixture_id: AUTH-VALIDATION-SELF-REPORT-001
+    runner_id: validation_self_report
+    path: tests/authority/fixtures/protected/bad-validation-self-report.json
+    sha256: sha256:21d73d535bd0723c0deff565629b5c4b33c8695c993dda6304b58dd4ce303666
+    expected_decision: deny
+    expected_reason_code: AUTH-VALIDATION-SELF-REPORT
+  - fixture_id: AUTH-CANDIDATE-LEGAL-SESSION-001
+    runner_id: candidate_legal_session
+    path: tests/authority/fixtures/protected/good-legal-session-path.json
+    sha256: sha256:c692ce9b69f900233838fe775d426ca41b95f445c02e1300b73fb6e99079255c
+    expected_decision: allow
+    expected_reason_code: null
+  - fixture_id: AUTH-SYNTHETIC-PRODUCTION-001
+    runner_id: candidate_synthetic_profile
+    path: tests/authority/fixtures/protected/bad-synthetic-production.json
+    sha256: sha256:cb40bb319c472a50f14ed349731a624fc4761fa5ce66048ba1bf08b719204bf8
+    expected_decision: deny
+    expected_reason_code: AUTH-CANDIDATE-UNSAFE
+  - fixture_id: AUTH-SYNTHETIC-OUTSIDE-001
+    runner_id: candidate_synthetic_outside
+    path: tests/authority/fixtures/protected/bad-synthetic-outside.json
+    sha256: sha256:e45e8b9a78be9a50aa7974ded55fc54599d1432c69d0d359a98cea810fa50f88
+    expected_decision: deny
+    expected_reason_code: AUTH-SYNTHETIC-PATH
+  - fixture_id: AUTH-PRE-A-PHASE-MIX-001
+    runner_id: pre_a_phase_mix
+    path: tests/authority/fixtures/protected/bad-pre-a-phase-mix.json
+    sha256: sha256:e84ae68aaec5373716f2c37833ae317c668d83f4e8920579603617c9a43b960b
+    expected_decision: deny
+    expected_reason_code: AUTH-PRE-A-PHASE-MIX

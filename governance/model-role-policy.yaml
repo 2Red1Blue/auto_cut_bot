@@ -1,0 +1,18 @@
+schema_version: 1.0.0
+risk_assignments:
+  authority:
+    allowed_model_families: [gpt-5.6-sol]
+    allowed_reasoning_classes: [high, xhigh]
+  high:
+    allowed_model_families: [gpt-5.6-sol]
+    allowed_reasoning_classes: [high, xhigh]
+  bounded:
+    allowed_model_families: [gpt-5.6-sol, gpt-5.6-terra]
+    allowed_reasoning_classes: [medium, high, xhigh]
+  mechanical:
+    allowed_model_families: [gpt-5.6-sol, gpt-5.6-terra, gpt-5.3-codex-spark]
+    allowed_reasoning_classes: [low, medium, high]
+independence:
+  different_run_identity_required: true
+  different_context_hash_required: true
+  protected_oracle_required: true

@@ -1,0 +1,5 @@
+{
+  "fixture_id": "AUTH-PATH-ESCAPE-001",
+  "mutation": {"field": "allowed_write_paths[0].pattern", "value": "../outside/**"},
+  "expected_reason_code": "AUTH-PATH-ESCAPE"
+}

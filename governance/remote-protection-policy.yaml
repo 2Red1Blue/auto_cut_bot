@@ -1,0 +1,13 @@
+schema_version: 1.0.0
+canonical_remote_url: https://github.com/2Red1Blue/auto_cut_bot
+target_ref: refs/heads/main
+allowed_collector_ids: [github-rulesets-live-v1]
+required_check_ids:
+  - v213-task-admission
+  - v213-authority-lock
+  - v213-change-scope
+  - v213-independent-check
+  - v213-history-publication-audit
+require_codeowners: true
+deny_direct_push: true
+max_attestation_ttl_seconds: 300

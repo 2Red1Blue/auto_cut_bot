@@ -1,0 +1,5 @@
+{
+  "fixture_id": "AUTH-MODEL-SPARK-001",
+  "mutation": {"field": "implementer.model_family", "value": "gpt-5.3-codex-spark"},
+  "expected_reason_code": "AUTH-MODEL-FAMILY"
+}

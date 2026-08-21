@@ -1,0 +1,13 @@
+schema_version: 1.0.0
+authority_revision: 1
+authorizations:
+  - authorization_id: user-approved-v213-authority-bootstrap-20260821
+    task_id: 08-21-00-trellis-authority-sync
+    task_type: authority_change
+    allowed_protected_paths:
+      - {repository: auto_cut_bot, pattern: governance/**}
+      - {repository: auto_cut_bot, pattern: tools/authority/**}
+      - {repository: auto_cut_bot, pattern: tests/authority/**}
+      - {repository: ac_auto_cut, pattern: governance/**}
+      - {repository: ac_auto_cut, pattern: tests/authority_consumer/**}
+    approved_by: user-explicit-authorization
