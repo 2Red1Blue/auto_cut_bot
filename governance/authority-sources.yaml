@@ -1,11 +1,11 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 2
+authority_revision: 3
 contract_version: 2.1.3
-seed_source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
+seed_source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
 repositories:
   auto_cut_bot:
-    source_commit: eb15f544de60cf4d967bb9326b6548f115e0cb8f
+    source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
@@ -34,6 +34,8 @@ entries:
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/consumer-lock-readiness.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/consumer-lock.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/kernel-build.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/kernel-build-evidence-policy.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/kernel-build-provenance.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-lock.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/source-candidate.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-sources.schema.json}
@@ -62,6 +64,7 @@ entries:
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/upstream-parity.schema.json}
   - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/validation-receipt-set.schema.json}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/activation-profiles.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/kernel-build-evidence-policy.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/consumer-lock-policy.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/model-role-policy.yaml}
   - {class: architecture_gate, repository: auto_cut_bot, path: governance/protected-paths.yaml}
@@ -98,6 +101,14 @@ entries:
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-offline-remote.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-candidate-secret.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-candidate-collision.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-altered-build-input.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-altered-wheel.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-child02-wrong-profile.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-commit-divergence.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-fabricated-build-receipt.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-index-divergence.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-reserved-path.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-consumer-lock-stale-task-revision.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-bootstrap-chain.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-fake-tree-oid.json}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-validation-self-report.json}
