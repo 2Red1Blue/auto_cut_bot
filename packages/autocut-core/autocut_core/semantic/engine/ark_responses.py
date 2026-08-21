@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import mimetypes
@@ -41,6 +42,7 @@ DEFAULT_POLL_INTERVAL = 2.0
 MAX_FILE_SIZE_BYTES = 512 * 1024 * 1024  # 512 MB
 FILE_READY_STATUSES = {"active", "processed"}
 FILE_ERROR_STATUSES = {"error", "failed", "expired"}
+FILE_CACHE_MAX_AGE_SECONDS = 6 * 24 * 60 * 60
 
 
 def _get_ark_client(
@@ -180,6 +182,22 @@ def _sha256_file(file_path: Path) -> str:
     return h.hexdigest()
 
 
+def _is_fresh_cache_timestamp(uploaded_at_str: object) -> bool:
+    """Return whether a cache timestamp is a recent, unambiguous UTC instant."""
+    if not isinstance(uploaded_at_str, str) or not uploaded_at_str:
+        return False
+    try:
+        uploaded_at = datetime.datetime.fromisoformat(uploaded_at_str)
+    except ValueError:
+        return False
+    if uploaded_at.tzinfo is None:
+        uploaded_at = uploaded_at.replace(tzinfo=datetime.timezone.utc)
+    else:
+        uploaded_at = uploaded_at.astimezone(datetime.timezone.utc)
+    age_seconds = (datetime.datetime.now(datetime.timezone.utc) - uploaded_at).total_seconds()
+    return 0 <= age_seconds < FILE_CACHE_MAX_AGE_SECONDS
+
+
 def _get_or_upload_file_id(
     *,
     client: Ark,
@@ -223,11 +241,11 @@ def _get_or_upload_file_id(
             try:
                 meta = json.loads(cache_file.read_text(encoding="utf-8"))
                 fid = meta.get("file_id")
-                # 验证缓存的 file_id 是否仍然有效（status=active）
                 if fid:
-                    if _check_file_active(client, str(fid), extra_headers=extra_headers):
+                    if _is_fresh_cache_timestamp(meta.get("uploaded_at")) and _check_file_active(
+                        client, str(fid), extra_headers=extra_headers
+                    ):
                         return str(fid)
-                    # file_id 过期/失效，继续重新上传
             except (OSError, json.JSONDecodeError):
                 pass
         # 在此目录尝试上传并写缓存
@@ -239,7 +257,7 @@ def _get_or_upload_file_id(
                         "file_id": file_id,
                         "sha256": sha,
                         "path": str(file_path),
-                        "uploaded_at": utc_now().isoformat(),
+                        "uploaded_at": utc_now(),
                         "video_fps": video_fps,
                     },
                     ensure_ascii=False,
@@ -254,7 +272,6 @@ def _get_or_upload_file_id(
 
     # 所有候选目录均不可写，直接上传（不缓存）
     return _upload_file_to_ark(**upload_kwargs)
-
 
 # ── 参数构造 ──
 
@@ -345,25 +362,44 @@ def _build_responses_input(
 def _build_text_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
     """将 Chat Completions 的 response_format 转换为 Responses API 的 text.format。
 
-    支持:
-      - {"type": "json_object"} → {"format": {"type": "json_object"}}
-      - {"type": "json_object", "json_schema": {...}} → {"format": {"type": "json_schema", ...}}
+    A schema descriptor must explicitly provide ``name``, ``strict`` and
+    ``schema``.  This adapter must not invent a different contract for Ark.
     """
     if not response_format:
         return None
     rtype = response_format.get("type")
+    if rtype == "json_schema":
+        descriptor = response_format.get("json_schema")
+        return _build_json_schema_text_format(descriptor)
     if rtype == "json_object":
         schema = response_format.get("json_schema")
-        if schema and isinstance(schema, dict):
-            return {"format": {
-                "type": "json_schema",
-                "name": schema.get("name", "response"),
-                "strict": schema.get("strict", True),
-                "schema": schema.get("schema", schema),
-            }}
+        if schema is not None:
+            return _build_json_schema_text_format(schema)
         return {"format": {"type": "json_object"}}
     return None
 
+
+def _build_json_schema_text_format(descriptor: object) -> dict[str, Any] | None:
+    if not isinstance(descriptor, dict):
+        return None
+    name = descriptor.get("name")
+    strict = descriptor.get("strict")
+    schema = descriptor.get("schema")
+    if (
+        not isinstance(name, str)
+        or not name
+        or type(strict) is not bool
+        or not isinstance(schema, dict)
+    ):
+        return None
+    return {
+        "format": {
+            "type": "json_schema",
+            "name": name,
+            "strict": strict,
+            "schema": schema,
+        }
+    }
 
 # ── 主入口 ──
 
