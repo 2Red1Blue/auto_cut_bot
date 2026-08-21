@@ -14,6 +14,10 @@ from autocut_core.contracts.teaser_contract import (
 from autocut_core.contracts.story_script_causal import (
     validate_story_script_causal_dependency,
 )
+from autocut_core.schema.story_evidence import (
+    StoryEvidenceSchemaComponents,
+    build_story_evidence_schemas,
+)
 from autocut_core.schema.window import WINDOW_ANALYSIS_SCHEMA
 
 # 共享的 helper 函数 (与旧 story_schemas.py 完全一致)
@@ -1458,6 +1462,28 @@ STORY_EVIDENCE_INDEX_SCHEMA = obj(
         ),
     }
 )
+
+
+# The active v4 schemas are composed in the dependency leaf.  The definitions
+# above remain compatibility names during the baseline cleanup; only this
+# explicit registry input decides the schemas exposed to callers.
+_STORY_EVIDENCE_SCHEMAS = build_story_evidence_schemas(
+    StoryEvidenceSchemaComponents(
+        teaser_contract=TEASER_CONTRACT_SCHEMA,
+        window_analysis=WINDOW_ANALYSIS_SCHEMA,
+        event_card=EVENT_CARD_SCHEMA,
+        highlight_hook_candidate=HIGHLIGHT_HOOK_CANDIDATE_SCHEMA,
+        character=SERIES_BIBLE_SCHEMA["properties"]["characters"]["items"],
+        relationship=SERIES_BIBLE_SCHEMA["properties"]["relationships"]["items"],
+        fact=SERIES_BIBLE_SCHEMA["properties"]["facts"]["items"],
+        story_thread=SERIES_BIBLE_SCHEMA["properties"]["story_threads"]["items"],
+        thread_beat=THREAD_BEAT_SCHEMA,
+        open_question=SERIES_BIBLE_SCHEMA["properties"]["open_questions"]["items"],
+        causal_dependency=STORY_SCRIPT_BEAT_SCHEMA["properties"]["causal_dependency"],
+    )
+)
+STORY_EVIDENCE_PACKET_SCHEMA = _STORY_EVIDENCE_SCHEMAS.packet
+STORY_EVIDENCE_INDEX_SCHEMA = _STORY_EVIDENCE_SCHEMAS.index
 
 
 SPAN_ANCHOR_REF_SCHEMA = obj(
