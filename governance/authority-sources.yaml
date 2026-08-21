@@ -1,0 +1,101 @@
+schema_version: 1.0.0
+authority_id: autocut-v2.1.3-production-authority
+authority_revision: 1
+contract_version: 2.1.3
+seed_source_commit: b4ff62b7111468db8bfd94c6cad25f0862bf55bb
+repositories:
+  auto_cut_bot:
+    source_commit: b4ff62b7111468db8bfd94c6cad25f0862bf55bb
+  ac_auto_cut:
+    source_commit: dbaf408786b637708e343120e628929b79a8410a
+entries:
+  - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-production-system-contracts.md}
+  - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-stage-01-knowledge-chain-v2.md}
+  - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-stage-02-story-design-v2.md}
+  - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-stage-03-story-scripting-v2.md}
+  - {class: production_contract, repository: ac_auto_cut, path: 原理/v2.1-production-spec/v2-stage-04-story-assembly-v2.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/README.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/01-artifact-store-and-transaction-kernel.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/02-execution-admission-recovery-generation-kernel.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/03-media-evidence-preflight.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/04-stage-01-to-03-semantic-implementation.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/05-stage-04-physical-edit-implementation.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/06-stage-05-render-qc-release-implementation.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/07-dual-runtime-implementation.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/08-publication-transaction-and-certification.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/09-migration-rollout-and-operations.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/10-postgresql-physical-schema-and-data-lifecycle.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/11-compatible-algorithm-principles-and-reuse-boundaries.md}
+  - {class: implementation_contract, repository: ac_auto_cut, path: 原理/v2.1-implementation-design/12-implementation-conformance-and-ai-drift-prevention.md}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schema-index.yaml}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-lock.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/source-candidate.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-sources.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/blocking-fixtures-manifest.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/activation-profiles.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/authority-reference.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/baseline-failure.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/candidate-tree-audit.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/change-scope.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/change-verification.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/commit-tree.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/history-publication-audit.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/independent-check.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/model-role-policy.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/protected-paths.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/push-verification.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/remote-protection.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/remote-protection-policy.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/reuse-admission.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/runtime-conformance.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/task-admission.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/task-authorizations.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/task-conformance-manifest.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/synthetic-sensitive-fixture-manifest.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/trellis-sync-manifest.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/upstream-parity.schema.json}
+  - {class: schema_source, repository: auto_cut_bot, path: governance/schemas/validation-receipt-set.schema.json}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/activation-profiles.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/model-role-policy.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/protected-paths.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/remote-protection-policy.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/task-authorizations.yaml}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: governance/synthetic-sensitive-fixtures.manifest.yaml}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/managed-files.json}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/backend/index.md}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/backend/authority-bootstrap-block.md}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/backend/implementation-conformance-gates.md}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/auto_cut_bot/backend/index.md}
+  - {class: architecture_gate, repository: auto_cut_bot, path: governance/trellis-spec/ac_auto_cut/backend/index.md}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/__init__.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/aggregate_gate.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/cli.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/common.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/conformance_gates.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/errors.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/fixture_runner.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/lock.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/remote_gate.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/receipts.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/source_candidate_gate.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/task_gate.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/trellis_sync.py}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: governance/blocking-fixtures.manifest.yaml}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-broad-glob.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-cross-repo-top-level.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-path-escape.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-spark-authority.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/tbd-design.md}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-nonruntime-na.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-offline-remote.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-candidate-secret.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-candidate-collision.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-bootstrap-chain.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-fake-tree-oid.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-validation-self-report.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/good-legal-session-path.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-synthetic-production.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-synthetic-outside.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-pre-a-phase-mix.json}
+  - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/synthetic-sensitive/literal-api-key.txt}
