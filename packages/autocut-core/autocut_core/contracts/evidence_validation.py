@@ -6,13 +6,30 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from autocut_core.io import atomic_write_json, load_json, load_jsonl, sha256_file
 from autocut_core.libs.evidence_builder import (
     event_range_refs,
     filter_expanded_events,
     source_snapshot,
 )
-from autocut_core.io import atomic_write_json, load_json, load_jsonl, sha256_file
 from autocut_core.schema.compat import validate_task_response
+
+
+def selected_manifest_path(job_root: Path, canonical_name: str, legacy_name: str) -> Path:
+    """Return the one deterministic manifest path used by all consumers.
+
+    The underscore spelling is canonical.  The hyphen spelling is a backwards
+    compatible alias, not an invitation to silently proceed without a
+    manifest.  Keeping this resolution here prevents the stage and the
+    validator from fingerprinting different files for the same job.
+    """
+    canonical_path = job_root / canonical_name
+    if canonical_path.is_file():
+        return canonical_path
+    legacy_path = job_root / legacy_name
+    if legacy_path.is_file():
+        return legacy_path
+    raise FileNotFoundError(f"missing manifest: expected {canonical_path} or {legacy_path}")
 
 
 def indexed(
@@ -30,9 +47,7 @@ def indexed(
     return result
 
 
-def check_subset(
-    values: Any, known: set[str], where: str, errors: list[str]
-) -> set[str]:
+def check_subset(values: Any, known: set[str], where: str, errors: list[str]) -> set[str]:
     if not isinstance(values, list):
         errors.append(f"{where} must be an array")
         return set()
@@ -43,18 +58,32 @@ def check_subset(
     return selected
 
 
-def validate(job_root: Path) -> dict[str, Any]:
+def validate(job_root: Path, *, evidence_dir: Path | None = None) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
+    try:
+        source_manifest_path = selected_manifest_path(
+            job_root, "source_manifest.json", "source-manifest.json"
+        )
+    except FileNotFoundError:
+        source_manifest_path = job_root / "source_manifest.json"
+    try:
+        window_manifest_path = selected_manifest_path(
+            job_root, "window_manifest.json", "window-manifest.json"
+        )
+    except FileNotFoundError:
+        window_manifest_path = job_root / "window_manifest.json"
+    published_evidence_dir = job_root / "story-evidence"
+    active_evidence_dir = evidence_dir or published_evidence_dir
     paths = {
-        "index": job_root / "story-evidence" / "index.json",
+        "index": active_evidence_dir / "index.json",
         "approval": job_root / "story-approval.json",
         "portfolio": job_root / "story-portfolio.json",
         "bible": job_root / "series-bible.json",
         "events": job_root / "event-cards.jsonl",
         "candidates": job_root / "highlight-hook-catalog.json",
-        "sources": job_root / "source_manifest.json",
-        "window_manifest": job_root / "window_manifest.json",
+        "sources": source_manifest_path,
+        "window_manifest": window_manifest_path,
         "window_summaries": job_root / "window-summaries.jsonl",
     }
     for label, path in paths.items():
@@ -69,6 +98,8 @@ def validate(job_root: Path) -> dict[str, Any]:
     )
     approval = load_json(paths["approval"])
     portfolio = load_json(paths["portfolio"])
+    if not isinstance(portfolio, dict):
+        errors.append("Story Portfolio must be an object")
     bible = load_json(paths["bible"])
     global_events = indexed(
         load_jsonl(paths["events"]),
@@ -149,22 +180,49 @@ def validate(job_root: Path) -> dict[str, Any]:
         "window_summaries_sha256": sha256_file(paths["window_summaries"]),
     }
     current_portfolio_sha256 = sha256_file(paths["portfolio"])
-    if index.get("story_approval_sha256") != current_fingerprints[
-        "story_approval_sha256"
-    ]:
+    if index.get("story_approval_sha256") != current_fingerprints["story_approval_sha256"]:
         errors.append("Story Evidence Index approval SHA-256 is stale")
     if index.get("portfolio_sha256") != current_portfolio_sha256:
         errors.append("Story Evidence Index Portfolio SHA-256 is stale")
-    approved_items = {
-        item.get("story_id"): item
-        for item in approval.get("stories", [])
-        if isinstance(item, dict)
-        and item.get("decision") == "approved"
-        and isinstance(item.get("story_id"), str)
-    }
+    if not isinstance(approval, dict):
+        errors.append("Story Approval must be an object")
+        return {"ok": False, "errors": errors, "warnings": warnings}
+    stories = approval.get("stories")
+    if not isinstance(stories, list):
+        errors.append("Story Approval stories must be an array")
+        return {"ok": False, "errors": errors, "warnings": warnings}
+    approved_items: dict[str, dict[str, Any]] = {}
+    story_ids: set[str] = set()
+    for item_index, item in enumerate(stories):
+        where = f"Story Approval stories[{item_index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{where} must be an object")
+            continue
+        story_id = item.get("story_id")
+        if not isinstance(story_id, str) or not story_id:
+            errors.append(f"{where}.story_id must be non-empty")
+            continue
+        if story_id in story_ids:
+            errors.append(f"Story Approval contains duplicate story_id: {story_id}")
+            continue
+        story_ids.add(story_id)
+        if item.get("decision") == "approved":
+            approved_items[story_id] = item
     if approval.get("fulfillment_status") != "ready":
         errors.append("Story Approval fulfillment_status is not ready")
-    if set(approval.get("selected_story_ids", [])) != set(approved_items):
+    selected_story_ids = approval.get("selected_story_ids")
+    if not isinstance(selected_story_ids, list) or not all(
+        isinstance(story_id, str) and story_id for story_id in selected_story_ids
+    ):
+        errors.append("Story Approval selected_story_ids must be non-empty strings")
+        selected_story_id_set: set[str] = set()
+    else:
+        selected_story_id_set = set(selected_story_ids)
+        if len(selected_story_id_set) != len(selected_story_ids):
+            errors.append("Story Approval selected_story_ids contains duplicates")
+    if not selected_story_id_set:
+        errors.append("Story Approval selects no Stories")
+    if selected_story_id_set != set(approved_items):
         errors.append("Story Approval selected_story_ids is stale")
     index_packets = index.get("packets", [])
     packet_entries = indexed(
@@ -186,7 +244,10 @@ def validate(job_root: Path) -> dict[str, Any]:
         if not isinstance(path_value, str):
             errors.append(f"{story_id}: packet path must be a string")
             continue
-        packet_path = Path(path_value).expanduser().resolve()
+        declared_packet_path = Path(path_value).expanduser().resolve()
+        packet_path = declared_packet_path
+        if evidence_dir is not None and declared_packet_path.parent == published_evidence_dir:
+            packet_path = active_evidence_dir / declared_packet_path.name
         if not packet_path.is_file():
             errors.append(f"{story_id}: missing packet file {packet_path}")
             continue
@@ -245,12 +306,18 @@ def validate(job_root: Path) -> dict[str, Any]:
         binding = packet.get("approval_binding", {})
         if binding.get("story_script_sha256") != current_script_sha256:
             errors.append(f"{story_id}: packet Story Script SHA-256 is stale")
-        if binding.get("story_script_sha256") != approval_item.get(
-            "approved_script_sha256"
-        ):
+        if binding.get("story_script_sha256") != approval_item.get("approved_script_sha256"):
             errors.append(f"{story_id}: packet differs from approved Script SHA-256")
         if binding.get("portfolio_sha256") != current_portfolio_sha256:
             errors.append(f"{story_id}: packet Portfolio SHA-256 is stale")
+        if approval_item.get("portfolio_sha256") != current_portfolio_sha256:
+            errors.append(f"{story_id}: approved Story Portfolio SHA-256 is stale")
+        script_portfolio = script.get("portfolio")
+        if (
+            not isinstance(script_portfolio, dict)
+            or script_portfolio.get("portfolio_sha256") != current_portfolio_sha256
+        ):
+            errors.append(f"{story_id}: approved Story Script Portfolio binding is stale")
         if packet.get("input_fingerprints") != current_fingerprints:
             errors.append(f"{story_id}: packet input fingerprints are stale")
         scope_policy = script.get("scope_policy", {})
@@ -347,17 +414,13 @@ def validate(job_root: Path) -> dict[str, Any]:
         for label, selected, global_records in exact_catalogs:
             for item_id, item in selected.items():
                 if global_records.get(item_id) != item:
-                    errors.append(
-                        f"{story_id}: {label}[{item_id}] differs from source artifact"
-                    )
+                    errors.append(f"{story_id}: {label}[{item_id}] differs from source artifact")
         for source_id, snapshot in packet_sources.items():
             source = global_sources.get(source_id)
             if source is None:
                 errors.append(f"{story_id}: unknown source snapshot {source_id}")
             elif source_snapshot(source) != snapshot:
-                errors.append(
-                    f"{story_id}: source snapshot {source_id} differs from manifest"
-                )
+                errors.append(f"{story_id}: source snapshot {source_id} differs from manifest")
         beat_ids: set[str] = set()
         for beat_index, beat in enumerate(packet.get("beat_evidence", [])):
             where = f"{story_id}.beat_evidence[{beat_index}]"
@@ -387,14 +450,10 @@ def validate(job_root: Path) -> dict[str, Any]:
                 errors,
             )
             if not direct_event_ids.issubset(expanded_event_ids):
-                errors.append(
-                    f"{where}.direct_event_ids must be included in "
-                    "expanded_event_ids"
-                )
+                errors.append(f"{where}.direct_event_ids must be included in expanded_event_ids")
             if not fact_context_event_ids.issubset(expanded_event_ids):
                 errors.append(
-                    f"{where}.fact_context_event_ids must be included in "
-                    "expanded_event_ids"
+                    f"{where}.fact_context_event_ids must be included in expanded_event_ids"
                 )
             check_subset(
                 beat.get("candidate_ids"),
@@ -449,14 +508,10 @@ def validate(job_root: Path) -> dict[str, Any]:
             if isinstance(script_beat, dict):
                 retrieval = script_beat.get("retrieval_requirements", {})
                 expected_direct_event_ids.update(
-                    item
-                    for item in script_beat.get("event_ids", [])
-                    if isinstance(item, str)
+                    item for item in script_beat.get("event_ids", []) if isinstance(item, str)
                 )
                 expected_direct_event_ids.update(
-                    item
-                    for item in retrieval.get("event_ids", [])
-                    if isinstance(item, str)
+                    item for item in retrieval.get("event_ids", []) if isinstance(item, str)
                 )
                 direct_candidate_ids = {
                     item
@@ -469,9 +524,7 @@ def validate(job_root: Path) -> dict[str, Any]:
                 for candidate_id in direct_candidate_ids:
                     candidate = global_candidates.get(candidate_id, {})
                     expected_direct_event_ids.update(
-                        item
-                        for item in candidate.get("event_ids", [])
-                        if isinstance(item, str)
+                        item for item in candidate.get("event_ids", []) if isinstance(item, str)
                     )
                 raw_fact_context_event_ids: set[str] = set()
                 for item in script_beat.get("must_show", []):
@@ -488,25 +541,19 @@ def validate(job_root: Path) -> dict[str, Any]:
                     for fact_id in item.get("evidence_fact_ids", []):
                         fact = global_facts.get(fact_id, {})
                         raw_fact_context_event_ids.update(
-                            value
-                            for value in fact.get("event_ids", [])
-                            if isinstance(value, str)
+                            value for value in fact.get("event_ids", []) if isinstance(value, str)
                         )
                 anchor_episodes = {
                     int(global_events[event_id]["episode"])
                     for event_id in expected_direct_event_ids
                     if event_id in global_events
-                    and isinstance(
-                        global_events[event_id].get("episode"), int
-                    )
+                    and isinstance(global_events[event_id].get("episode"), int)
                 }
                 anchor_episodes.update(
                     int(global_candidates[candidate_id]["episode"])
                     for candidate_id in direct_candidate_ids
                     if candidate_id in global_candidates
-                    and isinstance(
-                        global_candidates[candidate_id].get("episode"), int
-                    )
+                    and isinstance(global_candidates[candidate_id].get("episode"), int)
                 )
                 expected_fact_context_event_ids = filter_expanded_events(
                     raw_fact_context_event_ids,
@@ -519,21 +566,14 @@ def validate(job_root: Path) -> dict[str, Any]:
                         f"{where}.direct_event_ids differ from explicit "
                         "Beat/must-show/Retrieval/Candidate Event evidence"
                     )
-                if (
-                    fact_context_event_ids
-                    != expected_fact_context_event_ids
-                ):
+                if fact_context_event_ids != expected_fact_context_event_ids:
                     errors.append(
                         f"{where}.fact_context_event_ids differ from "
                         "lookback-filtered must-show Fact context"
                     )
             observed_must_show_ids: set[str] = set()
-            for show_index, must_show in enumerate(
-                beat.get("must_show_evidence", [])
-            ):
-                show_where = (
-                    f"{where}.must_show_evidence[{show_index}]"
-                )
+            for show_index, must_show in enumerate(beat.get("must_show_evidence", [])):
+                show_where = f"{where}.must_show_evidence[{show_index}]"
                 must_show_id = must_show.get("must_show_id")
                 if isinstance(must_show_id, str):
                     observed_must_show_ids.add(must_show_id)
@@ -555,9 +595,7 @@ def validate(job_root: Path) -> dict[str, Any]:
                     f"{show_where}.resolved_event_ids",
                     errors,
                 )
-                if resolved_show_events != (
-                    direct_show_events | fact_show_events
-                ):
+                if resolved_show_events != (direct_show_events | fact_show_events):
                     errors.append(
                         f"{show_where}.resolved_event_ids must equal direct "
                         "plus Fact-context Event IDs"
@@ -566,24 +604,17 @@ def validate(job_root: Path) -> dict[str, Any]:
                 if isinstance(expected_show, dict):
                     expected_direct_show_events = {
                         item
-                        for item in expected_show.get(
-                            "evidence_event_ids", []
-                        )
+                        for item in expected_show.get("evidence_event_ids", [])
                         if isinstance(item, str)
                     }
                     raw_fact_show_events = {
                         event_id
-                        for fact_id in expected_show.get(
-                            "evidence_fact_ids", []
-                        )
-                        for event_id in global_facts.get(
-                            fact_id, {}
-                        ).get("event_ids", [])
+                        for fact_id in expected_show.get("evidence_fact_ids", [])
+                        for event_id in global_facts.get(fact_id, {}).get("event_ids", [])
                         if isinstance(event_id, str)
                     }
                     expected_fact_show_events = (
-                        raw_fact_show_events
-                        & expected_fact_context_event_ids
+                        raw_fact_show_events & expected_fact_context_event_ids
                     )
                     if direct_show_events != expected_direct_show_events:
                         errors.append(
@@ -601,103 +632,73 @@ def validate(job_root: Path) -> dict[str, Any]:
                         if event_id in global_events
                     )
                     expected_status = (
-                        "covered"
-                        if expected_direct_show_events and has_direct_range
-                        else "missing"
+                        "covered" if expected_direct_show_events and has_direct_range else "missing"
                     )
                     if must_show.get("status") != expected_status:
                         errors.append(
-                            f"{show_where}.status cannot be covered by "
-                            "Fact-only evidence"
+                            f"{show_where}.status cannot be covered by Fact-only evidence"
                         )
-            if isinstance(script_beat, dict) and observed_must_show_ids != set(
-                expected_must_shows
-            ):
-                errors.append(
-                    f"{where}.must_show_evidence differs from approved Script"
-                )
+            if isinstance(script_beat, dict) and observed_must_show_ids != set(expected_must_shows):
+                errors.append(f"{where}.must_show_evidence differs from approved Script")
             tiered_refs: list[dict[str, Any]] = []
             for range_field in (
                 "direct_range_refs",
                 "candidate_range_refs",
                 "context_range_refs",
             ):
-                for range_index, range_ref in enumerate(
-                    beat.get(range_field, [])
-                ):
-                    range_where = (
-                        f"{where}.{range_field}[{range_index}]"
-                    )
+                for range_index, range_ref in enumerate(beat.get(range_field, [])):
+                    range_where = f"{where}.{range_field}[{range_index}]"
                     tiered_refs.append(range_ref)
                     if range_ref.get("source_id") not in packet_sources:
                         errors.append(f"{range_where} has unknown source_id")
                     origin = range_ref.get("origin")
                     origin_id = range_ref.get("origin_id")
                     if origin == "event" and origin_id not in packet_events:
-                        errors.append(
-                            f"{range_where} has unknown Event origin"
-                        )
-                    if (
-                        origin == "candidate"
-                        and origin_id not in packet_candidates
-                    ):
-                        errors.append(
-                            f"{range_where} has unknown Candidate origin"
-                        )
+                        errors.append(f"{range_where} has unknown Event origin")
+                    if origin == "candidate" and origin_id not in packet_candidates:
+                        errors.append(f"{range_where} has unknown Candidate origin")
                     check_subset(
                         range_ref.get("evidence_window_ids"),
                         set(packet_windows),
                         f"{range_where}.evidence_window_ids",
                         errors,
                     )
-            normalized = lambda item: (
-                item.get("source_id"),
-                float(item.get("start", -1)),
-                float(item.get("end", -1)),
-                item.get("origin"),
-                item.get("origin_id"),
-            )
-            legacy_keys = {
-                normalized(item) for item in beat.get("range_refs", [])
-            }
+
+            def normalized(item: dict[str, Any]) -> tuple[Any, ...]:
+                return (
+                    item.get("source_id"),
+                    float(item.get("start", -1)),
+                    float(item.get("end", -1)),
+                    item.get("origin"),
+                    item.get("origin_id"),
+                )
+
+            legacy_keys = {normalized(item) for item in beat.get("range_refs", [])}
             tiered_keys = {normalized(item) for item in tiered_refs}
             if legacy_keys != tiered_keys:
-                errors.append(
-                    f"{where}.range_refs must equal the union of tiered refs"
-                )
+                errors.append(f"{where}.range_refs must equal the union of tiered refs")
         expected_beat_ids = {
-            beat.get("id")
-            for beat in script.get("beats", [])
-            if isinstance(beat.get("id"), str)
+            beat.get("id") for beat in script.get("beats", []) if isinstance(beat.get("id"), str)
         }
         if beat_ids != expected_beat_ids:
-            errors.append(
-                f"{story_id}: packet Beat coverage differs from approved Script"
-            )
+            errors.append(f"{story_id}: packet Beat coverage differs from approved Script")
         coverage = packet.get("coverage_summary", {})
         required_thread_beat_ids = set(script.get("required_thread_beat_ids", []))
         if set(coverage.get("required_thread_beat_ids", [])) != required_thread_beat_ids:
-            errors.append(
-                f"{story_id}: packet required Thread Beat coverage is stale"
-            )
-        missing_required = set(
-            coverage.get("missing_required_thread_beat_ids", [])
-        )
+            errors.append(f"{story_id}: packet required Thread Beat coverage is stale")
+        missing_required = set(coverage.get("missing_required_thread_beat_ids", []))
         covered_thread_beats = set(coverage.get("covered_thread_beat_ids", []))
         if missing_required != required_thread_beat_ids - covered_thread_beats:
             errors.append(
                 f"{story_id}: packet missing required Thread Beat coverage is inconsistent"
             )
         if missing_required and packet.get("status") != "incomplete":
-            errors.append(
-                f"{story_id}: missing required Thread Beats must make packet incomplete"
-            )
+            errors.append(f"{story_id}: missing required Thread Beats must make packet incomplete")
         if not set(packet_windows).issubset(global_manifest_windows):
             errors.append(f"{story_id}: packet contains windows outside manifest")
     if index.get("status") == "partially_ready":
         warnings.append(
-            "Story Evidence is partially ready; incomplete Stories remain "
-            "selected for repair"
+            "Story Evidence is partially ready; incomplete Stories remain selected for repair"
         )
     elif index.get("status") == "incomplete":
         warnings.append("Story Evidence contains incomplete must-have coverage")

@@ -6,14 +6,24 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from autocut_core.io import stable_id
-from autocut_core.schema.compat import validate_task_response
 from autocut_core.contracts.cross_unit import (
     cross_unit_required,
     dependency_episode_range,
     dependency_event_ids,
     filter_events_by_episode_range,
-    processing_unit_map,
+)
+from autocut_core.io import stable_id
+from autocut_core.schema.compat import validate_task_response
+
+_PACKET_FINGERPRINT_KEYS = frozenset(
+    {
+        "series_bible_sha256",
+        "event_cards_sha256",
+        "candidate_catalog_sha256",
+        "source_manifest_sha256",
+        "window_manifest_sha256",
+        "window_summaries_sha256",
+    }
 )
 
 
@@ -279,6 +289,16 @@ def build_packet(
     adjacent_window_hops: int,
     units_by_episode: dict[int, set[str]],
 ) -> dict[str, Any]:
+    if set(fingerprints) != _PACKET_FINGERPRINT_KEYS:
+        raise ValueError(
+            "Story Evidence fingerprints must contain exactly "
+            + ", ".join(sorted(_PACKET_FINGERPRINT_KEYS))
+        )
+    for name, digest in fingerprints.items():
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"Story Evidence fingerprint {name} is not a SHA-256 digest")
+    if not isinstance(approval_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", approval_sha256):
+        raise ValueError("Story Evidence approval fingerprint is not a SHA-256 digest")
     selected_character_ids = checked_ids(
         script["character_ids"], characters, "script.character_ids"
     )
@@ -298,9 +318,7 @@ def build_packet(
         thread_beats,
         "script.required_thread_beat_ids",
     )
-    selected_fact_ids = checked_ids(
-        script["required_fact_ids"], facts, "script.required_fact_ids"
-    )
+    selected_fact_ids = checked_ids(script["required_fact_ids"], facts, "script.required_fact_ids")
     selected_fact_ids.update(
         checked_ids(
             script["intentional_mystery_fact_ids"],
@@ -337,9 +355,7 @@ def build_packet(
             thread_beats=thread_beats,
         )
         dependency_events = {
-            event_id: events[event_id]
-            for event_id in dependency_event_id_set
-            if event_id in events
+            event_id: events[event_id] for event_id in dependency_event_id_set if event_id in events
         }
         dependency_range = dependency_episode_range(beat, dependency_events)
         requested_character_ids = checked_ids(
@@ -377,9 +393,7 @@ def build_packet(
             candidates,
             f"{where}.retrieval_requirements.candidate_ids",
         )
-        direct_event_ids = checked_ids(
-            beat["event_ids"], events, f"{where}.event_ids"
-        )
+        direct_event_ids = checked_ids(beat["event_ids"], events, f"{where}.event_ids")
         direct_event_ids.update(requested_event_ids)
         direct_candidate_ids = checked_ids(
             beat["candidate_suggestions"],
@@ -414,19 +428,14 @@ def build_packet(
                 )
             must_show_fact_event_ids.update(fact_context_events)
             has_range = any(
-                event_range_refs(events[event_id])
-                for event_id in requested_show_events
+                event_range_refs(events[event_id]) for event_id in requested_show_events
             )
             # A Fact is semantic context, not an observable shot.  A
             # must-show is covered only by its explicitly cited Event
             # evidence; Fact-linked Events remain available for context
             # recall but cannot independently prove visual/dialogue/action
             # coverage.
-            show_status = (
-                "covered"
-                if requested_show_events and has_range
-                else "missing"
-            )
+            show_status = "covered" if requested_show_events and has_range else "missing"
             if show_status == "missing":
                 missing_must_show_ids.append(must_show["id"])
                 missing_requirements.append(
@@ -555,8 +564,7 @@ def build_packet(
         )
         for item in must_show_evidence:
             item["fact_context_event_ids"] = sorted(
-                set(item["fact_context_event_ids"])
-                & filtered_fact_context_event_ids
+                set(item["fact_context_event_ids"]) & filtered_fact_context_event_ids
             )
             # fact_context_event_ids are for context recall only, not counted as resolved evidence
             # Resolved = only direct_event_ids (explicitly cited, observable events)
@@ -577,9 +585,7 @@ def build_packet(
                 )
             )
         inferred_context_candidate_ids.difference_update(direct_candidate_ids)
-        related_candidate_ids = (
-            set(direct_candidate_ids) | inferred_context_candidate_ids
-        )
+        related_candidate_ids = set(direct_candidate_ids) | inferred_context_candidate_ids
         for candidate_id in inferred_context_candidate_ids:
             expanded_event_ids.update(
                 checked_ids(
@@ -617,9 +623,7 @@ def build_packet(
             ]
         )
         evidence_window_ids = {
-            window_id
-            for item in range_refs
-            for window_id in item["evidence_window_ids"]
+            window_id for item in range_refs for window_id in item["evidence_window_ids"]
         }
         unknown_evidence_windows = sorted(evidence_window_ids - set(manifest_windows))
         if unknown_evidence_windows:
@@ -633,16 +637,10 @@ def build_packet(
         )
         unknown_summaries = sorted(expanded_window_ids - set(window_summaries))
         if unknown_summaries:
-            raise ValueError(
-                f"{where} is missing adjacent window summaries: {unknown_summaries}"
-            )
+            raise ValueError(f"{where} is missing adjacent window summaries: {unknown_summaries}")
         context_window_ids = expanded_window_ids - evidence_window_ids
-        source_ids = {
-            item["source_id"] for item in range_refs if item["source_id"] in sources
-        }
-        unknown_sources = sorted(
-            {item["source_id"] for item in range_refs} - set(sources)
-        )
+        source_ids = {item["source_id"] for item in range_refs if item["source_id"] in sources}
+        unknown_sources = sorted({item["source_id"] for item in range_refs} - set(sources))
         if unknown_sources:
             raise ValueError(f"{where} references unknown sources: {unknown_sources}")
         if not range_refs:
@@ -696,9 +694,7 @@ def build_packet(
                 "resolved_thread_beat_ids": sorted(requested_thread_beat_ids),
                 "must_show_evidence": must_show_evidence,
                 "direct_event_ids": sorted(direct_event_ids),
-                "fact_context_event_ids": sorted(
-                    filtered_fact_context_event_ids
-                ),
+                "fact_context_event_ids": sorted(filtered_fact_context_event_ids),
                 "expanded_event_ids": sorted(expanded_event_ids),
                 "candidate_ids": sorted(related_candidate_ids),
                 "evidence_window_ids": sorted(evidence_window_ids),
@@ -719,9 +715,7 @@ def build_packet(
                 "primary_highlight_candidate_id",
                 "opening-highlight-unresolved",
             )
-            dependency_ids = set(
-                dependency_event_id_set
-            ) | set(dependency_unknown_ids)
+            dependency_ids = set(dependency_event_id_set) | set(dependency_unknown_ids)
             source_episode_ids = sorted(
                 {
                     int(events[event_id]["episode"])
@@ -733,9 +727,7 @@ def build_packet(
                 {
                     unit_id
                     for episode in source_episode_ids
-                    for unit_id in units_by_episode.get(
-                        episode, {f"episode-{episode:03d}"}
-                    )
+                    for unit_id in units_by_episode.get(episode, {f"episode-{episode:03d}"})
                 }
             )
             is_required = cross_unit_required(
@@ -746,17 +738,13 @@ def build_packet(
             )
             is_explanation = bool(
                 isinstance(beat.get("causal_dependency"), dict)
-                and beat["causal_dependency"].get(
-                    "explains_opening_highlight", False
-                )
+                and beat["causal_dependency"].get("explains_opening_highlight", False)
             )
             if is_explanation and not dependency_event_id_set:
                 retrieval_status = "missing"
             elif dependency_unknown_ids:
                 retrieval_status = "missing"
-            elif is_explanation and not dependency_event_id_set.issubset(
-                expanded_event_ids
-            ):
+            elif is_explanation and not dependency_event_id_set.issubset(expanded_event_ids):
                 retrieval_status = "partial"
             elif is_explanation:
                 retrieval_status = "covered"
@@ -774,12 +762,8 @@ def build_packet(
                 "ancestor_episode_range": dependency_range,
                 "source_episode_ids": source_episode_ids,
                 "source_unit_ids": source_unit_ids,
-                "covered_event_ids": sorted(
-                    dependency_event_id_set & expanded_event_ids
-                ),
-                "missing_event_ids": sorted(
-                    dependency_event_id_set - expanded_event_ids
-                ),
+                "covered_event_ids": sorted(dependency_event_id_set & expanded_event_ids),
+                "missing_event_ids": sorted(dependency_event_id_set - expanded_event_ids),
                 "retrieval_status": retrieval_status,
                 "cross_unit_required": is_required,
                 "reason": (
@@ -851,9 +835,7 @@ def build_packet(
         all_range_refs.extend(range_refs)
 
     hook = script["ending_hook_intent"]
-    hook_event_ids = checked_ids(
-        hook["event_ids"], events, "ending_hook_intent.event_ids"
-    )
+    hook_event_ids = checked_ids(hook["event_ids"], events, "ending_hook_intent.event_ids")
     hook_candidate_ids = checked_ids(
         hook["candidate_ids"], candidates, "ending_hook_intent.candidate_ids"
     )
@@ -882,11 +864,7 @@ def build_packet(
         if ref is not None:
             hook_refs.append(ref)
     hook_refs = unique_range_refs(hook_refs)
-    hook_window_ids = {
-        window_id
-        for item in hook_refs
-        for window_id in item["evidence_window_ids"]
-    }
+    hook_window_ids = {window_id for item in hook_refs for window_id in item["evidence_window_ids"]}
     selected_window_ids.update(
         expand_adjacent_windows(
             hook_window_ids,
@@ -911,16 +889,12 @@ def build_packet(
                 f"story_threads[{thread_id}].open_question_ids",
             )
         )
-    selected_source_ids = {
-        events[event_id]["source_id"] for event_id in selected_event_ids
-    }
+    selected_source_ids = {events[event_id]["source_id"] for event_id in selected_event_ids}
     selected_source_ids.update(
-        candidates[candidate_id]["source_id"]
-        for candidate_id in selected_candidate_ids
+        candidates[candidate_id]["source_id"] for candidate_id in selected_candidate_ids
     )
     selected_source_ids.update(
-        manifest_windows[window_id]["source_id"]
-        for window_id in selected_window_ids
+        manifest_windows[window_id]["source_id"] for window_id in selected_window_ids
     )
     unknown_sources = sorted(selected_source_ids - set(sources))
     if unknown_sources:
@@ -929,12 +903,9 @@ def build_packet(
     covered_thread_beat_ids = {
         thread_beat_id
         for thread_beat_id in selected_thread_beat_ids
-        if set(thread_beats[thread_beat_id].get("event_ids", []))
-        & selected_event_ids
+        if set(thread_beats[thread_beat_id].get("event_ids", [])) & selected_event_ids
     }
-    missing_required_thread_beat_ids = sorted(
-        required_thread_beat_ids - covered_thread_beat_ids
-    )
+    missing_required_thread_beat_ids = sorted(required_thread_beat_ids - covered_thread_beat_ids)
     explanation_beats = [
         beat
         for beat in script.get("beats", [])
@@ -950,9 +921,7 @@ def build_packet(
         cross_unit_records.append(
             {
                 "beat_id": script["beats"][0]["id"],
-                "opening_candidate_id": script["teaser_contract"][
-                    "primary_highlight_candidate_id"
-                ],
+                "opening_candidate_id": script["teaser_contract"]["primary_highlight_candidate_id"],
                 "required_context_ids": [],
                 "required_event_ids": [],
                 "ancestor_episode_range": None,
@@ -983,9 +952,7 @@ def build_packet(
         "schema_version": "1.0",
         "method": "series-global-causal-routing-v1",
         "story_id": script["story_id"],
-        "opening_candidate_id": script["teaser_contract"][
-            "primary_highlight_candidate_id"
-        ],
+        "opening_candidate_id": script["teaser_contract"]["primary_highlight_candidate_id"],
         "status": cross_unit_status,
         "may_continue_to_story_plan": cross_unit_status in {"not_required", "covered"},
         "analysis_unit_policy": "processing_only",
@@ -1018,7 +985,12 @@ def build_packet(
                 for record in cross_unit_records
                 for context_id in (
                     record.get("missing_event_ids", [])
-                    + (["causal_dependency"] if record.get("retrieval_status") == "missing" and not record.get("required_event_ids") else [])
+                    + (
+                        ["causal_dependency"]
+                        if record.get("retrieval_status") == "missing"
+                        and not record.get("required_event_ids")
+                        else []
+                    )
                 )
             }
         ),
@@ -1026,7 +998,7 @@ def build_packet(
     }
     packet = {
         "schema_version": "1.2",
-        "method": "structured-thread-beat-recall-v3",
+        "method": "structured-thread-beat-recall-v4",
         "story_id": script["story_id"],
         "title": script["title"],
         "production_slot": script["portfolio"]["production_slot"],
@@ -1036,9 +1008,7 @@ def build_packet(
             "story_script_sha256": approval_item["approved_script_sha256"],
             "portfolio_sha256": approval_item["portfolio_sha256"],
             "decided_at": approval_item["decided_at"],
-            "accepted_material_risks": bool(
-                approval_item.get("accepted_material_risks")
-            ),
+            "accepted_material_risks": bool(approval_item.get("accepted_material_risks")),
             "reviewer_notes": str(approval_item.get("notes", "")),
         },
         "input_fingerprints": {
@@ -1066,9 +1036,7 @@ def build_packet(
             "missing_required_thread_beat_ids": missing_required_thread_beat_ids,
             "source_count": len(selected_source_ids),
             "range_count": len(all_range_refs),
-            "unique_evidence_duration_seconds": unique_duration_seconds(
-                all_range_refs
-            ),
+            "unique_evidence_duration_seconds": unique_duration_seconds(all_range_refs),
         },
         "beat_evidence": beat_evidence,
         "evidence_catalog": {
@@ -1115,31 +1083,19 @@ def build_packet(
                     ),
                 )
             ],
-            "characters": [
-                characters[item_id] for item_id in sorted(selected_character_ids)
-            ],
+            "characters": [characters[item_id] for item_id in sorted(selected_character_ids)],
             "relationships": [
-                relationships[item_id]
-                for item_id in sorted(selected_relationship_ids)
+                relationships[item_id] for item_id in sorted(selected_relationship_ids)
             ],
             "facts": [facts[item_id] for item_id in sorted(selected_fact_ids)],
-            "story_threads": [
-                threads[item_id] for item_id in sorted(selected_thread_ids)
-            ],
-            "thread_beats": [
-                thread_beats[item_id]
-                for item_id in sorted(selected_thread_beat_ids)
-            ],
-            "open_questions": [
-                questions[item_id] for item_id in sorted(selected_question_ids)
-            ],
+            "story_threads": [threads[item_id] for item_id in sorted(selected_thread_ids)],
+            "thread_beats": [thread_beats[item_id] for item_id in sorted(selected_thread_beat_ids)],
+            "open_questions": [questions[item_id] for item_id in sorted(selected_question_ids)],
         },
     }
     schema_errors = validate_task_response("story_evidence_packet", packet)
     if schema_errors:
-        raise ValueError(
-            "invalid Story Evidence Packet: " + "; ".join(schema_errors[:40])
-        )
+        raise ValueError("invalid Story Evidence Packet: " + "; ".join(schema_errors[:40]))
     return packet
 
 
@@ -1159,12 +1115,7 @@ def render_review(packets: list[dict[str, Any]]) -> str:
                 f"可进入 Story Plan：`{packet.get('cross_unit_context_report', {}).get('may_continue_to_story_plan', False)}`",
                 (
                     "- 缺失 required Thread Beat："
-                    + (
-                        ", ".join(
-                            coverage["missing_required_thread_beat_ids"]
-                        )
-                        or "无"
-                    )
+                    + (", ".join(coverage["missing_required_thread_beat_ids"]) or "无")
                 ),
                 "",
                 "| Beat | 角色 | 检索状态 | Event | Candidate | 证据窗 | 相邻窗 |",
