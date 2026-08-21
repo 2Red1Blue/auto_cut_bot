@@ -7,10 +7,42 @@ Stage 通过 get_llm_port() 获取已注册的实现，共享包不依赖具体�
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Any, Callable
 import threading
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator, Mapping
+from pathlib import Path
+from typing import NotRequired, TypeAlias, TypedDict, cast
+
+
+class LLMUsage(TypedDict, total=False):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class LLMMessage(TypedDict, total=False):
+    content: str | None
+
+
+class LLMChoice(TypedDict, total=False):
+    message: LLMMessage
+
+
+class LLMResponse(TypedDict, total=False):
+    """Supported response shapes from both legacy and agent LLM adapters."""
+
+    choices: list[LLMChoice]
+    content: str | None
+    finish_reason: str
+    usage: LLMUsage
+
+
+class LLMStreamDone(TypedDict):
+    done: bool
+    usage: NotRequired[LLMUsage]
+
+
+LLMStreamChunk: TypeAlias = str | LLMStreamDone
 
 
 class LLMPort(ABC):
@@ -29,7 +61,7 @@ class LLMPort(ABC):
         workers: int | str,
         requests_per_minute: float,
         semantic_retries: int,
-        context_injection: dict[str, Any] | None = None,
+        context_injection: dict[str, object] | None = None,
         job_ids: list[str] | None = None,
     ) -> None:
         """执行批量 LLM 推理。
@@ -49,9 +81,9 @@ class LLMPort(ABC):
     def build_context_injection(
         self,
         stage_name: str,
-        config: Any,
-        bus: Any,
-    ) -> dict[str, Any] | None:
+        config: object,
+        bus: object,
+    ) -> dict[str, object] | None:
         """构建注入到 LLM prompt 的上下文。
 
         Args:
@@ -74,12 +106,51 @@ class LLMPort(ABC):
         max_tokens: int = 131072,
         response_format: dict[str, str] | None = None,
         timeout: float = 120.0,
-    ) -> dict[str, Any]:
+    ) -> Mapping[str, object]:
         """单次 LLM 调用（非批量）。
 
         默认抛出 NotImplementedError，子类可选实现。
         """
         raise NotImplementedError("call_llm 未实现 — 子类需覆盖此方法")
+
+    def stream_llm(
+        self,
+        prompt: str,
+        model: str,
+        *,
+        messages: list[dict[str, str]] | None = None,
+        temperature: float = 0.1,
+        max_tokens: int = 131072,
+        response_format: dict[str, str] | None = None,
+        timeout: float = 600.0,
+    ) -> Iterator[LLMStreamChunk]:
+        """流式 LLM 调用（生成器，逐 token 产出 delta 文本）。
+
+        默认回退到 call_llm 一次性返回，子类可覆盖提供真正的流式输出。
+        """
+        result = self.call_llm(
+            prompt,
+            model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+            timeout=timeout,
+        )
+        direct_content = result.get("content")
+        content = direct_content if isinstance(direct_content, str) else ""
+        choices_value = result.get("choices")
+        if not content and isinstance(choices_value, list) and choices_value:
+            choices = cast(list[object], choices_value)
+            first_choice = choices[0]
+            if isinstance(first_choice, Mapping):
+                message = cast(Mapping[object, object], first_choice).get("message")
+                if isinstance(message, Mapping):
+                    nested_content = cast(Mapping[object, object], message).get("content")
+                    if isinstance(nested_content, str):
+                        content = nested_content
+        if content:
+            yield content
 
 
 # ── LLMPort 工厂注册表 ──────────────────────────────────────────────────
@@ -88,7 +159,7 @@ class LLMPort(ABC):
 
 _LLM_PORT_FACTORIES: list[Callable[[], LLMPort]] = []
 _LLM_PORT_LOCK = threading.Lock()
-_LLM_PORT_AUTO_DISCOVERED = False
+_llm_port_auto_discovered = False
 
 
 def register_llm_port_factory(factory: Callable[[], LLMPort]) -> None:
@@ -110,7 +181,7 @@ def get_llm_port() -> LLMPort:
     ``ac_cutflow.llm_port`` 自动发现 (延迟发现, 仅首次调用时触发)。
     均未找到时抛出 RuntimeError。
     """
-    global _LLM_PORT_AUTO_DISCOVERED
+    global _llm_port_auto_discovered
 
     # 1. 已注册的工厂 (LIFO — 最后注册的优先)
     for factory in reversed(_LLM_PORT_FACTORIES):
@@ -120,12 +191,16 @@ def get_llm_port() -> LLMPort:
             continue
 
     # 2. 延迟 entry_point 自动发现 (仅一次)
-    if not _LLM_PORT_AUTO_DISCOVERED:
-        _LLM_PORT_AUTO_DISCOVERED = True
+    if not _llm_port_auto_discovered:
+        _llm_port_auto_discovered = True
         try:
             from importlib.metadata import entry_points as _eps
+
             for ep in _eps().select(group="ac_cutflow.llm_port"):
-                factory = ep.load()
+                loaded: object = ep.load()
+                if not callable(loaded):
+                    continue
+                factory = cast(Callable[[], LLMPort], loaded)
                 try:
                     return factory()
                 except ImportError:
