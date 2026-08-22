@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/schema-meta/owner-anchor.schema.json",
+  "$comment": "Authority: 00-contract-toolchain-and-command-kernel.md#3.1 at authority commit 794a4eb. This is grammar only: it does not declare any pack, entry, artifact, command, component, capability, or business state.",
+  "type": "object",
+  "properties": {
+    "owner_pack": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"},
+    "owner_source_path": {"$ref": "#/$defs/contained_path"},
+    "owner_source_hash": {"$ref": "#/$defs/sha256"},
+    "owner_contract_path": {"$ref": "#/$defs/contained_path"},
+    "owner_contract_hash": {"$ref": "#/$defs/sha256"}
+  },
+  "required": [
+    "owner_pack",
+    "owner_source_path",
+    "owner_source_hash",
+    "owner_contract_path",
+    "owner_contract_hash"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"},
+    "contained_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[A-Za-z0-9._~%-]+(?:/[A-Za-z0-9._~%-]+)*$"
+    }
+  }
+}

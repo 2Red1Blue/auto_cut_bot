@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/handoff/handoff-manifest.schema.json",
+  "$comment": "Authority: 00-contract-toolchain-and-command-kernel.md#3.1 and source-transcription-plan.md#A. Grammar for a frozen source-pack handoff; it does not declare any Registry entry or business identity.",
+  "type": "object",
+  "properties": {
+    "format": {"const": "autocut.registry-source.handoff/v1"},
+    "contract_version": {"const": "2.1.3"},
+    "handoff_version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)$"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "authority_anchors": {"$ref": "#/$defs/authority_anchor_index"},
+    "source_paths": {"$ref": "#/$defs/path_hash_index"},
+    "source_tree_hash": {"$ref": "#/$defs/sha256"},
+    "review": {"$ref": "#/$defs/review"}
+  },
+  "required": [
+    "format",
+    "contract_version",
+    "handoff_version",
+    "producer",
+    "authority_anchors",
+    "source_paths",
+    "source_tree_hash",
+    "review"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"},
+    "contained_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[A-Za-z0-9._~%-]+(?:/[A-Za-z0-9._~%-]+)*$"
+    },
+    "producer": {
+      "type": "object",
+      "properties": {
+        "pack_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"},
+        "source_revision": {"$ref": "#/$defs/sha256"},
+        "producer_git_commit": {"$ref": "#/$defs/git_commit"}
+      },
+      "required": ["pack_id", "source_revision", "producer_git_commit"],
+      "additionalProperties": false
+    },
+    "path_hash_index": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/contained_path"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "authority_locator": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*//)(?!.*(?:^|/)(?:\\.{1,2})(?:/|$))[A-Za-z0-9._~%-]+(?:/[A-Za-z0-9._~%-]+)*#[1-9][0-9]*(?:\\.[1-9][0-9]*)*$"
+    },
+    "authority_anchor_index": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"$ref": "#/$defs/authority_locator"},
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "reviewer_id": {"type": "string", "minLength": 1, "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"},
+        "review_record_hash": {"$ref": "#/$defs/sha256"},
+        "producer_git_commit": {"$ref": "#/$defs/git_commit"}
+      },
+      "required": ["reviewer_id", "review_record_hash", "producer_git_commit"],
+      "additionalProperties": false
+    },
+    "git_commit": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}
+  }
+}
