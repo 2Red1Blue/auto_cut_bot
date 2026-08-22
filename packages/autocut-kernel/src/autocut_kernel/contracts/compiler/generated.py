@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
+from .authority import verify_source_authority
 from .canonical import canonical_json_bytes, load_canonical_json_bytes
 from .errors import (
     ContractCompilerError,
@@ -28,6 +29,7 @@ def write_generated_tree(
     *,
     generated_files: Mapping[str, bytes],
     sources: tuple[SourceInput, ...],
+    authority_root: Path,
     compiler_version: str,
 ) -> HashManifest:
     """Replace an owned output tree with a complete deterministic snapshot.
@@ -37,6 +39,7 @@ def write_generated_tree(
     disposable generated output.
     """
 
+    _verify_all_source_authority(sources=sources, authority_root=authority_root)
     _assert_writable_root(root)
     normalized = _normalize_generated_files(generated_files)
     manifest = HashManifest.build(
@@ -65,10 +68,12 @@ def check_generated_tree(
     *,
     generated_files: Mapping[str, bytes],
     sources: tuple[SourceInput, ...],
+    authority_root: Path,
     compiler_version: str,
 ) -> HashManifest:
     """Verify an on-disk output tree is exactly the expected compiler snapshot."""
 
+    _verify_all_source_authority(sources=sources, authority_root=authority_root)
     expected_files = _normalize_generated_files(generated_files)
     expected = HashManifest.build(
         compiler_version=compiler_version,
@@ -90,6 +95,13 @@ def check_generated_tree(
     if actual_files != expected_files:
         raise GeneratedTreeDriftError("generated tree content or file set has drifted")
     return expected
+
+
+def _verify_all_source_authority(*, sources: tuple[SourceInput, ...], authority_root: Path) -> None:
+    if not sources:
+        raise ContractCompilerError("generated trees require at least one authority-verified source")
+    for source in sources:
+        verify_source_authority(source=source, authority_root=authority_root)
 
 
 def _assert_writable_root(root: Path) -> None:

@@ -1,7 +1,9 @@
 """Stable public API for deterministic contract compilation."""
 
+from .compiler.authority import verify_source_authority
 from .compiler.canonical import canonical_json_bytes, canonical_json_hash
 from .compiler.errors import (
+    AuthorityIntegrityError,
     ContractCompilerError,
     GeneratedTreeDriftError,
     GeneratedTreeOwnershipError,
@@ -14,6 +16,7 @@ from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_jso
 
 __all__ = [
     "ContractCompilerError",
+    "AuthorityIntegrityError",
     "ContractPath",
     "GeneratedTreeDriftError",
     "GeneratedTreeOwnershipError",
@@ -28,5 +31,6 @@ __all__ = [
     "load_json_source",
     "scope_identity",
     "validate_source_span_temporal_semantics",
+    "verify_source_authority",
     "write_generated_tree",
 ]

@@ -1,6 +1,7 @@
 """Public contract compiler API for the standalone AutoCut kernel."""
 
 from .public import (
+    AuthorityIntegrityError,
     ContractCompilerError,
     ContractPath,
     GeneratedTreeDriftError,
@@ -16,11 +17,13 @@ from .public import (
     load_json_source,
     scope_identity,
     validate_source_span_temporal_semantics,
+    verify_source_authority,
     write_generated_tree,
 )
 
 __all__ = [
     "ContractCompilerError",
+    "AuthorityIntegrityError",
     "ContractPath",
     "GeneratedTreeDriftError",
     "GeneratedTreeOwnershipError",
@@ -35,5 +38,6 @@ __all__ = [
     "load_json_source",
     "scope_identity",
     "validate_source_span_temporal_semantics",
+    "verify_source_authority",
     "write_generated_tree",
 ]

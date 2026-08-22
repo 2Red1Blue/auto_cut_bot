@@ -13,6 +13,10 @@ class SourceMetadataError(ContractCompilerError):
     """Raised when source provenance metadata is missing or ambiguous."""
 
 
+class AuthorityIntegrityError(ContractCompilerError):
+    """Raised when a machine source no longer matches its Markdown authority."""
+
+
 class GeneratedTreeOwnershipError(ContractCompilerError):
     """Raised when a compiler would overwrite a tree it does not own."""
 
