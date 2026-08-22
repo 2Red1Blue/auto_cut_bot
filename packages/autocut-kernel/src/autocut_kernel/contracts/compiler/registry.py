@@ -1,78 +1,60 @@
-"""Closed, non-executable registry primitives extracted from the production contract."""
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownParameterType=false
+"""RegistrySet boundary and frozen CommandContractProfile grammar."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
-from typing import Mapping
 
 from .canonical import canonical_json_hash
 from .errors import RegistryValidationError
+from .registry_entries import (
+    CLOSED_CAPABILITIES,
+    CLOSED_SCOPE_KINDS,
+    ArtifactEntry,
+    CommandEntry,
+    RuleEntry,
+    StrategyEntry,
+    TraceEntry,
+    array,
+    contract_obligation_locator,
+    digest,
+    exact,
+    path,
+    strings,
+    text,
+)
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SCHEMA_URI = re.compile(r"schema://[^\s/]+/.+\Z")
-_TRACE_GATES = frozenset(
-    {"contract_ci", "shadow_entry", "publication_enablement", "platform_capability"}
-)
-_PROFILE_FIELDS = frozenset(
-    {
-        "command_name",
-        "command_version",
-        "allowed_scope_kinds",
-        "parameter_schema_uri",
-        "parameter_schema_hash",
-        "result_schema_uri",
-        "result_schema_hash",
-        "required_input_roles",
-        "required_policy_roles",
-        "lifecycle_slots",
-        "transaction_profile",
-        "side_effect_class",
-        "required_capability",
-        "handler_id",
-        "handler_version",
-    }
-)
-_TRACE_FIELDS = frozenset({"contract_path", "schema_path", "evaluator", "test_ids", "rollout_gate"})
-_REGISTRY_SOURCE_FIELDS = frozenset({"artifacts", "commands", "rules", "strategies", "traces"})
-# This is the complete v2.1.3 Command universe in total contract §3.5.  A
-# registry that omits one is structurally incomplete even if all present
-# profiles happen to parse.
-_V213_COMMAND_KEYS = frozenset(
-    {
-        ("PrepareMediaEvidence", "2.1.3"),
-        ("StartRun", "2.1.3"),
-        ("BuildNarrativeGraph", "2.1.3"),
-        ("CompileStoryPortfolio", "2.1.3"),
-        ("BuildEditorialBlueprint", "2.1.3"),
-        ("CompilePhysicalEdit", "2.1.3"),
-        ("AdvanceSourceUsageLedger", "2.1.3"),
-        ("RenderAndEvaluatePublication", "2.1.3"),
-        ("CreatePreRenderStoryDeny", "2.1.3"),
-        ("DecidePortfolioRelease", "2.1.3"),
-        ("PlanPublicationBatch", "2.1.3"),
-        ("PreparePublicationBatch", "2.1.3"),
-        ("CommitPublicationBatch", "2.1.3"),
-        ("AbortPublicationBatch", "2.1.3"),
-        ("ReconcilePublicationBatch", "2.1.3"),
-        ("PublishIndependentOutput", "2.1.3"),
-        ("RecoverScope", "2.1.3"),
-        ("FinalizeRunOutcome", "2.1.3"),
-        ("MigrateLegacyArtifacts", "2.1.3"),
-    }
-)
+_PROFILE_FIELDS = {
+    "command_name",
+    "command_version",
+    "allowed_scope_kinds",
+    "parameter_schema_uri",
+    "parameter_schema_hash",
+    "result_schema_uri",
+    "result_schema_hash",
+    "required_input_roles",
+    "required_policy_roles",
+    "lifecycle_slots",
+    "artifact_set_plan",
+    "commit_protocol",
+    "side_effect_class",
+    "required_capability",
+    "handler_id",
+    "handler_version",
+    "idempotency_algorithm_id",
+    "idempotency_algorithm_version",
+    "idempotency_algorithm_contract_hash",
+}
+_TRACE_FIELDS = {"contract_path", "schema_path", "evaluator", "test_ids", "rollout_gate"}
+_SOURCE_FIELDS = {"artifacts", "commands", "rules", "strategies", "traces"}
+_GATES = {"contract_ci", "shadow_entry", "publication_enablement", "platform_capability"}
 
 
 @dataclass(frozen=True, slots=True)
 class CommandContractProfile:
-    """The closed command profile shell required by total contract §3.5.
-
-    This class validates only frozen structure.  It deliberately does not claim
-    that a schema URI exists or that a handler can execute: those are full
-    RegistrySet closure checks, to be enabled only with complete owner packs.
-    """
-
     command_name: str
     command_version: str
     allowed_scope_kinds: tuple[str, ...]
@@ -83,49 +65,69 @@ class CommandContractProfile:
     required_input_roles: tuple[str, ...]
     required_policy_roles: tuple[str, ...]
     lifecycle_slots: tuple[str, ...]
-    transaction_profile: str
+    artifact_set_plan: dict[str, object]
+    commit_protocol: str
     side_effect_class: str
     required_capability: str
     handler_id: str
     handler_version: str
+    idempotency_algorithm_id: str
+    idempotency_algorithm_version: str
+    idempotency_algorithm_contract_hash: str
 
     @classmethod
     def from_mapping(cls, value: object) -> "CommandContractProfile":
-        mapping = _exact_mapping(value, _PROFILE_FIELDS, label="command_contract_profile")
-        profile = cls(
-            command_name=_text(mapping, "command_name"),
-            command_version=_text(mapping, "command_version"),
-            allowed_scope_kinds=_identifier_array(mapping, "allowed_scope_kinds"),
-            parameter_schema_uri=_schema_uri(mapping, "parameter_schema_uri"),
-            parameter_schema_hash=_sha256(mapping, "parameter_schema_hash"),
-            result_schema_uri=_schema_uri(mapping, "result_schema_uri"),
-            result_schema_hash=_sha256(mapping, "result_schema_hash"),
-            required_input_roles=_identifier_array(mapping, "required_input_roles"),
-            required_policy_roles=_identifier_array(mapping, "required_policy_roles"),
-            lifecycle_slots=_identifier_array(mapping, "lifecycle_slots"),
-            transaction_profile=_text(mapping, "transaction_profile"),
-            side_effect_class=_text(mapping, "side_effect_class"),
-            required_capability=_text(mapping, "required_capability"),
-            handler_id=_text(mapping, "handler_id"),
-            handler_version=_text(mapping, "handler_version"),
+        m = exact(value, _PROFILE_FIELDS, "command_contract_profile")
+        plan = m["artifact_set_plan"]
+        if type(plan) is not dict:
+            raise RegistryValidationError("artifact_set_plan must be an object")  # noqa: E721
+        if plan.get("kind") == "recover_scope_outcome":
+            exact(plan, {"kind"}, "artifact_set_plan")
+        else:
+            exact(plan, {"kind", "artifact_set_profile"}, "artifact_set_plan")
+            if plan["kind"] != "fixed":
+                raise RegistryValidationError("artifact_set_plan is not closed")
+        from .registry_entries import COMMIT_PROTOCOLS
+
+        protocol = text(m, "commit_protocol")
+        if protocol not in COMMIT_PROTOCOLS:
+            raise RegistryValidationError("commit_protocol is not closed")
+        parameter_uri, result_uri = text(m, "parameter_schema_uri"), text(m, "result_schema_uri")
+        if not _SCHEMA_URI.fullmatch(parameter_uri) or not _SCHEMA_URI.fullmatch(result_uri):
+            raise RegistryValidationError("schema URI is invalid")
+        return cls(
+            text(m, "command_name"),
+            text(m, "command_version"),
+            _closed_scope_kinds(m, "allowed_scope_kinds"),
+            parameter_uri,
+            digest(m, "parameter_schema_hash"),
+            result_uri,
+            digest(m, "result_schema_hash"),
+            strings(m, "required_input_roles"),
+            strings(m, "required_policy_roles"),
+            strings(m, "lifecycle_slots"),
+            plan,
+            protocol,
+            text(m, "side_effect_class"),
+            _closed_capability(m, "required_capability"),
+            text(m, "handler_id"),
+            text(m, "handler_version"),
+            text(m, "idempotency_algorithm_id"),
+            text(m, "idempotency_algorithm_version"),
+            digest(m, "idempotency_algorithm_contract_hash"),
         )
-        return profile
 
     @property
     def key(self) -> tuple[str, str]:
-        return (self.command_name, self.command_version)
+        return self.command_name, self.command_version
 
     @property
     def parameters_are_static_empty(self) -> bool:
-        """Whether §3.5 permits only a closed empty parameters object."""
-
         return self.command_name not in {"RecoverScope", "MigrateLegacyArtifacts"}
 
 
 @dataclass(frozen=True, slots=True)
 class ContractTrace:
-    """The closed trace object required by total contract §12."""
-
     contract_path: str
     schema_path: str
     evaluator_component: str
@@ -138,37 +140,31 @@ class ContractTrace:
 
     @classmethod
     def from_mapping(cls, value: object) -> "ContractTrace":
-        mapping = _exact_mapping(value, _TRACE_FIELDS, label="contract_trace")
-        evaluator = _exact_mapping(
-            mapping["evaluator"], {"component", "version", "contract_hash"}, label="trace.evaluator"
+        m = exact(value, _TRACE_FIELDS, "contract_trace")
+        evaluator, tests = (
+            exact(m["evaluator"], {"component", "version", "contract_hash"}, "trace.evaluator"),
+            exact(m["test_ids"], {"pass", "fail", "indeterminate"}, "trace.test_ids"),
         )
-        test_ids = _exact_mapping(
-            mapping["test_ids"], {"pass", "fail", "indeterminate"}, label="trace.test_ids"
-        )
-        contract_path = _text(mapping, "contract_path")
-        schema_path = _text(mapping, "schema_path")
-        if not _safe_schema_path(schema_path):
-            raise RegistryValidationError("trace.schema_path must be a safe relative schema path")
-        gate = _text(mapping, "rollout_gate")
-        if gate not in _TRACE_GATES:
+        gate = text(m, "rollout_gate")
+        if gate not in _GATES:
             raise RegistryValidationError("trace.rollout_gate is not a closed rollout gate")
+        contract_obligation_locator(m, "contract_path")
+        path(m, "schema_path")
         return cls(
-            contract_path=contract_path,
-            schema_path=schema_path,
-            evaluator_component=_text(evaluator, "component"),
-            evaluator_version=_text(evaluator, "version"),
-            evaluator_contract_hash=_sha256(evaluator, "contract_hash"),
-            pass_test_ids=_identifier_array(test_ids, "pass", non_empty=True),
-            fail_test_ids=_identifier_array(test_ids, "fail", non_empty=True),
-            indeterminate_test_ids=_identifier_array(test_ids, "indeterminate"),
-            rollout_gate=gate,
+            text(m, "contract_path"),
+            text(m, "schema_path"),
+            text(evaluator, "component"),
+            text(evaluator, "version"),
+            digest(evaluator, "contract_hash"),
+            strings(tests, "pass", nonempty=True),
+            strings(tests, "fail", nonempty=True),
+            strings(tests, "indeterminate"),
+            gate,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class PartialRegistrySet:
-    """An immutable compiler-only registry fragment which is never executable."""
-
     command_profiles: tuple[CommandContractProfile, ...]
     contract_traces: tuple[ContractTrace, ...]
 
@@ -179,9 +175,11 @@ class PartialRegistrySet:
         command_profiles: tuple[CommandContractProfile, ...],
         contract_traces: tuple[ContractTrace, ...],
     ) -> "PartialRegistrySet":
-        _unique((profile.key for profile in command_profiles), label="command profile")
-        _unique((trace.contract_path for trace in contract_traces), label="contract trace path")
-        return cls(command_profiles=command_profiles, contract_traces=contract_traces)
+        if len({p.key for p in command_profiles}) != len(command_profiles):
+            raise RegistryValidationError("duplicate command profile")
+        if len({t.contract_path for t in contract_traces}) != len(contract_traces):
+            raise RegistryValidationError("duplicate contract trace path")
+        return cls(command_profiles, contract_traces)
 
     @property
     def ready(self) -> bool:
@@ -193,18 +191,12 @@ class PartialRegistrySet:
 
 @dataclass(frozen=True, slots=True)
 class RegistrySet:
-    """Hash-bound loader boundary for a future complete RegistrySet.
-
-    The machine-source envelopes for Artifact, Rule and Strategy entries have
-    not yet been transcribed from the authority.  This loader therefore checks
-    the only currently closed parts (the five-category envelope, exact source
-    hash, profiles and traces), records why the input is incomplete, and never
-    turns opaque data into a runtime-selectable RegistrySet.  A later owner
-    pack must add closed entry schemas and closure validation before it can
-    make this type ready.
-    """
-
     source_hash: str
+    artifacts: tuple[ArtifactEntry, ...]
+    commands: tuple[CommandEntry, ...]
+    rules: tuple[RuleEntry, ...]
+    strategies: tuple[StrategyEntry, ...]
+    traces: tuple[TraceEntry, ...]
     command_profiles: tuple[CommandContractProfile, ...]
     contract_traces: tuple[ContractTrace, ...]
     category_counts: tuple[tuple[str, int], ...]
@@ -212,120 +204,151 @@ class RegistrySet:
 
     @classmethod
     def from_mapping(cls, value: object, *, expected_source_hash: str) -> "RegistrySet":
-        """Load one closed registry-source envelope against an external hash.
+        """Reject unproven in-memory sources.
 
-        ``expected_source_hash`` is deliberately supplied out of band: adding
-        a self-declared hash to the source would not authenticate its bytes.
-        The function accepts no YAML/parser defaults and does not expose raw
-        Artifact/Rule/Strategy entries until their closed schemas exist.
+        A flat mapping has no source-pack provenance and must never become a
+        runtime-selectable registry.  ``from_manifest`` is the sole compiler
+        path deliberately exposed on this type.
         """
+        del value, expected_source_hash
+        raise RegistryValidationError(
+            "RegistrySet requires a validated RegistrySourceManifest; "
+            "flat mappings are not executable"
+        )
 
-        mapping = _exact_mapping(value, _REGISTRY_SOURCE_FIELDS, label="registry_set_source")
-        if not _SHA256.fullmatch(expected_source_hash):
-            raise RegistryValidationError("expected_source_hash must be a lowercase sha256 digest")
-        actual_source_hash = canonical_json_hash(mapping)
-        if actual_source_hash != expected_source_hash:
-            raise RegistryValidationError("registry_set_source hash does not match expected_source_hash")
+    @classmethod
+    def from_manifest(cls, manifest: object) -> "RegistrySet":
+        """Compile one validated manifest snapshot into a ready RegistrySet."""
+        from .registry_source import RegistrySourceManifest, load_registry_source_manifest
 
-        categories = {name: _array(mapping, name) for name in _REGISTRY_SOURCE_FIELDS}
-        profiles = tuple(CommandContractProfile.from_mapping(item) for item in categories["commands"])
-        traces = tuple(ContractTrace.from_mapping(item) for item in categories["traces"])
-        PartialRegistrySet.build(command_profiles=profiles, contract_traces=traces)
+        if not isinstance(manifest, RegistrySourceManifest):
+            raise RegistryValidationError("RegistrySet requires a validated RegistrySourceManifest")
+        # A frozen dataclass is not an authority boundary: an untrusted caller
+        # can construct one directly.  Re-read the named snapshot and require
+        # exact equality before parsing any entry.
+        verified = load_registry_source_manifest(manifest.root)
+        if verified != manifest:
+            raise RegistryValidationError(
+                "RegistrySourceManifest is forged or stale relative to its source snapshot"
+            )
+        manifest = verified
+        documents = {
+            document.registry_kind: document.value for document in manifest.registry_documents
+        }
+        if set(documents) != _SOURCE_FIELDS:
+            raise RegistryValidationError(
+                "RegistrySourceManifest has incomplete registry documents"
+            )
+        raw = {name: array(documents[name], "entries") for name in _SOURCE_FIELDS}
+        artifacts = tuple(ArtifactEntry.from_mapping(value) for value in raw["artifacts"])
+        commands = tuple(CommandEntry.from_mapping(value) for value in raw["commands"])
+        rules = tuple(RuleEntry.from_mapping(value) for value in raw["rules"])
+        strategies = tuple(StrategyEntry.from_mapping(value) for value in raw["strategies"])
+        traces = tuple(TraceEntry.from_mapping(value) for value in raw["traces"])
+        profiles = tuple(
+            _profile(entry) for entry in commands if entry.entry_kind == "command_profile"
+        )
+        contract_traces = tuple(
+            _trace(entry) for entry in traces if entry.entry_kind == "contract_trace"
+        )
+        PartialRegistrySet.build(command_profiles=profiles, contract_traces=contract_traces)
+        from .registry_closure import closure_errors
 
-        profile_keys = frozenset(profile.key for profile in profiles)
-        reasons: list[str] = []
-        missing_commands = _V213_COMMAND_KEYS - profile_keys
-        unexpected_commands = profile_keys - _V213_COMMAND_KEYS
-        if missing_commands:
-            reasons.append("missing v2.1.3 command profiles")
-        if unexpected_commands:
-            reasons.append("contains command profiles outside the v2.1.3 command universe")
-        for category in ("artifacts", "rules", "strategies", "traces"):
-            if not categories[category]:
-                reasons.append(f"registry category {category} is empty")
-        # The authority specifies that all five registries participate in
-        # closure, but does not yet supply closed machine schemas for these
-        # three entry kinds.  Their raw JSON is intentionally not treated as
-        # executable evidence merely because its enclosing bytes are hashed.
-        reasons.append("artifact/rule/strategy entry schemas and closure rules are not transcribed")
+        reasons = closure_errors(
+            artifacts,
+            commands,
+            rules,
+            strategies,
+            traces,
+            source_packs=manifest.source_packs,
+            source_snapshot=manifest.source_snapshot,
+        )
+        if reasons:
+            raise RegistryValidationError("RegistrySet closure failed: " + "; ".join(reasons))
         return cls(
-            source_hash=actual_source_hash,
-            command_profiles=profiles,
-            contract_traces=traces,
-            category_counts=tuple(sorted((name, len(entries)) for name, entries in categories.items())),
-            incompleteness_reasons=tuple(reasons),
+            manifest.registry_set_hash,
+            artifacts,
+            commands,
+            rules,
+            strategies,
+            traces,
+            profiles,
+            contract_traces,
+            tuple(sorted((name, len(items)) for name, items in raw.items())),
+            (),
+        )
+
+    @classmethod
+    def _legacy_from_mapping(cls, value: object, *, expected_source_hash: str) -> "RegistrySet":
+        m = exact(value, _SOURCE_FIELDS, "registry_set_source")
+        if (
+            not _SHA256.fullmatch(expected_source_hash)
+            or canonical_json_hash(m) != expected_source_hash
+        ):
+            raise RegistryValidationError(
+                "registry_set_source hash does not match expected_source_hash"
+            )
+        raw = {name: array(m, name) for name in _SOURCE_FIELDS}
+        artifacts, commands = (
+            tuple(ArtifactEntry.from_mapping(v) for v in raw["artifacts"]),
+            tuple(CommandEntry.from_mapping(v) for v in raw["commands"]),
+        )
+        rules, strategies, traces = (
+            tuple(RuleEntry.from_mapping(v) for v in raw["rules"]),
+            tuple(StrategyEntry.from_mapping(v) for v in raw["strategies"]),
+            tuple(TraceEntry.from_mapping(v) for v in raw["traces"]),
+        )
+        profiles = tuple(_profile(e) for e in commands if e.entry_kind == "command_profile")
+        contract_traces = tuple(_trace(e) for e in traces if e.entry_kind == "contract_trace")
+        PartialRegistrySet.build(command_profiles=profiles, contract_traces=contract_traces)
+        from .registry_closure import closure_errors
+
+        reasons = (
+            *closure_errors(artifacts, commands, rules, strategies, traces),
+            "source-pack provenance and real fixture coverage are unavailable",
+        )
+        return cls(
+            expected_source_hash,
+            artifacts,
+            commands,
+            rules,
+            strategies,
+            traces,
+            profiles,
+            contract_traces,
+            tuple(sorted((name, len(items)) for name, items in raw.items())),
+            reasons,
         )
 
     @property
     def ready(self) -> bool:
-        """Whether a complete, closed RegistrySet can be runtime-selected."""
-
         return not self.incompleteness_reasons
 
     def require_ready(self) -> None:
-        """Reject runtime selection before full source-pack closure exists."""
-
-        detail = "; ".join(self.incompleteness_reasons) or "unknown closure failure"
-        raise RegistryValidationError(f"RegistrySet is not executable or runtime-selectable: {detail}")
-
-
-def _exact_mapping(value: object, expected: frozenset[str] | set[str], *, label: str) -> Mapping[str, object]:
-    if type(value) is not dict:  # noqa: E721 - reject mapping subclasses with hidden behavior.
-        raise RegistryValidationError(f"{label} must be an object")
-    actual = set(value)
-    if actual != expected:
-        raise RegistryValidationError(f"{label} must have exactly {sorted(expected)}")
-    return value
+        if not self.ready:
+            raise RegistryValidationError(
+                "RegistrySet is not executable or runtime-selectable: "
+                + "; ".join(self.incompleteness_reasons)
+            )
 
 
-def _text(mapping: Mapping[str, object], key: str) -> str:
-    value = mapping[key]
-    if type(value) is not str or not value or value != value.strip() or "\n" in value or "\r" in value:  # noqa: E721
-        raise RegistryValidationError(f"{key} must be a normalized non-empty single-line string")
-    return value
+def _profile(entry: CommandEntry) -> CommandContractProfile:
+    return CommandContractProfile.from_mapping({key: entry.data[key] for key in _PROFILE_FIELDS})
 
 
-def _identifier_array(mapping: Mapping[str, object], key: str, *, non_empty: bool = False) -> tuple[str, ...]:
-    value = mapping[key]
-    if type(value) is not list:  # noqa: E721
-        raise RegistryValidationError(f"{key} must be an array")
-    identifiers = tuple(_text({key: item}, key) for item in value)
-    if non_empty and not identifiers:
-        raise RegistryValidationError(f"{key} must be non-empty")
-    if len(set(identifiers)) != len(identifiers):
-        raise RegistryValidationError(f"{key} must not contain duplicate identifiers")
-    return identifiers
+def _trace(entry: TraceEntry) -> ContractTrace:
+    return ContractTrace.from_mapping({key: entry.data[key] for key in _TRACE_FIELDS})
 
 
-def _array(mapping: Mapping[str, object], key: str) -> list[object]:
-    value = mapping[key]
-    if type(value) is not list:  # noqa: E721 - source registries are JSON arrays.
-        raise RegistryValidationError(f"{key} must be an array")
-    return value
+def _closed_scope_kinds(value: dict[str, object], key: str) -> tuple[str, ...]:
+    scopes = strings(value, key)
+    if any(scope not in CLOSED_SCOPE_KINDS for scope in scopes):
+        raise RegistryValidationError(f"{key} must use the closed v2.1.3 scope enum")
+    return scopes
 
 
-def _sha256(mapping: Mapping[str, object], key: str) -> str:
-    value = _text(mapping, key)
-    if not _SHA256.fullmatch(value):
-        raise RegistryValidationError(f"{key} must be a lowercase sha256 digest")
-    return value
-
-
-def _schema_uri(mapping: Mapping[str, object], key: str) -> str:
-    value = _text(mapping, key)
-    if not _SCHEMA_URI.fullmatch(value):
-        raise RegistryValidationError(f"{key} must be a schema URI")
-    return value
-
-
-def _safe_schema_path(value: str) -> bool:
-    if "\\" in value:
-        return False
-    path = PurePosixPath(value)
-    return bool(value) and not path.is_absolute() and not any(part in {"", ".", ".."} for part in path.parts)
-
-
-def _unique(values: object, *, label: str) -> None:
-    items = tuple(values)  # type: ignore[arg-type]
-    if len(set(items)) != len(items):
-        raise RegistryValidationError(f"duplicate {label}")
+def _closed_capability(value: dict[str, object], key: str) -> str:
+    capability = text(value, key)
+    if capability not in CLOSED_CAPABILITIES:
+        raise RegistryValidationError(f"{key} must use the closed v2.1.3 capability enum")
+    return capability

@@ -23,9 +23,11 @@ def _profile() -> dict[str, object]:
         "allowed_scope_kinds": ["story"], "parameter_schema_uri": "schema://command/build-editorial/2.1.3/parameters",
         "parameter_schema_hash": SHA, "result_schema_uri": "schema://command/build-editorial/2.1.3/result",
         "result_schema_hash": SHA, "required_input_roles": ["portfolio"], "required_policy_roles": ["job_policy"],
-        "lifecycle_slots": ["initial", "recovery"], "transaction_profile": "single_artifact_set_cas",
+        "lifecycle_slots": ["initial", "recovery"], "artifact_set_plan": {"kind": "fixed", "artifact_set_profile": "stage_admission"}, "commit_protocol": "artifact_set_commit",
         "side_effect_class": "model_then_store", "required_capability": "runtime.execute_stage",
         "handler_id": "editorial-blueprint-handler", "handler_version": "1.0.0",
+        "idempotency_algorithm_id": "editorial-idempotency", "idempotency_algorithm_version": "1.0.0",
+        "idempotency_algorithm_contract_hash": SHA,
     }
 
 
@@ -64,6 +66,9 @@ def test_profile_and_trace_reject_unknown_or_unclosed_values() -> None:
     unsafe_path = _trace() | {"schema_path": "../outside.schema.json"}
     with pytest.raises(contracts.RegistryValidationError, match="safe relative"):
         contracts.ContractTrace.from_mapping(unsafe_path)
+    unsafe_contract = _trace() | {"contract_path": "../outside.contract"}
+    with pytest.raises(contracts.RegistryValidationError, match="safe relative contract"):
+        contracts.ContractTrace.from_mapping(unsafe_contract)
 
 
 def test_partial_registry_rejects_duplicate_command_or_trace_identity() -> None:
