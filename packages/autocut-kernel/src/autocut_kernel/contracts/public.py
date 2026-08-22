@@ -7,10 +7,12 @@ from .compiler.errors import (
     ContractCompilerError,
     GeneratedTreeDriftError,
     GeneratedTreeOwnershipError,
+    ReferenceValidationError,
     RegistryValidationError,
 )
 from .compiler.generated import check_generated_tree, write_generated_tree
 from .compiler.manifest import HashManifest
+from .compiler.refs import ArtifactRef, ArtifactSetRef, DomainRef, ImmutableBlobRef
 from .compiler.registry import CommandContractProfile, ContractTrace, PartialRegistrySet
 from .compiler.scope import ScopeIdentity, scope_identity
 from .compiler.semantics import SourceClockBinding, validate_source_span_temporal_semantics
@@ -19,14 +21,19 @@ from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_jso
 __all__ = [
     "ContractCompilerError",
     "AuthorityIntegrityError",
+    "ArtifactRef",
+    "ArtifactSetRef",
     "CommandContractProfile",
     "ContractPath",
     "ContractTrace",
+    "DomainRef",
     "GeneratedTreeDriftError",
     "GeneratedTreeOwnershipError",
     "HashManifest",
+    "ImmutableBlobRef",
     "PartialRegistrySet",
     "RegistryValidationError",
+    "ReferenceValidationError",
     "SourceInput",
     "SourceClockBinding",
     "SourceMetadata",

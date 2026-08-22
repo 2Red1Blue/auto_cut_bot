@@ -4,6 +4,7 @@ from .authority import verify_source_authority
 from .canonical import canonical_json_bytes, canonical_json_hash
 from .generated import check_generated_tree, write_generated_tree
 from .manifest import HashManifest
+from .refs import ArtifactRef, ArtifactSetRef, DomainRef, ImmutableBlobRef
 from .registry import CommandContractProfile, ContractTrace, PartialRegistrySet
 from .scope import ScopeIdentity, scope_identity
 from .semantics import SourceClockBinding, validate_source_span_temporal_semantics
@@ -13,7 +14,11 @@ __all__ = [
     "ContractPath",
     "CommandContractProfile",
     "ContractTrace",
+    "ArtifactRef",
+    "ArtifactSetRef",
+    "DomainRef",
     "HashManifest",
+    "ImmutableBlobRef",
     "PartialRegistrySet",
     "SourceClockBinding",
     "SourceInput",
