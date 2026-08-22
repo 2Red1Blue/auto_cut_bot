@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Mapping
 
+from .canonical import canonical_json_hash
 from .errors import RegistryValidationError
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -34,6 +35,33 @@ _PROFILE_FIELDS = frozenset(
     }
 )
 _TRACE_FIELDS = frozenset({"contract_path", "schema_path", "evaluator", "test_ids", "rollout_gate"})
+_REGISTRY_SOURCE_FIELDS = frozenset({"artifacts", "commands", "rules", "strategies", "traces"})
+# This is the complete v2.1.3 Command universe in total contract §3.5.  A
+# registry that omits one is structurally incomplete even if all present
+# profiles happen to parse.
+_V213_COMMAND_KEYS = frozenset(
+    {
+        ("PrepareMediaEvidence", "2.1.3"),
+        ("StartRun", "2.1.3"),
+        ("BuildNarrativeGraph", "2.1.3"),
+        ("CompileStoryPortfolio", "2.1.3"),
+        ("BuildEditorialBlueprint", "2.1.3"),
+        ("CompilePhysicalEdit", "2.1.3"),
+        ("AdvanceSourceUsageLedger", "2.1.3"),
+        ("RenderAndEvaluatePublication", "2.1.3"),
+        ("CreatePreRenderStoryDeny", "2.1.3"),
+        ("DecidePortfolioRelease", "2.1.3"),
+        ("PlanPublicationBatch", "2.1.3"),
+        ("PreparePublicationBatch", "2.1.3"),
+        ("CommitPublicationBatch", "2.1.3"),
+        ("AbortPublicationBatch", "2.1.3"),
+        ("ReconcilePublicationBatch", "2.1.3"),
+        ("PublishIndependentOutput", "2.1.3"),
+        ("RecoverScope", "2.1.3"),
+        ("FinalizeRunOutcome", "2.1.3"),
+        ("MigrateLegacyArtifacts", "2.1.3"),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +191,84 @@ class PartialRegistrySet:
         raise RegistryValidationError("partial RegistrySet is not executable or runtime-selectable")
 
 
+@dataclass(frozen=True, slots=True)
+class RegistrySet:
+    """Hash-bound loader boundary for a future complete RegistrySet.
+
+    The machine-source envelopes for Artifact, Rule and Strategy entries have
+    not yet been transcribed from the authority.  This loader therefore checks
+    the only currently closed parts (the five-category envelope, exact source
+    hash, profiles and traces), records why the input is incomplete, and never
+    turns opaque data into a runtime-selectable RegistrySet.  A later owner
+    pack must add closed entry schemas and closure validation before it can
+    make this type ready.
+    """
+
+    source_hash: str
+    command_profiles: tuple[CommandContractProfile, ...]
+    contract_traces: tuple[ContractTrace, ...]
+    category_counts: tuple[tuple[str, int], ...]
+    incompleteness_reasons: tuple[str, ...]
+
+    @classmethod
+    def from_mapping(cls, value: object, *, expected_source_hash: str) -> "RegistrySet":
+        """Load one closed registry-source envelope against an external hash.
+
+        ``expected_source_hash`` is deliberately supplied out of band: adding
+        a self-declared hash to the source would not authenticate its bytes.
+        The function accepts no YAML/parser defaults and does not expose raw
+        Artifact/Rule/Strategy entries until their closed schemas exist.
+        """
+
+        mapping = _exact_mapping(value, _REGISTRY_SOURCE_FIELDS, label="registry_set_source")
+        if not _SHA256.fullmatch(expected_source_hash):
+            raise RegistryValidationError("expected_source_hash must be a lowercase sha256 digest")
+        actual_source_hash = canonical_json_hash(mapping)
+        if actual_source_hash != expected_source_hash:
+            raise RegistryValidationError("registry_set_source hash does not match expected_source_hash")
+
+        categories = {name: _array(mapping, name) for name in _REGISTRY_SOURCE_FIELDS}
+        profiles = tuple(CommandContractProfile.from_mapping(item) for item in categories["commands"])
+        traces = tuple(ContractTrace.from_mapping(item) for item in categories["traces"])
+        PartialRegistrySet.build(command_profiles=profiles, contract_traces=traces)
+
+        profile_keys = frozenset(profile.key for profile in profiles)
+        reasons: list[str] = []
+        missing_commands = _V213_COMMAND_KEYS - profile_keys
+        unexpected_commands = profile_keys - _V213_COMMAND_KEYS
+        if missing_commands:
+            reasons.append("missing v2.1.3 command profiles")
+        if unexpected_commands:
+            reasons.append("contains command profiles outside the v2.1.3 command universe")
+        for category in ("artifacts", "rules", "strategies", "traces"):
+            if not categories[category]:
+                reasons.append(f"registry category {category} is empty")
+        # The authority specifies that all five registries participate in
+        # closure, but does not yet supply closed machine schemas for these
+        # three entry kinds.  Their raw JSON is intentionally not treated as
+        # executable evidence merely because its enclosing bytes are hashed.
+        reasons.append("artifact/rule/strategy entry schemas and closure rules are not transcribed")
+        return cls(
+            source_hash=actual_source_hash,
+            command_profiles=profiles,
+            contract_traces=traces,
+            category_counts=tuple(sorted((name, len(entries)) for name, entries in categories.items())),
+            incompleteness_reasons=tuple(reasons),
+        )
+
+    @property
+    def ready(self) -> bool:
+        """Whether a complete, closed RegistrySet can be runtime-selected."""
+
+        return not self.incompleteness_reasons
+
+    def require_ready(self) -> None:
+        """Reject runtime selection before full source-pack closure exists."""
+
+        detail = "; ".join(self.incompleteness_reasons) or "unknown closure failure"
+        raise RegistryValidationError(f"RegistrySet is not executable or runtime-selectable: {detail}")
+
+
 def _exact_mapping(value: object, expected: frozenset[str] | set[str], *, label: str) -> Mapping[str, object]:
     if type(value) is not dict:  # noqa: E721 - reject mapping subclasses with hidden behavior.
         raise RegistryValidationError(f"{label} must be an object")
@@ -189,6 +295,13 @@ def _identifier_array(mapping: Mapping[str, object], key: str, *, non_empty: boo
     if len(set(identifiers)) != len(identifiers):
         raise RegistryValidationError(f"{key} must not contain duplicate identifiers")
     return identifiers
+
+
+def _array(mapping: Mapping[str, object], key: str) -> list[object]:
+    value = mapping[key]
+    if type(value) is not list:  # noqa: E721 - source registries are JSON arrays.
+        raise RegistryValidationError(f"{key} must be an array")
+    return value
 
 
 def _sha256(mapping: Mapping[str, object], key: str) -> str:

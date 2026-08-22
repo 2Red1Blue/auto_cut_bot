@@ -21,7 +21,12 @@ from .compiler.refs import (
     ImmutableBlobRef,
     verify_immutable_blob_bytes,
 )
-from .compiler.registry import CommandContractProfile, ContractTrace, PartialRegistrySet
+from .compiler.registry import (
+    CommandContractProfile,
+    ContractTrace,
+    PartialRegistrySet,
+    RegistrySet,
+)
 from .compiler.scope import ScopeIdentity, scope_identity
 from .compiler.semantics import SourceClockBinding, validate_source_span_temporal_semantics
 from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_json_source
@@ -43,6 +48,7 @@ __all__ = [
     "ImmutableBlobRef",
     "PartialRegistrySet",
     "RegistryValidationError",
+    "RegistrySet",
     "ReferenceValidationError",
     "SourceInput",
     "SourceClockBinding",

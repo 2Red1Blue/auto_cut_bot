@@ -12,7 +12,7 @@ from .refs import (
     ImmutableBlobRef,
     verify_immutable_blob_bytes,
 )
-from .registry import CommandContractProfile, ContractTrace, PartialRegistrySet
+from .registry import CommandContractProfile, ContractTrace, PartialRegistrySet, RegistrySet
 from .scope import ScopeIdentity, scope_identity
 from .semantics import SourceClockBinding, validate_source_span_temporal_semantics
 from .source import ContractPath, SourceInput, SourceMetadata, load_json_source
@@ -28,6 +28,7 @@ __all__ = [
     "HashManifest",
     "ImmutableBlobRef",
     "PartialRegistrySet",
+    "RegistrySet",
     "SourceClockBinding",
     "SourceInput",
     "SourceMetadata",
