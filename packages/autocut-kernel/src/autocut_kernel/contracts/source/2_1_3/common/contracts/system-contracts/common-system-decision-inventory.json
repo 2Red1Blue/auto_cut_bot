@@ -1,9 +1,10 @@
 {
-  "format": "autocut.common-system-decision-inventory/v1",
+  "format": "autocut.common-system-decision-inventory/v2",
   "contract_version": "2.1.3",
   "inventory_scope": "B0_common_system_source_decisions",
+  "provenance_ref": "contracts/system-contracts/common-system-provenance.json",
   "authority": {
-    "commit": "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94",
+    "commit": "ae960fba7290c586862ca23acb7236b8f2668b53",
     "documents": [
       {
         "anchor_id": "implementation-contract-toolchain-3.1",

@@ -1,0 +1,54 @@
+{
+  "format": "autocut.common-system-provenance/v1",
+  "contract_version": "2.1.3",
+  "inventory_scope": "B0_common_system_source_decisions",
+  "foundation_input": {
+    "producer_commit": "1fd66f6598b950b19349a44113569c04e840a84f",
+    "handoff_commit": "168b71d9fa9d20e9c2dc1061f80073ac0a0078de",
+    "handoff_git_path": "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/common/handoff/source-foundation-handoff.json",
+    "handoff_raw_sha256": "sha256:c0be3d51e1ff8d8bd6fa1a5a8e907832e6bb58816fb4b6137776bd9abca57c2d"
+  },
+  "authority_input": {
+    "initial_inventory_snapshot": {
+      "inventory_commit": "0eff1bc1c2a52e6a601fe50ca85e344a29dca1a3",
+      "inventory_git_path": "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/common/contracts/system-contracts/common-system-decision-inventory.json",
+      "inventory_raw_sha256": "sha256:c3ef8e479c713be3dfb1e21b51bb1e0f4aa29c51b210366d53af353168655901",
+      "authority_commit": "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94"
+    },
+    "acceptance_snapshot": {
+      "task_source_map_path": "08-21-01-contract-codegen/research/authority-slice-map.md",
+      "task_source_map_raw_sha256": "sha256:85ee6cca8dd97ca7fdc003e68ab317d0559ff234560d5b2cf9f322155cb7c118",
+      "authority_commit": "ae960fba7290c586862ca23acb7236b8f2668b53",
+      "documents": [
+        {
+          "path": "原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md",
+          "raw_utf8_sha256": "sha256:95388738e322bb8cd68410dc5e4ca548eff7c8ba496b16d62526d7ca605fcf57",
+          "task_source_map_binding": "design_mechanics_not_listed_in_authority_table"
+        },
+        {
+          "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+          "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+          "task_source_map_binding": "listed_authority"
+        }
+      ]
+    },
+    "refresh_relation": {
+      "initial_inventory_created_before_current_task_map": true,
+      "required_git_relation": "initial_authority_is_ancestor_of_acceptance_authority",
+      "required_blob_relation": "referenced_authority_documents_are_byte_identical"
+    }
+  },
+  "design_input": {
+    "task_design_path": "08-21-01-contract-codegen/research/B-common-system-source-design.md",
+    "task_design_raw_sha256": "sha256:1d14b6a683e08b9109bbb36c418253f6632c11592ae8b7890dda1681b7b42e88"
+  },
+  "inventory_output": {
+    "path": "contracts/system-contracts/common-system-decision-inventory.json",
+    "raw_sha256": "sha256:febb09bd4a7ae1a40d47318ef2575baf79ca820056c078ff8d775258f51781d3"
+  },
+  "readiness": {
+    "common_pack_ready": false,
+    "business_source_authorized": false,
+    "registry_contribution_authorized": false
+  }
+}

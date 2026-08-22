@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import stat
+import subprocess
 from pathlib import Path
 from typing import Any
 
-INVENTORY_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/common"
-    / "contracts/system-contracts/common-system-decision-inventory.json"
-)
+import pytest
 
-AUTHORITY_COMMIT = "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94"
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+COMMON_ROOT = (
+    REPOSITORY_ROOT
+    / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/common"
+)
+SYSTEM_CONTRACTS_ROOT = COMMON_ROOT / "contracts/system-contracts"
+INVENTORY_PATH = SYSTEM_CONTRACTS_ROOT / "common-system-decision-inventory.json"
+PROVENANCE_PATH = SYSTEM_CONTRACTS_ROOT / "common-system-provenance.json"
+INVENTORY_GIT_PATH = INVENTORY_PATH.relative_to(REPOSITORY_ROOT).as_posix()
+
+FOUNDATION_PRODUCER_COMMIT = "1fd66f6598b950b19349a44113569c04e840a84f"
+FOUNDATION_HANDOFF_COMMIT = "168b71d9fa9d20e9c2dc1061f80073ac0a0078de"
+FOUNDATION_HANDOFF_RAW_SHA256 = (
+    "sha256:c0be3d51e1ff8d8bd6fa1a5a8e907832e6bb58816fb4b6137776bd9abca57c2d"
+)
+INITIAL_INVENTORY_COMMIT = "0eff1bc1c2a52e6a601fe50ca85e344a29dca1a3"
+INITIAL_AUTHORITY_COMMIT = "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94"
+ACCEPTANCE_AUTHORITY_COMMIT = "ae960fba7290c586862ca23acb7236b8f2668b53"
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 DISPOSITIONS = {
     "directly_transcribable",
@@ -22,6 +39,22 @@ DISPOSITIONS = {
 }
 REQUIRED_AC_IDS = [f"AC-B-{number:03d}" for number in range(1, 10)]
 FORBIDDEN_TEXT = {"", "...", "TBD", "_example", "placeholder"}
+FORBIDDEN_IDENTITY_KEYS = {
+    "artifact_id",
+    "artifact_type",
+    "command_id",
+    "command_name",
+    "evaluator_component_id",
+    "handler_component_id",
+    "idempotency_component_id",
+    "registry_id",
+    "rule_id",
+    "schema_id",
+    "state_id",
+    "strategy_id",
+    "trace_id",
+    "transition_id",
+}
 
 EXPECTED_CANDIDATES = {
     "schemas/primitives/artifact-ref.schema.json",
@@ -125,8 +158,108 @@ EXPECTED_AUTHORITY_DOCUMENT_HASHES = {
 }
 
 
+def _sha256(raw: bytes) -> str:
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def _git_bytes(repository: Path, *arguments: str) -> bytes:
+    completed = subprocess.run(
+        ("git", "-C", str(repository), *arguments),
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise AssertionError(f"git {' '.join(arguments)} failed: {detail}")
+    return completed.stdout
+
+
+def _git_text(repository: Path, *arguments: str) -> str:
+    return _git_bytes(repository, *arguments).decode("ascii").strip()
+
+
+def _git_blob(repository: Path, commit: str, path: str) -> bytes:
+    return _git_bytes(repository, "show", f"{commit}:{path}")
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_bytes())
+    assert isinstance(value, dict)
+    return value
+
+
 def _load() -> dict[str, Any]:
-    return json.loads(INVENTORY_PATH.read_text(encoding="utf-8"))
+    return _load_json(INVENTORY_PATH)
+
+
+def _load_provenance() -> dict[str, Any]:
+    return _load_json(PROVENANCE_PATH)
+
+
+def _capture_external_file(root: Path, relative: str) -> bytes:
+    relative_path = Path(relative)
+    assert not relative_path.is_absolute()
+    assert relative_path.parts and all(
+        part not in {"", ".", ".."} for part in relative_path.parts
+    )
+    assert root.is_dir() and not root.is_symlink()
+    cursor = root
+    for part in relative_path.parts[:-1]:
+        cursor /= part
+        assert not cursor.is_symlink()
+    candidate = root / relative_path
+    descriptor = os.open(
+        candidate,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        assert stat.S_ISREG(metadata.st_mode), candidate
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 65536):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _capture_pinned_external_file(root: Path, relative: str, expected_hash: str) -> bytes:
+    assert SHA256.fullmatch(expected_hash)
+    raw = _capture_external_file(root, relative)
+    assert _sha256(raw) == expected_hash
+    return raw
+
+
+def _external_roots() -> tuple[Path, Path]:
+    authority_value = os.environ.get("AUTOCUT_B0_AUTHORITY_REPOSITORY")
+    task_value = os.environ.get("AUTOCUT_B0_TRELLIS_TASKS_ROOT")
+    if authority_value is None and task_value is None:
+        pytest.skip("real B0 authority/task integration requires explicit external roots")
+    assert authority_value is not None, (
+        "AUTOCUT_B0_AUTHORITY_REPOSITORY is required when any B0 external pin is supplied"
+    )
+    assert task_value is not None, (
+        "AUTOCUT_B0_TRELLIS_TASKS_ROOT is required when any B0 external pin is supplied"
+    )
+    authority_root = Path(authority_value)
+    task_root = Path(task_value)
+    assert authority_root.is_dir() and not authority_root.is_symlink()
+    assert task_root.is_dir() and not task_root.is_symlink()
+    return authority_root, task_root
+
+
+def _assert_no_business_identity_declarations(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            assert key not in FORBIDDEN_IDENTITY_KEYS
+            if key.startswith("declares_"):
+                assert item is False
+            _assert_no_business_identity_declarations(item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_business_identity_declarations(item)
 
 
 def _assert_no_placeholders(value: Any) -> None:
@@ -140,23 +273,268 @@ def _assert_no_placeholders(value: Any) -> None:
         assert value not in FORBIDDEN_TEXT
 
 
+def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
+    provenance = _load_provenance()
+    assert set(provenance) == {
+        "format",
+        "contract_version",
+        "inventory_scope",
+        "foundation_input",
+        "authority_input",
+        "design_input",
+        "inventory_output",
+        "readiness",
+    }
+    assert provenance["format"] == "autocut.common-system-provenance/v1"
+    assert provenance["contract_version"] == "2.1.3"
+    assert provenance["inventory_scope"] == "B0_common_system_source_decisions"
+    foundation = provenance["foundation_input"]
+    assert set(foundation) == {
+        "producer_commit",
+        "handoff_commit",
+        "handoff_git_path",
+        "handoff_raw_sha256",
+    }
+    assert foundation == {
+        "producer_commit": FOUNDATION_PRODUCER_COMMIT,
+        "handoff_commit": FOUNDATION_HANDOFF_COMMIT,
+        "handoff_git_path": (
+            "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/"
+            "common/handoff/source-foundation-handoff.json"
+        ),
+        "handoff_raw_sha256": FOUNDATION_HANDOFF_RAW_SHA256,
+    }
+    authority = provenance["authority_input"]
+    assert set(authority) == {
+        "initial_inventory_snapshot",
+        "acceptance_snapshot",
+        "refresh_relation",
+    }
+    initial = authority["initial_inventory_snapshot"]
+    assert set(initial) == {
+        "inventory_commit",
+        "inventory_git_path",
+        "inventory_raw_sha256",
+        "authority_commit",
+    }
+    assert initial["inventory_commit"] == INITIAL_INVENTORY_COMMIT
+    assert initial["inventory_git_path"] == INVENTORY_GIT_PATH
+    assert initial["authority_commit"] == INITIAL_AUTHORITY_COMMIT
+    assert SHA256.fullmatch(initial["inventory_raw_sha256"])
+    acceptance = authority["acceptance_snapshot"]
+    assert set(acceptance) == {
+        "task_source_map_path",
+        "task_source_map_raw_sha256",
+        "authority_commit",
+        "documents",
+    }
+    assert acceptance["authority_commit"] == ACCEPTANCE_AUTHORITY_COMMIT
+    assert SHA256.fullmatch(acceptance["task_source_map_raw_sha256"])
+    assert acceptance["documents"] == sorted(
+        acceptance["documents"], key=lambda item: item["path"].encode("utf-8")
+    )
+    assert all(
+        set(document) == {"path", "raw_utf8_sha256", "task_source_map_binding"}
+        and document["path"].endswith(".md")
+        and SHA256.fullmatch(document["raw_utf8_sha256"])
+        and document["task_source_map_binding"]
+        in {"listed_authority", "design_mechanics_not_listed_in_authority_table"}
+        for document in acceptance["documents"]
+    )
+    assert {
+        document["task_source_map_binding"] for document in acceptance["documents"]
+    } == {"listed_authority", "design_mechanics_not_listed_in_authority_table"}
+    assert authority["refresh_relation"] == {
+        "initial_inventory_created_before_current_task_map": True,
+        "required_git_relation": (
+            "initial_authority_is_ancestor_of_acceptance_authority"
+        ),
+        "required_blob_relation": "referenced_authority_documents_are_byte_identical",
+    }
+    assert set(provenance["design_input"]) == {
+        "task_design_path",
+        "task_design_raw_sha256",
+    }
+    assert SHA256.fullmatch(provenance["design_input"]["task_design_raw_sha256"])
+    assert provenance["inventory_output"]["path"] == (
+        "contracts/system-contracts/common-system-decision-inventory.json"
+    )
+    assert _sha256(INVENTORY_PATH.read_bytes()) == provenance["inventory_output"][
+        "raw_sha256"
+    ]
+    assert provenance["readiness"] == {
+        "common_pack_ready": False,
+        "business_source_authorized": False,
+        "registry_contribution_authorized": False,
+    }
+    _assert_no_placeholders(provenance)
+
+
+def test_foundation_and_initial_b0_pins_resolve_to_actual_git_blobs() -> None:
+    provenance = _load_provenance()
+    foundation = provenance["foundation_input"]
+    assert _git_text(REPOSITORY_ROOT, "rev-parse", foundation["producer_commit"]) == (
+        FOUNDATION_PRODUCER_COMMIT
+    )
+    assert _git_text(REPOSITORY_ROOT, "rev-parse", foundation["handoff_commit"]) == (
+        FOUNDATION_HANDOFF_COMMIT
+    )
+    _git_bytes(
+        REPOSITORY_ROOT,
+        "merge-base",
+        "--is-ancestor",
+        foundation["producer_commit"],
+        foundation["handoff_commit"],
+    )
+    handoff_raw = _git_blob(
+        REPOSITORY_ROOT,
+        foundation["handoff_commit"],
+        foundation["handoff_git_path"],
+    )
+    assert _sha256(handoff_raw) == foundation["handoff_raw_sha256"]
+    handoff = json.loads(handoff_raw)
+    assert handoff["producer"]["producer_git_commit"] == foundation["producer_commit"]
+    assert handoff["review"]["producer_git_commit"] == foundation["producer_commit"]
+    common_git_root = foundation["handoff_git_path"].rsplit("/handoff/", 1)[0]
+    source_tree = []
+    for relative, expected_hash in handoff["source_paths"].items():
+        source_raw = _git_blob(
+            REPOSITORY_ROOT,
+            foundation["producer_commit"],
+            f"{common_git_root}/{relative}",
+        )
+        assert _sha256(source_raw) == expected_hash
+        source_tree.append({"path": relative, "file_hash": expected_hash})
+    canonical_tree = json.dumps(
+        source_tree,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert _sha256(canonical_tree) == handoff["source_tree_hash"]
+    assert handoff["producer"]["source_revision"] == handoff["source_tree_hash"]
+
+    initial = provenance["authority_input"]["initial_inventory_snapshot"]
+    assert _git_text(REPOSITORY_ROOT, "rev-parse", initial["inventory_commit"]) == (
+        INITIAL_INVENTORY_COMMIT
+    )
+    assert _git_text(REPOSITORY_ROOT, "rev-parse", f"{INITIAL_INVENTORY_COMMIT}^") == (
+        FOUNDATION_HANDOFF_COMMIT
+    )
+    initial_raw = _git_blob(
+        REPOSITORY_ROOT,
+        initial["inventory_commit"],
+        initial["inventory_git_path"],
+    )
+    assert _sha256(initial_raw) == initial["inventory_raw_sha256"]
+    assert json.loads(initial_raw)["authority"]["commit"] == initial["authority_commit"]
+
+
+def test_external_authority_map_design_and_git_blobs_are_one_fresh_snapshot() -> None:
+    authority_root, task_root = _external_roots()
+    provenance = _load_provenance()
+    authority = provenance["authority_input"]
+    acceptance = authority["acceptance_snapshot"]
+    source_map_raw = _capture_pinned_external_file(
+        task_root,
+        acceptance["task_source_map_path"],
+        acceptance["task_source_map_raw_sha256"],
+    )
+    source_map_text = source_map_raw.decode("utf-8")
+    commit_match = re.search(r"commit\s+`([0-9a-f]{7,64})`", source_map_text)
+    assert commit_match is not None
+    assert _git_text(authority_root, "rev-parse", commit_match.group(1)) == acceptance[
+        "authority_commit"
+    ]
+    _git_bytes(
+        authority_root,
+        "merge-base",
+        "--is-ancestor",
+        authority["initial_inventory_snapshot"]["authority_commit"],
+        acceptance["authority_commit"],
+    )
+    inventory = _load()
+    assert inventory["authority"]["commit"] == acceptance["authority_commit"]
+    accepted_hashes = {
+        document["path"]: document["raw_utf8_sha256"]
+        for document in acceptance["documents"]
+    }
+    inventory_hashes = {
+        document["path"]: document["raw_utf8_sha256"]
+        for document in inventory["authority"]["documents"]
+    }
+    assert inventory_hashes == accepted_hashes
+    for document in acceptance["documents"]:
+        path = document["path"]
+        expected_hash = document["raw_utf8_sha256"]
+        if document["task_source_map_binding"] == "listed_authority":
+            assert f"`{Path(path).name}`" in source_map_text
+            assert expected_hash.removeprefix("sha256:") in source_map_text
+        else:
+            assert Path(path).name not in source_map_text
+        accepted_raw = _git_blob(
+            authority_root,
+            acceptance["authority_commit"],
+            path,
+        )
+        initial_raw = _git_blob(
+            authority_root,
+            authority["initial_inventory_snapshot"]["authority_commit"],
+            path,
+        )
+        assert _sha256(accepted_raw) == expected_hash
+        assert initial_raw == accepted_raw
+
+    design = provenance["design_input"]
+    design_raw = _capture_pinned_external_file(
+        task_root,
+        design["task_design_path"],
+        design["task_design_raw_sha256"],
+    )
+    design_text = design_raw.decode("utf-8")
+    assert all(requirement_id in design_text for requirement_id in REQUIRED_AC_IDS)
+    assert "B0：锁定输入并建立 blocker ledger" in design_text
+
+
+def test_external_pin_parameterization_is_fail_closed_when_partially_supplied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTOCUT_B0_AUTHORITY_REPOSITORY", str(tmp_path))
+    monkeypatch.delenv("AUTOCUT_B0_TRELLIS_TASKS_ROOT", raising=False)
+    with pytest.raises(AssertionError, match="TRELLIS_TASKS_ROOT"):
+        _external_roots()
+
+
+def test_external_file_capture_rejects_hash_drift_and_path_escape(tmp_path: Path) -> None:
+    pinned = tmp_path / "pinned.md"
+    pinned.write_bytes(b"frozen\n")
+    with pytest.raises(AssertionError):
+        _capture_pinned_external_file(tmp_path, "pinned.md", "sha256:" + "0" * 64)
+    with pytest.raises(AssertionError):
+        _capture_external_file(tmp_path, "../escape.md")
+
+
 def test_common_system_decision_inventory_has_a_closed_machine_shape() -> None:
     inventory = _load()
     assert set(inventory) == {
         "format",
         "contract_version",
         "inventory_scope",
+        "provenance_ref",
         "authority",
         "readiness",
         "authority_change_requirements",
         "candidates",
         "prohibitions",
     }
-    assert inventory["format"] == "autocut.common-system-decision-inventory/v1"
+    assert inventory["format"] == "autocut.common-system-decision-inventory/v2"
     assert inventory["contract_version"] == "2.1.3"
     assert inventory["inventory_scope"] == "B0_common_system_source_decisions"
+    assert inventory["provenance_ref"] == (
+        "contracts/system-contracts/common-system-provenance.json"
+    )
     assert set(inventory["authority"]) == {"commit", "documents"}
-    assert inventory["authority"]["commit"] == AUTHORITY_COMMIT
+    assert inventory["authority"]["commit"] == ACCEPTANCE_AUTHORITY_COMMIT
     assert inventory["authority"]["documents"]
     _assert_no_placeholders(inventory)
 
@@ -268,3 +646,23 @@ def test_common_system_decision_inventory_cannot_claim_pack_or_business_readines
         "declares_strategy_identity": False,
         "declares_trace_identity": False,
     }
+
+
+def test_b0_source_subtree_contains_only_decisions_and_provenance() -> None:
+    files = {
+        path.relative_to(SYSTEM_CONTRACTS_ROOT).as_posix()
+        for path in SYSTEM_CONTRACTS_ROOT.rglob("*")
+        if path.is_file()
+    }
+    assert files == {
+        "common-system-decision-inventory.json",
+        "common-system-provenance.json",
+    }
+    assert not any(
+        "registries" in path.parts
+        or path.name == "registry_set.yaml"
+        or "generated" in path.parts
+        for path in SYSTEM_CONTRACTS_ROOT.rglob("*")
+    )
+    for path in sorted(SYSTEM_CONTRACTS_ROOT.glob("*.json")):
+        _assert_no_business_identity_declarations(_load_json(path))
