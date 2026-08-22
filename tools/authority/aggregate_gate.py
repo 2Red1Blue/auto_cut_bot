@@ -53,7 +53,7 @@ def _assert_receipt_binding(
         raise GateViolation("AUTH-AGGREGATE-AUTHORITY", f"{receipt_type} authority is stale")
 
 
-def _context_snapshot(
+def context_snapshot(
     manifest: Mapping[str, Any],
     repository_roots: Mapping[str, Path],
     *,
@@ -113,7 +113,7 @@ def verify_change(
 
     manifest = load_mapping(task_manifest_path)
     initial_manifest_hash = sha256_file(task_manifest_path)
-    initial_context_hash = _context_snapshot(
+    initial_context_hash = context_snapshot(
         manifest,
         repository_roots,
         manifest_path=task_manifest_path,
@@ -158,7 +158,7 @@ def verify_change(
         decision="allow",
         reason_codes=[],
         task_id=task_id,
-        context_hash=canonical_hash(manifest),
+        context_hash=initial_context_hash,
         repository_heads_hash=canonical_hash(heads),
         authorization_id=(
             "authority-locked-grant" if manifest["task_type"] == "authority_change" else None
@@ -266,7 +266,7 @@ def verify_change(
     if canonical_hash(final_manifest) != canonical_hash(manifest):
         raise GateViolation("AUTH-AGGREGATE-MANIFEST-DRIFT", "task manifest content changed")
     if (
-        _context_snapshot(
+        context_snapshot(
             final_manifest,
             repository_roots,
             manifest_path=task_manifest_path,
@@ -352,7 +352,7 @@ def verify_push(
         repository_roots=repository_roots,
         control_plane_roots=control_plane_roots,
     )
-    current_context_hash = _context_snapshot(
+    current_context_hash = context_snapshot(
         manifest,
         repository_roots,
         manifest_path=task_manifest_path,

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from .aggregate_gate import verify_change, verify_push
+from .aggregate_gate import context_snapshot, verify_change, verify_push
 from .common import canonical_hash, load_mapping, write_json_atomic
 from .errors import GateViolation
 from .lock import build_authority_lock, verify_authority_lock
@@ -163,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
                 control_plane_roots=_bindings(args.control_plane_root),
             )
             if receipt_path:
+                manifest = load_mapping(args.manifest)
                 write_json_atomic(
                     receipt_path,
                     make_typed_receipt(
@@ -171,7 +172,12 @@ def main(argv: list[str] | None = None) -> int:
                         decision="allow",
                         reason_codes=[],
                         task_id=task_id,
-                        context_hash=canonical_hash(load_mapping(args.manifest)),
+                        context_hash=context_snapshot(
+                            manifest,
+                            _bindings(args.repository_root),
+                            manifest_path=args.manifest,
+                            control_plane_roots=_bindings(args.control_plane_root),
+                        ),
                         repository_heads_hash=canonical_hash(
                             {
                                 name: str(path.resolve())
@@ -180,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         authorization_id=(
                             "locked-task-authorization"
-                            if load_mapping(args.manifest).get("task_type") == "authority_change"
+                            if manifest.get("task_type") == "authority_change"
                             else None
                         ),
                     ),

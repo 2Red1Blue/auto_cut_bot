@@ -437,18 +437,19 @@ def test_global_trellis_context_rejects_path_and_hash_escape(
 
 def test_task_profile_binding_rejects_child02_bootstrap_and_stale_revision() -> None:
     policy = load_mapping(REPO_ROOT / "governance/task-authorizations.yaml")
+    revision = int(policy["authority_revision"])
     validate_task_activation_profile(
         task_id="08-21-02-import-firewall-and-package-skeleton",
         activation_profile="authority_package_skeleton",
         task_authorizations=policy,
-        authority_revision=3,
+        authority_revision=revision,
     )
     with pytest.raises(GateViolation, match="AUTH-TASK-PROFILE-DOWNGRADE"):
         validate_task_activation_profile(
             task_id="08-21-02-import-firewall-and-package-skeleton",
             activation_profile="authority_bootstrap",
             task_authorizations=policy,
-            authority_revision=3,
+            authority_revision=revision,
         )
     stale = copy.deepcopy(policy)
     stale["authority_revision"] = 2
@@ -457,7 +458,7 @@ def test_task_profile_binding_rejects_child02_bootstrap_and_stale_revision() -> 
             task_id="08-21-00-trellis-authority-sync",
             activation_profile="authority_bootstrap",
             task_authorizations=stale,
-            authority_revision=3,
+            authority_revision=revision,
         )
 
 

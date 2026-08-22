@@ -436,6 +436,7 @@ def _execute_consumer_lock_fixture(payload: dict[str, Any], repository_root: Pat
             return
         if case in {"child02_wrong_profile_na", "stale_task_authorization_revision"}:
             task_policy = load_mapping(repository_root / "governance/task-authorizations.yaml")
+            authority_revision = int(task_policy["authority_revision"])
             if case == "stale_task_authorization_revision":
                 task_policy["authority_revision"] = 2
             validate_task_activation_profile(
@@ -446,7 +447,7 @@ def _execute_consumer_lock_fixture(payload: dict[str, Any], repository_root: Pat
                     else "authority_package_skeleton"
                 ),
                 task_authorizations=task_policy,
-                authority_revision=3,
+                authority_revision=authority_revision,
             )
             return
     raise GateViolation("AUTH-FIXTURE-RUNNER", f"unknown consumer lock case: {case}")

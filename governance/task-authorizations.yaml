@@ -1,5 +1,5 @@
 schema_version: 1.0.0
-authority_revision: 5
+authority_revision: 6
 activation_profile_bindings:
   - task_id: 08-21-00-trellis-authority-sync
     required_profile: authority_bootstrap
