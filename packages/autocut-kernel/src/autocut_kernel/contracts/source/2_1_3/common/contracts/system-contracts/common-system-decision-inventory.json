@@ -1,0 +1,166 @@
+{
+  "format": "autocut.common-system-decision-inventory/v1",
+  "contract_version": "2.1.3",
+  "inventory_scope": "B0_common_system_source_decisions",
+  "authority": {
+    "commit": "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94",
+    "documents": [
+      {
+        "anchor_id": "implementation-contract-toolchain-3.1",
+        "path": "原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md",
+        "section": "3.1",
+        "raw_utf8_sha256": "sha256:95388738e322bb8cd68410dc5e4ca548eff7c8ba496b16d62526d7ca605fcf57",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-3.4",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "3.4",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-3.5",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "3.5",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-4.1",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "4.1",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-4.4",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "4.4",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-4.8",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "4.8",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-7.1",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "7.1",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-7.2",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "7.2",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-8.4",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "8.4",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-9.1",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "9.1",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-11",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "11",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      },
+      {
+        "anchor_id": "production-system-contracts-12.1",
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "section": "12.1",
+        "raw_utf8_sha256": "sha256:c12b24fffd0e534557998f2c125cf517cafe2f4c7a3e0722f62cc8fa68cb7b27",
+        "jcs_hash_applicability": "not_applicable_non_json_markdown"
+      }
+    ]
+  },
+  "readiness": {
+    "common_pack_ready": false,
+    "registry_entries_declared": false,
+    "business_schema_declared": false,
+    "reason": "B0 records source decisions and blockers only; later owner contributions and closed authority decisions are required before any RegistrySet can be ready."
+  },
+  "authority_change_requirements": [
+    {"id": "AC-B-001", "subject": "artifact catalogue, scope, owner, producer and policy bindings"},
+    {"id": "AC-B-002", "subject": "ArtifactEnvelope validity, producer, input, extension and payload-discriminator closure"},
+    {"id": "AC-B-003", "subject": "CommandReceiptRegistry collection and key serialization"},
+    {"id": "AC-B-004", "subject": "RecoveryLedger variants, budget representation and reservation reference"},
+    {"id": "AC-B-005", "subject": "generation purpose, parameter, provider outcome and generated-draft closure"},
+    {"id": "AC-B-006", "subject": "migration mapping, reason-code and Stage 1 hint closure"},
+    {"id": "AC-B-007", "subject": "Diagnostic and Degradation evidence and omitted-reference unions"},
+    {"id": "AC-B-008", "subject": "SourceUsageLedger single source owner and dependency handoff"},
+    {"id": "AC-B-009", "subject": "common/system literal artifact, schema, component, handler, evaluator, idempotency and trace identities"}
+  ],
+  "candidates": [
+    {"candidate_id": "B0-001", "proposed_source": "schemas/primitives/artifact-ref.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-002", "proposed_source": "schemas/primitives/artifact-set-ref.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-003", "proposed_source": "schemas/primitives/degradation.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.4"], "authority_change_ids": ["AC-B-007"]},
+    {"candidate_id": "B0-004", "proposed_source": "schemas/primitives/diagnostic.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.4"], "authority_change_ids": ["AC-B-007"]},
+    {"candidate_id": "B0-005", "proposed_source": "schemas/primitives/domain-ref.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-006", "proposed_source": "schemas/primitives/immutable-blob-ref.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-007", "proposed_source": "schemas/primitives/scope.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-008", "proposed_source": "schemas/primitives/source-span-ref.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-009", "proposed_source": "schemas/bootstrap/external-job-request.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-3.4"], "authority_change_ids": []},
+    {"candidate_id": "B0-010", "proposed_source": "schemas/bootstrap/job-start-slot.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-3.4"], "authority_change_ids": []},
+    {"candidate_id": "B0-011", "proposed_source": "schemas/run/run-manifest.schema.json", "disposition": "directly_transcribable", "owner": "common", "authority_anchor_ids": ["production-system-contracts-3.4"], "authority_change_ids": []},
+    {"candidate_id": "B0-012", "proposed_source": "schemas/admission/admission-result.schema.json", "disposition": "awaiting_owner", "owner": "stage_01_stage_02_stage_03_stage_04", "authority_anchor_ids": ["production-system-contracts-7.1"], "authority_change_ids": []},
+    {"candidate_id": "B0-013", "proposed_source": "schemas/admission/rule-result.schema.json", "disposition": "awaiting_owner", "owner": "commands", "authority_anchor_ids": ["production-system-contracts-7.2"], "authority_change_ids": ["AC-B-009"]},
+    {"candidate_id": "B0-014", "proposed_source": "schemas/receipt/command-request-shell.schema.json", "disposition": "awaiting_owner", "owner": "commands", "authority_anchor_ids": ["production-system-contracts-3.5"], "authority_change_ids": ["AC-B-009"]},
+    {"candidate_id": "B0-015", "proposed_source": "schemas/receipt/command-result-shell.schema.json", "disposition": "awaiting_owner", "owner": "commands", "authority_anchor_ids": ["production-system-contracts-3.5"], "authority_change_ids": ["AC-B-009"]},
+    {"candidate_id": "B0-016", "proposed_source": "schemas/receipt/command-receipt-registry.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-3.5"], "authority_change_ids": ["AC-B-003"]},
+    {"candidate_id": "B0-017", "proposed_source": "schemas/receipt/command-receipt.schema.json", "disposition": "awaiting_owner", "owner": "commands", "authority_anchor_ids": ["production-system-contracts-3.5"], "authority_change_ids": ["AC-B-009"]},
+    {"candidate_id": "B0-018", "proposed_source": "schemas/recovery/recovery-attempt.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-9.1"], "authority_change_ids": ["AC-B-004", "AC-B-009"]},
+    {"candidate_id": "B0-019", "proposed_source": "schemas/recovery/recovery-ledger.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-9.1"], "authority_change_ids": ["AC-B-004"]},
+    {"candidate_id": "B0-020", "proposed_source": "schemas/generation-audit/generated-draft.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-021", "proposed_source": "schemas/generation-audit/generation-attempt-slot.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-022", "proposed_source": "schemas/generation-audit/generation-invocation.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-023", "proposed_source": "schemas/generation-audit/generation-policy.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-024", "proposed_source": "schemas/generation-audit/model-input-manifest.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-025", "proposed_source": "schemas/generation-audit/parse-normalization-record.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.8"], "authority_change_ids": ["AC-B-005"]},
+    {"candidate_id": "B0-026", "proposed_source": "schemas/migration/migration-assessment.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-12.1"], "authority_change_ids": ["AC-B-006"]},
+    {"candidate_id": "B0-027", "proposed_source": "schemas/migration/migration-policy.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-12.1"], "authority_change_ids": ["AC-B-006"]},
+    {"candidate_id": "B0-028", "proposed_source": "schemas/source-usage-ledger.schema.json", "disposition": "authority_change_required", "owner": "unresolved_common_or_stage_04", "authority_anchor_ids": ["production-system-contracts-8.4"], "authority_change_ids": ["AC-B-008"]},
+    {"candidate_id": "B0-029", "proposed_source": "schemas/stage_05/qc-report.schema.json", "disposition": "awaiting_owner", "owner": "stage_05", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-030", "proposed_source": "schemas/stage_05/render-attempt-result.schema.json", "disposition": "awaiting_owner", "owner": "stage_05", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-031", "proposed_source": "schemas/stage_05/rendered-asset.schema.json", "disposition": "awaiting_owner", "owner": "stage_05", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-032", "proposed_source": "schemas/publication/batch-publication-plan.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-033", "proposed_source": "schemas/publication/independent-ledger.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-034", "proposed_source": "schemas/publication/platform-publication-capability.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-035", "proposed_source": "schemas/publication/platform-spec-policy.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-036", "proposed_source": "schemas/publication/publication-enablement.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-037", "proposed_source": "schemas/publication/publication-ledger.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-038", "proposed_source": "schemas/publication/publication-policy.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-039", "proposed_source": "schemas/publication/publication-target.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-040", "proposed_source": "schemas/publication/qc-policy.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-041", "proposed_source": "schemas/publication/sensitive-content-policy.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-042", "proposed_source": "schemas/publication/story-portfolio-release.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-043", "proposed_source": "schemas/publication/transaction-artifacts.schema.json", "disposition": "awaiting_owner", "owner": "publication", "authority_anchor_ids": ["production-system-contracts-11"], "authority_change_ids": []},
+    {"candidate_id": "B0-044", "proposed_source": "schemas/envelope/artifact-envelope.schema.json", "disposition": "authority_change_required", "owner": "common", "authority_anchor_ids": ["production-system-contracts-4.1"], "authority_change_ids": ["AC-B-001", "AC-B-002", "AC-B-009"]}
+  ],
+  "prohibitions": {
+    "declares_registry_entry": false,
+    "declares_artifact_identity": false,
+    "declares_business_default": false,
+    "declares_command_identity": false,
+    "declares_rule_identity": false,
+    "declares_strategy_identity": false,
+    "declares_trace_identity": false
+  }
+}
