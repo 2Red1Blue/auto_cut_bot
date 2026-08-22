@@ -50,6 +50,7 @@ def test_all_primitive_sources_are_closed_2020_12_and_provenance_bound() -> None
         "artifact-set-ref.schema.json",
         "domain-ref.schema.json",
         "immutable-blob-ref.schema.json",
+        "scope.schema.json",
         "source-span-ref.schema.json",
     }
     assert {path.name for path in COMMON_SOURCE.glob("*.schema.json")} == expected
@@ -57,8 +58,11 @@ def test_all_primitive_sources_are_closed_2020_12_and_provenance_bound() -> None
         schema = _schema(filename)
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         assert schema["type"] == "object"
-        assert schema["additionalProperties"] is False
-        assert set(schema["required"]) == set(schema["properties"])
+        if "properties" in schema:
+            assert schema["additionalProperties"] is False
+            assert set(schema["required"]) == set(schema["properties"])
+        else:
+            assert schema["unevaluatedProperties"] is False
         assert AUTHORITY_HASH in schema["$comment"]
     assert STAGE_04_HASH in _schema("source-span-ref.schema.json")["$comment"]
 

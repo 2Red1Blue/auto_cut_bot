@@ -6,6 +6,7 @@ from .public import (
     GeneratedTreeDriftError,
     GeneratedTreeOwnershipError,
     HashManifest,
+    ScopeIdentity,
     SourceClockBinding,
     SourceInput,
     SourceMetadata,
@@ -13,6 +14,7 @@ from .public import (
     canonical_json_hash,
     check_generated_tree,
     load_json_source,
+    scope_identity,
     validate_source_span_temporal_semantics,
     write_generated_tree,
 )
@@ -26,10 +28,12 @@ __all__ = [
     "SourceInput",
     "SourceClockBinding",
     "SourceMetadata",
+    "ScopeIdentity",
     "canonical_json_bytes",
     "canonical_json_hash",
     "check_generated_tree",
     "load_json_source",
+    "scope_identity",
     "validate_source_span_temporal_semantics",
     "write_generated_tree",
 ]

@@ -8,6 +8,7 @@ from .compiler.errors import (
 )
 from .compiler.generated import check_generated_tree, write_generated_tree
 from .compiler.manifest import HashManifest
+from .compiler.scope import ScopeIdentity, scope_identity
 from .compiler.semantics import SourceClockBinding, validate_source_span_temporal_semantics
 from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_json_source
 
@@ -20,10 +21,12 @@ __all__ = [
     "SourceInput",
     "SourceClockBinding",
     "SourceMetadata",
+    "ScopeIdentity",
     "canonical_json_bytes",
     "canonical_json_hash",
     "check_generated_tree",
     "load_json_source",
+    "scope_identity",
     "validate_source_span_temporal_semantics",
     "write_generated_tree",
 ]

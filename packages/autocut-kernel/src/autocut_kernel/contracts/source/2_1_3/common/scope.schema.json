@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/scope.schema.json",
+  "$comment": "Authority: v2-production-system-contracts.md#4.2; sha256:7260bf922f8852ea22142220227fdda9a4e03e81433592c68957dffe08b7531d",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "oneOf": [
+    {"$ref": "#/$defs/root_input"},
+    {"$ref": "#/$defs/job"},
+    {"$ref": "#/$defs/portfolio"},
+    {"$ref": "#/$defs/story"},
+    {"$ref": "#/$defs/publication_batch"},
+    {"$ref": "#/$defs/publication_lineage"},
+    {"$ref": "#/$defs/run_lineage"},
+    {"$ref": "#/$defs/job_execution"}
+  ],
+  "$defs": {
+    "non_empty_text": {"type": "string", "minLength": 1},
+    "root_input": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "root_input"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "root_input_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "job_id", "root_input_id"],
+      "additionalProperties": false
+    },
+    "job": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "job"},
+        "run_id": {"$ref": "#/$defs/non_empty_text"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "run_id", "job_id"],
+      "additionalProperties": false
+    },
+    "portfolio": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "portfolio"},
+        "run_id": {"$ref": "#/$defs/non_empty_text"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "portfolio_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "run_id", "job_id", "portfolio_id"],
+      "additionalProperties": false
+    },
+    "story": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "story"},
+        "run_id": {"$ref": "#/$defs/non_empty_text"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "portfolio_id": {"$ref": "#/$defs/non_empty_text"},
+        "story_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "run_id", "job_id", "portfolio_id", "story_id"],
+      "additionalProperties": false
+    },
+    "publication_batch": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "publication_batch"},
+        "run_id": {"$ref": "#/$defs/non_empty_text"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "portfolio_id": {"$ref": "#/$defs/non_empty_text"},
+        "batch_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "run_id", "job_id", "portfolio_id", "batch_id"],
+      "additionalProperties": false
+    },
+    "publication_lineage": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "publication_lineage"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "publication_lineage_id": {"$ref": "#/$defs/non_empty_text"},
+        "visibility_domain_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["kind", "job_id", "publication_lineage_id", "visibility_domain_hash"],
+      "additionalProperties": false
+    },
+    "run_lineage": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "run_lineage"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "run_lineage_id": {"$ref": "#/$defs/non_empty_text"},
+        "recovery_budget_epoch_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "job_id", "run_lineage_id", "recovery_budget_epoch_id"],
+      "additionalProperties": false
+    },
+    "job_execution": {
+      "type": "object",
+      "properties": {
+        "kind": {"const": "job_execution"},
+        "job_id": {"$ref": "#/$defs/non_empty_text"},
+        "job_execution_id": {"$ref": "#/$defs/non_empty_text"}
+      },
+      "required": ["kind", "job_id", "job_execution_id"],
+      "additionalProperties": false
+    }
+  }
+}
