@@ -2,6 +2,7 @@
 
 from .authority import verify_source_authority
 from .canonical import canonical_json_bytes, canonical_json_hash
+from .commands import CommandRequest
 from .generated import check_generated_tree, write_generated_tree
 from .manifest import HashManifest
 from .refs import ArtifactRef, ArtifactSetRef, DomainRef, ImmutableBlobRef
@@ -13,6 +14,7 @@ from .source import ContractPath, SourceInput, SourceMetadata, load_json_source
 __all__ = [
     "ContractPath",
     "CommandContractProfile",
+    "CommandRequest",
     "ContractTrace",
     "ArtifactRef",
     "ArtifactSetRef",

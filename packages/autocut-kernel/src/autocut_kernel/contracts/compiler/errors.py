@@ -25,6 +25,10 @@ class ReferenceValidationError(ContractCompilerError):
     """Raised when a cross-artifact reference violates its closed wire shape."""
 
 
+class CommandValidationError(ContractCompilerError):
+    """Raised when a shared Command request violates its closed wire contract."""
+
+
 class GeneratedTreeOwnershipError(ContractCompilerError):
     """Raised when a compiler would overwrite a tree it does not own."""
 

@@ -2,8 +2,10 @@
 
 from .compiler.authority import verify_source_authority
 from .compiler.canonical import canonical_json_bytes, canonical_json_hash
+from .compiler.commands import CommandRequest
 from .compiler.errors import (
     AuthorityIntegrityError,
+    CommandValidationError,
     ContractCompilerError,
     GeneratedTreeDriftError,
     GeneratedTreeOwnershipError,
@@ -24,6 +26,8 @@ __all__ = [
     "ArtifactRef",
     "ArtifactSetRef",
     "CommandContractProfile",
+    "CommandRequest",
+    "CommandValidationError",
     "ContractPath",
     "ContractTrace",
     "DomainRef",
