@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from importlib import import_module
 from pathlib import Path
 
@@ -61,3 +62,18 @@ def test_direct_construction_cannot_bypass_reference_validation() -> None:
             media_type="application/octet-stream",
             byte_length_decimal="\ud800",
         )
+
+
+def test_immutable_blob_byte_identity_is_recomputed_before_interpretation() -> None:
+    contracts = import_module("autocut_kernel.contracts")
+    raw = b"immutable blob bytes"
+    reference = contracts.ImmutableBlobRef(
+        object_id="blob_1",
+        sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
+        storage_locator="object-store://blob_1",
+        media_type="application/octet-stream",
+        byte_length_decimal=str(len(raw)),
+    )
+    contracts.verify_immutable_blob_bytes(reference, raw)
+    with pytest.raises(contracts.ReferenceValidationError, match="sha256"):
+        contracts.verify_immutable_blob_bytes(reference, b"different")

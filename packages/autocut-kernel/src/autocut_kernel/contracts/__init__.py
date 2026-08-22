@@ -28,6 +28,7 @@ from .public import (
     load_json_source,
     scope_identity,
     validate_source_span_temporal_semantics,
+    verify_immutable_blob_bytes,
     verify_source_authority,
     write_generated_tree,
 )
@@ -60,6 +61,7 @@ __all__ = [
     "load_json_source",
     "scope_identity",
     "validate_source_span_temporal_semantics",
+    "verify_immutable_blob_bytes",
     "verify_source_authority",
     "write_generated_tree",
 ]

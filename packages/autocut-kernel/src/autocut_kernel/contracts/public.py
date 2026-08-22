@@ -14,7 +14,13 @@ from .compiler.errors import (
 )
 from .compiler.generated import check_generated_tree, write_generated_tree
 from .compiler.manifest import HashManifest
-from .compiler.refs import ArtifactRef, ArtifactSetRef, DomainRef, ImmutableBlobRef
+from .compiler.refs import (
+    ArtifactRef,
+    ArtifactSetRef,
+    DomainRef,
+    ImmutableBlobRef,
+    verify_immutable_blob_bytes,
+)
 from .compiler.registry import CommandContractProfile, ContractTrace, PartialRegistrySet
 from .compiler.scope import ScopeIdentity, scope_identity
 from .compiler.semantics import SourceClockBinding, validate_source_span_temporal_semantics
@@ -48,6 +54,7 @@ __all__ = [
     "load_json_source",
     "scope_identity",
     "validate_source_span_temporal_semantics",
+    "verify_immutable_blob_bytes",
     "verify_source_authority",
     "write_generated_tree",
 ]

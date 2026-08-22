@@ -124,6 +124,27 @@ class ImmutableBlobRef:
         }
 
 
+def verify_immutable_blob_bytes(reference: ImmutableBlobRef, raw: bytes) -> None:
+    """Verify byte identity before a caller interprets an immutable Blob payload.
+
+    Owner-declared media/schema/contract semantics require the committed owning
+    Artifact and are therefore deliberately outside this primitive. This check
+    only establishes the prerequisite byte identity mandated by §4.1.
+    """
+
+    if type(reference) is not ImmutableBlobRef:  # noqa: E721
+        raise ReferenceValidationError("immutable blob verification requires an ImmutableBlobRef")
+    if type(raw) is not bytes:  # noqa: E721
+        raise ReferenceValidationError("immutable blob bytes must be bytes")
+    import hashlib
+
+    actual_hash = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual_hash != reference.sha256:
+        raise ReferenceValidationError("immutable blob bytes do not match sha256")
+    if str(len(raw)) != reference.byte_length_decimal:
+        raise ReferenceValidationError("immutable blob bytes do not match byte_length_decimal")
+
+
 def _exact_mapping(value: object, expected: set[str], *, label: str) -> Mapping[str, object]:
     if type(value) is not dict:  # noqa: E721 - mapping subclasses are not a closed wire object.
         raise ReferenceValidationError(f"{label} must be an object")
