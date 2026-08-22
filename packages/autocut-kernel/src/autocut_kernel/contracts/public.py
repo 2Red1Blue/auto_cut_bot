@@ -7,9 +7,11 @@ from .compiler.errors import (
     ContractCompilerError,
     GeneratedTreeDriftError,
     GeneratedTreeOwnershipError,
+    RegistryValidationError,
 )
 from .compiler.generated import check_generated_tree, write_generated_tree
 from .compiler.manifest import HashManifest
+from .compiler.registry import CommandContractProfile, ContractTrace, PartialRegistrySet
 from .compiler.scope import ScopeIdentity, scope_identity
 from .compiler.semantics import SourceClockBinding, validate_source_span_temporal_semantics
 from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_json_source
@@ -17,10 +19,14 @@ from .compiler.source import ContractPath, SourceInput, SourceMetadata, load_jso
 __all__ = [
     "ContractCompilerError",
     "AuthorityIntegrityError",
+    "CommandContractProfile",
     "ContractPath",
+    "ContractTrace",
     "GeneratedTreeDriftError",
     "GeneratedTreeOwnershipError",
     "HashManifest",
+    "PartialRegistrySet",
+    "RegistryValidationError",
     "SourceInput",
     "SourceClockBinding",
     "SourceMetadata",

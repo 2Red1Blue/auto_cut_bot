@@ -17,6 +17,10 @@ class AuthorityIntegrityError(ContractCompilerError):
     """Raised when a machine source no longer matches its Markdown authority."""
 
 
+class RegistryValidationError(ContractCompilerError):
+    """Raised when a closed compiler Registry input is malformed or incomplete."""
+
+
 class GeneratedTreeOwnershipError(ContractCompilerError):
     """Raised when a compiler would overwrite a tree it does not own."""
 
