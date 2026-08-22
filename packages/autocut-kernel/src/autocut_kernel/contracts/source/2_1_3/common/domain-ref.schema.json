@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/domain-ref.schema.json",
+  "$comment": "Authority: v2-production-system-contracts.md#4.1; sha256:7260bf922f8852ea22142220227fdda9a4e03e81433592c68957dffe08b7531d",
+  "type": "object",
+  "properties": {
+    "artifact_ref": {"$ref": "https://autocut.invalid/contracts/2.1.3/common/artifact-ref.schema.json"},
+    "object_type": {"type": "string", "minLength": 1},
+    "object_id": {"type": "string", "minLength": 1}
+  },
+  "required": ["artifact_ref", "object_type", "object_id"],
+  "additionalProperties": false
+}
