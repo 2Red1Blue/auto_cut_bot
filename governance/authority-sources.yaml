@@ -1,11 +1,11 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 3
+authority_revision: 4
 contract_version: 2.1.3
-seed_source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
+seed_source_commit: 265df6652378f17abdbe90a3188ab3475f1adf87
 repositories:
   auto_cut_bot:
-    source_commit: 515db74d6c871f32e953e7bbde99e2b121836def
+    source_commit: 265df6652378f17abdbe90a3188ab3475f1adf87
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
@@ -90,6 +90,7 @@ entries:
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/receipts.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/source_candidate_gate.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/task_gate.py}
+  - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/task_control_plane.py}
   - {class: architecture_gate, repository: auto_cut_bot, path: tools/authority/trellis_sync.py}
   - {class: blocking_fixture, repository: auto_cut_bot, path: governance/blocking-fixtures.manifest.yaml}
   - {class: blocking_fixture, repository: auto_cut_bot, path: tests/authority/fixtures/protected/bad-broad-glob.json}
