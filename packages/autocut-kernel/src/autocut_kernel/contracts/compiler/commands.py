@@ -53,9 +53,12 @@ _NO_RUN_MANIFEST = frozenset({"PrepareMediaEvidence", "StartRun"})
 class CommandRequest:
     """A parsed, non-authorizing shared Command request.
 
-    Profile resolution, caller authorization, idempotency-key derivation and
-    all request/result role semantics belong to Dispatcher/Registry packs. This
-    shell only establishes that a Runtime cannot smuggle unknown fields or
+    This is intentionally an *unprofiled* parse result, never a dispatcher
+    admission or execution authorization. Profile resolution must still bind
+    the exact ``(command_name, command_version)``, allowed scope, required
+    capability, input/policy roles and parameter schema before any Handler is
+    reachable. Bootstrap required facts are likewise Handler/Profile concerns.
+    The shell only establishes that a Runtime cannot smuggle unknown fields or
     ad-hoc parameter values across the shared command boundary.
     """
 
@@ -71,6 +74,17 @@ class CommandRequest:
     invocation_id: str
     idempotency_key: str
     requested_capability: str
+
+    @property
+    def profile_resolved(self) -> bool:
+        """False by construction: this parser has no executable RegistrySet."""
+
+        return False
+
+    def require_profile_resolved(self) -> None:
+        raise CommandValidationError(
+            "an unprofiled CommandRequest is not dispatcher-admitted or executable"
+        )
 
     @classmethod
     def from_mapping(cls, value: object) -> "CommandRequest":

@@ -34,6 +34,9 @@ def test_command_request_accepts_closed_nonbootstrap_shell() -> None:
     request = contracts.CommandRequest.from_mapping(_request())
     assert request.scope["kind"] == "story"
     assert request.run_manifest_ref is not None
+    assert request.profile_resolved is False
+    with pytest.raises(contracts.CommandValidationError, match="not dispatcher-admitted"):
+        request.require_profile_resolved()
     with pytest.raises(TypeError):
         request.scope["kind"] = "job"  # type: ignore[index]
 
