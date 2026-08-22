@@ -7,13 +7,16 @@ grammars and cross-document closure belong to later compiler stages.
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, cast
 
 from .canonical import canonical_json_hash, sha256_bytes
 from .errors import RegistryValidationError
+from .registry_entries import machine_source_locator
 
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SEMVER = re.compile(
@@ -110,35 +113,138 @@ class RegistrySourceManifest:
     registry_set_hash: str
 
 
+class _FixedRootReader:
+    """Read one source tree through a pinned root descriptor.
+
+    Every component is opened relative to the already-open parent with
+    ``O_NOFOLLOW``.  The final bytes are read from that same descriptor after
+    ``fstat`` proves it is a regular file; there is no resolve/check/reopen
+    window for a symlink or directory swap to cross.
+    """
+
+    def __init__(self, source_root: Path) -> None:
+        self.root = Path(os.path.abspath(os.fspath(source_root)))
+        self._root_fd: int | None = None
+
+    def __enter__(self) -> "_FixedRootReader":
+        if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            raise RegistryValidationError(
+                "platform lacks descriptor-relative no-follow source reads"
+            )
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        descriptor = -1
+        try:
+            descriptor = os.open(self.root, flags)
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                os.close(descriptor)
+                descriptor = -1
+                raise RegistryValidationError("source root must be a non-symlink directory")
+        except OSError as error:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise RegistryValidationError(
+                "source root must be an existing non-symlink directory"
+            ) from error
+        self._root_fd = descriptor
+        return self
+
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+        del exc_type, exc_value, traceback
+        if self._root_fd is not None:
+            os.close(self._root_fd)
+            self._root_fd = None
+
+    def read_bytes(self, relative: object, *, label: str) -> bytes:
+        """Capture raw bytes from one exact machine locator under the pinned root."""
+        locator = machine_source_locator(relative, label=f"{label}.path")
+        if self._root_fd is None:
+            raise RegistryValidationError("source root descriptor is not open")
+        current_fd = os.dup(self._root_fd)
+        directory_flags = (
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        )
+        # Opening a FIFO read-only blocks until a writer connects.  Keep this
+        # descriptor-relative preflight fail-closed: open non-blocking, then
+        # reject every non-regular final node with fstat before attempting a
+        # read.  O_NOFOLLOW alone does not protect this availability boundary.
+        file_flags = (
+            os.O_RDONLY
+            | os.O_NOFOLLOW
+            | os.O_NONBLOCK
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            parts = locator.split("/")
+            for part in parts[:-1]:
+                next_fd = os.open(part, directory_flags, dir_fd=current_fd)
+                try:
+                    is_directory = stat.S_ISDIR(os.fstat(next_fd).st_mode)
+                except OSError:
+                    os.close(next_fd)
+                    raise
+                if not is_directory:
+                    os.close(next_fd)
+                    raise RegistryValidationError(
+                        f"{label}: source path component must be a directory"
+                    )
+                os.close(current_fd)
+                current_fd = next_fd
+
+            file_fd = os.open(parts[-1], file_flags, dir_fd=current_fd)
+            try:
+                if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+                    raise RegistryValidationError(f"{label}: source must be a regular file")
+                with os.fdopen(file_fd, "rb", closefd=True) as stream:
+                    file_fd = -1
+                    return stream.read()
+            finally:
+                if file_fd >= 0:
+                    os.close(file_fd)
+        except OSError as error:
+            raise RegistryValidationError(
+                f"{label}: source path is missing, non-regular, or contains a symbolic link"
+            ) from error
+        finally:
+            os.close(current_fd)
+
+
 def load_registry_source_manifest(source_root: Path) -> RegistrySourceManifest:
     """Load and verify the fixed eight-pack source manifest rooted at ``source_root``."""
 
-    root = source_root.resolve(strict=True)
-    if source_root.is_symlink() or not root.is_dir():
-        raise RegistryValidationError("source root must be a non-symlink directory")
-    manifest_path = _safe_file(root, "common/registry_set.yaml", label="registry manifest")
-    manifest = _load_yaml(manifest_path)
-    _exact_fields(manifest, _MANIFEST_FIELDS, "registry_set")
-    _require_text(manifest, "format", "registry_set")
-    if manifest["format"] != "autocut.registry-set.source/v1":
-        raise RegistryValidationError("registry_set.format is invalid")
-    if manifest.get("contract_version") != "2.1.3":
-        raise RegistryValidationError("registry_set.contract_version must be 2.1.3")
-    version = _require_text(manifest, "registry_set_version", "registry_set")
-    if not _SEMVER.fullmatch(version):
-        raise RegistryValidationError("registry_set.registry_set_version must be SemVer")
-    pack_id = _stable_id(manifest, "pack_id", "registry_set")
-    _hash(manifest, "registry_set_hash", "registry_set")
+    with _FixedRootReader(source_root) as source:
+        manifest_raw = source.read_bytes(
+            "common/registry_set.yaml", label="registry manifest"
+        )
+        manifest = _load_yaml_bytes(
+            manifest_raw, origin=f"{source.root}/common/registry_set.yaml"
+        )
+        _exact_fields(manifest, _MANIFEST_FIELDS, "registry_set")
+        _require_text(manifest, "format", "registry_set")
+        if manifest["format"] != "autocut.registry-set.source/v1":
+            raise RegistryValidationError("registry_set.format is invalid")
+        if manifest.get("contract_version") != "2.1.3":
+            raise RegistryValidationError("registry_set.contract_version must be 2.1.3")
+        version = _require_text(manifest, "registry_set_version", "registry_set")
+        if not _SEMVER.fullmatch(version):
+            raise RegistryValidationError("registry_set.registry_set_version must be SemVer")
+        pack_id = _stable_id(manifest, "pack_id", "registry_set")
+        _hash(manifest, "registry_set_hash", "registry_set")
 
-    packs, snapshot = _parse_packs(root, manifest["source_packs"])
-    documents = _parse_documents(root, manifest["registry_documents"], pack_id)
-    view = dict(manifest)
-    del view["registry_set_hash"]
-    if canonical_json_hash(view) != manifest["registry_set_hash"]:
-        raise RegistryValidationError("registry_set_hash does not match its JCS hash view")
-    return RegistrySourceManifest(
-        root, pack_id, version, packs, snapshot, documents, manifest["registry_set_hash"]
-    )
+        packs, snapshot = _parse_packs(source, manifest["source_packs"])
+        documents = _parse_documents(source, manifest["registry_documents"], pack_id)
+        view = dict(manifest)
+        del view["registry_set_hash"]
+        if canonical_json_hash(view) != manifest["registry_set_hash"]:
+            raise RegistryValidationError("registry_set_hash does not match its JCS hash view")
+        return RegistrySourceManifest(
+            source.root,
+            pack_id,
+            version,
+            packs,
+            snapshot,
+            documents,
+            manifest["registry_set_hash"],
+        )
 
 
 def compile_registry_source(source_root: Path) -> object:
@@ -152,7 +258,9 @@ def compile_registry_source(source_root: Path) -> object:
     return RegistrySet.from_manifest(load_registry_source_manifest(source_root))
 
 
-def _parse_packs(root: Path, value: object) -> tuple[tuple[SourcePack, ...], tuple[SourceSnapshot, ...]]:
+def _parse_packs(
+    source: _FixedRootReader, value: object
+) -> tuple[tuple[SourcePack, ...], tuple[SourceSnapshot, ...]]:
     if type(value) is not list or len(value) != len(_PACKS):  # noqa: E721
         raise RegistryValidationError("source_packs must contain exactly eight entries")
     packs: list[SourcePack] = []
@@ -179,10 +287,10 @@ def _parse_packs(root: Path, value: object) -> tuple[tuple[SourcePack, ...], tup
             raise RegistryValidationError("source_paths must be a non-empty array")
         paths: list[SourcePath] = []
         seen: set[str] = set()
-        for path_index, source in enumerate(paths_value):
+        for path_index, source_entry in enumerate(paths_value):
             label = f"source_packs[{index}].source_paths[{path_index}]"
-            _exact_fields(source, _SOURCE_PATH_FIELDS, label)
-            relative = _pack_path(source.get("path"), expected_kind, label)
+            _exact_fields(source_entry, _SOURCE_PATH_FIELDS, label)
+            relative = _pack_path(source_entry.get("path"), expected_kind, label)
             if relative in seen:
                 raise RegistryValidationError(f"{label}.path is duplicated")
             seen.add(relative)
@@ -190,10 +298,10 @@ def _parse_packs(root: Path, value: object) -> tuple[tuple[SourcePack, ...], tup
                 raise RegistryValidationError(
                     "manifest and registry documents must not appear in source_paths"
                 )
-            declared_hash = _hash(source, "file_hash", label)
+            declared_hash = _hash(source_entry, "file_hash", label)
             # Capture the bytes at verification time.  Later closure phases
             # consume this immutable value, never a second filesystem read.
-            raw = _safe_file(root, relative, label=label).read_bytes()
+            raw = source.read_bytes(relative, label=label)
             actual = sha256_bytes(raw)
             if actual != declared_hash:
                 raise RegistryValidationError(f"{label}.file_hash does not match raw source bytes")
@@ -219,7 +327,7 @@ def _parse_packs(root: Path, value: object) -> tuple[tuple[SourcePack, ...], tup
 
 
 def _parse_documents(
-    root: Path, value: object, manifest_pack_id: str
+    source: _FixedRootReader, value: object, manifest_pack_id: str
 ) -> tuple[RegistryDocument, ...]:
     if type(value) is not list or len(value) != len(_REGISTRY_PATHS):  # noqa: E721
         raise RegistryValidationError("registry_documents must contain exactly five entries")
@@ -236,8 +344,10 @@ def _parse_documents(
                 "registry_documents must use fixed UTF-8 sorted kinds and paths"
             )
         declared_hash = _hash(item, "document_hash", f"registry_documents[{index}]")
-        document = _load_yaml(
-            _safe_file(root, _REGISTRY_PATHS[expected_kind], label="registry document")
+        document_path = _REGISTRY_PATHS[expected_kind]
+        document = _load_yaml_bytes(
+            source.read_bytes(document_path, label="registry document"),
+            origin=f"{source.root}/{document_path}",
         )
         _exact_fields(document, _ENVELOPE_FIELDS, f"{expected_kind} registry")
         if (
@@ -267,14 +377,21 @@ def _parse_documents(
     return tuple(documents)
 
 
-def _load_yaml(path: Path) -> dict[str, Any]:
+def _load_yaml(path: Path) -> dict[str, Any]:  # pyright: ignore[reportUnusedFunction]
+    """Test/tool helper that also performs one descriptor-relative read."""
+    with _FixedRootReader(path.parent) as source:
+        raw = source.read_bytes(path.name, label=str(path))
+    return _load_yaml_bytes(raw, origin=str(path))
+
+
+def _load_yaml_bytes(raw: bytes, *, origin: str) -> dict[str, Any]:
     try:
-        raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise RegistryValidationError(f"{path}: invalid UTF-8 YAML") from error
-    value = _RestrictedYaml(raw, origin=str(path)).parse()
+        text = raw.decode("utf-8")
+    except UnicodeError as error:
+        raise RegistryValidationError(f"{origin}: invalid UTF-8 YAML") from error
+    value = _RestrictedYaml(text, origin=origin).parse()
     if type(value) is not dict:  # noqa: E721
-        raise RegistryValidationError(f"{path}: YAML root must be an object")
+        raise RegistryValidationError(f"{origin}: YAML root must be an object")
     return value
 
 
@@ -446,36 +563,22 @@ def _has_forbidden_yaml_token(text: str) -> bool:
     return False
 
 
-def _safe_file(root: Path, relative: str, *, label: str) -> Path:
-    path = _pack_path(relative, "", label)
-    candidate = root.joinpath(*PurePosixPath(path).parts)
-    try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root)
-    except (OSError, ValueError) as error:
-        raise RegistryValidationError(
-            f"{label}: path escapes the source root or does not exist"
-        ) from error
-    current = root
-    for part in PurePosixPath(path).parts:
-        current = current / part
-        if current.is_symlink():
-            raise RegistryValidationError(f"{label}: symbolic links are forbidden")
-    if not candidate.is_file():
-        raise RegistryValidationError(f"{label}: source must be a regular file")
-    return candidate
-
-
 def _pack_path(value: object, pack_root: str, label: str) -> str:
-    if type(value) is not str or not value or "\\" in value:  # noqa: E721
-        raise RegistryValidationError(f"{label}.path must be a non-empty POSIX relative path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise RegistryValidationError(f"{label}.path contains an unsafe path segment")
-    normalized = str(path)
-    if pack_root and not (normalized == pack_root or normalized.startswith(f"{pack_root}/")):
+    """Validate a source locator before *any* path normalization occurs.
+
+    The manifest signs the raw spelling of every source path.  Accepting a
+    spelling that ``PurePosixPath`` later normalizes would make the signed
+    locator differ from the filesystem lookup (for example ``a//b`` or
+    ``a/./b``).  Keep this deliberately narrower than general filesystem
+    paths: Registry source locators are canonical ASCII POSIX-relative names.
+    """
+
+    locator = machine_source_locator(value, label=f"{label}.path")
+    # With the raw spelling checks above, this is intentionally an exact raw
+    # containment test rather than a normalized-path approximation.
+    if pack_root and not (locator == pack_root or locator.startswith(f"{pack_root}/")):
         raise RegistryValidationError(f"{label}.path must be contained in {pack_root}")
-    return normalized
+    return locator
 
 
 def _exact_fields(value: object, expected: frozenset[str], label: str) -> dict[str, Any]:

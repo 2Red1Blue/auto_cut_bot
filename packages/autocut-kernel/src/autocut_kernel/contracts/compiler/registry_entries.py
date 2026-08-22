@@ -7,14 +7,15 @@ checked by :mod:`registry_closure` from one immutable RegistrySet snapshot.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from pathlib import PurePosixPath
 from typing import Mapping
 
 from .canonical import canonical_json_bytes
 from .errors import RegistryValidationError
 
 SHA_PREFIX = "sha256:"
+_MACHINE_SOURCE_LOCATOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
 # These values are copied verbatim from the frozen v2.1.3 production-system
 # contract: §4.2 defines the eight scope variants and §3.5 defines the
 # requested-capability enum.  Keep the compiler's single authoritative binding
@@ -110,16 +111,30 @@ def array(mapping: Mapping[str, object], key: str) -> list[object]:
     return value
 
 
-def path(mapping: Mapping[str, object], key: str) -> str:
-    value = text(mapping, key)
-    candidate = PurePosixPath(value)
-    if (
-        "\\" in value
-        or candidate.is_absolute()
-        or any(part in {"", ".", ".."} for part in candidate.parts)
-    ):
-        raise RegistryValidationError(f"{key} must be a safe relative path")
+def machine_source_locator(value: object, *, label: str) -> str:
+    """Validate an exact physical Registry source locator.
+
+    The source spelling is signed data, so this validator deliberately works
+    on the unmodified string.  In particular, no ``Path`` constructor may
+    collapse repeated slashes or dot segments before the grammar is checked.
+    Trace obligation locators use :func:`contract_obligation_locator` instead.
+    """
+    if type(value) is not str or not value:  # noqa: E721
+        raise RegistryValidationError(
+            f"{label} must be a non-empty safe relative path and canonical ASCII POSIX locator"
+        )
+    if not _MACHINE_SOURCE_LOCATOR.fullmatch(value):
+        raise RegistryValidationError(
+            f"{label} must be a safe relative path and canonical ASCII POSIX locator"
+        )
+    if value.endswith("/") or any(part in {"", ".", ".."} for part in value.split("/")):
+        raise RegistryValidationError(f"{label} contains an unsafe path segment")
     return value
+
+
+def path(mapping: Mapping[str, object], key: str) -> str:
+    """Validate a physical source/schema/contract/test/fixture locator."""
+    return machine_source_locator(mapping[key], label=key)
 
 
 def contract_obligation_locator(mapping: Mapping[str, object], key: str) -> str:

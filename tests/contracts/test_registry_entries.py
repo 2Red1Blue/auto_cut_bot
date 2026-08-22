@@ -178,6 +178,164 @@ def test_fixture_artifact_refs_are_closed_sorted_and_hashed() -> None:
 @pytest.mark.parametrize(
     "locator",
     [
+        "common//schema.json",
+        "common/./schema.json",
+        "common/../schema.json",
+        "common/schema.json/",
+        "/common/schema.json",
+        "common\\schema.json",
+        "common/例.json",
+        "common/\u202eschema.json",
+        "common/space name.json",
+        "common/schema%20name.json",
+        "common/schema#name.json",
+        "common/schema?name.json",
+        "common/schema:name.json",
+        "common/schema@name.json",
+        "common/\x01schema.json",
+        "common/\x7fschema.json",
+    ],
+)
+def test_physical_registry_locator_rejects_raw_aliases_and_non_ascii(locator: str) -> None:
+    from autocut_kernel.contracts.compiler.registry_entries import path
+
+    with pytest.raises(Exception, match="canonical ASCII|unsafe path"):
+        path({"locator": locator}, "locator")
+
+
+def test_every_registry_entry_family_uses_physical_machine_locator_grammar() -> None:
+    """Artifact, Command, Rule, Strategy and Trace paths share one grammar."""
+    from autocut_kernel.contracts.compiler.registry_entries import (
+        ArtifactEntry,
+        CommandEntry,
+        RuleEntry,
+        StrategyEntry,
+        TraceEntry,
+    )
+
+    artifact = {
+        "artifact_type": "artifact",
+        "payload_schema_path": "common/例.json",
+        "payload_schema_hash": SHA,
+        "envelope_schema_path": "common/schema.json",
+        "envelope_schema_hash": SHA,
+        "allowed_scope_kinds": ["job"],
+        "authority_writers": [
+            {"kind": "dispatcher", "authority_id": "source-dispatcher"}
+        ],
+        "permitted_producer_components": [
+            {"component_id": "producer", "component_version": "1"}
+        ],
+        "policy_requirements": {"kind": "none"},
+        **_ownership(),
+    }
+    authority = {
+        "entry_kind": "authority_operation",
+        "authority_kind": "dispatcher",
+        "authority_id": "source-dispatcher",
+        "contract_path": "common/例.json",
+        "contract_hash": SHA,
+        "allowed_artifact_types": ["artifact"],
+        **_ownership(),
+    }
+    rule = {
+        "domain": "admission",
+        "rule_id": "rule",
+        "rule_class": "admission",
+        "subject_artifact_types": ["artifact"],
+        "evaluator_component": "eval",
+        "evaluator_component_version": "1",
+        "evaluator_contract_hash": SHA,
+        "indeterminate_allowed": False,
+        "on_fail": "stop",
+        "on_indeterminate": "stop",
+        "allowed_recovery_kinds": [],
+        "exhaustion_action": "stop",
+        "diagnostic_schema_path": "common/例.json",
+        "diagnostic_schema_hash": SHA,
+        **_ownership(),
+    }
+    strategy = {
+        "component_id": "eval",
+        "component_version": "1",
+        "kind": "evaluator",
+        "implementation_contract_path": "common/例.json",
+        "implementation_contract_hash": SHA,
+        "input_schema_path": "common/schema.json",
+        "input_schema_hash": SHA,
+        "output_schema_path": "common/schema.json",
+        "output_schema_hash": SHA,
+        "determinism": "deterministic",
+        "capabilities": [],
+        **_ownership(),
+    }
+    trace = _contract_trace("原理/阶段-04#SA-DIALOGUE-001")
+    trace["schema_path"] = "common/例.json"
+
+    for parser, value in (
+        (ArtifactEntry.from_mapping, artifact),
+        (CommandEntry.from_mapping, authority),
+        (RuleEntry.from_mapping, rule),
+        (StrategyEntry.from_mapping, strategy),
+        (TraceEntry.from_mapping, trace),
+    ):
+        with pytest.raises(Exception, match="canonical ASCII"):
+            parser(value)
+
+
+def test_fixture_and_conditional_schema_paths_use_machine_locator_grammar() -> None:
+    from autocut_kernel.contracts.compiler.registry_entries import CommandEntry, TraceEntry
+
+    fixture = {
+        "entry_kind": "test_fixture_inventory",
+        "test_id": "test",
+        "test_kind": "unit",
+        "pack_id": "common-pack",
+        "test_path": "common/test.json",
+        "test_file_hash": SHA,
+        "fixture_refs": [
+            {
+                "fixture_id": "fixture",
+                "pack_id": "common-pack",
+                "path": "common/例.json",
+                "file_hash": SHA,
+                "artifact_refs": [],
+            }
+        ],
+        **_ownership(),
+    }
+    with pytest.raises(Exception, match="canonical ASCII"):
+        TraceEntry.from_mapping(fixture)
+
+    profile = {
+        "entry_kind": "artifact_set_profile",
+        "artifact_set_profile": "stage_admission",
+        "decision_member_role": "decision",
+        "decision_artifact_type": "artifact",
+        "required_member_roles": [],
+        "conditional_member_roles": [
+            {
+                "role": "conditional",
+                "artifact_types": ["artifact"],
+                "scope_kinds": ["job"],
+                "min_members": 0,
+                "max_members": 1,
+                "condition_schema_path": "common//condition.json",
+                "condition_schema_hash": SHA,
+            }
+        ],
+        "forbidden_member_roles": [],
+        "affected_chain_heads": [],
+        "forbidden_reference_directions": [],
+        **_ownership(),
+    }
+    with pytest.raises(Exception, match="unsafe path"):
+        CommandEntry.from_mapping(profile)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
         "#fragment",
         "stage-04#",
         "stage-04#first#second",

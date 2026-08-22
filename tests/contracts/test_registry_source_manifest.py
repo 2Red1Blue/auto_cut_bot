@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -81,6 +83,55 @@ def _scalar(value: object) -> str:
     return str(value)
 
 
+def _resign_command_source_locator(
+    root: Path, *, declared_path: str, physical_path: str | None
+) -> None:
+    """Reissue every manifest signature after replacing the command locator.
+
+    ``physical_path`` deliberately lets an alias resolve to a real, distinct
+    raw file.  That keeps the negative tests from being only syntax probes:
+    apart from the locator grammar itself, their entry, tree, and manifest are
+    all correctly hash-bound.
+    """
+    from autocut_kernel.contracts.compiler.registry_source import _load_yaml
+
+    manifest_path = root / "common" / "registry_set.yaml"
+    manifest = _load_yaml(manifest_path)
+    packs = manifest["source_packs"]
+    assert isinstance(packs, list)
+    commands = packs[1]
+    assert isinstance(commands, dict) and commands["kind"] == "commands"
+    source_paths = commands["source_paths"]
+    assert isinstance(source_paths, list) and len(source_paths) == 1
+    source = source_paths[0]
+    assert isinstance(source, dict)
+
+    if physical_path is None:
+        target = root / "commands" / "example.json"
+    else:
+        target = root / physical_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'{"signed":"locator-test"}\n')
+    source["path"] = declared_path
+    source["file_hash"] = sha256_bytes(target.read_bytes())
+    commands["source_tree_hash"] = canonical_json_hash(
+        sorted(source_paths, key=lambda item: item["path"].encode("utf-8"))
+    )
+    manifest.pop("registry_set_hash")
+    manifest["registry_set_hash"] = canonical_json_hash(manifest)
+    manifest_path.write_text(_yaml(manifest) + "\n")
+
+    # Demonstrate that the rejection below is not due to stale signatures.
+    reissued = _load_yaml(manifest_path)
+    assert reissued["registry_set_hash"] == canonical_json_hash(
+        {key: value for key, value in reissued.items() if key != "registry_set_hash"}
+    )
+    reissued_commands = reissued["source_packs"][1]
+    assert reissued_commands["source_tree_hash"] == canonical_json_hash(
+        sorted(reissued_commands["source_paths"], key=lambda item: item["path"].encode("utf-8"))
+    )
+
+
 def test_loads_a_minimal_complete_eight_pack_manifest(tmp_path: Path) -> None:
     manifest = load_registry_source_manifest(_write_valid_source(tmp_path))
     assert len(manifest.source_packs) == 8
@@ -144,15 +195,193 @@ def test_rejects_source_path_outside_its_pack(tmp_path: Path) -> None:
         load_registry_source_manifest(root)
 
 
-def test_rejects_symlinked_source(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("unsafe_path", "physical_path"),
+    [
+        ("commands/\u0001example.json", "commands/\u0001example.json"),
+        ("commands/\u001fexample.json", "commands/\u001fexample.json"),
+        ("commands/\u007fexample.json", "commands/\u007fexample.json"),
+        ("commands\\example.json", "commands\\example.json"),
+        ("commands//example.json", "commands/example.json"),
+        ("commands/./example.json", "commands/example.json"),
+        ("commands/../common/alias-target.json", "common/alias-target.json"),
+        ("commands/例.json", "commands/例.json"),
+        ("commands/\u202eexample.json", "commands/\u202eexample.json"),
+        ("commands/space name.json", "commands/space name.json"),
+        ("commands/percent%20name.json", "commands/percent%20name.json"),
+        ("commands/hash#name.json", "commands/hash#name.json"),
+        ("commands/query?name.json", "commands/query?name.json"),
+        ("commands/colon:name.json", "commands/colon:name.json"),
+        ("commands/at@name.json", "commands/at@name.json"),
+    ],
+)
+def test_rejects_fully_signed_noncanonical_source_path_spellings(
+    tmp_path: Path, unsafe_path: str, physical_path: str
+) -> None:
+    """Reject an unsafe spelling even when it names an actual signed raw file."""
+    root = _write_valid_source(tmp_path)
+    _resign_command_source_locator(
+        root, declared_path=unsafe_path, physical_path=physical_path
+    )
+
+    with pytest.raises(RegistryValidationError, match="canonical ASCII|unsafe path"):
+        load_registry_source_manifest(root)
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["\u0000", "/commands/example.json", "commands/example.json/"],
+)
+def test_rejects_signed_unrepresentable_source_path_spellings(
+    tmp_path: Path, unsafe_path: str
+) -> None:
+    """Some forbidden spellings cannot denote a portable regular file at all."""
+    root = _write_valid_source(tmp_path)
+    _resign_command_source_locator(root, declared_path=unsafe_path, physical_path=None)
+
+    with pytest.raises(RegistryValidationError, match="canonical ASCII|unsafe path"):
+        load_registry_source_manifest(root)
+
+
+def test_rejects_fully_signed_symlinked_source(tmp_path: Path) -> None:
+    """A valid manifest cannot turn a final symlink into source authority."""
     root = _write_valid_source(tmp_path)
     target = root / "commands" / "example.json"
     replacement = root / "commands" / "linked.json"
     replacement.symlink_to(target)
-    manifest = root / "common" / "registry_set.yaml"
-    manifest.write_text(manifest.read_text().replace("commands/example.json", "commands/linked.json"))
-    with pytest.raises(RegistryValidationError):
+    _resign_command_source_locator(
+        root, declared_path="commands/linked.json", physical_path=None
+    )
+
+    with pytest.raises(RegistryValidationError, match="symbolic link"):
         load_registry_source_manifest(root)
+
+
+def test_rejects_signed_source_beneath_symlinked_directory(tmp_path: Path) -> None:
+    """Every intermediate component, not only the final file, is no-follow."""
+    root = _write_valid_source(tmp_path / "source")
+    detached = tmp_path / "detached-commands"
+    (root / "commands").rename(detached)
+    (root / "commands").symlink_to(detached, target_is_directory=True)
+
+    with pytest.raises(RegistryValidationError, match="symbolic link"):
+        load_registry_source_manifest(root)
+
+
+def test_rejects_signed_fifo_source_without_blocking_or_leaking_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signed source locator may never block the compiler on a FIFO."""
+    from autocut_kernel.contracts.compiler import registry_source
+
+    root = _write_valid_source(tmp_path)
+    source_path = root / "commands" / "example.json"
+    source_path.unlink()
+    os.mkfifo(source_path)
+
+    real_open = os.open
+    real_close = os.close
+    fifo_fds: list[int] = []
+    closed_fds: list[int] = []
+
+    def tracking_open(
+        path: object,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+        if stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+            fifo_fds.append(descriptor)
+        return descriptor
+
+    def tracking_close(descriptor: int) -> None:
+        closed_fds.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(registry_source.os, "open", tracking_open)
+    monkeypatch.setattr(
+        registry_source.os,
+        "supports_dir_fd",
+        frozenset({*os.supports_dir_fd, tracking_open}),
+    )
+    monkeypatch.setattr(registry_source.os, "close", tracking_close)
+
+    with pytest.raises(RegistryValidationError, match="regular file"):
+        load_registry_source_manifest(root)
+
+    assert len(fifo_fds) == 1
+    assert fifo_fds[0] in closed_fds
+
+
+def test_rejects_symlinked_source_root(tmp_path: Path) -> None:
+    real_root = _write_valid_source(tmp_path / "real-source")
+    alias = tmp_path / "source-alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+
+    with pytest.raises(RegistryValidationError, match="source root"):
+        load_registry_source_manifest(alias)
+
+
+def test_fixed_root_descriptor_survives_deterministic_root_path_swap(tmp_path: Path) -> None:
+    """Once opened, replacing the pathname cannot redirect the source reader."""
+    from autocut_kernel.contracts.compiler.registry_source import _FixedRootReader
+
+    root = tmp_path / "source"
+    trusted = root / "common" / "value.txt"
+    trusted.parent.mkdir(parents=True)
+    trusted.write_bytes(b"trusted-root")
+
+    with _FixedRootReader(root) as reader:
+        detached = tmp_path / "detached-source"
+        root.rename(detached)
+        replacement = root / "common" / "value.txt"
+        replacement.parent.mkdir(parents=True)
+        replacement.write_bytes(b"replacement-root")
+        assert reader.read_bytes("common/value.txt", label="root swap") == b"trusted-root"
+
+
+def test_descriptor_relative_walk_survives_deterministic_directory_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent fd remains authoritative if its directory name is replaced."""
+    import os
+
+    from autocut_kernel.contracts.compiler import registry_source
+
+    root = tmp_path / "source"
+    trusted = root / "commands" / "example.json"
+    trusted.parent.mkdir(parents=True)
+    trusted.write_bytes(b"trusted-directory")
+    real_open = os.open
+    swapped = False
+
+    with registry_source._FixedRootReader(root) as reader:
+
+        def swapping_open(
+            path: object,
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            nonlocal swapped
+            if path == "example.json" and dir_fd is not None and not swapped:
+                swapped = True
+                detached = root / "detached-commands"
+                (root / "commands").rename(detached)
+                replacement = root / "commands" / "example.json"
+                replacement.parent.mkdir()
+                replacement.write_bytes(b"replacement-directory")
+            return real_open(path, flags, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(registry_source.os, "open", swapping_open)
+        assert (
+            reader.read_bytes("commands/example.json", label="directory swap")
+            == b"trusted-directory"
+        )
+        assert swapped
 
 
 def test_forbidden_yaml_token_scanner_keeps_escaped_json_quotes_inside_strings() -> None:
@@ -387,6 +616,42 @@ def test_compiles_a_genuinely_closed_eight_pack_registry_ready(tmp_path: Path) -
     registry = compile_registry_source(_write_closed_source(tmp_path))
     assert registry.ready is True
     registry.require_ready()
+
+
+def test_compiler_keeps_trace_contract_obligation_locator_outside_machine_path_grammar(
+    tmp_path: Path,
+) -> None:
+    """A Trace obligation may remain human-readable while its owner proof is signed."""
+    from autocut_kernel.contracts.compiler.registry_source import compile_registry_source
+
+    root = _write_closed_source(tmp_path)
+
+    def mutate(entries: object) -> None:
+        assert isinstance(entries, list)
+        trace = next(item for item in entries if item.get("entry_kind") == "contract_trace")
+        assert isinstance(trace, dict)
+        trace["contract_path"] = "原理/阶段-04#SA-DIALOGUE-001"
+
+    _mutate_document_and_resign(root, "traces", mutate)
+    assert compile_registry_source(root).ready
+
+
+@pytest.mark.parametrize("locator", ["common//schema.json", "common/例.json"])
+def test_compiler_rejects_re_signed_physical_entry_locator(
+    tmp_path: Path, locator: str
+) -> None:
+    """A semantically re-signed Registry document cannot authorize an alias."""
+    from autocut_kernel.contracts.compiler.registry_source import compile_registry_source
+
+    root = _write_closed_source(tmp_path)
+
+    def mutate(entries: object) -> None:
+        assert isinstance(entries, list) and isinstance(entries[0], dict)
+        entries[0]["payload_schema_path"] = locator
+
+    _mutate_document_and_resign(root, "artifacts", mutate)
+    with pytest.raises(RegistryValidationError, match="canonical ASCII|unsafe path"):
+        compile_registry_source(root)
 
 
 def test_compiler_rejects_a_forged_or_stale_manifest_snapshot(tmp_path: Path) -> None:
