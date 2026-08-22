@@ -19,6 +19,7 @@ check_change_scope(TaskConformanceManifest, GitIndex)
 
 - 权威 tracked source 是 `auto_cut_bot/governance/`；根 `.trellis/` 是单向 operational copy。
 - `auto_cut_bot` 与 `ac_auto_cut` 是两个独立 Git repositories；跨仓 task 只能使用 `repository_refs`，顶层单仓 branch/base/worktree 字段必须为 null。
+- `.trellis/tasks` 是仓库之外、全局可见的 Trellis 控制面，不属于任一业务 Git diff。引用它时，TaskConformanceManifest 必须声明 `task_control_plane`，并以 caller 显式提供的绝对 `trellis_tasks` root、任务目录内的 EOF/UTF-8/hash-bound 文件及 `task-control-plane.lock.json` 冻结；admission、change verification 与 push verification 都要重放该锁。它只能提供规划输入，不能授予代码写入范围。
 - PostgreSQL `autocut_authority`、ArtifactSet/CAS、Command/Receipt、Admission/Recovery、双 Runtime、import firewall 和 Reuse Ledger 均来自 v2.1.3 权威契约。
 - 未声明字段、默认、fallback、动态 import、Stage 私有状态和私有写路径均禁止。
 - scope 必须由每个绑定仓库的 Git index 相对 predecessor commit 计算；caller 不得提交或删减 changed-path 列表。

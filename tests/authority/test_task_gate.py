@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from authority.conformance_gates import (
 from authority.errors import GateViolation
 from authority.lock import build_authority_lock
 from authority.receipts import make_typed_receipt
+from authority.task_control_plane import freeze_task_control_plane
 from authority.task_gate import (
     admit_task,
     check_change_scope,
@@ -210,6 +212,7 @@ def _fixture_repository(tmp_path: Path) -> tuple[Path, dict[str, Any], Path, Pat
 def _context(root: Path, name: str) -> dict[str, Any]:
     path = root / f"task/{name}"
     return {
+        "source": "repository",
         "repository": "fixture",
         "path": f"task/{name}",
         "sha256": sha256_file(path),
@@ -252,6 +255,7 @@ def _manifest(
         "allowed_write_paths": [{"repository": "fixture", "pattern": "governance/**"}],
         "forbidden_runtime_import_roots": [{"repository": "fixture", "pattern": "legacy/**"}],
         "permitted_legacy_read_roots": [],
+        "task_control_plane": None,
         "planning_artifacts": [{"kind": kind, **_context(root, name)} for kind, name in kinds],
         "implementation_context": _context(root, "implement.jsonl"),
         "check_context": _context(root, "check.jsonl"),
@@ -285,6 +289,60 @@ def _write_manifest(root: Path, manifest: dict[str, Any]) -> Path:
     return path
 
 
+def _global_context(root: Path, task_directory: str, name: str) -> dict[str, Any]:
+    path = root / task_directory / name
+    return {
+        "source": "trellis_tasks",
+        "path": f"{task_directory}/{name}",
+        "sha256": sha256_file(path),
+        "byte_length": path.stat().st_size,
+    }
+
+
+def _global_task_manifest(
+    tmp_path: Path, root: Path, lock: dict[str, Any]
+) -> tuple[dict[str, Any], Path, Path]:
+    """Freeze a global Trellis task context outside the fixture Git checkout."""
+
+    tasks_root = tmp_path / "global-trellis-tasks"
+    task_directory = "08-21-02-import-firewall-and-package-skeleton"
+    task_root = tasks_root / task_directory
+    task_root.mkdir(parents=True)
+    for name in ("prd.md", "design.md", "implement.md", "implement.jsonl", "check.jsonl"):
+        (task_root / name).write_text(f"complete global {name}\n", encoding="utf-8")
+    manifest = _manifest(root, lock)
+    manifest["task_control_plane"] = {
+        "source": "trellis_tasks",
+        "task_directory": task_directory,
+        "lock_path": f"{task_directory}/task-control-plane.lock.json",
+    }
+    kinds = (
+        ("prd", "prd.md"),
+        ("design", "design.md"),
+        ("implement", "implement.md"),
+        ("implement_context", "implement.jsonl"),
+        ("check_context", "check.jsonl"),
+    )
+    manifest["planning_artifacts"] = [
+        {"kind": kind, **_global_context(tasks_root, task_directory, name)} for kind, name in kinds
+    ]
+    manifest["implementation_context"] = _global_context(
+        tasks_root, task_directory, "implement.jsonl"
+    )
+    manifest["check_context"] = _global_context(tasks_root, task_directory, "check.jsonl")
+    manifest_path = task_root / "task-conformance-manifest.yaml"
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    control_lock = freeze_task_control_plane(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        trellis_tasks_root=tasks_root,
+        repository_roots={"fixture": root},
+    )
+    lock_path = task_root / "task-control-plane.lock.json"
+    lock_path.write_text(json.dumps(control_lock, sort_keys=True), encoding="utf-8")
+    return manifest, manifest_path, tasks_root
+
+
 def test_authority_task_requires_independent_locked_authorization(tmp_path: Path) -> None:
     root, lock, lock_path, model_path, protected_path = _fixture_repository(tmp_path)
     manifest = _manifest(root, lock)
@@ -303,6 +361,77 @@ def test_authority_task_requires_independent_locked_authorization(tmp_path: Path
             model_policy_path=model_path,
             protected_paths_path=protected_path,
             repository_roots={"fixture": root},
+        )
+
+
+def test_global_trellis_context_is_hash_bound_and_cannot_extend_repository_scope(
+    tmp_path: Path,
+) -> None:
+    root, lock, lock_path, model_path, protected_path = _fixture_repository(tmp_path)
+    _manifest, manifest_path, tasks_root = _global_task_manifest(tmp_path, root, lock)
+    refs = admit_task(
+        manifest_path=manifest_path,
+        authority_lock_path=lock_path,
+        model_policy_path=model_path,
+        protected_paths_path=protected_path,
+        repository_roots={"fixture": root},
+        control_plane_roots={"trellis_tasks": tasks_root},
+    )
+    assert [ref["repository"] for ref in refs] == ["fixture"]
+
+    # A global planning root is not a repository binding and cannot make a
+    # control-plane path eligible for a staged business write.
+    (root / "outside-allowlist.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(root, "add", "outside-allowlist.py")
+    with pytest.raises(GateViolation, match="AUTH-SCOPE-OUTSIDE-ALLOWLIST"):
+        check_change_scope(
+            manifest_path=manifest_path,
+            protected_paths_path=protected_path,
+            repository_roots={"fixture": root},
+            authority_lock_hash=lock["bundle_hash"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (
+            lambda manifest: manifest["planning_artifacts"][0].__setitem__("path", "../outside.md"),
+            "AUTH-PATH-ESCAPE",
+        ),
+        (
+            lambda manifest: manifest["planning_artifacts"][0].__setitem__("path", "/outside.md"),
+            "AUTH-PATH-INVALID",
+        ),
+        (
+            lambda manifest: manifest["planning_artifacts"][0].__setitem__(
+                "path", "another-task/prd.md"
+            ),
+            "AUTH-TASK-CONTROL-PATH",
+        ),
+        (
+            lambda manifest: manifest["planning_artifacts"][0].__setitem__(
+                "sha256", "sha256:" + "0" * 64
+            ),
+            "AUTH-TASK-CONTEXT-HASH",
+        ),
+    ],
+)
+def test_global_trellis_context_rejects_path_and_hash_escape(
+    tmp_path: Path, mutate: Any, error: str
+) -> None:
+    root, lock, lock_path, model_path, protected_path = _fixture_repository(tmp_path)
+    manifest, manifest_path, tasks_root = _global_task_manifest(tmp_path, root, lock)
+    mutate(manifest)
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+    with pytest.raises(GateViolation, match=error):
+        admit_task(
+            manifest_path=manifest_path,
+            authority_lock_path=lock_path,
+            model_policy_path=model_path,
+            protected_paths_path=protected_path,
+            repository_roots={"fixture": root},
+            control_plane_roots={"trellis_tasks": tasks_root},
         )
 
 

@@ -16,9 +16,7 @@ from .common import (
     canonical_hash,
     git_output,
     load_mapping,
-    require_list,
     require_sha256,
-    sha256_bytes,
     sha256_file,
 )
 from .conformance_gates import (
@@ -35,6 +33,11 @@ from .errors import GateViolation
 from .lock import verify_authority_lock_data
 from .receipts import make_typed_receipt, validate_typed_receipt
 from .remote_gate import verify_remote_protection
+from .task_control_plane import (
+    control_plane_contexts,
+    replay_task_control_plane,
+    resolve_context_file,
+)
 from .task_gate import admit_task, check_change_scopes
 
 
@@ -50,37 +53,45 @@ def _assert_receipt_binding(
         raise GateViolation("AUTH-AGGREGATE-AUTHORITY", f"{receipt_type} authority is stale")
 
 
-def _context_snapshot(manifest: Mapping[str, Any], repository_roots: Mapping[str, Path]) -> str:
-    contexts: list[Mapping[str, Any]] = []
-    for artifact in require_list(manifest.get("planning_artifacts"), where="planning_artifacts"):
-        if not isinstance(artifact, dict):
-            raise GateViolation("AUTH-AGGREGATE-CONTEXT", "planning context is invalid")
-        contexts.append(artifact)
-    for field in ("implementation_context", "check_context"):
-        context = manifest.get(field)
-        if not isinstance(context, dict):
-            raise GateViolation("AUTH-AGGREGATE-CONTEXT", f"{field} is invalid")
-        contexts.append(context)
+def _context_snapshot(
+    manifest: Mapping[str, Any],
+    repository_roots: Mapping[str, Path],
+    *,
+    manifest_path: Path,
+    control_plane_roots: Mapping[str, Path] | None = None,
+) -> str:
+    """Reread each hash-bound context, including the explicit global task root."""
+
+    roots = control_plane_roots or {}
+    trellis_tasks_root = roots.get("trellis_tasks")
+    task_binding = manifest.get("task_control_plane")
+    task_directory = (
+        str(task_binding.get("task_directory")) if isinstance(task_binding, dict) else None
+    )
     observed: list[dict[str, Any]] = []
-    for context in contexts:
-        repository = str(context.get("repository"))
-        relative = str(context.get("path"))
-        if repository not in repository_roots:
-            raise GateViolation("AUTH-AGGREGATE-CONTEXT", "context repository is unbound")
-        try:
-            root = repository_roots[repository].resolve(strict=True)
-            path = (root / relative).resolve(strict=True)
-            path.relative_to(root)
-            raw = path.read_bytes()
-        except (OSError, ValueError) as exc:
-            raise GateViolation("AUTH-AGGREGATE-CONTEXT", "cannot reread context bytes") from exc
-        digest = sha256_bytes(raw)
-        if digest != context.get("sha256") or len(raw) != context.get("byte_length"):
-            raise GateViolation("AUTH-AGGREGATE-CONTEXT-DRIFT", f"context changed: {relative}")
-        observed.append(
-            {"repository": repository, "path": relative, "sha256": digest, "bytes": len(raw)}
+    for where, context in control_plane_contexts(manifest):
+        _raw, evidence = resolve_context_file(
+            context,
+            repository_roots=repository_roots,
+            trellis_tasks_root=trellis_tasks_root,
+            task_directory=task_directory,
+            where=where,
         )
-    return canonical_hash(observed)
+        observed.append({"where": where, **evidence})
+    control_plane_lock_hash = replay_task_control_plane(
+        manifest_path=manifest_path,
+        manifest=manifest,
+        trellis_tasks_root=trellis_tasks_root,
+        repository_roots=repository_roots,
+        control_plane_lock_path=(
+            trellis_tasks_root / str(task_binding["lock_path"])
+            if trellis_tasks_root is not None and isinstance(task_binding, dict)
+            else None
+        ),
+    )
+    return canonical_hash(
+        {"contexts": observed, "task_control_plane_lock_hash": control_plane_lock_hash}
+    )
 
 
 def verify_change(
@@ -93,6 +104,7 @@ def verify_change(
     registry_paths: Sequence[str],
     reuse_ledger_path: str,
     checker_collector_ids: Mapping[str, str],
+    control_plane_roots: Mapping[str, Path] | None = None,
     validation_environment: Mapping[str, Mapping[str, str]] | None = None,
     scan_profile: str = "production",
     synthetic_fixture_manifest_path: Path | None = None,
@@ -101,7 +113,12 @@ def verify_change(
 
     manifest = load_mapping(task_manifest_path)
     initial_manifest_hash = sha256_file(task_manifest_path)
-    initial_context_hash = _context_snapshot(manifest, repository_roots)
+    initial_context_hash = _context_snapshot(
+        manifest,
+        repository_roots,
+        manifest_path=task_manifest_path,
+        control_plane_roots=control_plane_roots,
+    )
     lock = load_mapping(authority_lock_path)
     verified_authority = verify_authority_lock_data(lock, repository_roots)
     authority_hash = require_sha256(lock.get("bundle_hash"), where="authority bundle hash")
@@ -125,6 +142,7 @@ def verify_change(
         model_policy_path=model_policy_path,
         protected_paths_path=protected_paths_path,
         repository_roots=repository_roots,
+        control_plane_roots=control_plane_roots,
     )
     task_id = str(manifest["task_id"])
     heads = [
@@ -205,6 +223,7 @@ def verify_change(
             repository_roots=repository_roots,
             root=root,
             checker_collector_id=checker_id,
+            control_plane_roots=control_plane_roots,
         )
         if independent["checker_command_results_hash"] != validation["command_results_hash"]:
             raise GateViolation(
@@ -246,7 +265,15 @@ def verify_change(
     final_manifest = load_mapping(task_manifest_path)
     if canonical_hash(final_manifest) != canonical_hash(manifest):
         raise GateViolation("AUTH-AGGREGATE-MANIFEST-DRIFT", "task manifest content changed")
-    if _context_snapshot(final_manifest, repository_roots) != initial_context_hash:
+    if (
+        _context_snapshot(
+            final_manifest,
+            repository_roots,
+            manifest_path=task_manifest_path,
+            control_plane_roots=control_plane_roots,
+        )
+        != initial_context_hash
+    ):
         raise GateViolation("AUTH-AGGREGATE-CONTEXT-DRIFT", "task context changed during gate")
     for scope in scopes:
         if (
@@ -263,7 +290,9 @@ def verify_change(
         }
         for scope in scopes
     ]
-    closure = [str(item["receipt_id"]) for item in evidence]
+    # Bind the context both explicitly in the receipt and in the receipt
+    # closure.  Push verification replays the former against current bytes.
+    closure = [str(item["receipt_id"]) for item in evidence] + [initial_context_hash]
     aggregate = make_typed_receipt(
         "change_verification",
         authority_lock_hash=authority_hash,
@@ -277,12 +306,14 @@ def verify_change(
             ]
         ),
         repository_tree_oids_hash=canonical_hash(repository_trees),
+        control_plane_context_hash=initial_context_hash,
         receipt_closure_hash=canonical_hash(closure),
     )
     return {
         "receipt": aggregate,
         "evidence_receipts": evidence,
         "authority_evidence_hash": canonical_hash(verified_authority),
+        "context_snapshot_hash": initial_context_hash,
         "repository_trees": repository_trees,
     }
 
@@ -300,12 +331,33 @@ def verify_push(
     remote_policy_path: Path,
     scan_profile: str = "production",
     synthetic_fixture_manifest_path: Path | None = None,
+    task_manifest_path: Path,
+    model_policy_path: Path,
+    protected_paths_path: Path,
+    control_plane_roots: Mapping[str, Path] | None = None,
 ) -> dict[str, Any]:
     """Issue push permission only after fresh provider and history verification."""
 
     lock = load_mapping(authority_lock_path)
     verify_authority_lock_data(lock, repository_roots)
     authority_hash = require_sha256(lock.get("bundle_hash"), where="authority bundle hash")
+    manifest = load_mapping(task_manifest_path)
+    if str(manifest.get("task_id")) != task_id:
+        raise GateViolation("AUTH-PUSH-TASK", "push task_id differs from task manifest")
+    admit_task(
+        manifest_path=task_manifest_path,
+        authority_lock_path=authority_lock_path,
+        model_policy_path=model_policy_path,
+        protected_paths_path=protected_paths_path,
+        repository_roots=repository_roots,
+        control_plane_roots=control_plane_roots,
+    )
+    current_context_hash = _context_snapshot(
+        manifest,
+        repository_roots,
+        manifest_path=task_manifest_path,
+        control_plane_roots=control_plane_roots,
+    )
     change_receipt = change_bundle.get("receipt")
     if not isinstance(change_receipt, dict):
         raise GateViolation("AUTH-PUSH-CHANGE", "change verification bundle is missing")
@@ -315,6 +367,11 @@ def verify_push(
         task_id=task_id,
         authority_hash=authority_hash,
     )
+    if change_receipt["control_plane_context_hash"] != current_context_hash:
+        raise GateViolation(
+            "AUTH-PUSH-CONTEXT-DRIFT",
+            "task or global control-plane context changed after change verification",
+        )
     trees = change_bundle.get("repository_trees")
     if not isinstance(trees, list):
         raise GateViolation("AUTH-PUSH-CHANGE", "repository tree evidence is missing")

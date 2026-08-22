@@ -52,6 +52,12 @@
     "allowed_write_paths": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/path_rule"}},
     "forbidden_runtime_import_roots": {"type": "array", "items": {"$ref": "#/$defs/path_rule"}},
     "permitted_legacy_read_roots": {"type": "array", "items": {"$ref": "#/$defs/legacy_read"}},
+    "task_control_plane": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/task_control_plane"}
+      ]
+    },
     "planning_artifacts": {"type": "array", "minItems": 5, "items": {"$ref": "#/$defs/planning_artifact"}},
     "implementation_context": {"$ref": "#/$defs/context_file"},
     "check_context": {"$ref": "#/$defs/context_file"},
@@ -137,11 +143,33 @@
       }
     },
     "context_file": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["source", "repository", "path", "sha256", "byte_length"],
+          "properties": {
+            "source": {"const": "repository"}, "repository": {"type": "string", "minLength": 1},
+            "path": {"$ref": "#/$defs/relative_path"}, "sha256": {"$ref": "#/$defs/sha256"},
+            "byte_length": {"type": "integer", "minimum": 1}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["source", "path", "sha256", "byte_length"],
+          "properties": {
+            "source": {"const": "trellis_tasks"}, "path": {"$ref": "#/$defs/relative_path"},
+            "sha256": {"$ref": "#/$defs/sha256"}, "byte_length": {"type": "integer", "minimum": 1}
+          }
+        }
+      ]
+    },
+    "task_control_plane": {
       "type": "object", "additionalProperties": false,
-      "required": ["repository", "path", "sha256", "byte_length"],
+      "required": ["source", "task_directory", "lock_path"],
       "properties": {
-        "repository": {"type": "string", "minLength": 1}, "path": {"$ref": "#/$defs/relative_path"},
-        "sha256": {"$ref": "#/$defs/sha256"}, "byte_length": {"type": "integer", "minimum": 1}
+        "source": {"const": "trellis_tasks"},
+        "task_directory": {"$ref": "#/$defs/relative_path"},
+        "lock_path": {"$ref": "#/$defs/relative_path"}
       }
     },
     "planning_artifact": {

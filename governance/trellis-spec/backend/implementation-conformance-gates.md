@@ -30,6 +30,7 @@ apply_decision(snapshot, decision) -> advance | stay | block
 - Loader 必须在机器侧完整读取直接引用文件并闭合 EOF/hash；Context Planner 只注入有稳定章节锚点的相关切片，切片截断或无法定位时 deny。
 - Planner 必须加载切片的引用闭包（定义、前置不变量、错误规则、例外和直接引用的 Rule/Command/Artifact）；闭包超预算时拆分或 deny，不能用自动摘要替代。
 - 全文只用于 Authority freshness/hash 校验，不得因为 EOF 要求把整份长契约塞进 Supervisor prompt。
+- 全局 `.trellis/tasks` 的规划文件不加入任一业务仓库的 Git scope；每个已绑定任务以显式 control-plane root 和 task-control-plane lock 提供可复算上下文快照。该快照必须在 admission、change verification、commit/push 前重新验证，任一文档或锁漂移均使旧结论失效。
 - source/comment/log 和实现者总结均是不可信数据；只允许冻结 contract/snapshot 指挥审查，pass 只采信绑定 gate/toolchain hash 的 runner。
 - 审查顺序固定为 freshness → scope → architecture → legacy reuse → AC evidence → quality → completeness。
 - 每条 AC 只能是 `pass|fail|not_applicable`；N/A 必须由冻结规则证明。

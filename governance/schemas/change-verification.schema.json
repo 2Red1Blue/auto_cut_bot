@@ -15,6 +15,7 @@
     "task_id",
     "base_commits_hash",
     "repository_tree_oids_hash",
+    "control_plane_context_hash",
     "receipt_closure_hash"
   ],
   "properties": {
@@ -56,6 +57,9 @@
       "$ref": "#/$defs/sha256"
     },
     "repository_tree_oids_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "control_plane_context_hash": {
       "$ref": "#/$defs/sha256"
     },
     "receipt_closure_hash": {

@@ -58,6 +58,7 @@ def _parser() -> argparse.ArgumentParser:
     admit.add_argument("--model-policy", type=Path, required=True)
     admit.add_argument("--protected-paths", type=Path, required=True)
     admit.add_argument("--repository-root", action="append", default=[])
+    admit.add_argument("--control-plane-root", action="append", default=[])
     admit.add_argument("--receipt", type=Path)
 
     scope = subparsers.add_parser("check-scope")
@@ -90,6 +91,7 @@ def _parser() -> argparse.ArgumentParser:
     change.add_argument("--model-policy", type=Path, required=True)
     change.add_argument("--protected-paths", type=Path, required=True)
     change.add_argument("--repository-root", action="append", default=[])
+    change.add_argument("--control-plane-root", action="append", default=[])
     change.add_argument("--registry-path", action="append", default=[])
     change.add_argument("--reuse-ledger", required=True)
     change.add_argument("--checker-collector", action="append", default=[])
@@ -103,7 +105,11 @@ def _parser() -> argparse.ArgumentParser:
     push.add_argument("--repository", required=True)
     push.add_argument("--repository-root", action="append", default=[])
     push.add_argument("--task-id", required=True)
+    push.add_argument("--manifest", type=Path, required=True)
     push.add_argument("--lock", type=Path, required=True)
+    push.add_argument("--model-policy", type=Path, required=True)
+    push.add_argument("--protected-paths", type=Path, required=True)
+    push.add_argument("--control-plane-root", action="append", default=[])
     push.add_argument("--change-bundle", type=Path, required=True)
     push.add_argument("--candidate-commit", required=True)
     push.add_argument("--remote-attestation", type=Path, required=True)
@@ -154,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                 model_policy_path=args.model_policy,
                 protected_paths_path=args.protected_paths,
                 repository_roots=_bindings(args.repository_root),
+                control_plane_roots=_bindings(args.control_plane_root),
             )
             if receipt_path:
                 write_json_atomic(
@@ -226,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
                 registry_paths=args.registry_path,
                 reuse_ledger_path=args.reuse_ledger,
                 checker_collector_ids=_string_bindings(args.checker_collector),
+                control_plane_roots=_bindings(args.control_plane_root),
                 scan_profile=args.scan_profile,
                 synthetic_fixture_manifest_path=args.synthetic_fixture_manifest,
             )
@@ -249,6 +257,10 @@ def main(argv: list[str] | None = None) -> int:
                 remote_policy_path=args.remote_policy,
                 scan_profile=args.scan_profile,
                 synthetic_fixture_manifest_path=args.synthetic_fixture_manifest,
+                task_manifest_path=args.manifest,
+                model_policy_path=args.model_policy,
+                protected_paths_path=args.protected_paths,
+                control_plane_roots=_bindings(args.control_plane_root),
             )
             if args.output:
                 write_json_atomic(args.output, result)

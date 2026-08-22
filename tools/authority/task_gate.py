@@ -11,7 +11,6 @@ from typing import Any
 from .common import (
     PLACEHOLDER_RE,
     canonical_hash,
-    contained_path,
     git_bytes,
     git_index_paths,
     git_output,
@@ -30,6 +29,7 @@ from .common import (
 from .errors import GateViolation
 from .lock import validate_authority_lock
 from .receipts import make_typed_receipt
+from .task_control_plane import replay_task_control_plane, resolve_context_file
 
 RISK_CLASSES = {"authority", "high", "bounded", "mechanical"}
 TASK_TYPES = {"implementation", "authority_change"}
@@ -314,26 +314,42 @@ def _validate_path_rules(manifest: Mapping[str, Any], repository_names: set[str]
             )
 
 
-def _validate_context_file(
-    item: Mapping[str, Any], *, repository_roots: Mapping[str, Path], where: str
-) -> None:
-    require_closed(item, required=("repository", "path", "sha256", "byte_length"), where=where)
-    repository = require_non_empty_string(item["repository"], where=f"{where}.repository")
-    if repository not in repository_roots:
-        raise GateViolation("AUTH-TASK-CONTEXT-REPOSITORY", f"{where} unknown repository")
-    relative = validate_relative_path(item["path"], where=f"{where}.path")
-    expected = require_sha256(item["sha256"], where=f"{where}.sha256")
-    if not isinstance(item["byte_length"], int) or item["byte_length"] < 1:
+def _validate_context_declaration(item: Mapping[str, Any], *, where: str) -> str:
+    """Validate the closed source union before any context is read.
+
+    A Trellis workspace context deliberately has no repository field.  It is
+    planning evidence only; the repository binding and write scope are derived
+    exclusively from ``repository``/``repository_refs`` elsewhere in the
+    manifest.
+    """
+
+    source = item.get("source")
+    common = ("source", "path", "sha256", "byte_length")
+    if source == "repository":
+        require_closed(item, required=("repository", *common), where=where)
+        require_non_empty_string(item["repository"], where=f"{where}.repository")
+    elif source == "trellis_tasks":
+        require_closed(item, required=common, where=where)
+    else:
+        raise GateViolation("AUTH-TASK-CONTEXT-SOURCE", f"{where} has unknown context source")
+    validate_relative_path(item["path"], where=f"{where}.path")
+    require_sha256(item["sha256"], where=f"{where}.sha256")
+    if (
+        isinstance(item["byte_length"], bool)
+        or not isinstance(item["byte_length"], int)
+        or item["byte_length"] < 1
+    ):
         raise GateViolation("AUTH-TASK-CONTEXT-BYTES", f"{where}.byte_length must be positive")
-    path = contained_path(repository_roots[repository], relative, allow_missing=False)
-    raw = path.read_bytes()
-    if len(raw) != item["byte_length"] or sha256_file(path) != expected:
-        raise GateViolation("AUTH-TASK-CONTEXT-HASH", f"{where} bytes/hash mismatch")
-    validate_context_content(raw, where=where)
+    return str(source)
 
 
 def validate_context_content(raw: bytes, *, where: str) -> None:
-    """Reject placeholder planning content through the same production gate."""
+    """Compatibility entry point for fixture validation.
+
+    Context files loaded through :func:`admit_task` are validated by the
+    control-plane resolver.  Fixture runners use this small public helper when
+    exercising the same UTF-8/placeholder invariant directly.
+    """
 
     try:
         text = raw.decode("utf-8")
@@ -396,6 +412,7 @@ def validate_task_manifest(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
             "checker_requirements",
             "authority_change",
         ),
+        optional=("task_control_plane",),
         where="task manifest",
     )
     if manifest["schema_version"] != "1.0.0":
@@ -431,6 +448,19 @@ def validate_task_manifest(manifest: Mapping[str, Any]) -> list[dict[str, str]]:
     refs = _validate_repository_binding(manifest)
     repository_names = {item["repository"] for item in refs}
     _validate_path_rules(manifest, repository_names)
+    control_plane = manifest.get("task_control_plane")
+    if control_plane is not None:
+        if not isinstance(control_plane, dict):
+            raise GateViolation("AUTH-TASK-CONTROL-BINDING", "task_control_plane must be an object")
+        require_closed(
+            control_plane,
+            required=("source", "task_directory", "lock_path"),
+            where="task_control_plane",
+        )
+        if control_plane["source"] != "trellis_tasks":
+            raise GateViolation("AUTH-TASK-CONTROL-BINDING", "unknown task control-plane source")
+        validate_relative_path(control_plane["task_directory"], where="task_directory")
+        validate_relative_path(control_plane["lock_path"], where="lock_path")
     if manifest["task_type"] == "authority_change":
         change = manifest["authority_change"]
         if not isinstance(change, dict):
@@ -463,6 +493,7 @@ def admit_task(
     model_policy_path: Path,
     protected_paths_path: Path,
     repository_roots: Mapping[str, Path],
+    control_plane_roots: Mapping[str, Path] | None = None,
 ) -> list[dict[str, str]]:
     """Validate a task against exact authority, context, repository and model state."""
 
@@ -478,6 +509,15 @@ def admit_task(
             "AUTH-TASK-REPOSITORY-ROOTS", "repository roots do not match task binding"
         )
     resolved_roots = {name: path.resolve(strict=True) for name, path in repository_roots.items()}
+    supplied_control_roots = dict(control_plane_roots or {})
+    if set(supplied_control_roots) - {"trellis_tasks"}:
+        raise GateViolation(
+            "AUTH-TASK-CONTROL-ROOT", "only the trellis_tasks control-plane root is supported"
+        )
+    if set(supplied_control_roots) & expected_names:
+        raise GateViolation(
+            "AUTH-TASK-CONTROL-ROOT", "control-plane roots cannot be repository bindings"
+        )
 
     activation_policy, _activation_hash = _locked_mapping(
         lock=lock,
@@ -528,23 +568,25 @@ def admit_task(
     )
     required_kinds = {"prd", "design", "implement", "implement_context", "check_context"}
     seen_kinds: set[str] = set()
+    declared_contexts: list[tuple[str, Mapping[str, Any]]] = []
+    has_trellis_context = False
     for index, artifact in enumerate(artifacts):
         if not isinstance(artifact, dict):
             raise GateViolation("AUTH-TASK-PLANNING", f"planning_artifacts[{index}] invalid")
-        require_closed(
-            artifact,
-            required=("kind", "repository", "path", "sha256", "byte_length"),
-            where=f"planning_artifacts[{index}]",
-        )
+        if "kind" not in artifact:
+            raise GateViolation("AUTH-TASK-PLANNING", f"planning_artifacts[{index}] missing kind")
         kind = require_non_empty_string(artifact["kind"], where=f"planning_artifacts[{index}].kind")
         if kind in seen_kinds:
             raise GateViolation("AUTH-TASK-PLANNING-DUPLICATE", f"duplicate planning kind: {kind}")
         seen_kinds.add(kind)
-        _validate_context_file(
-            {key: value for key, value in artifact.items() if key != "kind"},
-            repository_roots=resolved_roots,
-            where=f"planning_artifacts[{index}]",
-        )
+        context = {key: value for key, value in artifact.items() if key != "kind"}
+        source = _validate_context_declaration(context, where=f"planning_artifacts[{index}]")
+        if source == "repository" and context["repository"] not in expected_names:
+            raise GateViolation(
+                "AUTH-TASK-CONTEXT-REPOSITORY", f"planning_artifacts[{index}] unknown repository"
+            )
+        has_trellis_context = has_trellis_context or source == "trellis_tasks"
+        declared_contexts.append((f"planning_artifacts[{index}]", context))
     if not required_kinds.issubset(seen_kinds):
         raise GateViolation(
             "AUTH-TASK-PLANNING-INCOMPLETE", "required planning artifacts are absent"
@@ -554,11 +596,55 @@ def admit_task(
         context = manifest[field]
         if not isinstance(context, dict):
             raise GateViolation("AUTH-TASK-CONTEXT", f"{field} must be an object")
-        _validate_context_file(context, repository_roots=resolved_roots, where=field)
+        source = _validate_context_declaration(context, where=field)
+        if source == "repository" and context["repository"] not in expected_names:
+            raise GateViolation("AUTH-TASK-CONTEXT-REPOSITORY", f"{field} unknown repository")
+        has_trellis_context = has_trellis_context or source == "trellis_tasks"
+        declared_contexts.append((field, context))
     if manifest["implementation_context"]["sha256"] == manifest["check_context"]["sha256"]:
         raise GateViolation(
             "AUTH-TASK-CONTEXT-INDEPENDENCE", "implementation/check context must differ"
         )
+
+    control_plane = manifest.get("task_control_plane")
+    if has_trellis_context:
+        if control_plane is None or set(supplied_control_roots) != {"trellis_tasks"}:
+            raise GateViolation(
+                "AUTH-TASK-CONTROL-ROOT",
+                "global task context requires exactly one explicit trellis_tasks root",
+            )
+        trellis_root = supplied_control_roots["trellis_tasks"]
+        lock_path = trellis_root / str(control_plane["lock_path"])
+        replay_task_control_plane(
+            manifest_path=manifest_path,
+            manifest=manifest,
+            trellis_tasks_root=trellis_root,
+            repository_roots=resolved_roots,
+            control_plane_lock_path=lock_path,
+        )
+        task_directory = str(control_plane["task_directory"])
+        for where, context in declared_contexts:
+            resolve_context_file(
+                context,
+                repository_roots=resolved_roots,
+                trellis_tasks_root=trellis_root,
+                task_directory=task_directory,
+                where=where,
+            )
+    else:
+        if control_plane is not None or supplied_control_roots:
+            raise GateViolation(
+                "AUTH-TASK-CONTROL-ROOT",
+                "repository-only task must not bind a global control-plane root",
+            )
+        for where, context in declared_contexts:
+            resolve_context_file(
+                context,
+                repository_roots=resolved_roots,
+                trellis_tasks_root=None,
+                task_directory=None,
+                where=where,
+            )
 
     commands = require_list(
         manifest["validation_commands"], where="validation_commands", non_empty=True

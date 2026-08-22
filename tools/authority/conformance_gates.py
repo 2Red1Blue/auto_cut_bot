@@ -765,6 +765,7 @@ def verify_independent_check(
     repository_roots: Mapping[str, Path],
     root: Path,
     checker_collector_id: str,
+    control_plane_roots: Mapping[str, Path] | None = None,
 ) -> dict[str, Any]:
     collector = _CHECKER_RUN_COLLECTORS.get(checker_collector_id)
     if collector is None:
@@ -810,20 +811,25 @@ def verify_independent_check(
     actual_tree = _tree_hash(root)
     if manifest["candidate_tree_hash"] != actual_tree:
         raise GateViolation("AUTH-CHECK-CANDIDATE", "checker attestation binds another tree")
+    from .task_control_plane import resolve_context_file
+
+    task_binding = task_manifest.get("task_control_plane")
+    task_directory = (
+        str(task_binding.get("task_directory")) if isinstance(task_binding, dict) else None
+    )
+    trellis_tasks_root = (control_plane_roots or {}).get("trellis_tasks")
     for field_name in ("implementation_context", "check_context"):
         context = task_manifest.get(field_name)
         if not isinstance(context, dict):
             raise GateViolation("AUTH-CHECK-CONTEXT", f"missing task {field_name}")
-        repository = str(context.get("repository"))
-        relative = str(context.get("path"))
-        if repository not in repository_roots:
-            raise GateViolation("AUTH-CHECK-CONTEXT", "context repository is unbound")
-        try:
-            context_path = (repository_roots[repository] / relative).resolve(strict=True)
-            context_path.relative_to(repository_roots[repository].resolve(strict=True))
-            actual_context_hash = sha256_bytes(context_path.read_bytes())
-        except (OSError, ValueError) as exc:
-            raise GateViolation("AUTH-CHECK-CONTEXT", "cannot read bound context") from exc
+        _raw, evidence = resolve_context_file(
+            context,
+            repository_roots=repository_roots,
+            trellis_tasks_root=trellis_tasks_root,
+            task_directory=task_directory,
+            where=field_name,
+        )
+        actual_context_hash = str(evidence["sha256"])
         if manifest[f"{field_name}_hash"] != actual_context_hash:
             raise GateViolation("AUTH-CHECK-CONTEXT", f"{field_name} hash mismatch")
     expected_checker_input_hash = canonical_hash(

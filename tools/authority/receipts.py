@@ -205,6 +205,7 @@ RECEIPT_FIELDS: dict[str, dict[str, FieldKind]] = {
         "task_id": "string",
         "base_commits_hash": "sha256",
         "repository_tree_oids_hash": "sha256",
+        "control_plane_context_hash": "sha256",
         "receipt_closure_hash": "sha256",
     },
     "push_verification": {
