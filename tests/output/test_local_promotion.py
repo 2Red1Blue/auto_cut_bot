@@ -4,15 +4,98 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 from autocut_kernel.output import LocalPromotionError, LocalPromotionRequest, promote_local_output
-from autocut_kernel.rendering.qc import QCCheck, QCReport
+from autocut_kernel.rendering import build_render_plan, parse_recipe
+from autocut_kernel.rendering.ffmpeg_renderer import FFmpegRenderer, RenderAttempt
+from autocut_kernel.rendering.qc import LocalQC, QCCheck, QCReport
 
 
 def _digest(value: bytes) -> str:
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
+
+
+def _observed_report(staging: Path) -> QCReport:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None or shutil.which("ffprobe") is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source = staging.with_name("source.mp4")
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x48:rate=25:duration=1",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()
+    digest, ticks = _digest(source.read_bytes()), [0, 10240]
+    evidence = {
+        "source": {"sha256": digest, "byte_size": source.stat().st_size},
+        "video_stream": {
+            "stream_index": 0,
+            "codec_name": "h264",
+            "width": 64,
+            "height": 48,
+            "time_base": {"numerator": 1, "denominator": 12800},
+        },
+        "pts_index": ticks,
+        "pts_index_sha256": _digest(json.dumps(ticks, separators=(",", ":")).encode()),
+        "validity_intervals": [{"start_pts": 0, "end_pts": 10240}],
+        "ffprobe": {
+            "executable": "ffprobe",
+            "version": "fixture",
+            "stderr_sha256": "sha256:" + "0" * 64,
+        },
+        "fixture_id": "fixture",
+        "fixture_manifest_sha256": "sha256:" + "1" * 64,
+        "fixture_sidecar_sha256": "sha256:" + "2" * 64,
+        "fixture_schema_version": 1,
+        "evidence_mode": "fixture_ground_truth_v1",
+    }
+    recipe = parse_recipe(
+        {
+            "source": evidence["source"],
+            "span": {"start_pts": 0, "end_pts": 10240},
+            "timebase": {"numerator": 1, "denominator": 12800},
+            "evidence": evidence,
+        },
+        expected_source_sha256=digest,
+        profile="test",
+    )
+    attempt = FFmpegRenderer().render(
+        recipe,
+        build_render_plan(recipe, source_path=source, output_path=staging),
+        source_path=source,
+        staging_root=staging.parent / "private-staging",
+    )
+    staging.write_bytes(attempt.output_path.read_bytes())
+    bound = RenderAttempt(
+        attempt.recipe_hash,
+        attempt.profile_hash,
+        attempt.source_sha256,
+        staging,
+        _digest(staging.read_bytes()),
+        staging.stat().st_size,
+        attempt.ffmpeg_argv,
+        attempt.stderr_sha256,
+    )
+    return LocalQC().inspect(recipe, bound)
 
 
 def _request(
@@ -24,7 +107,8 @@ def _request(
     recipe_hash: str | None = None,
     qc_report: QCReport | None = None,
 ) -> LocalPromotionRequest:
-    recipe_hash = recipe_hash or _digest(b"recipe-1")
+    report = qc_report or _observed_report(staging)
+    recipe_hash = recipe_hash or report.recipe_hash
     asset_sha256 = _digest(staging.read_bytes())
     return LocalPromotionRequest(
         output_root=root,
@@ -33,7 +117,7 @@ def _request(
         staging_asset=staging,
         recipe_hash=recipe_hash,
         asset_sha256=asset_sha256,
-        qc_report=qc_report or _approved_report(recipe_hash, asset_sha256),
+        qc_report=report,
     )
 
 
@@ -45,7 +129,9 @@ def _json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_promotes_content_addressed_asset_manifest_then_atomic_current_pointer(tmp_path: Path) -> None:
+def test_promotes_content_addressed_asset_manifest_then_atomic_current_pointer(
+    tmp_path: Path,
+) -> None:
     staging = tmp_path / "render.mp4"
     staging.write_bytes(b"verified render bytes")
 
@@ -53,14 +139,16 @@ def test_promotes_content_addressed_asset_manifest_then_atomic_current_pointer(t
 
     current = _json(result.current_path)
     assert result.asset_path.read_bytes() == staging.read_bytes()
-    assert current["asset"] == {"path": result.asset_path.relative_to(tmp_path / "output").as_posix(), "sha256": result.asset_sha256}
-    assert current["manifest"] == {"path": result.manifest_path.relative_to(tmp_path / "output").as_posix(), "sha256": result.manifest_sha256}
-    assert _json(result.manifest_path)["qc_report"] == {
-        "checks": [{"evidence_sha256": _digest(b"evidence"), "name": "identity", "passed": True}],
-        "output_sha256": result.asset_sha256,
-        "recipe_hash": _digest(b"recipe-1"),
-        "status": "approved",
+    assert current["asset"] == {
+        "path": result.asset_path.relative_to(tmp_path / "output").as_posix(),
+        "sha256": result.asset_sha256,
     }
+    assert current["manifest"] == {
+        "path": result.manifest_path.relative_to(tmp_path / "output").as_posix(),
+        "sha256": result.manifest_sha256,
+    }
+    assert _json(result.manifest_path)["qc_report"]["status"] == "approved"
+    assert _json(result.manifest_path)["qc_report"]["output_sha256"] == result.asset_sha256
 
 
 def test_same_promoted_output_is_idempotent(tmp_path: Path) -> None:
@@ -72,16 +160,23 @@ def test_same_promoted_output_is_idempotent(tmp_path: Path) -> None:
     second = promote_local_output(request)
 
     assert second == first
-    assert len(list((tmp_path / "output" / "assets" / "sha256" / request.asset_sha256[7:9]).iterdir())) == 1
+    assert (
+        len(list((tmp_path / "output" / "assets" / "sha256" / request.asset_sha256[7:9]).iterdir()))
+        == 1
+    )
 
 
 def test_rejects_nonapproved_derived_qc_before_creating_current_pointer(tmp_path: Path) -> None:
     staging = tmp_path / "render.mp4"
     staging.write_bytes(b"verified render bytes")
     recipe_hash = _digest(b"recipe-1")
-    rejected = QCReport(recipe_hash, _digest(staging.read_bytes()), (QCCheck("identity", False, _digest(b"evidence")),))
+    rejected = QCReport(
+        recipe_hash,
+        _digest(staging.read_bytes()),
+        (QCCheck("identity", False, _digest(b"evidence")),),
+    )
 
-    with pytest.raises(LocalPromotionError, match="approved"):
+    with pytest.raises(LocalPromotionError, match="validated recipe"):
         promote_local_output(_request(tmp_path / "output", staging, qc_report=rejected))
 
     assert not (tmp_path / "output" / "current.json").exists()
@@ -104,7 +199,7 @@ def test_digest_mismatch_preserves_existing_current_pointer(tmp_path: Path) -> N
         new_staging,
         request.recipe_hash,
         wrong_digest,
-        _approved_report(request.recipe_hash, wrong_digest),
+        request.qc_report,
     )
 
     with pytest.raises(LocalPromotionError, match="digest"):
@@ -139,8 +234,8 @@ def test_attempt_namespaces_keep_cross_job_current_pointers_isolated(tmp_path: P
 
     assert first.asset_path == second.asset_path
     assert first.current_path != second.current_path
-    assert first.current_path == root / "results" / "job-a" / "attempt-a" / "current.json"
-    assert second.current_path == root / "results" / "job-b" / "attempt-b" / "current.json"
+    assert first.current_path == root / "results" / "job-a" / "current.json"
+    assert second.current_path == root / "results" / "job-b" / "current.json"
 
 
 def test_hardlinked_existing_cas_asset_is_rejected_even_when_bytes_match(tmp_path: Path) -> None:
@@ -204,7 +299,7 @@ def test_rejects_qc_report_with_mismatched_recipe_or_output_identity(tmp_path: P
     wrong_recipe = _approved_report(_digest(b"other recipe"), request.asset_sha256)
     wrong_output = _approved_report(request.recipe_hash, _digest(b"other output"))
 
-    with pytest.raises(LocalPromotionError, match="recipe_hash"):
+    with pytest.raises(LocalPromotionError, match="validated recipe"):
         promote_local_output(_request(request.output_root, staging, qc_report=wrong_recipe))
-    with pytest.raises(LocalPromotionError, match="output_sha256"):
+    with pytest.raises(LocalPromotionError, match="validated recipe"):
         promote_local_output(_request(request.output_root, staging, qc_report=wrong_output))

@@ -1,9 +1,4 @@
-"""Fail-closed, atomic promotion of a locally rendered, QC-approved asset.
-
-The immutable asset and its canonical manifest are installed before ``current.json``
-is replaced.  Consumers that use only ``current.json`` therefore observe either the
-previous complete output or the new complete output, never a partially promoted one.
-"""
+"""Fail-closed promotion using descriptor-relative filesystem operations."""
 
 from __future__ import annotations
 
@@ -11,31 +6,32 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import stat
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from ..rendering.qc import QCReport
+from ..rendering.qc import LocalQC, QCReport
 
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
 _NAMESPACE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 class LocalPromotionError(Exception):
-    """Raised when an output cannot be safely promoted."""
+    """Raised when output cannot be safely promoted."""
 
 
 @dataclass(frozen=True, slots=True)
 class LocalPromotionRequest:
-    """Verified inputs needed to promote one approved local render.
+    """Inputs for a local promotion.
 
-    ``qc_report`` is a derived :class:`~autocut_kernel.rendering.qc.QCReport`, not
-    caller-controlled status data.  Its approved outcome and two identity bindings
-    must agree with the recipe and staging asset being promoted.
+    A ``QCReport`` is diagnostic evidence, never an authorization credential.
+    The boundary repeats every required QC observation against current staging
+    bytes and the validated recipe/attempt retained by ``LocalQC.inspect``.
     """
 
     output_root: Path
@@ -49,8 +45,6 @@ class LocalPromotionRequest:
 
 @dataclass(frozen=True, slots=True)
 class PromotionResult:
-    """Paths and digests of the promoted immutable output."""
-
     asset_path: Path
     manifest_path: Path
     current_path: Path
@@ -59,306 +53,352 @@ class PromotionResult:
 
 
 def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
-    """Atomically make a verified, QC-approved staging asset current.
+    """Independently re-QC a staging asset before making it current.
 
-    The output layout is deliberately content-addressed:
-
-    ``assets/sha256/<prefix>/<hex>.mp4`` contains the bytes and
-    ``results/<job_id>/<attempt_id>/manifests/<hex>.json`` contains its canonical
-    promotion manifest.  The mutable pointer is scoped to that same attempt.
-    Existing immutable entries are accepted only when their complete contents are
-    identical.  The mutable ``current.json`` pointer is written last using a
-    fsynced temporary file and ``os.replace``.
+    Immutable files live in ``assets/sha256`` and
+    ``results/<job>/manifests``; the job-scoped mutable pointer is
+    ``results/<job>/current.json``. Attempts are diagnostic evidence only.
     """
-
-    _validate_request(request)
-    output_root = request.output_root
-    _ensure_output_root(output_root)
-
-    asset_hex = request.asset_sha256.removeprefix(_SHA256_PREFIX)
+    _validate_request_shape(request)
+    report = _reverify_promotion_inputs(request)
+    asset_hex = request.asset_sha256[7:]
     asset_relative = PurePosixPath("assets") / "sha256" / asset_hex[:2] / f"{asset_hex}.mp4"
-    asset_path = _resolve_generated_path(output_root, asset_relative)
-    _install_asset(output_root, request.staging_asset, asset_path, request.asset_sha256)
-
-    result_relative = PurePosixPath("results") / request.job_id / request.attempt_id
-
     manifest_value: dict[str, object] = {
         "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
-        "qc_report": request.qc_report.to_manifest(),
+        "qc_report": report.to_manifest(),
         "recipe_hash": request.recipe_hash,
         "schema_version": 1,
     }
     manifest_bytes = _canonical_json_bytes(manifest_value, "promotion manifest")
     manifest_sha256 = _sha256(manifest_bytes)
+    result_relative = PurePosixPath("results") / request.job_id
     manifest_relative = result_relative / "manifests" / f"{manifest_sha256[7:]}.json"
-    manifest_path = _resolve_generated_path(output_root, manifest_relative)
-    _install_bytes(output_root, manifest_path, manifest_bytes, "manifest")
-
-    current_bytes = _canonical_json_bytes(
-        {
-            "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
-            "manifest": {"path": manifest_relative.as_posix(), "sha256": manifest_sha256},
-            "schema_version": 1,
-        },
-        "current pointer",
+    current_relative = result_relative / "current.json"
+    root_fd = _open_output_root(request.output_root)
+    try:
+        _install_in_directory(
+            root_fd, asset_relative, request.staging_asset, request.asset_sha256, "asset"
+        )
+        _install_in_directory(
+            root_fd, manifest_relative, manifest_bytes, _sha256(manifest_bytes), "manifest"
+        )
+        current_fd = _open_or_create_directory(root_fd, current_relative.parts[:-1])
+        try:
+            current_bytes = _canonical_json_bytes(
+                {
+                    "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
+                    "manifest": {"path": manifest_relative.as_posix(), "sha256": manifest_sha256},
+                    "schema_version": 1,
+                },
+                "current pointer",
+            )
+            _atomic_replace(current_fd, current_relative.name, current_bytes)
+        finally:
+            os.close(current_fd)
+    finally:
+        os.close(root_fd)
+    root = request.output_root.absolute()
+    return PromotionResult(
+        root.joinpath(*asset_relative.parts),
+        root.joinpath(*manifest_relative.parts),
+        root.joinpath(*current_relative.parts),
+        request.asset_sha256,
+        manifest_sha256,
     )
-    current_path = _resolve_generated_path(output_root, result_relative / "current.json")
-    _ensure_real_directory(output_root, current_path.parent)
-    _atomic_replace(current_path, current_bytes)
-    return PromotionResult(asset_path, manifest_path, current_path, request.asset_sha256, manifest_sha256)
 
 
-def _validate_request(request: LocalPromotionRequest) -> None:
+def _validate_request_shape(request: LocalPromotionRequest) -> None:
+    _require_secure_os_apis()
     _validate_digest(request.asset_sha256, "asset_sha256")
     _validate_digest(request.recipe_hash, "recipe_hash")
     _validate_namespace_component(request.job_id, "job_id")
     _validate_namespace_component(request.attempt_id, "attempt_id")
     if not isinstance(cast(object, request.qc_report), QCReport):
-        raise LocalPromotionError("qc_report must be a derived QCReport")
-    if not request.qc_report.approved:
-        raise LocalPromotionError("qc_report must be approved")
-    if request.qc_report.recipe_hash != request.recipe_hash:
-        raise LocalPromotionError("qc_report.recipe_hash does not match recipe_hash")
-    if request.qc_report.output_sha256 != request.asset_sha256:
-        raise LocalPromotionError("qc_report.output_sha256 does not match asset_sha256")
+        raise LocalPromotionError("qc_report must be a QCReport observation")
+
+
+def _reverify_promotion_inputs(request: LocalPromotionRequest) -> QCReport:
+    """Do not use a public report's pass flag to authorize promotion."""
+    recipe, attempt = request.qc_report.recipe, request.qc_report.attempt
+    if recipe is None or attempt is None:
+        raise LocalPromotionError("qc_report lacks validated recipe and attempt observations")
+    if recipe.canonical_hash != request.recipe_hash or attempt.recipe_hash != request.recipe_hash:
+        raise LocalPromotionError("trusted recipe/attempt hash does not match recipe_hash")
+    if attempt.output_sha256 != request.asset_sha256:
+        raise LocalPromotionError("trusted attempt output digest does not match asset_sha256")
+    if attempt.output_path.absolute() != request.staging_asset.absolute():
+        raise LocalPromotionError("trusted attempt output path does not match staging_asset")
+    report = LocalQC().inspect(recipe, attempt)
+    if (
+        report.recipe_hash != request.recipe_hash
+        or report.output_sha256 != request.asset_sha256
+        or not report.approved
+    ):
+        raise LocalPromotionError("independent QC verification rejected staging_asset")
+    return report
+
+
+def _require_secure_os_apis() -> None:
+    if not all(hasattr(os, item) for item in ("O_NOFOLLOW", "O_DIRECTORY")) or not all(
+        fn in os.supports_dir_fd for fn in (os.open, os.mkdir, os.link, os.rename, os.unlink)
+    ):
+        raise LocalPromotionError("secure descriptor-relative filesystem APIs are unavailable")
+
+
+def _open_output_root(root: Path) -> int:
+    """Create/open a lexical absolute root without following any symlink."""
+    absolute = root.absolute()
+    if not absolute.is_absolute() or any(part in {"", ".", ".."} for part in absolute.parts[1:]):
+        raise LocalPromotionError("output_root must be an absolute-safe directory path")
+    fd = os.open("/", _DIRECTORY_FLAGS)
+    try:
+        for part in absolute.parts[1:]:
+            try:
+                os.mkdir(part, mode=0o755, dir_fd=fd)
+                os.fsync(fd)
+            except FileExistsError:
+                pass
+            try:
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+            except OSError as error:
+                raise LocalPromotionError("output_root must be a real directory") from error
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_or_create_directory(root_fd: int, components: Sequence[str]) -> int:
+    fd = os.dup(root_fd)
+    try:
+        for part in components:
+            if part in {"", ".", ".."}:
+                raise LocalPromotionError("generated directory escapes output_root")
+            try:
+                os.mkdir(part, mode=0o755, dir_fd=fd)
+                os.fsync(fd)
+            except FileExistsError:
+                pass
+            try:
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+            except OSError as error:
+                raise LocalPromotionError(
+                    "generated directory component must be a real directory"
+                ) from error
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _install_in_directory(
+    root_fd: int, relative: PurePosixPath, source: Path | bytes, expected: str, label: str
+) -> None:
+    directory_fd = _open_or_create_directory(root_fd, relative.parts[:-1])
+    try:
+        if isinstance(source, Path):
+            _install_asset(directory_fd, relative.name, source, expected)
+        else:
+            _install_bytes(directory_fd, relative.name, source, expected, label)
+    finally:
+        os.close(directory_fd)
+
+
+def _install_asset(directory_fd: int, name: str, source: Path, expected: str) -> None:
+    source_fd = _open_regular_source(source)
+    temporary_name: str | None = None
+    try:
+        temporary_fd, temporary_name = _new_temporary(directory_fd, ".asset-")
+        digest, size = hashlib.sha256(), 0
+        with (
+            os.fdopen(source_fd, "rb", closefd=True) as input_stream,
+            os.fdopen(temporary_fd, "wb", closefd=True) as output_stream,
+        ):
+            source_fd = -1
+            for chunk in iter(lambda: input_stream.read(_CHUNK_SIZE), b""):
+                digest.update(chunk)
+                size += len(chunk)
+                output_stream.write(chunk)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        if size == 0 or f"sha256:{digest.hexdigest()}" != expected:
+            raise LocalPromotionError("staging_asset digest does not match asset_sha256")
+        _install_temp_exclusively(directory_fd, temporary_name, name, "asset")
+        temporary_name = None
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+        if temporary_name is not None:
+            _unlink_if_present(directory_fd, temporary_name)
+
+
+def _open_regular_source(path: Path) -> int:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise LocalPromotionError(
+            "staging_asset must be a readable regular non-symlink file"
+        ) from error
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise LocalPromotionError("staging_asset must be a regular file")
+    return fd
+
+
+def _install_bytes(directory_fd: int, name: str, value: bytes, expected: str, label: str) -> None:
+    if _sha256(value) != expected:
+        raise LocalPromotionError(f"invalid immutable {label} digest")
+    temporary_fd, temporary_name = _new_temporary(directory_fd, f".{label}-")
+    try:
+        with os.fdopen(temporary_fd, "wb", closefd=True) as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _install_temp_exclusively(directory_fd, temporary_name, name, label)
+        temporary_name = ""
+    finally:
+        if temporary_name:
+            _unlink_if_present(directory_fd, temporary_name)
+
+
+def _new_temporary(directory_fd: int, prefix: str) -> tuple[int, str]:
+    for _ in range(100):
+        name = f"{prefix}{secrets.token_hex(16)}"
+        try:
+            return os.open(
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=directory_fd,
+            ), name
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise LocalPromotionError("could not create promotion temporary file") from error
+    raise LocalPromotionError("could not create unique promotion temporary file")
+
+
+def _install_temp_exclusively(directory_fd: int, temporary: str, target: str, label: str) -> None:
+    try:
+        os.link(
+            temporary,
+            target,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError:
+        if not _existing_matches(directory_fd, temporary, target):
+            raise LocalPromotionError(f"conflicting immutable {label} already exists") from None
+    except OSError as error:
+        raise LocalPromotionError(f"could not install immutable {label}") from error
+    else:
+        try:
+            os.chmod(target, 0o444, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as error:
+            raise LocalPromotionError(f"could not seal immutable {label}") from error
+        os.fsync(directory_fd)
+    _unlink_if_present(directory_fd, temporary)
+
+
+def _existing_matches(directory_fd: int, temporary: str, target: str) -> bool:
+    try:
+        target_fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+        temp_fd = os.open(temporary, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fd)
+    except OSError:
+        return False
+    try:
+        status = os.fstat(target_fd)
+        return (
+            stat.S_ISREG(status.st_mode)
+            and status.st_nlink == 1
+            and _descriptors_equal(temp_fd, target_fd)
+        )
+    finally:
+        os.close(target_fd)
+        os.close(temp_fd)
+
+
+def _descriptors_equal(left: int, right: int) -> bool:
+    while True:
+        left_chunk, right_chunk = os.read(left, _CHUNK_SIZE), os.read(right, _CHUNK_SIZE)
+        if left_chunk != right_chunk:
+            return False
+        if not left_chunk:
+            return True
+
+
+def _atomic_replace(directory_fd: int, target: str, value: bytes) -> None:
+    temporary_fd, temporary = _new_temporary(directory_fd, ".current-")
+    try:
+        with os.fdopen(temporary_fd, "wb", closefd=True) as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.rename(temporary, target, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = ""
+        os.fsync(directory_fd)
+    except OSError as error:
+        raise LocalPromotionError("could not atomically update current pointer") from error
+    finally:
+        if temporary:
+            _unlink_if_present(directory_fd, temporary)
+
+
+def _unlink_if_present(directory_fd: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        raise LocalPromotionError("could not clean promotion temporary file") from error
 
 
 def _validate_digest(value: object, field_name: str) -> None:
     if (
         type(value) is not str
-        or len(value) != len(_SHA256_PREFIX) + 64
+        or len(value) != 71
         or not value.startswith(_SHA256_PREFIX)
-        or any(character not in "0123456789abcdef" for character in value[len(_SHA256_PREFIX) :])
+        or any(c not in "0123456789abcdef" for c in value[7:])
     ):
         raise LocalPromotionError(f"{field_name} must be a lowercase sha256 digest")
 
 
 def _validate_namespace_component(value: object, field_name: str) -> None:
-    if type(value) is not str or _NAMESPACE_COMPONENT.fullmatch(value) is None:  # noqa: E721
+    if type(value) is not str or _NAMESPACE_COMPONENT.fullmatch(value) is None:
         raise LocalPromotionError(f"{field_name} must be a safe non-empty namespace component")
 
 
-def _resolve_generated_path(root: Path, relative: PurePosixPath) -> Path:
-    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
-        raise LocalPromotionError("generated path must be a non-empty relative path")
-    target = root.joinpath(*relative.parts)
-    try:
-        target.relative_to(root)
-    except ValueError as error:  # Defensive: PurePosixPath validation above is authoritative.
-        raise LocalPromotionError("generated path escapes output_root") from error
-    return target
-
-
-def _ensure_output_root(root: Path) -> None:
-    """Create the selected root, refusing a symlink at the boundary."""
-
-    existed = root.exists()
-    root.mkdir(parents=True, exist_ok=True)
-    if root.is_symlink() or not root.is_dir():
-        raise LocalPromotionError("output_root must be a real directory")
-    _fsync_directory(root)
-    if not existed:
-        _fsync_directory(root.parent)
-
-
-def _ensure_real_directory(root: Path, directory: Path) -> None:
-    """Create a generated directory one component at a time without symlinks."""
-
-    try:
-        relative = directory.relative_to(root)
-    except ValueError as error:
-        raise LocalPromotionError("generated directory escapes output_root") from error
-    probe = root
-    if probe.is_symlink() or not probe.is_dir():
-        raise LocalPromotionError("output_root must be a real directory")
-    missing: list[Path] = []
-    for part in relative.parts:
-        probe = probe / part
-        if probe.exists():
-            if probe.is_symlink() or not probe.is_dir():
-                raise LocalPromotionError("generated directory component must be a real directory")
-        else:
-            missing.append(probe)
-    for item in missing:
-        if item.parent.is_symlink():
-            raise LocalPromotionError("generated directory component must not be a symlink")
-        try:
-            item.mkdir()
-        except FileExistsError:
-            pass
-        if item.is_symlink() or not item.is_dir():
-            raise LocalPromotionError("generated directory component must be a real directory")
-        _fsync_directory(item)
-        _fsync_directory(item.parent)
-
-
-def _install_asset(root: Path, source: Path, target: Path, expected_sha256: str) -> None:
-    """Copy source to a private temporary file, then link it into its CAS path."""
-
-    _ensure_real_directory(root, target.parent)
-    descriptor = _open_regular_source(source)
-    temporary: Path | None = None
-    try:
-        temporary_descriptor, temporary_name = tempfile.mkstemp(prefix=".asset-", dir=target.parent)
-        temporary = Path(temporary_name)
-        digest = hashlib.sha256()
-        byte_count = 0
-        try:
-            with os.fdopen(descriptor, "rb", closefd=True) as input_stream, os.fdopen(
-                temporary_descriptor, "wb", closefd=True
-            ) as output_stream:
-                descriptor = -1
-                for chunk in iter(lambda: input_stream.read(_CHUNK_SIZE), b""):
-                    digest.update(chunk)
-                    byte_count += len(chunk)
-                    output_stream.write(chunk)
-                output_stream.flush()
-                os.fsync(output_stream.fileno())
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-        actual_sha256 = f"{_SHA256_PREFIX}{digest.hexdigest()}"
-        if byte_count == 0:
-            raise LocalPromotionError("staging_asset must be non-empty")
-        if actual_sha256 != expected_sha256:
-            raise LocalPromotionError("staging_asset digest does not match asset_sha256")
-        _install_temp_exclusively(temporary, target, expected_sha256, "asset")
-        temporary = None
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
-def _open_regular_source(path: Path) -> int:
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as error:
-        raise LocalPromotionError("staging_asset must be a readable regular non-symlink file") from error
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise LocalPromotionError("staging_asset must be a regular file")
-    return descriptor
-
-
-def _install_bytes(root: Path, target: Path, value: bytes, label: str) -> None:
-    _ensure_real_directory(root, target.parent)
-    temporary_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{label}-", dir=target.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(temporary_descriptor, "wb", closefd=True) as stream:
-            stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
-        _install_temp_exclusively(temporary, target, _sha256(value), label)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
-def _install_temp_exclusively(temp: Path, target: Path, expected_sha256: str, label: str) -> None:
-    """Publish a completed file without overwriting a pre-existing immutable path."""
-
-    try:
-        os.link(temp, target)
-    except FileExistsError:
-        if (
-            not target.is_file()
-            or target.is_symlink()
-            or os.stat(target).st_nlink != 1
-            or not _files_equal(temp, target)
-        ):
-            raise LocalPromotionError(f"conflicting immutable {label} already exists") from None
-    else:
-        os.chmod(target, 0o444)
-        _fsync_directory(target.parent)
-    finally:
-        temp.unlink(missing_ok=True)
-
-
-def _atomic_replace(target: Path, value: bytes) -> None:
-    """Replace a mutable pointer only after its complete new value is durable."""
-
-    temporary_descriptor, temporary_name = tempfile.mkstemp(prefix=".current-", dir=target.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(temporary_descriptor, "wb", closefd=True) as stream:
-            stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, target)
-        temporary = None
-        _fsync_directory(target.parent)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
-def _fsync_directory(directory: Path) -> None:
-    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _files_equal(left: Path, right: Path) -> bool:
-    """Compare existing immutable bytes rather than trusting its path digest."""
-
-    try:
-        if left.stat().st_size != right.stat().st_size:
-            return False
-    except OSError:
-        return False
-    left_descriptor = _open_regular_source(left)
-    right_descriptor = _open_regular_source(right)
-    try:
-        with os.fdopen(left_descriptor, "rb", closefd=True) as left_stream, os.fdopen(
-            right_descriptor, "rb", closefd=True
-        ) as right_stream:
-            left_descriptor = right_descriptor = -1
-            while True:
-                left_chunk = left_stream.read(_CHUNK_SIZE)
-                right_chunk = right_stream.read(_CHUNK_SIZE)
-                if left_chunk != right_chunk:
-                    return False
-                if not left_chunk:
-                    return True
-    finally:
-        if left_descriptor >= 0:
-            os.close(left_descriptor)
-        if right_descriptor >= 0:
-            os.close(right_descriptor)
-
-
 def _sha256(value: bytes) -> str:
-    return f"{_SHA256_PREFIX}{hashlib.sha256(value).hexdigest()}"
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
 
 def _canonical_json_bytes(value: object, field_name: str) -> bytes:
     return json.dumps(
-        _json_copy(value, field_name), ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False
+        _json_copy(value, field_name),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
     ).encode("utf-8")
 
 
 def _json_copy(value: object, field_name: str) -> Any:
-    """Validate the precise JSON subset this persistence boundary accepts."""
-
-    if value is None or type(value) is bool or type(value) is int or type(value) is str:  # noqa: E721
-        return value
-    if type(value) is float:  # noqa: E721
-        raise LocalPromotionError(f"{field_name} must not contain floats")
+    if value is None or type(value) is bool or type(value) is int or type(value) is str:
+        return value  # noqa: E721
+    if type(value) is float:
+        raise LocalPromotionError(f"{field_name} must not contain floats")  # noqa: E721
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
-        mapping = cast(Mapping[object, object], value)
-        for key, item in mapping.items():
-            if type(key) is not str:  # noqa: E721
+        for key, item in cast(Mapping[object, object], value).items():
+            if type(key) is not str:
                 raise LocalPromotionError(f"{field_name} object keys must be strings")
             result[key] = _json_copy(item, f"{field_name}.{key}")
         return result
     if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-        sequence = cast(Sequence[object], value)
-        return [_json_copy(item, f"{field_name}[]") for item in sequence]
+        return [_json_copy(item, f"{field_name}[]") for item in cast(Sequence[object], value)]
     raise LocalPromotionError(f"{field_name} must contain only JSON values")

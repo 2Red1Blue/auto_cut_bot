@@ -8,13 +8,13 @@ import shutil
 import stat
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 from ..media.types import canonical_sha256, sha256_prefixed
 from .ffmpeg_renderer import RenderAttempt
-from .models import Recipe
+from .models import H264_MP4_VIDEO_PROFILE, Recipe
 
 _CHUNK_SIZE = 1024 * 1024
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
@@ -36,11 +36,19 @@ class QCCheck:
 
 @dataclass(frozen=True, slots=True)
 class QCReport:
-    """Closed QC outcome.  Approval is derived only from all required checks."""
+    """A serializable record of observations, not an authorization credential.
+
+    ``recipe`` and ``attempt`` are retained only in-process so that the promotion
+    boundary can independently repeat the observations.  They are deliberately
+    excluded from the manifest: Python values are public and reconstructible, so
+    a report's ``approved`` property must never be treated as a security claim.
+    """
 
     recipe_hash: str
     output_sha256: str
     checks: tuple[QCCheck, ...]
+    recipe: Recipe | None = field(default=None, repr=False, compare=False)
+    attempt: RenderAttempt | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.recipe_hash, "qc_report.recipe_hash")
@@ -91,7 +99,7 @@ class LocalQC:
             self._sample_check(attempt),
             self._coarse_visual_check(attempt),
         )
-        return QCReport(recipe.canonical_hash, attempt.output_sha256, checks)
+        return QCReport(recipe.canonical_hash, attempt.output_sha256, checks, recipe, attempt)
 
     def _identity_check(self, recipe: Recipe, attempt: RenderAttempt) -> QCCheck:
         try:
@@ -100,6 +108,7 @@ class LocalQC:
             digest, size = _sha256_file(path) if regular else ("", 0)
             passed = (
                 attempt.recipe_hash == recipe.canonical_hash
+                and attempt.profile_hash == H264_MP4_VIDEO_PROFILE.canonical_hash
                 and regular and size > 0 and digest == attempt.output_sha256
             )
             evidence: object = {"digest": digest, "regular": regular, "size": size}
@@ -137,7 +146,10 @@ class LocalQC:
         if not self._ffmpeg:
             return _check("full_decode", False, {"error": "ffmpeg unavailable"})
         completed = self._run([self._ffmpeg, "-v", "error", "-i", str(attempt.output_path), "-map", "0:v:0", "-an", "-f", "null", "-"])
-        return _check("full_decode", completed is not None and completed.returncode == 0, _completed_evidence(completed))
+        return _check(
+            "full_decode", completed is not None and completed.returncode == 0,
+            {"returncode": None if completed is None else completed.returncode},
+        )
 
     def _sample_check(self, attempt: RenderAttempt) -> QCCheck:
         if not self._ffmpeg:
@@ -159,7 +171,10 @@ class LocalQC:
         ])
         output = b"" if completed is None else completed.stdout + completed.stderr
         detected = b"black_start:" in output or b"freeze_start:" in output
-        return _check("coarse_black_freeze_guard", completed is not None and completed.returncode == 0 and not detected, _completed_evidence(completed))
+        return _check(
+            "coarse_black_freeze_guard", completed is not None and completed.returncode == 0 and not detected,
+            {"detected": detected, "returncode": None if completed is None else completed.returncode},
+        )
 
     def _run(self, argv: list[str]) -> subprocess.CompletedProcess[bytes] | None:
         try:
