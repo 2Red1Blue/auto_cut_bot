@@ -4,14 +4,51 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import subprocess
 
 import pytest
 
-from tests.media.fixture_corpus import ffmpeg_available, load_corpus_spec, register_fixture_corpus
+from tests.media.fixture_corpus import (
+    ffmpeg_available,
+    ffprobe_available,
+    load_corpus_spec,
+    register_fixture_corpus,
+)
 
 
 def _sha256(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _independent_video_probe(source_path) -> tuple[str, list[int]]:
+    """Perform a second ffprobe read instead of trusting corpus serialization."""
+    ffprobe = shutil.which("ffprobe")
+    assert ffprobe is not None
+    completed = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=time_base:frame=media_type,best_effort_timestamp",
+            "-show_frames",
+            "-of",
+            "json",
+            str(source_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    payload = json.loads(completed.stdout)
+    return payload["streams"][0]["time_base"], [
+        frame["best_effort_timestamp"]
+        for frame in payload["frames"]
+        if frame["media_type"] == "video"
+    ]
 
 
 def test_corpus_spec_declares_ffprobe_as_the_exact_pts_authority() -> None:
@@ -20,8 +57,10 @@ def test_corpus_spec_declares_ffprobe_as_the_exact_pts_authority() -> None:
 
     assert fixture["profile"] == "test"
     assert fixture["source_filename"].endswith(".mp4")
-    assert "ffprobe" in fixture["ground_truth"]["exact_pts"]
-    assert "pts" not in fixture["ground_truth"].get("known_values", {})
+    assert fixture["ground_truth"]["exact_pts"]["representation"] == "integer_pts_index"
+    validity = fixture["ground_truth"]["validity_intervals"]
+    assert validity["schema_version"] == 1
+    assert validity["representation"] == "integer_pts_closed_intervals"
 
 
 def test_fixture_registration_rejects_production_before_external_work(tmp_path, monkeypatch) -> None:
@@ -31,11 +70,12 @@ def test_fixture_registration_rejects_production_before_external_work(tmp_path, 
         register_fixture_corpus(tmp_path, profile="production")
 
 
-def test_fixture_registration_generates_hashed_local_mp4(tmp_path) -> None:
-    if not ffmpeg_available():
-        pytest.skip("ffmpeg is not installed; local media fixture corpus cannot be generated")
+@pytest.mark.parametrize("profile", ["test", "shadow"])
+def test_fixture_registration_generates_hashed_local_mp4(tmp_path, profile) -> None:
+    if not ffmpeg_available() or not ffprobe_available():
+        pytest.skip("ffmpeg and ffprobe are required to generate and verify the local media fixture corpus")
 
-    registration = register_fixture_corpus(tmp_path)
+    registration = register_fixture_corpus(tmp_path, profile=profile)
 
     assert registration.source_path.is_file()
     assert registration.source_path.stat().st_size > 0
@@ -47,6 +87,19 @@ def test_fixture_registration_generates_hashed_local_mp4(tmp_path) -> None:
     sidecar = json.loads(registration.sidecar_path.read_text(encoding="utf-8"))
     manifest = json.loads(registration.manifest_path.read_text(encoding="utf-8"))
     assert sidecar["source"]["content_sha256"] == registration.source_content_sha256
-    assert "ffprobe" in sidecar["ground_truth"]["exact_pts"]
+    assert registration.profile == profile
+    assert sidecar["generator"]["ffmpeg_path"] == shutil.which("ffmpeg")
+    assert sidecar["generator"]["ffmpeg_version"].startswith("ffmpeg version")
     assert manifest["sidecar"]["sha256"] == registration.sidecar_sha256
     assert manifest["source"]["content_sha256"] == registration.source_content_sha256
+    assert manifest["probe"]["ffprobe_path"] == shutil.which("ffprobe")
+    assert manifest["probe"]["ffprobe_version"].startswith("ffprobe version")
+
+    time_base, pts_index = _independent_video_probe(registration.source_path)
+    exact_pts = sidecar["ground_truth"]["exact_pts"]
+    validity = sidecar["ground_truth"]["validity_intervals"]
+    assert exact_pts["time_base"] == time_base
+    assert exact_pts["values"] == pts_index
+    assert all(isinstance(value, int) and not isinstance(value, bool) for value in pts_index)
+    assert validity["intervals"] == [{"end_pts": pts_index[-1], "start_pts": pts_index[0]}]
+    assert all(pts_index[0] <= value <= pts_index[-1] for value in pts_index)

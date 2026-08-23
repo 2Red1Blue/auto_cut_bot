@@ -17,6 +17,7 @@ from typing import Any
 
 _CORPUS_SPEC_PATH = Path(__file__).parent / "fixtures" / "corpus-spec.json"
 _TEST_PROFILE = "test"
+_SHADOW_PROFILE = "shadow"
 _FIXTURE_ID = "lavfi-testsrc2-sine-10fps-v1"
 
 
@@ -37,6 +38,11 @@ class FixtureCorpusRegistration:
 def ffmpeg_available() -> bool:
     """Return whether the local fixture generator can be executed."""
     return shutil.which("ffmpeg") is not None
+
+
+def ffprobe_available() -> bool:
+    """Return whether exact timestamp evidence can be read locally."""
+    return shutil.which("ffprobe") is not None
 
 
 def load_corpus_spec() -> dict[str, Any]:
@@ -72,6 +78,64 @@ def _fixture_definition(spec: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"media fixture corpus spec is missing {_FIXTURE_ID!r}")
 
 
+def _executable_version(executable: str) -> str:
+    completed = subprocess.run(
+        [executable, "-version"], capture_output=True, text=True, check=False
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"could not read version for executable: {executable}")
+    version = completed.stdout.splitlines()[0] if completed.stdout else ""
+    if not version:
+        raise RuntimeError(f"executable did not report a version: {executable}")
+    return version
+
+
+def _probe_video_evidence(ffprobe: str, source_path: Path) -> tuple[str, tuple[int, ...]]:
+    """Read the exact video frame index as integer ticks from ffprobe."""
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=time_base:frame=media_type,best_effort_timestamp",
+        "-show_frames",
+        "-of",
+        "json",
+        str(source_path),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or "ffprobe returned no stderr"
+        raise RuntimeError(f"ffprobe could not read media fixture evidence: {stderr}")
+    try:
+        payload = json.loads(completed.stdout)
+        streams = payload["streams"]
+        frames = payload["frames"]
+        time_base = streams[0]["time_base"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("ffprobe returned incomplete media fixture evidence") from error
+    if not isinstance(time_base, str) or "/" not in time_base:
+        raise RuntimeError("ffprobe did not return a video time base")
+
+    pts: list[int] = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            raise RuntimeError("ffprobe returned a malformed frame record")
+        if frame.get("media_type") != "video":
+            continue
+        raw_pts = frame.get("best_effort_timestamp")
+        if not isinstance(raw_pts, int) or isinstance(raw_pts, bool):
+            raise RuntimeError("ffprobe frame is missing an integer best_effort_timestamp")
+        pts.append(raw_pts)
+    if not pts:
+        raise RuntimeError("ffprobe did not return video frame timestamps")
+    if pts != sorted(set(pts)):
+        raise RuntimeError("ffprobe video frame PTS index is not strictly increasing")
+    return time_base, tuple(pts)
+
+
 def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> FixtureCorpusRegistration:
     """Generate and register the controlled MP4 fixture under ``tmp_path``.
 
@@ -80,12 +144,15 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
     """
     if profile == "production":
         raise ValueError("the media fixture corpus must not be registered with profile='production'")
-    if profile != _TEST_PROFILE:
+    if profile not in {_TEST_PROFILE, _SHADOW_PROFILE}:
         raise ValueError(f"unsupported media fixture corpus profile: {profile!r}")
 
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise FileNotFoundError("ffmpeg is required to generate the local media fixture corpus")
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise FileNotFoundError("ffprobe is required to record exact local media fixture timestamps")
 
     spec = load_corpus_spec()
     definition = _fixture_definition(spec)
@@ -154,11 +221,36 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
         raise RuntimeError("ffmpeg completed without producing a non-empty MP4 fixture")
 
     source_sha256 = _sha256_file(source_path)
+    time_base, pts_index = _probe_video_evidence(ffprobe, source_path)
+    ground_truth_template = definition.get("ground_truth")
+    if not isinstance(ground_truth_template, dict):
+        raise ValueError("media fixture definition must contain ground truth metadata")
+    validity_template = ground_truth_template.get("validity_intervals")
+    if not isinstance(validity_template, dict):
+        raise ValueError("media fixture ground truth must contain validity interval metadata")
+    interval_schema_version = validity_template.get("schema_version")
+    if not isinstance(interval_schema_version, int):
+        raise ValueError("media fixture validity interval schema_version must be an integer")
+
     sidecar_path = output_dir / "lavfi-testsrc2-sine-10fps-v1.sidecar.json"
     sidecar = {
         "fixture_id": _FIXTURE_ID,
         "generation": generation,
-        "ground_truth": definition["ground_truth"],
+        "generator": {"ffmpeg_path": ffmpeg, "ffmpeg_version": _executable_version(ffmpeg)},
+        "ground_truth": {
+            "exact_pts": {
+                "authoritative_source": "ffprobe video-frame best_effort_timestamp",
+                "representation": "integer_pts_index",
+                "time_base": time_base,
+                "values": list(pts_index),
+            },
+            "validity_intervals": {
+                "coverage": "all_indexed_video_pts",
+                "intervals": [{"end_pts": pts_index[-1], "start_pts": pts_index[0]}],
+                "representation": "integer_pts_closed_intervals",
+                "schema_version": interval_schema_version,
+            },
+        },
         "profile": profile,
         "schema_version": spec_schema_version(spec),
         "source": {
@@ -172,6 +264,7 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
     manifest = {
         "fixture_id": _FIXTURE_ID,
         "profile": profile,
+        "probe": {"ffprobe_path": ffprobe, "ffprobe_version": _executable_version(ffprobe)},
         "schema_version": spec_schema_version(spec),
         "sidecar": {"filename": sidecar_path.name, "sha256": sidecar_sha256},
         "source": {"content_sha256": source_sha256, "filename": source_path.name},

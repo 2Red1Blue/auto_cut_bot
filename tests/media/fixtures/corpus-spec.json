@@ -23,8 +23,19 @@
         }
       },
       "ground_truth": {
-        "exact_pts": "Intentionally omitted. Consumers must obtain exact packet/frame PTS with ffprobe.",
-        "sidecar_role": "Records the controlled generation recipe and content hashes; it does not infer timestamps."
+        "schema_version": 1,
+        "exact_pts": {
+          "representation": "integer_pts_index",
+          "authoritative_source": "ffprobe video-frame best_effort_timestamp",
+          "population": "Generated at fixture registration; never calculated from frame rate or duration."
+        },
+        "validity_intervals": {
+          "schema_version": 1,
+          "representation": "integer_pts_closed_intervals",
+          "coverage": "all_indexed_video_pts",
+          "population": "Generated from the ffprobe integer PTS index."
+        },
+        "sidecar_role": "Records the controlled generation recipe, tool provenance, exact ffprobe evidence, and content hashes."
       }
     }
   ]
