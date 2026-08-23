@@ -1,0 +1,1 @@
+{"boundary":"schema_only_owner_payload_source","fixtures":"structural_synthetic_only","format":"autocut.stage-02-owner-source-tests/v1","prohibitions":["No reference dereference or semantic interpretation.","No Envelope, Registry, command, producer, writer, rule registration, trace identity, evaluator, or runtime readiness claim."]}
