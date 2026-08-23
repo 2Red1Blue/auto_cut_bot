@@ -1,6 +1,13 @@
 """Durable semantic persistence for the local Pipeline MVP."""
 
-from .errors import CommandStateError, RuntimeStoreError, StaleHeadError, StoreValidationError
+from .errors import (
+    CommandStateError,
+    IdempotencyConflictError,
+    RuntimeStoreError,
+    StaleHeadError,
+    StoreConcurrencyError,
+    StoreValidationError,
+)
 from .models import (
     ArtifactMember,
     ArtifactScope,
@@ -20,9 +27,11 @@ __all__ = [
     "CommandRejection",
     "CommandStateError",
     "CommandSuccess",
+    "IdempotencyConflictError",
     "Job",
     "PostgresRuntimeStore",
     "RuntimeStoreError",
     "StaleHeadError",
+    "StoreConcurrencyError",
     "StoreValidationError",
 ]

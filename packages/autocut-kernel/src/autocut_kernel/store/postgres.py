@@ -11,7 +11,16 @@ from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import UUID, uuid4
 
-from .errors import CommandStateError, StaleHeadError, StoreValidationError
+from psycopg import DatabaseError, InterfaceError, ProgrammingError
+
+from .errors import (
+    CommandStateError,
+    IdempotencyConflictError,
+    RuntimeStoreError,
+    StaleHeadError,
+    StoreConcurrencyError,
+    StoreValidationError,
+)
 from .models import (
     ArtifactMember,
     CommandClaim,
@@ -51,40 +60,72 @@ class PostgresRuntimeStore:
             raise StoreValidationError("connection_factory must be callable")
         self._connection_factory = connection_factory
 
+    # ------------------------------------------------------------------
+    # claim_command
+    # ------------------------------------------------------------------
+
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
-        """Create or replay a canonical command claim for one durable Job."""
+        """Create or replay a canonical command claim for one durable Job.
+
+        Uses INSERT … ON CONFLICT DO NOTHING RETURNING so that two
+        concurrent callers with the same (job, idempotency_key) pair
+        never leak a raw unique-violation to the application.
+        """
 
         def operation(cursor: DbCursor) -> CommandOutcome:
             job_id = self._ensure_job(cursor, claim.job)
-            cursor.execute(
-                """
-                SELECT command_slot_id, command_name, request_hash, state
-                  FROM runtime.command_slots
-                 WHERE job_id = %s AND idempotency_key = %s FOR UPDATE
-                """,
-                (job_id, claim.idempotency_key),
-            )
-            existing = cursor.fetchone()
-            if existing is not None:
-                slot_id, command_name, request_hash, _state = existing
-                if command_name != claim.command_name or request_hash != claim.request_hash:
-                    raise StoreValidationError(
-                        "idempotency key was already claimed by a different command"
-                    )
-                return self._read_outcome_by_slot(cursor, UUID(str(slot_id)), job_id)
+
             slot_id = uuid4()
             cursor.execute(
                 """
                 INSERT INTO runtime.command_slots
                     (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
                 VALUES (%s, %s, %s, %s, %s, 'running')
+                ON CONFLICT (job_id, idempotency_key) DO NOTHING
+                RETURNING command_slot_id
                 """,
                 (slot_id, job_id, claim.idempotency_key, claim.command_name, claim.request_hash),
             )
-            cursor.execute("UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s", (job_id,))
-            return CommandOutcome(command_slot_id=slot_id, state="running", job_id=job_id)
+            row = cursor.fetchone()
+            if row is not None:
+                # A new key may only be claimed while the aggregate Job is open.
+                # Locking this row makes terminal-is-closed deterministic even
+                # when completion races a new command claim.
+                job_state = self._locked_job_state(cursor, job_id)
+                if job_state not in ("pending", "running"):
+                    raise CommandStateError("job is already terminal; new commands are closed")
+                if job_state == "pending":
+                    cursor.execute(
+                        "UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s",
+                        (job_id,),
+                    )
+                return CommandOutcome(command_slot_id=slot_id, state="running", job_id=job_id)
+
+            # Idempotency replay: lock and re-read the existing slot.
+            cursor.execute(
+                """
+                SELECT command_slot_id, command_name, request_hash, state
+                  FROM runtime.command_slots
+                 WHERE job_id = %s AND idempotency_key = %s
+                   FOR UPDATE
+                """,
+                (job_id, claim.idempotency_key),
+            )
+            existing = cursor.fetchone()
+            if existing is None:
+                raise RuntimeStoreError("command slot vanished after conflict")
+            slot_id_existing, command_name, request_hash, _state = existing
+            if command_name != claim.command_name or request_hash != claim.request_hash:
+                raise IdempotencyConflictError(
+                    "idempotency key was already claimed by a different command"
+                )
+            return self._read_outcome_by_slot(cursor, UUID(str(slot_id_existing)), job_id)
 
         return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # commit_command_success
+    # ------------------------------------------------------------------
 
     def commit_command_success(self, success: CommandSuccess) -> CommandOutcome:
         """Atomically persist one non-empty immutable result set and success Receipt."""
@@ -180,6 +221,10 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    # ------------------------------------------------------------------
+    # commit_command_rejection
+    # ------------------------------------------------------------------
+
     def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome:
         """Atomically persist a terminal deny/fail Receipt without inventing an ArtifactSet."""
 
@@ -216,6 +261,10 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    # ------------------------------------------------------------------
+    # read_outcome
+    # ------------------------------------------------------------------
+
     def read_outcome(self, job: Job, idempotency_key: str) -> CommandOutcome | None:
         """Read the durable state of a previously claimed semantic command."""
 
@@ -241,22 +290,42 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    # ------------------------------------------------------------------
+    # internal helpers
+    # ------------------------------------------------------------------
+
     def _ensure_job(self, cursor: DbCursor, job: Job) -> UUID:
-        cursor.execute(
-            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s FOR UPDATE", (job.job_key,)
-        )
-        existing = cursor.fetchone()
-        if existing is not None:
-            job_id, profile = existing
-            if profile != job.profile:
-                raise StoreValidationError("job_key cannot be reused with a different profile")
-            return UUID(str(job_id))
+        """Insert-or-verify one Job row, never leaking a raw unique violation.
+
+        Uses INSERT … ON CONFLICT DO NOTHING RETURNING so that two concurrent
+        _ensure_job calls for the same job_key never race.
+        """
         job_id = uuid4()
         cursor.execute(
-            "INSERT INTO runtime.jobs (job_id, job_key, profile, state) VALUES (%s, %s, %s, 'pending')",
+            """
+            INSERT INTO runtime.jobs (job_id, job_key, profile, state)
+            VALUES (%s, %s, %s, 'pending')
+            ON CONFLICT (job_key) DO NOTHING
+            RETURNING job_id, profile
+            """,
             (job_id, job.job_key, job.profile),
         )
-        return job_id
+        row = cursor.fetchone()
+        if row is not None:
+            return UUID(str(row[0]))
+
+        # Another transaction already created this job — verify profile match.
+        cursor.execute(
+            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s FOR UPDATE",
+            (job.job_key,),
+        )
+        existing = cursor.fetchone()
+        if existing is None:
+            raise RuntimeStoreError("job vanished after conflict")
+        existing_id, profile = existing
+        if profile != job.profile:
+            raise StoreValidationError("job_key cannot be reused with a different profile")
+        return UUID(str(existing_id))
 
     @staticmethod
     def _locked_slot(cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str]:
@@ -270,12 +339,27 @@ class PostgresRuntimeStore:
         return UUID(str(row[0])), str(row[1])
 
     @staticmethod
+    def _locked_job_state(cursor: DbCursor, job_id: UUID) -> str:
+        cursor.execute("SELECT state FROM runtime.jobs WHERE job_id = %s FOR UPDATE", (job_id,))
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeStoreError("job vanished before command claim")
+        return str(row[0])
+
+    @staticmethod
     def _complete(cursor: DbCursor, slot_id: UUID, job_id: UUID, outcome: str) -> None:
         cursor.execute(
-            "UPDATE runtime.command_slots SET state = %s, completed_at = transaction_timestamp() WHERE command_slot_id = %s",
+            "UPDATE runtime.command_slots SET state = %s, completed_at = transaction_timestamp()"
+            " WHERE command_slot_id = %s",
             (outcome, slot_id),
         )
-        cursor.execute("UPDATE runtime.jobs SET state = %s WHERE job_id = %s", (outcome, job_id))
+        # Only transition job state forward from running to terminal.
+        # Once a job is terminal it stays terminal — later commands never
+        # overwrite the aggregate outcome.
+        cursor.execute(
+            "UPDATE runtime.jobs SET state = %s WHERE job_id = %s AND state = 'running'",
+            (outcome, job_id),
+        )
 
     def _assert_next_revision(self, cursor: DbCursor, job_id: UUID, member: ArtifactMember) -> None:
         cursor.execute(
@@ -341,25 +425,45 @@ class PostgresRuntimeStore:
         )
 
     def _transaction(self, operation: Callable[[DbCursor], _Result]) -> _Result:
-        connection = self._connection_factory()
-        cursor = connection.cursor()
+        connection: DbConnection | None = None
+        cursor: DbCursor | None = None
         try:
+            connection = self._connection_factory()
+            cursor = connection.cursor()
             result = operation(cursor)
             connection.commit()
             return result
         except Exception as error:
-            connection.rollback()
-            if self._is_first_head_race(error):
-                raise StaleHeadError(
-                    "a concurrent command created the same logical head"
-                ) from error
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            if isinstance(error, RuntimeStoreError):
+                raise
+            sqlstate = getattr(error, "sqlstate", None)
+            if sqlstate == "23505":
+                raise StaleHeadError("a concurrent write violated a unique constraint") from error
+            if sqlstate in ("40001", "40P01"):
+                raise StoreConcurrencyError("database transaction should be retried") from error
+            if self._is_runtime_database_error(error):
+                raise RuntimeStoreError("database operation failed") from error
             raise
         finally:
-            cursor.close()
-            connection.close()
+            if cursor is not None:
+                cursor.close()
+            if connection is not None:
+                connection.close()
 
     @staticmethod
     def _is_first_head_race(error: Exception) -> bool:
         return getattr(
             error, "sqlstate", None
         ) == "23505" and "runtime_artifacts_scope_revision_key" in str(error)
+
+    @staticmethod
+    def _is_runtime_database_error(error: Exception) -> bool:
+        """Keep caller mistakes visible while hiding driver-level failures."""
+        return isinstance(error, (DatabaseError, InterfaceError)) and not isinstance(
+            error, ProgrammingError
+        )

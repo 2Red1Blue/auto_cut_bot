@@ -141,8 +141,23 @@ class CommandRejection:
     outcome: Literal["denied", "failed"] = "denied"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("command_slot_id must be a UUID")
         _text(self.failure_code, "failure_code")
         _text(self.failure_detail_json, "failure_detail_json")
+        try:
+            detail = json.loads(
+                self.failure_detail_json,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"invalid JSON constant {value}")
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError("failure_detail_json must contain JSON") from error
+        if not isinstance(detail, dict):
+            raise StoreValidationError("failure_detail_json must contain a JSON object")
+        if self.outcome not in ("denied", "failed"):
+            raise StoreValidationError("outcome must be 'denied' or 'failed'")
 
 
 @dataclass(frozen=True, slots=True)

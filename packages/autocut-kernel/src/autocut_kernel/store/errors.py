@@ -9,8 +9,16 @@ class StoreValidationError(RuntimeStoreError):
     """Raised before a malformed command can reach PostgreSQL."""
 
 
+class IdempotencyConflictError(RuntimeStoreError):
+    """An idempotency key was reused for a different command intent."""
+
+
 class StaleHeadError(RuntimeStoreError):
     """A competing command advanced or created the same logical artifact head."""
+
+
+class StoreConcurrencyError(RuntimeStoreError):
+    """PostgreSQL aborted the transaction due to a retryable concurrency conflict."""
 
 
 class CommandStateError(RuntimeStoreError):
