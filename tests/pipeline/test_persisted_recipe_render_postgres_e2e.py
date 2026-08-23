@@ -81,7 +81,11 @@ def _recipe_reference(
             )
             row = cursor.fetchone()
     assert row is not None
-    return RecipeReference(scope, "recipe", 1, str(row[0]))
+    content_hash = row[0]
+    if isinstance(content_hash, bytes):
+        content_hash = content_hash.decode("ascii")
+    assert isinstance(content_hash, str)
+    return RecipeReference(scope, "recipe", 1, content_hash)
 
 
 def _set_hash(member: ArtifactMember) -> str:
