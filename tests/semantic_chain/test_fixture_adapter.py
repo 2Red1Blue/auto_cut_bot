@@ -14,13 +14,12 @@ from autocut_kernel.media.types import (
     VideoStreamEvidence,
     canonical_sha256,
 )
-from autocut_kernel.physical_edit import FixtureBeatInput
 from autocut_kernel.semantic_chain import (
+    CatalogCandidateRef,
+    CatalogResolution,
     EvidenceRef,
     FactKind,
     FixtureAdapterDenied,
-    FixtureCandidateBinding,
-    FixtureCatalog,
     FixtureCatalogAdapter,
     RegisteredFact,
     SemanticChain,
@@ -51,78 +50,74 @@ def _media() -> MediaEvidence:
     )
 
 
-def _registered() -> tuple[
-    FixtureCatalogAdapter,
-    SemanticChain,
-    MediaEvidence,
-    EvidenceRef,
-    FixtureCandidateBinding,
-    FixtureBeatInput,
-]:
+class _Loader:
+    def __init__(self, evidence: MediaEvidence) -> None:
+        self.evidence = evidence
+
+    def load_exact(self, evidence_artifact: EvidenceRef) -> MediaEvidence:
+        assert evidence_artifact.content_hash == canonical_sha256(self.evidence.to_json())
+        return self.evidence
+
+
+class _Registry:
+    """Test-only trusted registry: identity guards provenance, hashes guard drift."""
+
+    def __init__(self, candidate: CatalogCandidateRef, evidence: MediaEvidence) -> None:
+        self.candidate = candidate
+        self.evidence = evidence
+
+    def resolve_exact(self, candidate: CatalogCandidateRef, media_evidence: MediaEvidence) -> CatalogResolution:
+        if candidate != self.candidate:
+            raise FixtureAdapterDenied("candidate is not registered by this fixture catalog")
+        if media_evidence is not self.evidence:
+            raise FixtureAdapterDenied("registry requires the exact persisted MediaEvidence identity")
+        if candidate.catalog_source_id != "fixture_catalog_v1" or candidate.catalog_source_hash != _hash("e"):
+            raise FixtureAdapterDenied("catalog source ID/hash do not match registration")
+        if candidate.profile is not SemanticProfile.TEST:
+            raise FixtureAdapterDenied("candidate profile does not match registration")
+        if candidate.evidence.content_hash != canonical_sha256(media_evidence.to_json()):
+            raise FixtureAdapterDenied("media evidence artifact hash does not match registration")
+        if media_evidence.pts_index_sha256 != canonical_sha256(list(media_evidence.pts_index.ticks)):
+            raise FixtureAdapterDenied("PTS index hash does not match registration")
+        if media_evidence.source.sha256 != _hash("a"):
+            raise FixtureAdapterDenied("source hash does not match registration")
+        if (media_evidence.fixture_manifest_sha256, media_evidence.fixture_sidecar_sha256) != (_hash("c"), _hash("d")):
+            raise FixtureAdapterDenied("fixture hashes do not match registration")
+        return CatalogResolution(candidate, candidate.evidence)
+
+
+def _registered() -> tuple[FixtureCatalogAdapter, SemanticChain, CatalogCandidateRef, MediaEvidence]:
     media = _media()
     evidence = EvidenceRef("media_evidence_v1", canonical_sha256(media.to_json()))
+    candidate = CatalogCandidateRef("candidate_v1", "fixture_catalog_v1", _hash("e"), evidence, SemanticProfile.TEST)
     chain = SemanticChainBuilder().build(
-        SemanticChainInput(
-            SemanticProfile.TEST,
-            (evidence,),
-            (RegisteredFact("fact_v1", FactKind.OBSERVATION, evidence),),
-        )
+        SemanticChainInput(SemanticProfile.TEST, (evidence,), (RegisteredFact("fact_v1", FactKind.OBSERVATION, evidence, candidate),))
     )
-    binding = FixtureCandidateBinding(
-        "candidate_v1", evidence, SemanticProfile.TEST, "fixture_catalog_v1"
-    )
-    beat = FixtureBeatInput(0, 10, 20, 40, 10)
-    catalog = FixtureCatalog.registered(
-        "fixture_catalog_v1", SemanticProfile.TEST, ((binding, beat),)
-    )
-    return FixtureCatalogAdapter(catalog), chain, media, evidence, binding, beat
+    return FixtureCatalogAdapter(_Loader(media), _Registry(candidate, media)), chain, candidate, media
 
 
-def test_adapter_resolves_only_the_registered_candidate_for_exact_committed_evidence() -> None:
-    adapter, chain, media, evidence, binding, beat = _registered()
-    assert adapter.resolve(chain, media, evidence, binding) is beat
+def test_adapter_resolves_only_candidate_bound_through_the_semantic_chain() -> None:
+    adapter, chain, candidate, _ = _registered()
+    assert adapter.resolve(chain, candidate) == CatalogResolution(candidate, candidate.evidence)
+    foreign = CatalogCandidateRef("candidate_other", "fixture_catalog_v1", _hash("e"), candidate.evidence, SemanticProfile.TEST)
+    with pytest.raises(FixtureAdapterDenied, match="exact catalog candidate"):
+        adapter.resolve(chain, foreign)
 
 
-def test_adapter_denies_foreign_or_uncommitted_evidence_and_profile() -> None:
-    adapter, chain, media, evidence, binding, _ = _registered()
-    foreign = EvidenceRef("media_evidence_other", evidence.content_hash)
-    with pytest.raises(FixtureAdapterDenied, match="exact committed"):
-        adapter.resolve(chain, media, foreign, binding)
-    altered = replace(media, fixture_id="other_fixture")
-    with pytest.raises(FixtureAdapterDenied, match="does not match"):
-        adapter.resolve(chain, altered, evidence, binding)
-    shadow_chain = SemanticChainBuilder().build(
-        SemanticChainInput(
-            SemanticProfile.SHADOW,
-            (evidence,),
-            (RegisteredFact("fact_v1", FactKind.OBSERVATION, evidence),),
-        )
-    )
-    with pytest.raises(FixtureAdapterDenied, match="profiles must match"):
-        adapter.resolve(shadow_chain, media, evidence, binding)
+def test_adapter_rejects_forged_self_consistent_evidence_without_trusted_provenance_identity() -> None:
+    _, chain, candidate, media = _registered()
+    forged = replace(media)
+    adapter = FixtureCatalogAdapter(_Loader(forged), _Registry(candidate, media))
+    with pytest.raises(FixtureAdapterDenied, match="exact persisted MediaEvidence identity"):
+        adapter.resolve(chain, candidate)
 
 
-def test_adapter_denies_pts_or_mapping_injection_through_semantic_inputs() -> None:
-    adapter, chain, media, evidence, binding, _ = _registered()
+def test_adapter_accepts_only_an_opaque_catalog_reference() -> None:
+    adapter, chain, candidate, _ = _registered()
     with pytest.raises(FixtureAdapterDenied):
-        adapter.resolve(chain, media, evidence, {"candidate_id": binding.candidate_id})  # type: ignore[arg-type]
-    with pytest.raises(FixtureAdapterDenied):
-        adapter.resolve(chain, {"path": "fixture.mp4"}, evidence, binding)  # type: ignore[arg-type]
-    with pytest.raises(FixtureAdapterDenied):
-        adapter.resolve(chain, None, evidence, binding)  # type: ignore[arg-type]
-    with pytest.raises(FixtureAdapterDenied):
-        FixtureCandidateBinding(
-            "production_candidate", evidence, SemanticProfile.PRODUCTION, "fixture_catalog_v1"
-        )
+        adapter.resolve(chain, {"candidate_id": candidate.candidate_id})  # type: ignore[arg-type]
     with pytest.raises(TypeError):
-        FixtureCandidateBinding(
-            "candidate_v2",
-            evidence,
-            SemanticProfile.TEST,
-            "fixture_catalog_v1",
-            desired_start_pts=999,
-        )  # type: ignore[call-arg]
+        adapter.resolve(chain, candidate, desired_start_pts=999)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        adapter.resolve(chain, media, evidence, binding, desired_start_pts=999)  # type: ignore[call-arg]
-    semantic_artifact = chain.to_mapping()
-    assert "pts" not in repr(semantic_artifact).lower()
+        adapter.resolve(chain, candidate, {"path": "fixture.mp4"})  # type: ignore[call-arg]
+    assert "pts" not in repr(chain.to_mapping()).lower()

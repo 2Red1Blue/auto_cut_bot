@@ -112,12 +112,47 @@ class EvidenceRef:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogCandidateRef:
+    """An opaque catalog candidate selected by a registered source fact.
+
+    This is deliberately a reference, not a cut request: it has no location,
+    timing, mapping, or media payload.  The catalog source hash makes a
+    candidate name meaningful only within one immutable catalog revision.
+    """
+
+    candidate_id: str
+    catalog_source_id: str
+    catalog_source_hash: str
+    evidence: EvidenceRef
+    profile: SemanticProfile
+
+    def __post_init__(self) -> None:
+        _opaque_id(self.candidate_id, "candidate.candidate_id")
+        _opaque_id(self.catalog_source_id, "candidate.catalog_source_id")
+        _sha256(self.catalog_source_hash, "candidate.catalog_source_hash")
+        if type(self.evidence) is not EvidenceRef:  # noqa: E721
+            raise SemanticChainDenied("candidate.evidence must be an EvidenceRef")
+        if type(self.profile) is not SemanticProfile or self.profile is SemanticProfile.PRODUCTION:  # noqa: E721
+            raise SemanticChainDenied("candidate.profile must be a non-production SemanticProfile")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "candidate_id": self.candidate_id,
+            "catalog_source_hash": self.catalog_source_hash,
+            "catalog_source_id": self.catalog_source_id,
+            "evidence": self.evidence.to_mapping(),
+            "profile": self.profile.value,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RegisteredFact:
     """One typed fact whose evidence must be registered by the chain input."""
 
     fact_id: str
     kind: FactKind
     evidence: EvidenceRef
+    candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
         _opaque_id(self.fact_id, "fact.fact_id")
@@ -125,9 +160,18 @@ class RegisteredFact:
             raise SemanticChainDenied("fact.kind must be a FactKind")
         if type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("fact.evidence must be an EvidenceRef")
+        if type(self.candidate) is not CatalogCandidateRef:  # noqa: E721
+            raise SemanticChainDenied("fact.candidate must be a CatalogCandidateRef")
+        if self.candidate.evidence != self.evidence:
+            raise SemanticChainDenied("fact candidate must bind its exact evidence")
 
     def to_mapping(self) -> dict[str, object]:
-        return {"evidence": self.evidence.to_mapping(), "fact_id": self.fact_id, "kind": self.kind.value}
+        return {
+            "candidate": self.candidate.to_mapping(),
+            "evidence": self.evidence.to_mapping(),
+            "fact_id": self.fact_id,
+            "kind": self.kind.value,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,6 +203,8 @@ class SemanticChainInput:
         registered = {(item.artifact_id, item.content_hash) for item in evidence}
         if any((fact.evidence.artifact_id, fact.evidence.content_hash) not in registered for fact in facts):
             raise SemanticChainDenied("fact evidence is missing from the registered input evidence")
+        if any(fact.candidate.profile is not self.profile for fact in facts):
+            raise SemanticChainDenied("fact candidates must bind the input profile")
         object.__setattr__(self, "evidence", evidence)
         object.__setattr__(self, "facts", facts)
 
@@ -182,15 +228,18 @@ class NarrativeNode:
     node_id: str
     fact_id: str
     evidence: EvidenceRef
+    candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
         _opaque_id(self.node_id, "narrative_node.node_id")
         _opaque_id(self.fact_id, "narrative_node.fact_id")
         if type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("narrative_node.evidence must be an EvidenceRef")
+        if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
+            raise SemanticChainDenied("narrative_node must bind its exact candidate evidence")
 
     def to_mapping(self) -> dict[str, object]:
-        return {"evidence": self.evidence.to_mapping(), "fact_id": self.fact_id, "node_id": self.node_id}
+        return {"candidate": self.candidate.to_mapping(), "evidence": self.evidence.to_mapping(), "fact_id": self.fact_id, "node_id": self.node_id}
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,15 +274,18 @@ class EventCard:
     node_id: str
     kind: EventKind
     evidence: EvidenceRef
+    candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
         _opaque_id(self.event_id, "event.event_id")
         _opaque_id(self.node_id, "event.node_id")
         if type(self.kind) is not EventKind or type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("event must contain an EventKind and EvidenceRef")
+        if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
+            raise SemanticChainDenied("event must bind its exact candidate evidence")
 
     def to_mapping(self) -> dict[str, object]:
-        return {"evidence": self.evidence.to_mapping(), "event_id": self.event_id, "kind": self.kind.value, "node_id": self.node_id}
+        return {"candidate": self.candidate.to_mapping(), "evidence": self.evidence.to_mapping(), "event_id": self.event_id, "kind": self.kind.value, "node_id": self.node_id}
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,15 +320,18 @@ class BlueprintBeat:
     event_id: str
     role: BeatRole
     evidence: EvidenceRef
+    candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
         _opaque_id(self.beat_id, "blueprint_beat.beat_id")
         _opaque_id(self.event_id, "blueprint_beat.event_id")
         if type(self.role) is not BeatRole or type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("blueprint beat must contain a BeatRole and EvidenceRef")
+        if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
+            raise SemanticChainDenied("blueprint beat must bind its exact candidate evidence")
 
     def to_mapping(self) -> dict[str, object]:
-        return {"beat_id": self.beat_id, "event_id": self.event_id, "evidence": self.evidence.to_mapping(), "role": self.role.value}
+        return {"beat_id": self.beat_id, "candidate": self.candidate.to_mapping(), "event_id": self.event_id, "evidence": self.evidence.to_mapping(), "role": self.role.value}
 
 
 @dataclass(frozen=True, slots=True)

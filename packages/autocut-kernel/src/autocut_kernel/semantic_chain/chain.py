@@ -76,9 +76,10 @@ class SemanticChainBuilder:
         self._require_input(source)
         nodes = tuple(
             NarrativeNode(
-                _derived_id("node", {"fact_id": fact.fact_id, "evidence": fact.evidence.to_mapping()}),
+                _derived_id("node", {"fact_id": fact.fact_id, "candidate": fact.candidate.to_mapping()}),
                 fact.fact_id,
                 fact.evidence,
+                fact.candidate,
             )
             for fact in sorted(source.facts, key=lambda item: item.fact_id)
         )
@@ -91,7 +92,13 @@ class SemanticChainBuilder:
             raise SemanticChainDenied("story stage requires the exact narrative for its registered input")
         facts = {fact.fact_id: fact for fact in source.facts}
         events = tuple(
-            EventCard(_derived_id("event", node.to_mapping()), node.node_id, _event_kind(facts[node.fact_id]), node.evidence)
+            EventCard(
+                _derived_id("event", node.to_mapping()),
+                node.node_id,
+                _event_kind(facts[node.fact_id]),
+                node.evidence,
+                node.candidate,
+            )
             for node in narrative.nodes
         )
         return Story(_derived_id("story", [event.to_mapping() for event in events]), narrative.canonical_hash, source.profile, events)
@@ -102,7 +109,13 @@ class SemanticChainBuilder:
         if type(story) is not Story or story.canonical_hash != expected_story.canonical_hash:  # noqa: E721
             raise SemanticChainDenied("blueprint stage requires the exact story for its registered input")
         beats = tuple(
-            BlueprintBeat(_derived_id("beat", event.to_mapping()), event.event_id, _beat_role(index, len(story.events)), event.evidence)
+            BlueprintBeat(
+                _derived_id("beat", event.to_mapping()),
+                event.event_id,
+                _beat_role(index, len(story.events)),
+                event.evidence,
+                event.candidate,
+            )
             for index, event in enumerate(story.events)
         )
         return EditorialBlueprint(_derived_id("blueprint", [beat.to_mapping() for beat in beats]), story.canonical_hash, source.profile, beats)

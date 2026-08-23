@@ -1,153 +1,113 @@
-"""Closed test-fixture bridge from semantic identities to physical-edit PTS.
+"""Boundary interfaces for resolving semantic catalog references in fixtures.
 
-PTS values are deliberately kept inside this module's registered catalog.  A
-semantic chain can name a candidate, but it cannot carry or override that
-candidate's timing values.
+The semantic package deliberately does not own a physical-edit catalog. A
+trusted persistence adapter loads committed ``MediaEvidence`` before a catalog
+service can resolve an opaque candidate reference. Python object privacy is not
+a hostile-code security boundary; these interfaces make provenance checks
+explicit at the integration edge.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from ..media.types import MediaEvidence, canonical_sha256
-from ..physical_edit import FixtureBeatInput
 from .chain import SemanticChain
-from .models import EvidenceRef, SemanticChainDenied, SemanticProfile, _opaque_id
+from .models import CatalogCandidateRef, EvidenceRef, SemanticChainDenied, SemanticProfile
 
 
 class FixtureAdapterDenied(SemanticChainDenied):
     """A fixture-catalog resolution did not meet its closed admission rules."""
 
 
-def _non_production_profile(value: object, field_name: str) -> SemanticProfile:
-    if type(value) is not SemanticProfile or value is SemanticProfile.PRODUCTION:  # noqa: E721
-        raise FixtureAdapterDenied(f"{field_name} must be a non-production SemanticProfile")
-    return value
-
-
 @dataclass(frozen=True, slots=True)
-class FixtureCandidateBinding:
-    """Opaque semantic identity for one catalog-owned fixture candidate."""
+class CatalogResolution:
+    """Opaque confirmation that a catalog candidate was resolved.
 
-    candidate_id: str
-    evidence: EvidenceRef
-    profile: SemanticProfile
-    catalog_source_id: str
+    Timing and physical-edit payloads remain in the registry-owning layer and
+    are not exposed by this semantic public API.
+    """
+
+    candidate: CatalogCandidateRef
+    evidence_artifact: EvidenceRef
 
     def __post_init__(self) -> None:
-        _opaque_id(self.candidate_id, "candidate.candidate_id")
-        if type(self.evidence) is not EvidenceRef:  # noqa: E721
-            raise FixtureAdapterDenied("candidate.evidence must be an EvidenceRef")
-        _non_production_profile(self.profile, "candidate.profile")
-        _opaque_id(self.catalog_source_id, "candidate.catalog_source_id")
+        if type(self.candidate) is not CatalogCandidateRef:  # noqa: E721
+            raise FixtureAdapterDenied("resolution requires a CatalogCandidateRef")
+        if type(self.evidence_artifact) is not EvidenceRef:  # noqa: E721
+            raise FixtureAdapterDenied("resolution requires an EvidenceRef")
+        if self.candidate.evidence != self.evidence_artifact:
+            raise FixtureAdapterDenied("resolution must bind the candidate evidence artifact")
 
 
-@dataclass(frozen=True, slots=True)
-class _FixtureCatalogEntry:
-    """One private catalog record; its PTS values never cross the semantic API."""
+@runtime_checkable
+class PersistedMediaEvidenceLoader(Protocol):
+    """Trusted persistence boundary that returns the exact persisted evidence object."""
 
-    binding: FixtureCandidateBinding
-    beat: FixtureBeatInput
-
-    def __post_init__(self) -> None:
-        if type(self.binding) is not FixtureCandidateBinding:  # noqa: E721
-            raise FixtureAdapterDenied("catalog entry must contain a FixtureCandidateBinding")
-        if type(self.beat) is not FixtureBeatInput:  # noqa: E721
-            raise FixtureAdapterDenied("catalog entry must contain a FixtureBeatInput")
+    def load_exact(self, evidence_artifact: EvidenceRef) -> MediaEvidence:
+        """Load the exact persisted evidence identified by ``evidence_artifact``."""
+        raise NotImplementedError
 
 
-@dataclass(frozen=True, slots=True)
-class FixtureCatalog:
-    """Closed in-memory registration of fixture-only candidate timing records."""
+@runtime_checkable
+class FixtureCandidateRegistry(Protocol):
+    """Fixture-owned service for opaque candidate resolution.
 
-    catalog_source_id: str
-    profile: SemanticProfile
-    _entries: tuple[_FixtureCatalogEntry, ...]
+    Implementations must reject a merely self-consistent object that is not
+    their exact persisted evidence record. They must check catalog source
+    ID/hash, profile, media-evidence artifact hash, PTS-index hash, source
+    hash, and fixture manifest/sidecar hashes before returning a resolution.
+    """
 
-    def __post_init__(self) -> None:
-        _opaque_id(self.catalog_source_id, "catalog.catalog_source_id")
-        _non_production_profile(self.profile, "catalog.profile")
-        entries = tuple(self._entries)
-        if not entries or any(type(item) is not _FixtureCatalogEntry for item in entries):  # noqa: E721
-            raise FixtureAdapterDenied(
-                "catalog entries must be non-empty registered fixture entries"
-            )
-        candidate_ids = tuple(item.binding.candidate_id for item in entries)
-        if len(candidate_ids) != len(set(candidate_ids)):
-            raise FixtureAdapterDenied("catalog candidate identifiers must be unique")
-        if any(
-            item.binding.catalog_source_id != self.catalog_source_id
-            or item.binding.profile is not self.profile
-            for item in entries
-        ):
-            raise FixtureAdapterDenied("catalog entries must bind this exact source and profile")
-        object.__setattr__(self, "_entries", entries)
-
-    @classmethod
-    def registered(
-        cls,
-        catalog_source_id: str,
-        profile: SemanticProfile,
-        registrations: tuple[tuple[FixtureCandidateBinding, FixtureBeatInput], ...],
-    ) -> FixtureCatalog:
-        """Create the only catalog construction path, from typed registrations."""
-
-        return cls(
-            catalog_source_id,
-            profile,
-            tuple(_FixtureCatalogEntry(binding, beat) for binding, beat in registrations),
-        )
-
-    def _resolve(self, binding: FixtureCandidateBinding) -> FixtureBeatInput:
-        for entry in self._entries:
-            if entry.binding == binding:
-                return entry.beat
-        raise FixtureAdapterDenied("candidate is not registered by this fixture catalog")
+    def resolve_exact(
+        self,
+        candidate: CatalogCandidateRef,
+        media_evidence: MediaEvidence,
+    ) -> CatalogResolution:
+        """Resolve ``candidate`` only for the exact trusted media evidence."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, slots=True)
 class FixtureCatalogAdapter:
-    """Resolve a semantic candidate only against its exact committed fixture evidence."""
+    """Bind a semantic candidate to trusted persisted evidence before registry lookup."""
 
-    catalog: FixtureCatalog
+    provenance_loader: PersistedMediaEvidenceLoader
+    registry: FixtureCandidateRegistry
 
     def __post_init__(self) -> None:
-        if type(self.catalog) is not FixtureCatalog:  # noqa: E721
-            raise FixtureAdapterDenied("adapter requires a FixtureCatalog")
+        if not callable(getattr(self.provenance_loader, "load_exact", None)):
+            raise FixtureAdapterDenied("adapter requires a persisted evidence loader")
+        if not callable(getattr(self.registry, "resolve_exact", None)):
+            raise FixtureAdapterDenied("adapter requires a fixture candidate registry")
 
-    def resolve(
-        self,
-        chain: SemanticChain,
-        media_evidence: MediaEvidence,
-        evidence_artifact: EvidenceRef,
-        candidate: FixtureCandidateBinding,
-    ) -> FixtureBeatInput:
-        """Return catalog PTS only after exact chain, evidence, and source binding checks."""
+    def resolve(self, chain: SemanticChain, candidate: CatalogCandidateRef) -> CatalogResolution:
+        """Resolve only a candidate already carried by this exact semantic chain.
+
+        Callers cannot supply PTS, a physical-edit input, a media mapping, or a
+        path here. The trusted loader supplies committed media evidence and the
+        registry verifies it against its persisted catalog registration.
+        """
 
         if type(chain) is not SemanticChain:  # noqa: E721
             raise FixtureAdapterDenied("adapter requires a SemanticChain")
+        if type(candidate) is not CatalogCandidateRef:  # noqa: E721
+            raise FixtureAdapterDenied("adapter requires a CatalogCandidateRef")
+        if chain.profile is SemanticProfile.PRODUCTION or candidate.profile is SemanticProfile.PRODUCTION:
+            raise FixtureAdapterDenied("production profile is denied for fixture catalog resolution")
+        if chain.profile is not candidate.profile:
+            raise FixtureAdapterDenied("chain and candidate profiles must match exactly")
+        if not any(beat.candidate == candidate for beat in chain.blueprint.beats):
+            raise FixtureAdapterDenied("semantic chain does not bind the exact catalog candidate")
+        media_evidence = self.provenance_loader.load_exact(candidate.evidence)
         if type(media_evidence) is not MediaEvidence:  # noqa: E721
-            raise FixtureAdapterDenied("adapter requires committed MediaEvidence")
-        if type(evidence_artifact) is not EvidenceRef:  # noqa: E721
-            raise FixtureAdapterDenied("adapter requires an EvidenceRef artifact identity")
-        if type(candidate) is not FixtureCandidateBinding:  # noqa: E721
-            raise FixtureAdapterDenied("adapter requires a FixtureCandidateBinding")
-        if chain.profile is SemanticProfile.PRODUCTION:
-            raise FixtureAdapterDenied(
-                "production profile is denied for fixture catalog resolution"
-            )
-        if not (chain.profile is self.catalog.profile is candidate.profile):
-            raise FixtureAdapterDenied("chain, catalog, and candidate profiles must match exactly")
-        if candidate.catalog_source_id != self.catalog.catalog_source_id:
-            raise FixtureAdapterDenied("candidate catalog source does not match this catalog")
-        if candidate.evidence != evidence_artifact:
-            raise FixtureAdapterDenied("candidate must bind the exact committed evidence artifact")
-        if evidence_artifact.content_hash != canonical_sha256(media_evidence.to_json()):
-            raise FixtureAdapterDenied(
-                "evidence artifact hash does not match committed MediaEvidence"
-            )
-        if not any(beat.evidence == evidence_artifact for beat in chain.blueprint.beats):
-            raise FixtureAdapterDenied(
-                "semantic chain does not bind the committed evidence artifact"
-            )
-        return self.catalog._resolve(candidate)
+            raise FixtureAdapterDenied("provenance loader must return committed MediaEvidence")
+        if candidate.evidence.content_hash != canonical_sha256(media_evidence.to_json()):
+            raise FixtureAdapterDenied("media evidence artifact hash does not match committed MediaEvidence")
+        resolution = self.registry.resolve_exact(candidate, media_evidence)
+        if type(resolution) is not CatalogResolution:  # noqa: E721
+            raise FixtureAdapterDenied("registry must return a CatalogResolution")
+        if resolution.candidate != candidate or resolution.evidence_artifact != candidate.evidence:
+            raise FixtureAdapterDenied("registry resolution does not bind the requested candidate and evidence")
+        return resolution

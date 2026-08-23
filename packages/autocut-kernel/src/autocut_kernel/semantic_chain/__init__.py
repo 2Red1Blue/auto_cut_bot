@@ -2,14 +2,16 @@
 
 from .chain import SemanticChain, SemanticChainBuilder
 from .fixture_adapter import (
+    CatalogResolution,
     FixtureAdapterDenied,
-    FixtureCandidateBinding,
-    FixtureCatalog,
+    FixtureCandidateRegistry,
     FixtureCatalogAdapter,
+    PersistedMediaEvidenceLoader,
 )
 from .models import (
     BeatRole,
     BlueprintBeat,
+    CatalogCandidateRef,
     EditorialBlueprint,
     EventCard,
     EventKind,
@@ -31,18 +33,20 @@ from .models import (
 __all__ = [
     "BeatRole",
     "BlueprintBeat",
+    "CatalogCandidateRef",
+    "CatalogResolution",
     "EditorialBlueprint",
     "EventCard",
     "EventKind",
     "EvidenceRef",
     "FixtureAdapterDenied",
-    "FixtureCandidateBinding",
-    "FixtureCatalog",
     "FixtureCatalogAdapter",
+    "FixtureCandidateRegistry",
     "FactKind",
     "NarrativeGraph",
     "NarrativeNode",
     "ProductionProfileDenied",
+    "PersistedMediaEvidenceLoader",
     "RegisteredFact",
     "SemanticChain",
     "SemanticChainBuilder",
