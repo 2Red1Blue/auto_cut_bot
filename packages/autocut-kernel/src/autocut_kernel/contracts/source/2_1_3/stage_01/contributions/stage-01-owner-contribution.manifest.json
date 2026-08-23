@@ -35,7 +35,7 @@
     ]
   },
   "producer_manifest_path": "contributions/stage-01-owner-contribution.manifest.json",
-  "producer_file_count": 14,
+  "producer_file_count": 13,
   "producer_files": [
     {
       "path": "contracts/stage-01-rule-obligations.json",
@@ -47,23 +47,19 @@
     },
     {
       "path": "contributions/stage-01-owner-contribution.manifest.schema.json",
-      "raw_sha256": "sha256:eb2fa0bcb42b823b686d20bfaa5ad75c0948a5b129292d25d104edc71fd038fd"
+      "raw_sha256": "sha256:09e2e8dc80b4d9e2ef8c48b658d046342bf240ad754e765dc22e040c81b8014c"
     },
     {
       "path": "fixtures/stage-01-owner-source-valid.json",
       "raw_sha256": "sha256:335954bd92749e8eaff3206f18f66eb2186d95c6e8743d67d5dec913877b4a81"
     },
     {
-      "path": "schemas/admission/coverage-stage-details.schema.json",
-      "raw_sha256": "sha256:60c5b3425188405f8bf9df23ee207b946559a481ec7ce418d8478cdd8033a4e9"
-    },
-    {
       "path": "schemas/coverage-ledger.schema.json",
-      "raw_sha256": "sha256:03f0e9e90f7254349c3e9fe4a89f66b05aafd98857394280de6e591b6ebec37e"
+      "raw_sha256": "sha256:1ff9bbccf367e627bd3c3cab7b6055ea3e8e466cdb96e75d67c54cc6db1561ef"
     },
     {
       "path": "schemas/dependency-closure-proof.schema.json",
-      "raw_sha256": "sha256:2788c87007171b253daab478909802d928349e6f910d2def86a7a38b00edefd8"
+      "raw_sha256": "sha256:cc3f1b9cf30593d55b7ac33ce30c0def85bf275e0b7e134d20d3a9ad21805ab6"
     },
     {
       "path": "schemas/dependency-propagation-policy.schema.json",
@@ -87,17 +83,17 @@
     },
     {
       "path": "tests/test-stage-01-owner-source.json",
-      "raw_sha256": "sha256:f81cf5270cd664e065e3b2ff28030a1f3b5c983458cc34d4224340b71924e002"
+      "raw_sha256": "sha256:ca89bbf2a4f463f8dc6a3a0d36579a94e73161be3cf75784552260350ac7fc90"
     }
   ],
   "repository_validation": {
     "path": "tests/contracts/test_stage01_owner_contribution.py",
-    "raw_sha256": "sha256:eaf2ebcdc720471fb06dfa045ff34fbeb182649eda914800894cc7954df1c69f"
+    "raw_sha256": "sha256:eb8c70f149e2e9e3b2a5631b6a3e21c51dabb4dd3d171e5668b3cae537b25db4"
   },
   "withheld": [
     "evidence_diagnostics",
     "conflict_diagnostics",
-    "admission_result_wrapper"
+    "outcome_wrapper"
   ],
   "status": {
     "owner_payload_source_partial": true,
@@ -105,6 +101,6 @@
   },
   "deferred_bindings": [
     "F/G-owned identities and bindings remain unresolved.",
-    "Diagnostics and the Admission wrapper remain withheld."
+    "Diagnostics and the outcome wrapper remain withheld."
   ]
 }
