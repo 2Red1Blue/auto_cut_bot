@@ -15,7 +15,13 @@ from autocut_kernel.output.local_promotion import LocalPromotionService
 from autocut_kernel.rendering import H264_MP4_VIDEO_PROFILE, Recipe
 from autocut_kernel.rendering.ffmpeg_renderer import RenderAttempt
 from autocut_kernel.rendering.qc import QCCheck, QCReport
-from autocut_kernel.store import Job, PersistedRecipe, PostgresRuntimeStore, RecipeReference
+from autocut_kernel.store import (
+    ArtifactScope,
+    Job,
+    PersistedRecipe,
+    PostgresRuntimeStore,
+    RecipeReference,
+)
 from autocut_kernel.store.models import canonical_recipe_scope
 
 
@@ -145,6 +151,32 @@ def test_digest_conflict_preserves_current_pointer(
     request.staging_asset.write_bytes(b"tampered")
     with pytest.raises(LocalPromotionError, match="digest"):
         _promote(request, store)
+    assert result.current_path.read_bytes() == previous  # type: ignore[attr-defined]
+
+
+def test_service_rejects_wrong_recipe_scope_without_replacing_current_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request, store = _request(tmp_path, monkeypatch)
+    result = _promote(request, store)
+    previous = result.current_path.read_bytes()  # type: ignore[attr-defined]
+    wrong_reference = RecipeReference(
+        ArtifactScope("pipeline", "job", "another-job"),
+        request.recipe_reference.logical_id,
+        request.recipe_reference.revision,
+        request.recipe_reference.content_hash,
+    )
+    wrong_scope_request = LocalPromotionRequest(
+        request.output_root,
+        request.job,
+        request.attempt_id,
+        request.staging_asset,
+        request.asset_sha256,
+        request.qc_report,
+        wrong_reference,
+    )
+    with pytest.raises(LocalPromotionError, match="canonical scope"):
+        _promote(wrong_scope_request, store)
     assert result.current_path.read_bytes() == previous  # type: ignore[attr-defined]
 
 

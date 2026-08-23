@@ -17,6 +17,7 @@ from uuid import UUID
 from ..rendering import Recipe, RecipeValidationError, parse_recipe
 from ..rendering.qc import LocalQC, QCReport
 from ..store import Job, PostgresRuntimeStore, RecipeReference, RuntimeStoreError
+from ..store.models import canonical_recipe_scope
 
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
@@ -158,6 +159,8 @@ def _validate_request_shape(request: LocalPromotionRequest) -> None:
         raise LocalPromotionError("job must be a Store Job")
     if not isinstance(cast(object, request.recipe_reference), RecipeReference):
         raise LocalPromotionError("recipe_reference must be a RecipeReference")
+    if request.recipe_reference.scope != canonical_recipe_scope(request.job):
+        raise LocalPromotionError("recipe_reference scope is not the canonical scope for job")
     _validate_digest(request.asset_sha256, "asset_sha256")
     _validate_namespace_component(request.job.job_key, "job.job_key")
     _validate_namespace_component(request.attempt_id, "attempt_id")
