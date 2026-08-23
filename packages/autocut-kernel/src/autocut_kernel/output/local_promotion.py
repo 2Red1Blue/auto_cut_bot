@@ -43,7 +43,6 @@ class LocalPromotionRequest:
     staging_asset: Path
     asset_sha256: str
     qc_report: QCReport
-    store: PostgresRuntimeStore
     recipe_reference: RecipeReference
 
 
@@ -56,7 +55,36 @@ class PromotionResult:
     manifest_sha256: str
 
 
+class LocalPromotionService:
+    """Trusted composition boundary for DB-backed local visibility.
+
+    The service's Store is supplied by application composition, not a caller
+    request.  This models application trust boundaries, not hostile Python
+    code: code able to instantiate or monkey-patch this service already has
+    process authority and is outside this API's authorization model.
+    """
+
+    def __init__(self, store: PostgresRuntimeStore) -> None:
+        if type(store) is not PostgresRuntimeStore:
+            raise LocalPromotionError("store must be an exact PostgresRuntimeStore")
+        self._store = store
+
+    def promote(self, request: LocalPromotionRequest) -> PromotionResult:
+        return _promote_local_output(request, self._store)
+
+
 def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
+    """Deprecated unsafe-free compatibility entrypoint.
+
+    It cannot make output visible because it has no injected Store.  Use
+    :class:`LocalPromotionService` at application composition instead.
+    """
+    raise LocalPromotionError("local promotion requires a trusted LocalPromotionService")
+
+
+def _promote_local_output(
+    request: LocalPromotionRequest, store: PostgresRuntimeStore
+) -> PromotionResult:
     """Independently re-QC a staging asset before making it current.
 
     Immutable files live in ``assets/sha256`` and
@@ -64,7 +92,7 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
     ``results/<job>/current.json``. Attempts are diagnostic evidence only.
     """
     _validate_request_shape(request)
-    recipe, store_job_id = _rehydrate_persisted_recipe(request)
+    recipe, store_job_id = _rehydrate_persisted_recipe(request, store)
     report = _reverify_promotion_inputs(request, recipe)
     asset_hex = request.asset_sha256[7:]
     asset_relative = PurePosixPath("assets") / "sha256" / asset_hex[:2] / f"{asset_hex}.mp4"
@@ -126,8 +154,6 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
 def _validate_request_shape(request: LocalPromotionRequest) -> None:
     _require_secure_os_apis()
-    if not isinstance(cast(object, request.store), PostgresRuntimeStore):
-        raise LocalPromotionError("store must be a PostgresRuntimeStore")
     if not isinstance(cast(object, request.job), Job):
         raise LocalPromotionError("job must be a Store Job")
     if not isinstance(cast(object, request.recipe_reference), RecipeReference):
@@ -139,7 +165,9 @@ def _validate_request_shape(request: LocalPromotionRequest) -> None:
         raise LocalPromotionError("qc_report must be a QCReport observation")
 
 
-def _rehydrate_persisted_recipe(request: LocalPromotionRequest) -> tuple[Recipe, UUID]:
+def _rehydrate_persisted_recipe(
+    request: LocalPromotionRequest, store: PostgresRuntimeStore
+) -> tuple[Recipe, UUID]:
     """Resolve the exact artifact again at the visibility boundary.
 
     A prior renderer read is only staging evidence.  The pointer writer repeats
@@ -147,7 +175,7 @@ def _rehydrate_persisted_recipe(request: LocalPromotionRequest) -> tuple[Recipe,
     with a raw Recipe object, a supplied hash, or a look-alike reference.
     """
     try:
-        persisted = request.store.read_recipe(request.job, request.recipe_reference)
+        persisted = store.read_recipe(request.job, request.recipe_reference)
         report_recipe = request.qc_report.recipe
         if report_recipe is None:
             raise LocalPromotionError("qc_report lacks validated recipe observation")

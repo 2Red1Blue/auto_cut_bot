@@ -1,66 +1,28 @@
-"""Tests for the persisted-recipe local promotion boundary."""
+"""Tests for trusted composition of persisted-recipe promotion."""
 
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
+from dataclasses import fields
 
 import pytest
 from autocut_kernel.output import LocalPromotionError, LocalPromotionRequest, promote_local_output
-from autocut_kernel.rendering.qc import QCCheck, QCReport
-from autocut_kernel.store import ArtifactScope, Job, RecipeReference
+from autocut_kernel.output.local_promotion import LocalPromotionService
+from autocut_kernel.store import PostgresRuntimeStore
 
 
-def _digest(value: bytes) -> str:
-    return f"sha256:{hashlib.sha256(value).hexdigest()}"
+def test_request_cannot_substitute_a_store() -> None:
+    """Store selection belongs to service construction, never request data."""
+    assert "store" not in {field.name for field in fields(LocalPromotionRequest)}
 
 
-def _request(root: Path, staging: Path, *, store: object = object()) -> LocalPromotionRequest:
-    recipe_hash = _digest(b"recipe")
-    return LocalPromotionRequest(
-        output_root=root,
-        job=Job("job-1", "test"),
-        attempt_id="attempt-1",
-        staging_asset=staging,
-        asset_sha256=_digest(staging.read_bytes()),
-        qc_report=QCReport(
-            recipe_hash,
-            _digest(staging.read_bytes()),
-            (QCCheck("identity", True, _digest(b"evidence")),),
-        ),
-        store=store,  # type: ignore[arg-type]
-        recipe_reference=RecipeReference(
-            ArtifactScope("pipeline", "job", "job-1"), "recipe", 1, recipe_hash
-        ),
-    )
+def test_legacy_function_cannot_make_output_visible_without_service() -> None:
+    with pytest.raises(LocalPromotionError, match="trusted LocalPromotionService"):
+        promote_local_output(object())  # type: ignore[arg-type]
 
 
-def test_rejects_non_store_promotion_authority_before_creating_current_pointer(tmp_path: Path) -> None:
-    staging = tmp_path / "render.mp4"
-    staging.write_bytes(b"untrusted render")
+def test_service_rejects_a_postgres_store_subclass() -> None:
+    class SubstituteStore(PostgresRuntimeStore):
+        pass
 
-    with pytest.raises(LocalPromotionError, match="PostgresRuntimeStore"):
-        promote_local_output(_request(tmp_path / "output", staging))
-
-    assert not list((tmp_path / "output").rglob("current.json")) if (tmp_path / "output").exists() else True
-
-
-def test_rejects_attribute_compatible_recipe_reference_before_creating_current_pointer(
-    tmp_path: Path,
-) -> None:
-    staging = tmp_path / "render.mp4"
-    staging.write_bytes(b"untrusted render")
-    request = _request(tmp_path / "output", staging)
-    request = LocalPromotionRequest(
-        request.output_root,
-        request.job,
-        request.attempt_id,
-        request.staging_asset,
-        request.asset_sha256,
-        request.qc_report,
-        request.store,
-        object(),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(LocalPromotionError, match="PostgresRuntimeStore"):
-        promote_local_output(request)
+    with pytest.raises(LocalPromotionError, match="exact PostgresRuntimeStore"):
+        LocalPromotionService(SubstituteStore(lambda: None))  # type: ignore[arg-type]

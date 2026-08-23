@@ -20,8 +20,8 @@ from ..output import (
     LocalPromotionError,
     LocalPromotionRequest,
     PromotionResult,
-    promote_local_output,
 )
+from ..output.local_promotion import LocalPromotionService
 from ..rendering import (
     H264_MP4_VIDEO_PROFILE,
     Recipe,
@@ -62,7 +62,6 @@ class RenderLocalRequest:
 class PersistedRenderLocalRequest:
     """One render authorized by an exact immutable Store recipe identity."""
 
-    store: PostgresRuntimeStore
     job: Job
     recipe_reference: RecipeReference
     source_path: Path
@@ -116,7 +115,16 @@ RenderLocalOutcome: TypeAlias = RenderLocalDenied | RenderLocalFailed | RenderLo
 class LocalRenderOrchestrator:
     """Sequence validation, staging render, derived QC, then atomic promotion."""
 
-    def __init__(self, *, renderer: FFmpegRenderer | None = None, qc: LocalQC | None = None) -> None:
+    def __init__(
+        self,
+        store: PostgresRuntimeStore | None = None,
+        *,
+        renderer: FFmpegRenderer | None = None,
+        qc: LocalQC | None = None,
+    ) -> None:
+        if store is not None and type(store) is not PostgresRuntimeStore:
+            raise ValueError("store must be an exact PostgresRuntimeStore")
+        self._store = store
         self._renderer = renderer
         self._qc = qc
 
@@ -166,7 +174,9 @@ class LocalRenderOrchestrator:
     def execute_persisted(self, request: PersistedRenderLocalRequest) -> RenderLocalOutcome:
         """Render and promote only a Store-rehydrated immutable recipe artifact."""
         try:
-            persisted = request.store.read_recipe(request.job, request.recipe_reference)
+            if self._store is None:
+                raise ValueError("persisted rendering requires a trusted Store")
+            persisted = self._store.read_recipe(request.job, request.recipe_reference)
             source_hash, source_size = _source_identity(request.source_path)
             recipe = parse_recipe(
                 json.loads(persisted.payload_json),
@@ -208,7 +218,7 @@ class LocalRenderOrchestrator:
             return RenderLocalDenied(_qc_failure_code(report), "derived QC report rejected render", attempt, report)
 
         try:
-            promotion = promote_local_output(
+            promotion = LocalPromotionService(self._store).promote(
                 LocalPromotionRequest(
                     output_root=request.output_root,
                     job=request.job,
@@ -216,7 +226,6 @@ class LocalRenderOrchestrator:
                     staging_asset=attempt.output_path,
                     asset_sha256=attempt.output_sha256,
                     qc_report=report,
-                    store=request.store,
                     recipe_reference=request.recipe_reference,
                 )
             )
@@ -236,13 +245,14 @@ def render_local(
 
 
 def render_persisted_local(
+    store: PostgresRuntimeStore,
     request: PersistedRenderLocalRequest,
     *,
     renderer: FFmpegRenderer | None = None,
     qc: LocalQC | None = None,
 ) -> RenderLocalOutcome:
     """Render and atomically promote one exact Store-owned recipe artifact."""
-    return LocalRenderOrchestrator(renderer=renderer, qc=qc).execute_persisted(request)
+    return LocalRenderOrchestrator(store, renderer=renderer, qc=qc).execute_persisted(request)
 
 
 def _validate_recipe_and_source(request: RenderLocalRequest) -> Recipe:
