@@ -39,3 +39,11 @@ class RecipeUnavailableError(RuntimeStoreError):
 
 class RecipeIntegrityError(RuntimeStoreError):
     """A persisted Recipe row does not satisfy its immutable provenance contract."""
+
+
+class MediaEvidenceUnavailableError(RuntimeStoreError):
+    """The exact persisted MediaEvidence identity is not available to this Job."""
+
+
+class MediaEvidenceIntegrityError(RuntimeStoreError):
+    """A MediaEvidence row does not satisfy its immutable provenance contract."""

@@ -17,6 +17,8 @@ from .errors import (
     CommandStateError,
     IdempotencyConflictError,
     JobProfileMismatchError,
+    MediaEvidenceIntegrityError,
+    MediaEvidenceUnavailableError,
     PersistenceConflictError,
     RecipeIntegrityError,
     RecipeUnavailableError,
@@ -32,6 +34,8 @@ from .models import (
     CommandRejection,
     CommandSuccess,
     Job,
+    MediaEvidenceReference,
+    PersistedMediaEvidence,
     PersistedRecipe,
     RecipeReference,
 )
@@ -385,6 +389,96 @@ class PostgresRuntimeStore:
                 )
             except (StoreValidationError, TypeError, ValueError) as error:
                 raise RecipeIntegrityError("persisted recipe payload failed immutable hash validation") from error
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # read_media_evidence
+    # ------------------------------------------------------------------
+
+    def read_media_evidence(
+        self, job: Job, reference: MediaEvidenceReference
+    ) -> PersistedMediaEvidence:
+        """Read one exact, succeeded immutable MediaEvidence artifact for ``job``.
+
+        Callers must provide the full scope/type/logical/revision/content
+        identity. This query intentionally does not use ``runtime.logical_heads``.
+        """
+
+        def operation(cursor: DbCursor) -> PersistedMediaEvidence:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise MediaEvidenceUnavailableError("job has no persisted media evidence")
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+
+            cursor.execute(
+                """
+                SELECT artifact.payload_json::text, artifact.job_id, receipt.receipt_id,
+                       artifact_set.artifact_set_id, slot.command_slot_id
+                  FROM runtime.artifacts AS artifact
+                  JOIN runtime.artifact_set_members AS member
+                    ON member.artifact_set_id = artifact.artifact_set_id
+                   AND member.artifact_id = artifact.artifact_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = artifact.artifact_set_id
+                   AND artifact_set.job_id = artifact.job_id
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = artifact_set.command_slot_id
+                   AND slot.job_id = artifact.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                 WHERE artifact.job_id = %s
+                   AND artifact.namespace = %s
+                   AND artifact.scope_kind = %s
+                   AND artifact.scope_key = %s
+                   AND artifact.artifact_type = %s
+                   AND artifact.logical_id = %s
+                   AND artifact.revision = %s
+                   AND artifact.content_hash = %s
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                """,
+                (
+                    UUID(str(job_id)),
+                    reference.scope.namespace,
+                    reference.scope.kind,
+                    reference.scope.key,
+                    reference.artifact_type,
+                    reference.logical_id,
+                    reference.revision,
+                    reference.content_hash,
+                ),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if not rows:
+                raise MediaEvidenceUnavailableError("exact media evidence artifact is unavailable")
+            if len(rows) != 1:
+                raise MediaEvidenceIntegrityError(
+                    "exact media evidence identity resolved to multiple durable rows"
+                )
+            payload_json, result_job_id, receipt_id, artifact_set_id, command_slot_id = rows[0]
+            try:
+                return PersistedMediaEvidence(
+                    reference=reference,
+                    payload_json=_text(payload_json),
+                    job_id=UUID(str(result_job_id)),
+                    receipt_id=UUID(str(receipt_id)),
+                    artifact_set_id=UUID(str(artifact_set_id)),
+                    command_slot_id=UUID(str(command_slot_id)),
+                )
+            except (StoreValidationError, TypeError, ValueError) as error:
+                raise MediaEvidenceIntegrityError(
+                    "persisted media evidence payload failed immutable hash validation"
+                ) from error
 
         return self._transaction(operation)
 

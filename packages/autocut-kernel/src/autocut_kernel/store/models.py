@@ -143,6 +143,56 @@ class PersistedRecipe:
 
 
 @dataclass(frozen=True, slots=True)
+class MediaEvidenceReference:
+    """The complete immutable identity of one persisted ``media_evidence`` artifact.
+
+    Its payload is deliberately retained as JSON by :class:`PersistedMediaEvidence`.
+    A media adapter can therefore parse the exact source evidence fields (including
+    ``source.sha256`` and ``source.byte_size``) without a lossy store projection.
+    """
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["media_evidence"] = "media_evidence"
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "media_evidence":
+            raise StoreValidationError(
+                "media evidence reference artifact_type must be 'media_evidence'"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedMediaEvidence:
+    """Verified MediaEvidence JSON and the succeeded command provenance that owns it."""
+
+    reference: MediaEvidenceReference
+    payload_json: str
+    job_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.job_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("job_id must be a UUID")
+        if not isinstance(self.receipt_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("receipt_id must be a UUID")
+        if not isinstance(self.artifact_set_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("artifact_set_id must be a UUID")
+        if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("command_slot_id must be a UUID")
+        if _canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError("payload_json does not match media evidence content_hash")
+
+
+@dataclass(frozen=True, slots=True)
 class CommandClaim:
     job: Job
     idempotency_key: str

@@ -13,6 +13,8 @@ from autocut_kernel.store import (
     CommandRejection,
     CommandSuccess,
     Job,
+    MediaEvidenceReference,
+    PersistedMediaEvidence,
     PersistedRecipe,
     PersistenceConflictError,
     RecipeReference,
@@ -113,6 +115,39 @@ def test_persisted_recipe_refuses_payload_hash_mismatch() -> None:
 
     with pytest.raises(StoreValidationError, match="content_hash"):
         PersistedRecipe(reference, "{}", uuid4(), uuid4(), uuid4(), uuid4())
+
+
+def test_persisted_media_evidence_retains_exact_source_evidence_json() -> None:
+    payload = '{"source":{"byte_size":42,"sha256":"sha256:' + "a" * 64 + '"}}'
+    reference = MediaEvidenceReference(
+        scope=ArtifactScope("pipeline", "job", "fixture-job"),
+        logical_id="media_evidence",
+        revision=1,
+        content_hash=digest(
+            json.dumps(
+                json.loads(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            )
+        ),
+    )
+
+    result = PersistedMediaEvidence(reference, payload, uuid4(), uuid4(), uuid4(), uuid4())
+
+    assert json.loads(result.payload_json)["source"] == {
+        "byte_size": 42,
+        "sha256": "sha256:" + "a" * 64,
+    }
+
+
+def test_persisted_media_evidence_refuses_payload_hash_mismatch() -> None:
+    reference = MediaEvidenceReference(
+        scope=ArtifactScope("pipeline", "job", "fixture-job"),
+        logical_id="media_evidence",
+        revision=1,
+        content_hash=digest("different payload"),
+    )
+
+    with pytest.raises(StoreValidationError, match="media evidence content_hash"):
+        PersistedMediaEvidence(reference, "{}", uuid4(), uuid4(), uuid4(), uuid4())
 
 
 def test_terminal_rejection_requires_structured_failure_detail() -> None:

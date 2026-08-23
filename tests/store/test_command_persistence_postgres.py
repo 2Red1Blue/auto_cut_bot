@@ -21,6 +21,9 @@ from autocut_kernel.store import (
     IdempotencyConflictError,
     Job,
     JobProfileMismatchError,
+    MediaEvidenceIntegrityError,
+    MediaEvidenceReference,
+    MediaEvidenceUnavailableError,
     PostgresRuntimeStore,
     RecipeIntegrityError,
     RecipeReference,
@@ -80,6 +83,24 @@ def _make_recipe_member(job_key: str, *, revision: int = 1, payload: object | No
         artifact_type="recipe",
         logical_id="recipe",
         revision=revision,
+        scope=ArtifactScope("pipeline", "job", job_key),
+        content_hash=_digest(encoded),
+        payload_json=encoded,
+    )
+
+
+def _make_media_evidence_member(
+    job_key: str, *, payload: object | None = None
+) -> ArtifactMember:
+    evidence_payload = payload if payload is not None else {
+        "source": {"byte_size": 42, "sha256": "sha256:" + "a" * 64},
+        "evidence_mode": "fixture_ground_truth_v1",
+    }
+    encoded = json.dumps(evidence_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return ArtifactMember(
+        artifact_type="media_evidence",
+        logical_id="media_evidence",
+        revision=1,
         scope=ArtifactScope("pipeline", "job", job_key),
         content_hash=_digest(encoded),
         payload_json=encoded,
@@ -289,6 +310,71 @@ def test_read_recipe_keeps_a_prior_revision_reproducible_after_head_advance() ->
 
     assert json.loads(store.read_recipe(job, first_reference).payload_json) == {"recipe": {"revision": 1}}
     assert json.loads(store.read_recipe(job, second_reference).payload_json) == {"recipe": {"revision": 2}}
+
+
+# ---------------------------------------------------------------------------
+# Exact persisted MediaEvidence reads
+# ---------------------------------------------------------------------------
+
+
+def test_read_media_evidence_returns_only_the_exact_succeeded_identity() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("evidence-read-job", "test")
+    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request")))
+    member = _make_media_evidence_member(job.job_key)
+    succeeded = store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,))
+    )
+    reference = MediaEvidenceReference(
+        member.scope, member.logical_id, member.revision, member.content_hash
+    )
+
+    persisted = store.read_media_evidence(job, reference)
+
+    assert persisted.reference == reference
+    assert json.loads(persisted.payload_json)["source"] == {
+        "byte_size": 42,
+        "sha256": "sha256:" + "a" * 64,
+    }
+    assert persisted.job_id == running.job_id
+    assert persisted.command_slot_id == running.command_slot_id
+    assert persisted.receipt_id == succeeded.receipt_id
+    assert persisted.artifact_set_id == succeeded.artifact_set_id
+
+    with pytest.raises(MediaEvidenceUnavailableError):
+        store.read_media_evidence(Job("other-job", "test"), reference)
+    with pytest.raises(JobProfileMismatchError):
+        store.read_media_evidence(Job(job.job_key, "production"), reference)
+    with pytest.raises(MediaEvidenceUnavailableError):
+        store.read_media_evidence(
+            job,
+            MediaEvidenceReference(member.scope, member.logical_id, member.revision, _digest("forged")),
+        )
+
+
+def test_read_media_evidence_rejects_a_persisted_content_hash_lie() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("evidence-tamper-job", "test")
+    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request")))
+    member = ArtifactMember(
+        artifact_type="media_evidence",
+        logical_id="media_evidence",
+        revision=1,
+        scope=ArtifactScope("pipeline", "job", job.job_key),
+        content_hash=_digest("forged-content-hash"),
+        payload_json='{"source":{"byte_size":42,"sha256":"sha256:' + "a" * 64 + '"}}',
+    )
+    store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,))
+    )
+    reference = MediaEvidenceReference(
+        member.scope, member.logical_id, member.revision, member.content_hash
+    )
+
+    with pytest.raises(MediaEvidenceIntegrityError, match="hash validation"):
+        store.read_media_evidence(job, reference)
 
 
 # ---------------------------------------------------------------------------
