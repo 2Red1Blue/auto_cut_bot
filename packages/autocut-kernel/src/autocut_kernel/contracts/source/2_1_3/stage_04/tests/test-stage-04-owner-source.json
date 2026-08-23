@@ -1,0 +1,1 @@
+{"fixture_kind":"structural_synthetic_only","negative_examples":[{"rejected_field":"pass"},{"rejected_field":"safety_rule_ids"},{"rejected_field":"applied_policy_rule_ids"},{"rejected_value":"decimal token"}],"schema_targets":["time_and_media","boundary_selection_policy","media_evidence_wire","span_variant","recipe_and_junction","compilation_report","certificate_reference"]}
