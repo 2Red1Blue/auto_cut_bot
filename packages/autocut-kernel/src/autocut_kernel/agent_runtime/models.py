@@ -103,13 +103,39 @@ class AgentRunResult:
         if self.state is AgentRunState.REJECTED_BEFORE_START:
             if traces or self.output_path is not None:
                 raise AgentRuntimeError("pre-start rejection cannot contain trace or output")
-        elif not traces:
-            raise AgentRuntimeError("terminal run result must retain prior stage traces")
-        if self.state is AgentRunState.SUCCEEDED:
-            if len(traces) != len(AgentRunStage) or self.output_path is None:
-                raise AgentRuntimeError("success requires all stage traces and a promoted output path")
-        elif self.output_path is not None:
-            raise AgentRuntimeError("only success may expose a promoted output path")
+        else:
+            self._validate_terminal_trace(self.state, traces)
+            if self.state is AgentRunState.SUCCEEDED:
+                if self.output_path is None:
+                    raise AgentRuntimeError("success requires a promoted output path")
+            elif self.output_path is not None:
+                raise AgentRuntimeError("only success may expose a promoted output path")
         if self.output_path is not None and not isinstance(cast(object, self.output_path), PurePath):
             raise AgentRuntimeError("output_path must be an immutable path")
         object.__setattr__(self, "traces", traces)
+
+    @staticmethod
+    def _validate_terminal_trace(state: AgentRunState, traces: tuple[AgentStageTrace, ...]) -> None:
+        expected_order = tuple(AgentRunStage)
+        if not traces or len(traces) > len(expected_order):
+            raise AgentRuntimeError("terminal run result must retain a non-empty stage prefix")
+        if tuple(trace.stage for trace in traces) != expected_order[: len(traces)]:
+            raise AgentRuntimeError("result traces must be the unique ordered runtime stage prefix")
+        if any(trace.command_state != "succeeded" for trace in traces[:-1]):
+            raise AgentRuntimeError("all traces before the terminal stage must have succeeded")
+        if state is AgentRunState.SUCCEEDED:
+            if len(traces) != len(expected_order) or traces[-1].command_state != "succeeded":
+                raise AgentRuntimeError("success requires four succeeded stage traces")
+            return
+        expected_terminal = {
+            AgentRunState.UPSTREAM_MEDIA_DENIED: (AgentRunStage.UPSTREAM_MEDIA, "denied"),
+            AgentRunState.UPSTREAM_MEDIA_FAILED: (AgentRunStage.UPSTREAM_MEDIA, "failed"),
+            AgentRunState.SEMANTIC_DENIED: (AgentRunStage.SEMANTIC, "denied"),
+            AgentRunState.SEMANTIC_FAILED: (AgentRunStage.SEMANTIC, "failed"),
+            AgentRunState.DOWNSTREAM_MEDIA_DENIED: (AgentRunStage.DOWNSTREAM_MEDIA, "denied"),
+            AgentRunState.DOWNSTREAM_MEDIA_FAILED: (AgentRunStage.DOWNSTREAM_MEDIA, "failed"),
+            AgentRunState.RENDER_DENIED: (AgentRunStage.RENDER, "denied"),
+            AgentRunState.RENDER_FAILED: (AgentRunStage.RENDER, "failed"),
+        }[state]
+        if (traces[-1].stage, traces[-1].command_state) != expected_terminal:
+            raise AgentRuntimeError("terminal trace must match the result state")

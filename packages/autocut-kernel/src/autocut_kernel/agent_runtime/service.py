@@ -87,6 +87,15 @@ class AgentRuntimeService:
             except ScenarioRegistryDenied:
                 # A succeeded receipt without a re-resolvable bridge is an
                 # infrastructure/provenance failure, not a semantic denial.
+                traces = (
+                    *traces[:-1],
+                    AgentStageTrace(
+                        AgentRunStage.SEMANTIC,
+                        semantic_job.job_key,
+                        "failed",
+                        semantic_outcome.receipt_id,
+                    ),
+                )
                 return self._failed(intent, AgentRunState.SEMANTIC_FAILED, traces, semantic_job)
         except ScenarioRegistryDenied:
             return self._failed(intent, AgentRunState.SEMANTIC_DENIED, traces, semantic_job)
@@ -170,16 +179,19 @@ class AgentRuntimeService:
         traces: tuple[AgentStageTrace, ...],
         job: Job,
     ) -> AgentRunResult:
-        if not traces or traces[-1].job_key != job.job_key:
-            stage = {
-                AgentRunState.UPSTREAM_MEDIA_DENIED: AgentRunStage.UPSTREAM_MEDIA,
-                AgentRunState.UPSTREAM_MEDIA_FAILED: AgentRunStage.UPSTREAM_MEDIA,
-                AgentRunState.SEMANTIC_DENIED: AgentRunStage.SEMANTIC,
-                AgentRunState.SEMANTIC_FAILED: AgentRunStage.SEMANTIC,
-                AgentRunState.DOWNSTREAM_MEDIA_DENIED: AgentRunStage.DOWNSTREAM_MEDIA,
-                AgentRunState.DOWNSTREAM_MEDIA_FAILED: AgentRunStage.DOWNSTREAM_MEDIA,
-                AgentRunState.RENDER_DENIED: AgentRunStage.RENDER,
-                AgentRunState.RENDER_FAILED: AgentRunStage.RENDER,
-            }[state]
-            traces = (*traces, AgentStageTrace(stage, job.job_key, "failed" if state.value.endswith("failed") else "denied", None))
+        stage = {
+            AgentRunState.UPSTREAM_MEDIA_DENIED: AgentRunStage.UPSTREAM_MEDIA,
+            AgentRunState.UPSTREAM_MEDIA_FAILED: AgentRunStage.UPSTREAM_MEDIA,
+            AgentRunState.SEMANTIC_DENIED: AgentRunStage.SEMANTIC,
+            AgentRunState.SEMANTIC_FAILED: AgentRunStage.SEMANTIC,
+            AgentRunState.DOWNSTREAM_MEDIA_DENIED: AgentRunStage.DOWNSTREAM_MEDIA,
+            AgentRunState.DOWNSTREAM_MEDIA_FAILED: AgentRunStage.DOWNSTREAM_MEDIA,
+            AgentRunState.RENDER_DENIED: AgentRunStage.RENDER,
+            AgentRunState.RENDER_FAILED: AgentRunStage.RENDER,
+        }[state]
+        command_state = "failed" if state.value.endswith("failed") else "denied"
+        if traces and traces[-1].job_key == job.job_key:
+            traces = (*traces[:-1], AgentStageTrace(stage, job.job_key, command_state, traces[-1].receipt_id))
+        else:
+            traces = (*traces, AgentStageTrace(stage, job.job_key, command_state, None))
         return AgentRunResult(intent.run_id, intent.profile, state, traces)

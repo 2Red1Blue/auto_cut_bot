@@ -8,9 +8,12 @@ from uuid import uuid4
 import pytest
 from autocut_kernel.agent_runtime import (
     AgentRunIntent,
+    AgentRunResult,
+    AgentRunStage,
     AgentRunState,
     AgentRuntimeError,
     AgentRuntimeService,
+    AgentStageTrace,
     LocalOutputConfiguration,
 )
 from autocut_kernel.pipeline import RenderLocalDenied, RenderLocalFailed
@@ -172,7 +175,7 @@ def test_succeeded_semantic_without_recoverable_bridge_is_failed_and_stops() -> 
     )
     result = service.run(_intent())
     assert result.state is AgentRunState.SEMANTIC_FAILED
-    assert result.traces[-1].command_state == "succeeded"
+    assert result.traces[-1].command_state == "failed"
     assert semantic.calls == reader.calls == 1
     assert downstream.calls == renderer.calls == 0
 
@@ -247,6 +250,34 @@ def test_render_terminal_outcomes_stop_without_promoted_output(monkeypatch, rend
     assert renderer.calls == 1
 
 
+def test_non_pg_success_returns_current_path_with_exact_four_stage_trace(monkeypatch) -> None:
+    _permit_semantic_bridge(monkeypatch)
+
+    class RenderSuccess:
+        def __init__(self) -> None:
+            self.promotion = SimpleNamespace(current_path=Path("visible/results/current.json"))
+
+    class Renderer:
+        def execute_persisted(self, _):
+            return RenderSuccess()
+
+    monkeypatch.setattr("autocut_kernel.agent_runtime.service.RenderLocalSuccess", RenderSuccess)
+    service, _, _, _, _, _, _ = _service(
+        CommandOutcome(uuid4(), "succeeded"),
+        CommandOutcome(uuid4(), "succeeded"),
+        renderer=Renderer(),
+    )
+    result = service.run(_intent())
+    assert result.state is AgentRunState.SUCCEEDED
+    assert result.output_path == Path("visible/results/current.json")
+    assert [(trace.stage, trace.command_state) for trace in result.traces] == [
+        (AgentRunStage.UPSTREAM_MEDIA, "succeeded"),
+        (AgentRunStage.SEMANTIC, "succeeded"),
+        (AgentRunStage.DOWNSTREAM_MEDIA, "succeeded"),
+        (AgentRunStage.RENDER, "succeeded"),
+    ]
+
+
 def test_intent_accepts_only_typed_scenario_ref_and_no_physical_agent_values() -> None:
     with pytest.raises(AgentRuntimeError):
         AgentRunIntent("agent_run_" + "a" * 32, SemanticProfile.TEST, {"path": "/tmp/video.mp4"})  # type: ignore[arg-type]
@@ -264,3 +295,27 @@ def test_runtime_modules_import_no_legacy_or_provider_clients() -> None:
         imports = [alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names]
         imports += [node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
         assert not any(part in forbidden for name in imports for part in name.split("."))
+
+
+def _trace(stage: AgentRunStage, state: str = "succeeded") -> AgentStageTrace:
+    return AgentStageTrace(stage, f"job-{stage.value}", state, None)
+
+
+@pytest.mark.parametrize(
+    ("state", "traces"),
+    (
+        (AgentRunState.UPSTREAM_MEDIA_DENIED, (_trace(AgentRunStage.SEMANTIC, "denied"),)),
+        (AgentRunState.SEMANTIC_FAILED, (_trace(AgentRunStage.UPSTREAM_MEDIA), _trace(AgentRunStage.SEMANTIC, "denied"))),
+        (AgentRunState.DOWNSTREAM_MEDIA_DENIED, (_trace(AgentRunStage.UPSTREAM_MEDIA), _trace(AgentRunStage.DOWNSTREAM_MEDIA, "denied"))),
+        (AgentRunState.RENDER_FAILED, (_trace(AgentRunStage.UPSTREAM_MEDIA, "failed"), _trace(AgentRunStage.SEMANTIC, "succeeded"))),
+    ),
+)
+def test_result_rejects_out_of_order_later_or_mismatched_terminal_traces(state, traces) -> None:
+    with pytest.raises(AgentRuntimeError):
+        AgentRunResult(_intent().run_id, SemanticProfile.TEST, state, traces)
+
+
+def test_result_requires_exact_four_succeeded_traces_for_success() -> None:
+    traces = (_trace(AgentRunStage.UPSTREAM_MEDIA), _trace(AgentRunStage.SEMANTIC))
+    with pytest.raises(AgentRuntimeError):
+        AgentRunResult(_intent().run_id, SemanticProfile.TEST, AgentRunState.SUCCEEDED, traces, Path("current.json"))
