@@ -184,15 +184,19 @@ def _permit_semantic_bridge(monkeypatch) -> None:
     )
 
 
-def test_downstream_denial_stops_before_second_store_read_and_render(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("outcome_state", "state"),
+    (("denied", AgentRunState.DOWNSTREAM_MEDIA_DENIED), ("failed", AgentRunState.DOWNSTREAM_MEDIA_FAILED)),
+)
+def test_downstream_terminal_outcomes_stop_before_second_store_read_and_render(monkeypatch, outcome_state, state) -> None:
     _permit_semantic_bridge(monkeypatch)
     service, scenarios, _, _, downstream, reader, renderer = _service(
         CommandOutcome(uuid4(), "succeeded"),
         CommandOutcome(uuid4(), "succeeded"),
-        downstream=CommandOutcome(uuid4(), "denied"),
+        downstream=CommandOutcome(uuid4(), outcome_state),
     )
     result = service.run(_intent())
-    assert result.state is AgentRunState.DOWNSTREAM_MEDIA_DENIED
+    assert result.state is state
     assert scenarios.calls == ["upstream", "semantic", "downstream"]
     assert downstream.calls == reader.calls == 1
     assert renderer.calls == 0
