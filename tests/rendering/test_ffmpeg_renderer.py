@@ -13,6 +13,7 @@ from autocut_kernel.rendering.ffmpeg_renderer import (
     FFmpegRenderer,
     SourceIdentityMismatchError,
 )
+from autocut_kernel.rendering.models import RenderPlan
 
 
 def _digest(path: Path) -> str:
@@ -79,3 +80,36 @@ def test_renderer_reports_mocked_ffmpeg_failure(tmp_path: Path) -> None:
 
     with pytest.raises(FFmpegExecutionError, match="bad media"):
         FFmpegRenderer(executable="fake-ffmpeg", runner=failed).render(recipe, plan, source_path=source, staging_root=tmp_path / "staging")
+
+
+def test_renderer_rejects_a_manual_plan_with_an_extra_input(tmp_path: Path) -> None:
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    recipe = parse_recipe(_recipe(source), expected_source_sha256=_digest(source), profile="test")
+    plan = build_render_plan(recipe, source_path=source, output_path=tmp_path / "out.mp4")
+    injected = RenderPlan(
+        plan.recipe_hash,
+        plan.profile_hash,
+        plan.output_timescale,
+        plan.filter_graph,
+        plan.argv[:-1] + ("-i", "attacker.mp4", plan.argv[-1]),
+    )
+    with pytest.raises(Exception, match="argv is not trusted"):
+        FFmpegRenderer(executable="fake", runner=lambda *_args, **_kwargs: pytest.fail("must not run")).render(
+            recipe, injected, source_path=source, staging_root=tmp_path / "staging"
+        )
+
+
+def test_renderer_uses_private_source_copy_when_caller_source_mutates(tmp_path: Path) -> None:
+    source = _source(tmp_path)
+    recipe = parse_recipe(_recipe(source), expected_source_sha256=_digest(source), profile="test")
+    plan = build_render_plan(recipe, source_path=source, output_path=tmp_path / "ignored.mp4")
+
+    def mutate_then_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        source.write_bytes(b"caller source changed after staging")
+        return subprocess.run(command, **kwargs)  # type: ignore[arg-type]
+
+    attempt = FFmpegRenderer(runner=mutate_then_run).render(recipe, plan, source_path=source, staging_root=tmp_path / "staging")
+    input_index = attempt.ffmpeg_argv.index("-i") + 1
+    assert attempt.ffmpeg_argv[input_index] != str(source.absolute())
+    assert attempt.output_path.is_file()

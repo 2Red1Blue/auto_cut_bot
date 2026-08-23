@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import stat
 import subprocess
@@ -12,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..media.types import sha256_prefixed
-from .models import Recipe, RenderPlan
+from .models import H264_MP4_VIDEO_PROFILE, Recipe, RenderPlan
+from .render_plan import build_render_plan
 
 _CHUNK_SIZE = 1024 * 1024
 _MAX_STDERR_BYTES = 16 * 1024
@@ -99,8 +101,11 @@ class FFmpegRenderer:
             raise SourceIdentityMismatchError("source identity does not match recipe before rendering")
         root = _staging_root(staging_root)
         attempt_dir = Path(tempfile.mkdtemp(prefix="render-", dir=root))
+        staged_source = attempt_dir / "source.mp4"
         output = attempt_dir / "asset.mp4"
-        argv = _bound_argv(plan, source, output)
+        _require_trusted_plan(plan, recipe, source)
+        _copy_verified_source(source, staged_source, recipe)
+        argv = build_render_plan(recipe, source_path=staged_source, output_path=output).argv
         try:
             completed = self._runner(
                 [self._executable, *argv[1:]], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -113,9 +118,6 @@ class FFmpegRenderer:
         if completed.returncode != 0:
             detail = completed.stderr[:_MAX_STDERR_BYTES].decode("utf-8", "replace").strip()
             raise FFmpegExecutionError(f"ffmpeg failed: {detail or 'no stderr'}")
-        source_after_sha256, source_after_size = _sha256_file(source)
-        if source_after_sha256 != recipe.source_sha256 or source_after_size != recipe.source_byte_size:
-            raise SourceIdentityMismatchError("source identity changed while rendering")
         output = _regular_path(output, "ffmpeg output")
         output_sha256, output_size = _sha256_file(output)
         if output_size <= 0:
@@ -142,19 +144,51 @@ def render(
     )
 
 
-def _bound_argv(plan: RenderPlan, source: Path, output: Path) -> tuple[str, ...]:
-    """Bind immutable per-attempt paths without admitting a shell or extra options."""
-    argv = list(plan.argv)
+def _require_trusted_plan(plan: RenderPlan, recipe: Recipe, source: Path) -> None:
+    """Accept only the exact fixed plan shape, never caller-controlled argv."""
+    if plan.recipe_hash != recipe.canonical_hash:
+        raise RenderError("render plan recipe hash does not match recipe")
+    if plan.profile_hash != H264_MP4_VIDEO_PROFILE.canonical_hash:
+        raise RenderError("render plan profile is unsupported")
+    expected = build_render_plan(recipe, source_path=source, output_path=Path("__output__.mp4"))
+    if plan.filter_graph != expected.filter_graph:
+        raise RenderError("render plan filter graph is not trusted")
+    expected_argv = expected.argv
     try:
-        input_index = argv.index("-i") + 1
-    except ValueError as error:
-        raise RenderError("render plan has no input path") from error
-    if input_index >= len(argv) - 1 or argv[-1].startswith("-"):
-        raise RenderError("render plan has invalid input or output path")
-    argv[0] = "ffmpeg"  # The record remains portable; executable resolution happens at execution.
-    argv[input_index] = str(source)
-    argv[-1] = str(output)
-    return tuple(argv)
+        input_index = expected_argv.index("-i") + 1
+    except ValueError as error:  # Defensive: the committed plan builder is closed.
+        raise RenderError("trusted render plan has no input") from error
+    if len(plan.argv) != len(expected_argv) or input_index >= len(plan.argv):
+        raise RenderError("render plan argv is not trusted")
+    # Paths are intentionally caller-variable; every option and its position is closed.
+    for index, (actual, trusted) in enumerate(zip(plan.argv, expected_argv, strict=True)):
+        if index not in {input_index, len(plan.argv) - 1} and actual != trusted:
+            raise RenderError("render plan argv is not trusted")
+
+
+def _copy_verified_source(source: Path, destination: Path, recipe: Recipe) -> None:
+    """Copy and re-hash source bytes before invoking ffmpeg on the private copy."""
+    digest = hashlib.sha256()
+    size = 0
+    try:
+        with source.open("rb") as input_stream, destination.open("xb") as output_stream:
+            for chunk in iter(lambda: input_stream.read(_CHUNK_SIZE), b""):
+                digest.update(chunk)
+                size += len(chunk)
+                output_stream.write(chunk)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+    except OSError as error:
+        raise RenderError("source_path could not be copied into private staging") from error
+    copied_sha256 = f"sha256:{digest.hexdigest()}"
+    if copied_sha256 != recipe.source_sha256 or size != recipe.source_byte_size:
+        destination.unlink(missing_ok=True)
+        raise SourceIdentityMismatchError("source identity changed while copying to staging")
+    verified_sha256, verified_size = _sha256_file(destination)
+    if verified_sha256 != recipe.source_sha256 or verified_size != recipe.source_byte_size:
+        destination.unlink(missing_ok=True)
+        raise SourceIdentityMismatchError("private staging source verification failed")
+    destination.chmod(0o444)
 
 
 def _staging_root(path: Path) -> Path:
@@ -166,14 +200,14 @@ def _staging_root(path: Path) -> Path:
 
 
 def _regular_path(path: Path, label: str) -> Path:
-    resolved = Path(path).resolve()
+    candidate = Path(path).absolute()
     try:
-        status = resolved.stat()
+        status = candidate.lstat()
     except OSError as error:
         raise RenderError(f"{label} must be a readable regular file") from error
     if not stat.S_ISREG(status.st_mode):
         raise RenderError(f"{label} must be a readable regular file")
-    return resolved
+    return candidate
 
 
 def _sha256_file(path: Path) -> tuple[str, int]:
