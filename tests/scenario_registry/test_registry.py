@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from autocut_kernel.physical_edit import FixtureBeatInput, SpanSelectionPolicy
+from autocut_kernel.pipeline import ResolutionPolicyIdentity
 from autocut_kernel.scenario_registry import (
     FixtureScenarioRegistry,
     ScenarioRef,
@@ -43,6 +44,9 @@ def _fixture(profile: SemanticProfile = SemanticProfile.TEST) -> _FixtureScenari
         FactKind.OBSERVATION,
         _Registry(),
         _Resolver(),
+        ResolutionPolicyIdentity(
+            "resolution_policy_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "sha256:" + "c" * 64
+        ),
     )
 
 
@@ -77,6 +81,7 @@ def test_agent_facing_scenario_ref_rejects_physical_and_untyped_payloads(value: 
         ("catalog_source_hash", "score=0.99"),
         ("fact_id", "fact_path_clip_mp4"),
         ("profile", "test"),
+        ("resolution_policy", "policy=caller-controlled"),
     ),
 )
 def test_malformed_composition_registration_is_denied(field: str, value: object) -> None:
@@ -132,3 +137,34 @@ def test_public_registry_constructor_and_exports_do_not_accept_physical_registra
     assert not hasattr(public_api, "FixtureScenario")
     with pytest.raises(ScenarioRegistryDenied, match="application composition"):
         FixtureScenarioRegistry((_fixture(),))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("token", "content_hash"),
+    (
+        ("resolution_policy_freeform", "sha256:" + "a" * 64),
+        ("resolution_policy_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "sha256:short"),
+    ),
+)
+def test_composition_policy_identity_is_closed_and_nonphysical(token: str, content_hash: str) -> None:
+    fixture = _fixture()
+    values = {name: getattr(fixture, name) for name in fixture.__dataclass_fields__}
+    values["resolution_policy"] = ResolutionPolicyIdentity(token, content_hash)
+    with pytest.raises(ScenarioRegistryDenied, match="resolution policy"):
+        _FixtureScenarioRegistration(**values)  # type: ignore[arg-type]
+
+
+def test_semantic_plan_carries_the_composed_resolution_policy_identity() -> None:
+    fixture = _fixture()
+    registry = FixtureScenarioRegistry._from_composition((fixture,))
+    job = Job("upstream-policy", "test")
+    upstream = UpstreamScenarioOutputs(
+        job,
+        MediaEvidenceReference(ArtifactScope("pipeline", "job", job.job_key), "media_evidence", 1, "sha256:" + "a" * 64),
+        RecipeReference(ArtifactScope("pipeline", "job", job.job_key), "recipe", 1, "sha256:" + "b" * 64),
+    )
+
+    plan = registry.prepare_semantic(fixture.ref, Job("semantic-policy", "test"), upstream)
+
+    assert plan.resolution_policy is fixture.resolution_policy
+    assert plan.request.resolution_policy is fixture.resolution_policy

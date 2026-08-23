@@ -12,6 +12,7 @@ from ..physical_edit import FixtureBeatInput, SpanSelectionPolicy
 from ..pipeline import (
     FixtureBeatResolver,
     LocalMediaCommandRequest,
+    ResolutionPolicyIdentity,
     SemanticChainCommandRequest,
     SemanticChainCommandResult,
 )
@@ -32,6 +33,7 @@ _FIXTURE = re.compile(r"fixture_[0-9a-f]{32}\Z")
 _CANDIDATE = re.compile(r"candidate_[0-9a-f]{32}\Z")
 _CATALOG = re.compile(r"catalog_[0-9a-f]{32}\Z")
 _FACT = re.compile(r"fact_[0-9a-f]{32}\Z")
+_RESOLUTION_POLICY = re.compile(r"resolution_policy_[0-9a-f]{32}\Z")
 _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
@@ -70,6 +72,7 @@ class _FixtureScenarioRegistration:
     fact_kind: FactKind
     registry: FixtureCandidateRegistry
     beat_resolver: FixtureBeatResolver
+    resolution_policy: ResolutionPolicyIdentity
 
     def __post_init__(self) -> None:
         if type(self.ref) is not ScenarioRef:  # noqa: E721
@@ -106,6 +109,12 @@ class _FixtureScenarioRegistration:
             raise ScenarioRegistryDenied("fixture scenario requires an exact candidate registry")
         if not callable(getattr(self.beat_resolver, "resolve_beat", None)):
             raise ScenarioRegistryDenied("fixture scenario requires a fixture beat resolver")
+        if type(self.resolution_policy) is not ResolutionPolicyIdentity:  # noqa: E721
+            raise ScenarioRegistryDenied("fixture scenario requires a closed resolution policy identity")
+        if not _RESOLUTION_POLICY.fullmatch(self.resolution_policy.policy_id):
+            raise ScenarioRegistryDenied("resolution policy token must be closed")
+        if not _SHA256.fullmatch(self.resolution_policy.policy_hash):
+            raise ScenarioRegistryDenied("resolution policy hash must be a lowercase sha256 digest")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +142,7 @@ class UpstreamScenarioOutputs:
 class SemanticScenarioPlan:
     scenario: ScenarioRef
     candidate: CatalogCandidateRef
+    resolution_policy: ResolutionPolicyIdentity
     request: SemanticChainCommandRequest
 
 
@@ -243,9 +253,10 @@ class FixtureScenarioRegistry:
             evidence,
             scenario.registry,
             scenario.beat_resolver,
+            scenario.resolution_policy,
             canonical_recipe_scope(semantic_job),
         )
-        return SemanticScenarioPlan(ref, candidate, request)
+        return SemanticScenarioPlan(ref, candidate, scenario.resolution_policy, request)
 
     def prepare_downstream(
         self, ref: ScenarioRef, downstream_job: Job, semantic: SemanticScenarioSuccess
