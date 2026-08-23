@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
+from ..rendering.qc import QCReport
+
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
 _NAMESPACE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
@@ -31,18 +33,18 @@ class LocalPromotionError(Exception):
 class LocalPromotionRequest:
     """Verified inputs needed to promote one approved local render.
 
-    ``qc_manifest`` is the approval authority.  It must be immutable JSON data
-    whose top-level ``status`` is exactly ``"approved"``.  ``report_manifest`` is
-    retained verbatim (after canonical JSON validation) as the accompanying report.
+    ``qc_report`` is a derived :class:`~autocut_kernel.rendering.qc.QCReport`, not
+    caller-controlled status data.  Its approved outcome and two identity bindings
+    must agree with the recipe and staging asset being promoted.
     """
 
     output_root: Path
     job_id: str
     attempt_id: str
     staging_asset: Path
+    recipe_hash: str
     asset_sha256: str
-    qc_manifest: Mapping[str, object]
-    report_manifest: Mapping[str, object]
+    qc_report: QCReport
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +84,8 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
     manifest_value: dict[str, object] = {
         "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
-        "qc_manifest": _json_copy(request.qc_manifest, "qc_manifest"),
-        "report_manifest": _json_copy(request.report_manifest, "report_manifest"),
+        "qc_report": request.qc_report.to_manifest(),
+        "recipe_hash": request.recipe_hash,
         "schema_version": 1,
     }
     manifest_bytes = _canonical_json_bytes(manifest_value, "promotion manifest")
@@ -108,12 +110,17 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
 def _validate_request(request: LocalPromotionRequest) -> None:
     _validate_digest(request.asset_sha256, "asset_sha256")
+    _validate_digest(request.recipe_hash, "recipe_hash")
     _validate_namespace_component(request.job_id, "job_id")
     _validate_namespace_component(request.attempt_id, "attempt_id")
-    qc_manifest = _json_copy(request.qc_manifest, "qc_manifest")
-    _json_copy(request.report_manifest, "report_manifest")
-    if qc_manifest.get("status") != "approved":
-        raise LocalPromotionError("qc_manifest.status must be 'approved'")
+    if not isinstance(cast(object, request.qc_report), QCReport):
+        raise LocalPromotionError("qc_report must be a derived QCReport")
+    if not request.qc_report.approved:
+        raise LocalPromotionError("qc_report must be approved")
+    if request.qc_report.recipe_hash != request.recipe_hash:
+        raise LocalPromotionError("qc_report.recipe_hash does not match recipe_hash")
+    if request.qc_report.output_sha256 != request.asset_sha256:
+        raise LocalPromotionError("qc_report.output_sha256 does not match asset_sha256")
 
 
 def _validate_digest(value: object, field_name: str) -> None:
