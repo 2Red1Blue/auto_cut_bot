@@ -17,6 +17,10 @@ class StaleHeadError(RuntimeStoreError):
     """A competing command advanced or created the same logical artifact head."""
 
 
+class PersistenceConflictError(RuntimeStoreError):
+    """A durable uniqueness constraint rejected a conflicting persistence write."""
+
+
 class StoreConcurrencyError(RuntimeStoreError):
     """PostgreSQL aborted the transaction due to a retryable concurrency conflict."""
 

@@ -12,6 +12,7 @@ from autocut_kernel.store import (
     CommandRejection,
     CommandSuccess,
     Job,
+    PersistenceConflictError,
     RuntimeStoreError,
     StaleHeadError,
     StoreValidationError,
@@ -107,15 +108,65 @@ def test_rejection_supports_failed_as_well_as_denied_outcome() -> None:
     assert rej.failure_code == "RUNTIME_CRASH"
 
 
-def test_first_head_unique_violation_maps_to_stable_error() -> None:
-    class UniqueViolationError(Exception):
-        sqlstate = "23505"
+class _UniqueViolationError(Exception):
+    sqlstate = "23505"
 
-        def __str__(self) -> str:
-            return "duplicate key runtime_artifacts_scope_revision_key"
+    def __init__(self, constraint_name: str) -> None:
+        self.diag = type("Diagnostic", (), {"constraint_name": constraint_name})()
 
-    assert PostgresRuntimeStore._is_first_head_race(UniqueViolationError())
-    assert isinstance(StaleHeadError("race"), Exception)
+
+class _UniqueViolationCursor:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+        raise self._error
+
+    def fetchone(self) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
+class _UniqueViolationConnection:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def cursor(self) -> _UniqueViolationCursor:
+        return _UniqueViolationCursor(self._error)
+
+    def commit(self) -> None:
+        pass
+
+    def rollback(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def _store_with_unique_violation(constraint_name: str) -> PostgresRuntimeStore:
+    error = _UniqueViolationError(constraint_name)
+    return PostgresRuntimeStore(lambda: _UniqueViolationConnection(error))
+
+
+def test_first_head_unique_violation_maps_to_stale_head_error() -> None:
+    store = _store_with_unique_violation("runtime_artifacts_scope_revision_key")
+
+    with pytest.raises(StaleHeadError, match="logical artifact head"):
+        store.claim_command(CommandClaim(Job("unique-head", "test"), "cmd", "x", digest("x")))
+
+
+@pytest.mark.parametrize(
+    "constraint_name",
+    ("runtime_command_slots_job_id_idempotency_key_key", "runtime_other_unique_key"),
+)
+def test_other_unique_violations_map_to_persistence_conflict_error(constraint_name: str) -> None:
+    store = _store_with_unique_violation(constraint_name)
+
+    with pytest.raises(PersistenceConflictError, match="uniqueness constraint"):
+        store.claim_command(CommandClaim(Job("unique-other", "test"), "cmd", "x", digest("x")))
 
 
 def test_programming_database_errors_are_mapped_to_runtime_store_error() -> None:

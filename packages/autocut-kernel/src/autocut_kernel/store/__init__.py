@@ -3,6 +3,7 @@
 from .errors import (
     CommandStateError,
     IdempotencyConflictError,
+    PersistenceConflictError,
     RuntimeStoreError,
     StaleHeadError,
     StoreConcurrencyError,
@@ -29,6 +30,7 @@ __all__ = [
     "CommandSuccess",
     "IdempotencyConflictError",
     "Job",
+    "PersistenceConflictError",
     "PostgresRuntimeStore",
     "RuntimeStoreError",
     "StaleHeadError",

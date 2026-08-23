@@ -16,6 +16,7 @@ from psycopg import DatabaseError, InterfaceError
 from .errors import (
     CommandStateError,
     IdempotencyConflictError,
+    PersistenceConflictError,
     RuntimeStoreError,
     StaleHeadError,
     StoreConcurrencyError,
@@ -452,7 +453,9 @@ class PostgresRuntimeStore:
                 raise
             sqlstate = getattr(error, "sqlstate", None)
             if sqlstate == "23505":
-                raise StaleHeadError("a concurrent write violated a unique constraint") from error
+                if self._is_first_head_race(error):
+                    raise StaleHeadError("a concurrent write created the same logical artifact head") from error
+                raise PersistenceConflictError("a persistence uniqueness constraint was violated") from error
             if sqlstate in ("40001", "40P01"):
                 raise StoreConcurrencyError("database transaction should be retried") from error
             if self._is_runtime_database_error(error):
@@ -466,9 +469,11 @@ class PostgresRuntimeStore:
 
     @staticmethod
     def _is_first_head_race(error: Exception) -> bool:
-        return getattr(
-            error, "sqlstate", None
-        ) == "23505" and "runtime_artifacts_scope_revision_key" in str(error)
+        diagnostic = getattr(error, "diag", None)
+        return (
+            getattr(error, "sqlstate", None) == "23505"
+            and getattr(diagnostic, "constraint_name", None) == "runtime_artifacts_scope_revision_key"
+        )
 
     @staticmethod
     def _is_runtime_database_error(error: Exception) -> bool:
