@@ -22,9 +22,20 @@ def test_runtime_core_migration_declares_closed_durable_relations() -> None:
     assert "runtime_artifacts_scope_revision_key" in sql
     assert "successful receipt must reference its command slot artifact set" in sql
     assert "artifact set members are incomplete" in sql
+    # set_hash is scoped per job, not globally unique
+    assert "UNIQUE (job_id, set_hash)" in sql
 
 
 def test_follow_up_migration_binds_head_to_its_exact_scoped_revision() -> None:
     sql = (MIGRATIONS / "0002_runtime_core_constraints.sql").read_text()
     assert "runtime.assert_head_matches_artifact" in sql
     assert "runtime_logical_head_exact_target_check" in sql
+    # Immutability guards
+    assert "committed receipts are immutable" in sql
+    assert "committed artifact sets are immutable" in sql
+    assert "committed artifacts are immutable" in sql
+    assert "committed artifact set members are immutable" in sql
+    # Cross-table integrity
+    assert "artifact job must match its artifact set job" in sql
+    assert "runtime.assert_artifact_job_matches_set" in sql
+    assert "runtime_artifact_job_matches_set_check" in sql

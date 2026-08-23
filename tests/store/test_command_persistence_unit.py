@@ -76,6 +76,35 @@ def test_terminal_rejection_requires_structured_failure_detail() -> None:
         CommandRejection(uuid4(), "PRECHECK_DENY", "")
 
 
+def test_terminal_rejection_requires_valid_json_failure_detail() -> None:
+    with pytest.raises(StoreValidationError, match="failure_detail_json must contain JSON"):
+        CommandRejection(uuid4(), "PRECHECK_DENY", "not json")
+
+
+@pytest.mark.parametrize("outcome", ("success", "running", "", None))
+def test_rejection_rejects_non_terminal_outcomes(outcome: object) -> None:
+    with pytest.raises(StoreValidationError, match="outcome must be 'denied' or 'failed'"):
+        CommandRejection(uuid4(), "PRECHECK_DENY", "{}", outcome=outcome)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("slot_id", ("not-a-uuid", 1, None))
+def test_rejection_requires_a_uuid_slot(slot_id: object) -> None:
+    with pytest.raises(StoreValidationError, match="command_slot_id must be a UUID"):
+        CommandRejection(slot_id, "PRECHECK_DENY", "{}")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("detail", ('{"value": NaN}', '{"value": Infinity}', "[]", '"text"', "null"))
+def test_rejection_requires_finite_json_object(detail: str) -> None:
+    with pytest.raises(StoreValidationError):
+        CommandRejection(uuid4(), "PRECHECK_DENY", detail)
+
+
+def test_rejection_supports_failed_as_well_as_denied_outcome() -> None:
+    rej = CommandRejection(uuid4(), "RUNTIME_CRASH", '{"reason":"unexpected"}', outcome="failed")
+    assert rej.outcome == "failed"
+    assert rej.failure_code == "RUNTIME_CRASH"
+
+
 def test_first_head_unique_violation_maps_to_stable_error() -> None:
     class UniqueViolationError(Exception):
         sqlstate = "23505"
