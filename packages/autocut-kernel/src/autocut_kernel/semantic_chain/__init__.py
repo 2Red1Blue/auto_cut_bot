@@ -1,6 +1,12 @@
 """Pure, closed semantic narrative MVP artifacts and deterministic builder."""
 
 from .chain import SemanticChain, SemanticChainBuilder
+from .fixture_adapter import (
+    FixtureAdapterDenied,
+    FixtureCandidateBinding,
+    FixtureCatalog,
+    FixtureCatalogAdapter,
+)
 from .models import (
     BeatRole,
     BlueprintBeat,
@@ -29,6 +35,10 @@ __all__ = [
     "EventCard",
     "EventKind",
     "EvidenceRef",
+    "FixtureAdapterDenied",
+    "FixtureCandidateBinding",
+    "FixtureCatalog",
+    "FixtureCatalogAdapter",
     "FactKind",
     "NarrativeGraph",
     "NarrativeNode",
