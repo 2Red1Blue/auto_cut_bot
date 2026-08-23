@@ -1,0 +1,156 @@
+"""Closed, semantic records for the local Pipeline persistence core."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass, field
+from typing import Literal
+from uuid import UUID
+
+from .errors import StoreValidationError
+
+CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
+JobProfile = Literal["test", "shadow", "production"]
+
+
+def _text(value: str, field_name: str) -> None:
+    if type(value) is not str or not value.strip():  # noqa: E721
+        raise StoreValidationError(f"{field_name} must be a non-empty string")
+
+
+def _sha256(value: str, field_name: str) -> None:
+    _text(value, field_name)
+    if (
+        len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise StoreValidationError(f"{field_name} must be a lowercase sha256 digest")
+
+
+@dataclass(frozen=True, slots=True)
+class Job:
+    job_key: str
+    profile: JobProfile
+
+    def __post_init__(self) -> None:
+        _text(self.job_key, "job_key")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactScope:
+    namespace: str
+    kind: str
+    key: str
+
+    def __post_init__(self) -> None:
+        _text(self.namespace, "scope.namespace")
+        _text(self.kind, "scope.kind")
+        _text(self.key, "scope.key")
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactMember:
+    artifact_type: str
+    logical_id: str
+    revision: int
+    scope: ArtifactScope
+    content_hash: str
+    payload_json: str
+
+    def __post_init__(self) -> None:
+        _text(self.artifact_type, "artifact_type")
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        _text(self.payload_json, "payload_json")
+        try:
+            json.loads(self.payload_json)
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError("payload_json must contain JSON") from error
+
+
+@dataclass(frozen=True, slots=True)
+class CommandClaim:
+    job: Job
+    idempotency_key: str
+    command_name: str
+    request_hash: str
+
+    def __post_init__(self) -> None:
+        _text(self.idempotency_key, "idempotency_key")
+        _text(self.command_name, "command_name")
+        _sha256(self.request_hash, "request_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandSuccess:
+    command_slot_id: UUID
+    set_hash: str
+    artifacts: tuple[ArtifactMember, ...]
+
+    def __post_init__(self) -> None:
+        _sha256(self.set_hash, "set_hash")
+        if not self.artifacts:
+            raise StoreValidationError("a successful command requires a non-empty artifact set")
+        identities = {
+            (
+                item.scope.namespace,
+                item.scope.kind,
+                item.scope.key,
+                item.artifact_type,
+                item.logical_id,
+            )
+            for item in self.artifacts
+        }
+        if len(identities) != len(self.artifacts):
+            raise StoreValidationError("one artifact set cannot advance a logical chain twice")
+        if self.set_hash != self.expected_set_hash:
+            raise StoreValidationError("set_hash must bind the exact artifact members")
+
+    @property
+    def expected_set_hash(self) -> str:
+        canonical_members = [
+            {
+                "artifact_type": item.artifact_type,
+                "content_hash": item.content_hash,
+                "logical_id": item.logical_id,
+                "payload_json": json.loads(item.payload_json),
+                "revision": item.revision,
+                "scope": {
+                    "key": item.scope.key,
+                    "kind": item.scope.kind,
+                    "namespace": item.scope.namespace,
+                },
+            }
+            for item in self.artifacts
+        ]
+        encoded = json.dumps(
+            canonical_members, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode()
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class CommandRejection:
+    command_slot_id: UUID
+    failure_code: str
+    failure_detail_json: str
+    outcome: Literal["denied", "failed"] = "denied"
+
+    def __post_init__(self) -> None:
+        _text(self.failure_code, "failure_code")
+        _text(self.failure_detail_json, "failure_detail_json")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandOutcome:
+    command_slot_id: UUID
+    state: CommandOutcomeKind
+    receipt_id: UUID | None = None
+    artifact_set_id: UUID | None = None
+    failure_code: str | None = None
+    failure_detail_json: str | None = None
+    job_id: UUID | None = field(default=None, compare=False)
