@@ -71,24 +71,36 @@
         "used_primitive_blobs": {
           "type": "array",
           "minItems": 3,
-          "maxItems": 3,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "path",
-              "raw_sha256"
-            ],
-            "properties": {
-              "path": {
-                "type": "string"
-              },
-              "raw_sha256": {
-                "type": "string",
-                "pattern": "^sha256:[0-9a-f]{64}$"
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "raw_sha256"],
+              "properties": {
+                "path": {"const": "schemas/primitives/immutable-blob-ref.schema.json"},
+                "raw_sha256": {"const": "sha256:52d4ea27825976cecc86e2d96d2388acb0aa885799adb708d6f0db616cc10678"}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "raw_sha256"],
+              "properties": {
+                "path": {"const": "schemas/primitives/domain-ref.schema.json"},
+                "raw_sha256": {"const": "sha256:72211809fa19f967345ccc41574fea5319feb40bcbde05a3564cf6bc8c63f896"}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "raw_sha256"],
+              "properties": {
+                "path": {"const": "schemas/primitives/source-span-ref.schema.json"},
+                "raw_sha256": {"const": "sha256:586c57b03f44a455478d722ab3012dcb33932fcc49fe0d0d847d9cfa2043bb29"}
               }
             }
-          }
+          ],
+          "items": false
         }
       }
     },

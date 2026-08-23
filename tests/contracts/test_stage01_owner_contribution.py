@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -59,6 +60,34 @@ def test_stage01_owner_source_is_closed_and_partial():
         {"path": "schemas/primitives/domain-ref.schema.json", "raw_sha256": "sha256:72211809fa19f967345ccc41574fea5319feb40bcbde05a3564cf6bc8c63f896"},
         {"path": "schemas/primitives/source-span-ref.schema.json", "raw_sha256": "sha256:586c57b03f44a455478d722ab3012dcb33932fcc49fe0d0d847d9cfa2043bb29"},
     ]
+
+
+def test_stage01_owner_manifest_schema_rejects_mutated_primitive_blob_path_or_hash():
+    manifest = load(PACK / "contributions/stage-01-owner-contribution.manifest.json")
+    schema = load(PACK / "contributions/stage-01-owner-contribution.manifest.schema.json")
+    validator = Draft202012Validator(schema)
+
+    wrong_path = deepcopy(manifest)
+    wrong_path["b_input"]["used_primitive_blobs"][0]["path"] = "schemas/primitives/wrong.schema.json"
+    assert not validator.is_valid(wrong_path)
+
+    wrong_hash = deepcopy(manifest)
+    wrong_hash["b_input"]["used_primitive_blobs"][1]["raw_sha256"] = "sha256:" + "0" * 64
+    assert not validator.is_valid(wrong_hash)
+
+
+def test_rule_obligations_are_a_non_executable_source_anchor_worklist():
+    worklist = load(PACK / "contracts/stage-01-rule-obligations.json")
+    assert worklist == {
+        "format": "autocut.stage-01-source-anchor-worklist/v1",
+        "contract_version": "2.1.3",
+        "source_anchors": [
+            {
+                "source_anchor": "v2-stage-01-knowledge-chain-v2.md#7",
+                "expected_shape": "knowledge-chain source material",
+            }
+        ],
+    }
 
 
 def test_stage01_source_has_no_registry_or_runtime_identity():

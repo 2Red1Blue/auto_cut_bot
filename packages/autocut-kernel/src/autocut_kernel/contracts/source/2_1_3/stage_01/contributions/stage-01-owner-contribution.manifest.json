@@ -39,7 +39,7 @@
   "producer_files": [
     {
       "path": "contracts/stage-01-rule-obligations.json",
-      "raw_sha256": "sha256:94905ebb7513b3600d1bd54aad0bce441036a6a31cb1704797ca909e125806c3"
+      "raw_sha256": "sha256:38888ed92b281b98ba552f0e214200d0fc3133ea6bcf24f374041572bfb4a824"
     },
     {
       "path": "contracts/stage-01-vector-obligations.json",
@@ -47,7 +47,7 @@
     },
     {
       "path": "contributions/stage-01-owner-contribution.manifest.schema.json",
-      "raw_sha256": "sha256:09e2e8dc80b4d9e2ef8c48b658d046342bf240ad754e765dc22e040c81b8014c"
+      "raw_sha256": "sha256:694f6f7f672968ff58644766d25bae584374aa93e7b982e885b8d7eb4142be98"
     },
     {
       "path": "fixtures/stage-01-owner-source-valid.json",
@@ -88,7 +88,7 @@
   ],
   "repository_validation": {
     "path": "tests/contracts/test_stage01_owner_contribution.py",
-    "raw_sha256": "sha256:eb8c70f149e2e9e3b2a5631b6a3e21c51dabb4dd3d171e5668b3cae537b25db4"
+    "raw_sha256": "sha256:102a10885a5bbcb05692f2aea1cd39ae2f6b5198c1c1f810e6a61b3cbdd22609"
   },
   "withheld": [
     "evidence_diagnostics",
