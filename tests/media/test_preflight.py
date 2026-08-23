@@ -13,6 +13,7 @@ from autocut_kernel.media.ffprobe_port import FFprobePort, FFprobePtsIndexError
 from autocut_kernel.media.preflight import (
     FixtureEvidenceError,
     MediaPreflightRequest,
+    SourceIdentityMismatchError,
     preflight,
     preflight_fixture,
 )
@@ -188,6 +189,14 @@ def test_actual_ffprobe_preflight_accepts_zero_pts_and_validates_fixture_provena
     _write_canonical(manifest_path, manifest)
     with pytest.raises(FixtureEvidenceError, match="profiles must match"):
         preflight_fixture(request)
+
+    class MutatingPort:
+        def probe(self, _: Path):
+            source_path.write_bytes(b"changed after the initial source hash")
+            return probe
+
+    with pytest.raises(SourceIdentityMismatchError, match="changed while ffprobe"):
+        preflight_fixture(request, port=MutatingPort())  # type: ignore[arg-type]
 
 
 def test_production_fixture_is_denied_before_probe_or_source_read(tmp_path: Path) -> None:

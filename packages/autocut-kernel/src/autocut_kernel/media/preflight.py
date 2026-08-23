@@ -225,6 +225,9 @@ def preflight_fixture(request: MediaPreflightRequest, *, port: FFprobePort | Non
     if source.sha256 != request.expected_source_sha256:
         raise SourceIdentityMismatchError("source SHA-256 does not match request identity")
     probe = (port or FFprobePort()).probe(request.source_path)
+    post_probe_sha256, post_probe_byte_size = _sha256_file(request.source_path)
+    if post_probe_sha256 != source.sha256 or post_probe_byte_size != source.byte_size:
+        raise SourceIdentityMismatchError("source identity changed while ffprobe evidence was collected")
     manifest, sidecar, manifest_sha256, sidecar_sha256 = _validate_fixture_files(
         request, source, probe.pts_index, probe.video_stream.time_base
     )
