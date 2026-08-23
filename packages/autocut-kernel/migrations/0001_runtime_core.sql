@@ -34,15 +34,18 @@ CREATE TABLE runtime.artifact_sets (
     command_slot_id uuid NOT NULL UNIQUE REFERENCES runtime.command_slots (command_slot_id)
         DEFERRABLE INITIALLY DEFERRED,
     job_id uuid NOT NULL REFERENCES runtime.jobs (job_id) DEFERRABLE INITIALLY DEFERRED,
-    set_hash text NOT NULL UNIQUE CHECK (set_hash ~ '^sha256:[0-9a-f]{64}$'),
+    set_hash text NOT NULL CHECK (set_hash ~ '^sha256:[0-9a-f]{64}$'),
     member_count integer NOT NULL CHECK (member_count > 0),
-    committed_at timestamptz NOT NULL DEFAULT transaction_timestamp()
+    committed_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
+    -- A command slot owns exactly one committed set.  Hash equality is scoped
+    -- to the Job so independently-run Jobs may produce identical content.
+    UNIQUE (job_id, set_hash),
+    UNIQUE (artifact_set_id, job_id)
 );
 
 CREATE TABLE runtime.artifacts (
     artifact_id uuid PRIMARY KEY,
-    artifact_set_id uuid NOT NULL
-        REFERENCES runtime.artifact_sets (artifact_set_id) DEFERRABLE INITIALLY DEFERRED,
+    artifact_set_id uuid NOT NULL,
     artifact_type text NOT NULL,
     logical_id text NOT NULL,
     revision bigint NOT NULL CHECK (revision >= 1),
@@ -53,6 +56,9 @@ CREATE TABLE runtime.artifacts (
     payload_json jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT transaction_timestamp(),
     job_id uuid NOT NULL REFERENCES runtime.jobs (job_id) DEFERRABLE INITIALLY DEFERRED,
+    FOREIGN KEY (artifact_set_id, job_id)
+        REFERENCES runtime.artifact_sets (artifact_set_id, job_id)
+        DEFERRABLE INITIALLY DEFERRED,
     CONSTRAINT runtime_artifacts_scope_revision_key
         UNIQUE (job_id, namespace, scope_kind, scope_key, artifact_type, logical_id, revision),
     UNIQUE (artifact_set_id, artifact_id)
