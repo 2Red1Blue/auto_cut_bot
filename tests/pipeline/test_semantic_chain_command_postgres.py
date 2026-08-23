@@ -28,18 +28,30 @@ def migrated_database() -> None:
                 cursor.execute((Path("packages/autocut-kernel/migrations") / name).read_text())
 
 
-def test_postgres_semantic_command_persists_one_set_and_replays_without_rebuild() -> None:
+def test_postgres_semantic_command_denies_an_uncommitted_exact_evidence_reference() -> None:
     assert DSN is not None
-    command = SemanticChainCommand(PostgresRuntimeStore(lambda: psycopg.connect(DSN)))
-    first = command.execute(_request())
-    replay = command.execute(_request())
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    command = SemanticChainCommand(store)
+    # The helper registers media only in its fake Store. PostgreSQL has no
+    # matching upstream committed artifact, so this must become a receipt-only
+    # expected denial rather than accepting caller-provided evidence.
+    request = _request(_FakeRequestStore())
+    first = command.execute(request)
+    replay = command.execute(request)
 
-    assert first.outcome.state == replay.outcome.state == "succeeded"
-    assert replay.outcome.artifact_set_id == first.outcome.artifact_set_id
-    assert first.resolved_beat is not None
+    assert first.outcome.state == replay.outcome.state == "denied"
+    assert first.outcome.artifact_set_id is None
+    assert replay.outcome.receipt_id == first.outcome.receipt_id
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
-            assert cursor.fetchone() == (1,)
+            assert cursor.fetchone() == (0,)
             cursor.execute("SELECT count(*) FROM runtime.artifact_members")
-            assert cursor.fetchone() == (3,)
+            assert cursor.fetchone() == (0,)
+
+
+class _FakeRequestStore:
+    """Only supplies the helper's in-memory media registration surface."""
+
+    def __init__(self) -> None:
+        self.media: dict[tuple[str, str], str] = {}

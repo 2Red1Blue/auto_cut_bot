@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from uuid import uuid4
 
@@ -23,7 +24,6 @@ from autocut_kernel.semantic_chain import (
     CatalogResolution,
     EvidenceRef,
     FactKind,
-    FixtureCatalogAdapter,
     RegisteredFact,
     SemanticChainBuilder,
     SemanticChainInput,
@@ -36,6 +36,8 @@ from autocut_kernel.store import (
     CommandRejection,
     CommandSuccess,
     Job,
+    MediaEvidenceReference,
+    MediaEvidenceUnavailableError,
 )
 
 
@@ -44,6 +46,17 @@ class _Store:
         self.successes: list[CommandSuccess] = []
         self.rejections: list[CommandRejection] = []
         self.outcomes: dict[tuple[str, str], CommandOutcome] = {}
+        self.media: dict[tuple[str, str], str] = {}
+        self.evidence_reads: list[tuple[Job, MediaEvidenceReference]] = []
+
+    def read_media_evidence(self, job: Job, reference: MediaEvidenceReference):
+        self.evidence_reads.append((job, reference))
+        try:
+            return type(
+                "Persisted", (), {"payload_json": self.media[(job.job_key, reference.content_hash)]}
+            )()
+        except KeyError as error:
+            raise MediaEvidenceUnavailableError("exact media evidence unavailable") from error
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         key = (claim.job.job_key, claim.idempotency_key)
@@ -118,7 +131,7 @@ def _hash(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def _request(*, profile: str = "test") -> SemanticChainCommandRequest:
+def _request(store: _Store, *, profile: str = "test") -> SemanticChainCommandRequest:
     media = MediaEvidence(
         SourceIdentity(_hash(b"source"), 100),
         VideoStreamEvidence(0, "mpeg4", 64, 48, TimeBase(1, 10)),
@@ -132,22 +145,42 @@ def _request(*, profile: str = "test") -> SemanticChainCommandRequest:
         1,
         "fixture_ground_truth_v1",
     )
-    evidence = EvidenceRef("media_evidence_v1", canonical_sha256(media.to_json()))
+    evidence = EvidenceRef(
+        "evidence_11111111111111111111111111111111", canonical_sha256(media.to_json())
+    )
     candidate = CatalogCandidateRef(
-        "candidate_v1", "fixture_catalog_v1", _hash(b"catalog"), evidence, SemanticProfile.TEST
+        "candidate_22222222222222222222222222222222",
+        "catalog_33333333333333333333333333333333",
+        _hash(b"catalog"),
+        evidence,
+        SemanticProfile.TEST,
     )
     source = SemanticChainInput(
         SemanticProfile.TEST,
         (evidence,),
-        (RegisteredFact("fact_v1", FactKind.OBSERVATION, evidence, candidate),),
+        (
+            RegisteredFact(
+                "fact_44444444444444444444444444444444", FactKind.OBSERVATION, evidence, candidate
+            ),
+        ),
     )
     job = Job("semantic-command-job", profile)  # type: ignore[arg-type]
+    media_job = Job("semantic-source-job", profile)  # type: ignore[arg-type]
+    reference = MediaEvidenceReference(
+        ArtifactScope("pipeline", "job", media_job.job_key),
+        evidence.artifact_id,
+        1,
+        evidence.content_hash,
+    )
+    store.media[(media_job.job_key, reference.content_hash)] = json.dumps(media.to_json())
     return SemanticChainCommandRequest(
         job,
         "semantic-chain-v1",
         source,
         candidate,
-        FixtureCatalogAdapter(_Loader(media), _Registry()),
+        media_job,
+        reference,
+        _Registry(),
         _BeatResolver(),
         ArtifactScope("pipeline", "job", job.job_key),
     )
@@ -156,7 +189,8 @@ def _request(*, profile: str = "test") -> SemanticChainCommandRequest:
 def test_success_persists_three_hash_bound_artifacts_and_replay_does_not_rebuild() -> None:
     store, builder = _Store(), _Builder()
     command = SemanticChainCommand(store, builder=builder)  # type: ignore[arg-type]
-    first, replay = command.execute(_request()), command.execute(_request())
+    request = _request(store)
+    first, replay = command.execute(request), command.execute(request)
     assert first.outcome.state == replay.outcome.state == "succeeded"
     assert builder.calls == 1
     assert first.resolved_beat is not None and replay.resolved_beat == first.resolved_beat
@@ -170,9 +204,15 @@ def test_success_persists_three_hash_bound_artifacts_and_replay_does_not_rebuild
 
 
 def test_expected_adapter_denial_closes_a_receipt_without_artifacts() -> None:
-    store, request = _Store(), _request()
+    store = _Store()
+    request = _request(store)
     result = SemanticChainCommand(store).execute(
-        replace(request, candidate=replace(request.candidate, candidate_id="foreign"))
+        replace(
+            request,
+            candidate=replace(
+                request.candidate, candidate_id="candidate_55555555555555555555555555555555"
+            ),
+        )
     )  # type: ignore[arg-type]
     assert result.outcome.state == "denied" and result.outcome.artifact_set_id is None
     assert result.resolved_beat is None and not store.successes
@@ -181,7 +221,9 @@ def test_expected_adapter_denial_closes_a_receipt_without_artifacts() -> None:
 
 def test_production_job_is_durably_denied_before_build_or_resolution() -> None:
     store, builder = _Store(), _Builder()
-    result = SemanticChainCommand(store, builder=builder).execute(_request(profile="production"))  # type: ignore[arg-type]
+    result = SemanticChainCommand(store, builder=builder).execute(
+        _request(store, profile="production")
+    )  # type: ignore[arg-type]
     assert (
         result.outcome.state == "denied"
         and result.outcome.failure_code == "PRODUCTION_PROFILE_FORBIDDEN"
@@ -190,7 +232,8 @@ def test_production_job_is_durably_denied_before_build_or_resolution() -> None:
 
 
 def test_request_hash_binds_catalog_identity_and_scope() -> None:
-    request = _request()
+    store = _Store()
+    request = _request(store)
     assert (
         replace(
             request, candidate=replace(request.candidate, catalog_source_hash=_hash(b"other"))
@@ -199,3 +242,15 @@ def test_request_hash_binds_catalog_identity_and_scope() -> None:
     )
     with pytest.raises(ValueError, match="canonical recipe scope"):
         replace(request, artifact_scope=ArtifactScope("pipeline", "job", "other"))
+
+
+def test_uncommitted_media_evidence_is_denied_without_artifacts() -> None:
+    store = _Store()
+    request = _request(store)
+    store.media.clear()
+
+    result = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.artifact_set_id is None
+    assert store.evidence_reads == [(request.media_job, request.media_evidence_reference)]
