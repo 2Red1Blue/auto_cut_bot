@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
-from referencing import Registry, Resource
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 COMMON_SOURCE = REPOSITORY_ROOT / "packages" / "autocut-kernel" / "src" / "autocut_kernel" / "contracts" / "source" / "2_1_3" / "common"
@@ -22,11 +20,11 @@ def _schema(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _validator(*, format_checker: FormatChecker | None = FormatChecker()) -> Draft202012Validator:
+@pytest.fixture
+def validator(source_schema_validator):
     resources = [_schema(RUN_SOURCE / SCHEMA_FILENAME)]
     resources.extend(_schema(PRIMITIVES_SOURCE / name) for name in ("artifact-ref.schema.json", "artifact-set-ref.schema.json", "scope.schema.json"))
-    registry = Registry().with_resources((resource["$id"], Resource.from_contents(resource)) for resource in resources)
-    return Draft202012Validator(resources[0], registry=registry, format_checker=format_checker)
+    return source_schema_validator(resources[0], resources[1:])
 
 
 def _artifact_ref(token: str) -> dict[str, str]:
@@ -57,14 +55,13 @@ def _policy_change() -> dict[str, object]:
     return {"kind": "job_policy", "parent_ref": _artifact_ref("e"), "child_ref": _artifact_ref("f")}
 
 
-def _assert_invalid(value: object) -> None:
-    assert list(_validator().iter_errors(value)), value
+def _assert_invalid(validator, value: object) -> None:
+    assert list(validator.iter_errors(value)), value
 
 
 def test_run_manifest_schema_is_closed_payload_only_and_authority_bound() -> None:
     schema = _schema(RUN_SOURCE / SCHEMA_FILENAME)
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert schema["$vocabulary"] == {"https://json-schema.org/draft/2020-12/vocab/format-assertion": True}
     assert schema["$id"] == SCHEMA_ID
     assert AUTHORITY_HASH in schema["$comment"]
     assert "payload-only" in schema["$comment"]
@@ -72,9 +69,9 @@ def test_run_manifest_schema_is_closed_payload_only_and_authority_bound() -> Non
     assert schema["additionalProperties"] is False
 
 
-def test_run_manifest_accepts_root_and_derived_structural_branches() -> None:
-    assert _validator().is_valid(_valid_root())
-    assert _validator().is_valid(_valid_derived())
+def test_run_manifest_accepts_root_and_derived_structural_branches(validator) -> None:
+    assert validator.is_valid(_valid_root())
+    assert validator.is_valid(_valid_derived())
 
 
 @pytest.mark.parametrize(
@@ -99,8 +96,8 @@ def test_run_manifest_accepts_root_and_derived_structural_branches() -> None:
         {**_valid_derived(), "parent_run_ref": {"run_id": "run-001", **_artifact_ref("a"), "extra": True}},
     ],
 )
-def test_run_manifest_rejects_invalid_root_or_derived_branch_shapes(payload: object) -> None:
-    _assert_invalid(payload)
+def test_run_manifest_rejects_invalid_root_or_derived_branch_shapes(validator, payload: object) -> None:
+    _assert_invalid(validator, payload)
 
 
 @pytest.mark.parametrize(
@@ -115,22 +112,19 @@ def test_run_manifest_rejects_invalid_root_or_derived_branch_shapes(payload: obj
         ([{"kind": "job_policy", "parent_ref": _artifact_ref("a"), "child_ref": {**_artifact_ref("b"), "extra": True}}], False),
     ],
 )
-def test_run_manifest_changed_ref_set_is_closed_and_canonically_ordered(changed_ref_set: list[object], is_valid: bool) -> None:
+def test_run_manifest_changed_ref_set_is_closed_and_canonically_ordered(validator, changed_ref_set: list[object], is_valid: bool) -> None:
     payload = _valid_derived()
     payload["changed_ref_set"] = changed_ref_set
-    assert _validator().is_valid(payload) is is_valid
+    assert validator.is_valid(payload) is is_valid
 
 
-def test_run_manifest_schema_leaves_deferred_semantics_to_later_gates() -> None:
+def test_run_manifest_schema_leaves_deferred_semantics_to_later_gates(validator) -> None:
     payload = _valid_derived()
     payload["changed_ref_set"] = [_root_input_change()]
     payload["affected_scope_set"] = [{"kind": "job", "run_id": "another-run", "job_id": "another-job"}]
-    assert _validator().is_valid(payload)
+    assert validator.is_valid(payload)
 
 
-def test_run_manifest_requires_format_assertion_validation_for_calendar_dates() -> None:
-    """A consumer that ignores the required vocabulary is non-conformant."""
-
-    invalid_calendar_date = {**_valid_root(), "created_at": "2026-02-30T12:34:56.789Z"}
-    assert _validator(format_checker=None).is_valid(invalid_calendar_date)
-    assert not _validator().is_valid(invalid_calendar_date)
+def test_run_manifest_rejects_calendar_invalid_created_at(validator) -> None:
+    payload = {**_valid_root(), "created_at": "2026-02-30T12:34:56.789Z"}
+    _assert_invalid(validator, payload)

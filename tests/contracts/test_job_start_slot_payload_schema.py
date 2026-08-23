@@ -7,8 +7,6 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from jsonschema import Draft202012Validator, FormatChecker
-from referencing import Registry, Resource
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 COMMON_SOURCE = REPOSITORY_ROOT / "packages" / "autocut-kernel" / "src" / "autocut_kernel" / "contracts" / "source" / "2_1_3" / "common"
@@ -35,16 +33,14 @@ def _schema(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _validator(*, format_checker: FormatChecker | None = FormatChecker()) -> Draft202012Validator:
+@pytest.fixture
+def validator(source_schema_validator):
     resources = [_schema(BOOTSTRAP_SOURCE / SCHEMA_FILENAME)]
     resources.extend(
         _schema(PRIMITIVES_SOURCE / filename)
         for filename in ("artifact-ref.schema.json", "artifact-set-ref.schema.json")
     )
-    registry = Registry().with_resources(
-        (resource["$id"], Resource.from_contents(resource)) for resource in resources
-    )
-    return Draft202012Validator(resources[0], registry=registry, format_checker=format_checker)
+    return source_schema_validator(resources[0], resources[1:])
 
 
 def _artifact_ref(name: str) -> dict[str, str]:
@@ -80,14 +76,13 @@ def _active_payload() -> dict[str, object]:
     return payload
 
 
-def _assert_invalid(value: object) -> None:
-    assert list(_validator().iter_errors(value)), value
+def _assert_invalid(validator, value: object) -> None:
+    assert list(validator.iter_errors(value)), value
 
 
 def test_job_start_slot_schema_is_closed_payload_only_and_authority_bound() -> None:
     schema = _schema(BOOTSTRAP_SOURCE / SCHEMA_FILENAME)
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert schema["$vocabulary"] == {"https://json-schema.org/draft/2020-12/vocab/format-assertion": True}
     assert schema["$id"] == SCHEMA_ID
     assert AUTHORITY_HASH in schema["$comment"]
     assert "payload-only" in schema["$comment"]
@@ -105,29 +100,29 @@ def test_job_start_slot_schema_is_closed_payload_only_and_authority_bound() -> N
     assert branches["active"]["properties"]["root_input_set_ref"]["$ref"] == ARTIFACT_SET_REF_ID
 
 
-def test_job_start_slot_accepts_reserved_and_first_active_payload_shapes() -> None:
-    assert _validator().is_valid(_reserved_payload())
-    assert _validator().is_valid(_active_payload())
+def test_job_start_slot_accepts_reserved_and_first_active_payload_shapes(validator) -> None:
+    assert validator.is_valid(_reserved_payload())
+    assert validator.is_valid(_active_payload())
 
 
 @pytest.mark.parametrize(
     "field",
     ["prior_slot_ref", "root_run_manifest_ref", "authority_run_manifest_ref", "run_lineage_id", "publication_lineage_id", "derived_run_manifest_refs"],
 )
-def test_job_start_slot_reserved_rejects_every_active_only_field(field: str) -> None:
+def test_job_start_slot_reserved_rejects_every_active_only_field(validator, field: str) -> None:
     payload = _reserved_payload()
     payload[field] = [] if field == "derived_run_manifest_refs" else _artifact_ref("future")
-    _assert_invalid(payload)
+    _assert_invalid(validator, payload)
 
 
 @pytest.mark.parametrize(
     "field",
     ["prior_slot_ref", "root_run_manifest_ref", "authority_run_manifest_ref", "run_lineage_id", "publication_lineage_id", "derived_run_manifest_refs"],
 )
-def test_job_start_slot_active_requires_every_active_only_field(field: str) -> None:
+def test_job_start_slot_active_requires_every_active_only_field(validator, field: str) -> None:
     payload = _active_payload()
     del payload[field]
-    _assert_invalid(payload)
+    _assert_invalid(validator, payload)
 
 
 @pytest.mark.parametrize(
@@ -148,23 +143,21 @@ def test_job_start_slot_active_requires_every_active_only_field(field: str) -> N
         {**_active_payload(), "state": "pending"},
     ],
 )
-def test_job_start_slot_rejects_missing_mixed_unknown_null_or_malformed_values(payload: object) -> None:
-    _assert_invalid(payload)
+def test_job_start_slot_rejects_missing_mixed_unknown_null_or_malformed_values(validator, payload: object) -> None:
+    _assert_invalid(validator, payload)
 
 
-def test_job_start_slot_schema_does_not_claim_deferred_cross_revision_semantics() -> None:
+def test_job_start_slot_schema_does_not_claim_deferred_cross_revision_semantics(validator) -> None:
     """Duplicate, prefix, and cross-ref equality checks belong to later semantic gates."""
 
     payload = _active_payload()
     payload["authority_run_manifest_ref"] = _artifact_ref("different-authority-run")
     derived = _artifact_ref("derived-run")
     payload["derived_run_manifest_refs"] = [derived, deepcopy(derived)]
-    assert _validator().is_valid(payload)
+    assert validator.is_valid(payload)
 
 
-def test_job_start_slot_requires_format_assertion_validation_for_calendar_dates() -> None:
-    """A consumer that ignores the required vocabulary is non-conformant."""
-
-    invalid_calendar_date = {**_active_payload(), "updated_at": "2026-02-30T12:34:56.789Z"}
-    assert _validator(format_checker=None).is_valid(invalid_calendar_date)
-    assert not _validator().is_valid(invalid_calendar_date)
+@pytest.mark.parametrize("payload_builder", [_reserved_payload, _active_payload])
+def test_job_start_slot_rejects_calendar_invalid_updated_at_in_both_branches(validator, payload_builder) -> None:
+    payload = {**payload_builder(), "updated_at": "2026-02-30T12:34:56.789Z"}
+    _assert_invalid(validator, payload)

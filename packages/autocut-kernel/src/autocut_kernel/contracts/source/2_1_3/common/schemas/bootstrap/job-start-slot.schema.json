@@ -1,6 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$vocabulary": {"https://json-schema.org/draft/2020-12/vocab/format-assertion": true},
   "$id": "https://autocut.invalid/contracts/2.1.3/common/schemas/bootstrap/job-start-slot.schema.json",
   "$comment": "Authority: 原理/v2.1-production-spec/v2-production-system-contracts.md#3.4; sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9. B2b is a closed payload-only transcription. Envelope inputs, Store/CAS behavior, Registry/type ownership, writer/producer rules, and cross-revision lineage, equality, ordering, duplicate, and prefix semantics remain explicitly deferred.",
   "oneOf": [
