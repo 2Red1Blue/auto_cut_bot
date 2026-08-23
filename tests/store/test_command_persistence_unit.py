@@ -203,3 +203,86 @@ def test_programming_database_errors_are_mapped_to_runtime_store_error() -> None
     store = PostgresRuntimeStore(Connection)
     with pytest.raises(RuntimeStoreError, match="database operation failed"):
         store.claim_command(CommandClaim(Job("programming-error", "test"), "cmd", "x", digest("x")))
+
+
+def test_store_decodes_bytes_text_values_from_database_rows() -> None:
+    job_id = uuid4()
+    slot_id = uuid4()
+    receipt_id = uuid4()
+    artifact_set_id = uuid4()
+    request_hash = digest("request")
+    member = ArtifactMember(
+        artifact_type="media_evidence",
+        logical_id="preflight",
+        revision=2,
+        scope=ArtifactScope("pipeline", "job", "bytes-job"),
+        content_hash=digest("evidence"),
+        payload_json='{"ready":true}',
+    )
+    canonical = [{
+        "artifact_type": member.artifact_type,
+        "content_hash": member.content_hash,
+        "logical_id": member.logical_id,
+        "payload_json": {"ready": True},
+        "revision": member.revision,
+        "scope": {"key": "bytes-job", "kind": "job", "namespace": "pipeline"},
+    }]
+    set_hash = digest(json.dumps(canonical, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+
+    class Cursor:
+        def __init__(self) -> None:
+            self.rows = iter(
+                (
+                    None,
+                    (job_id, b"test"),
+                    (b"running",),
+                    (slot_id, b"preflight", request_hash.encode()),
+                    (b"running", None, None, None, None),
+                    (job_id,),
+                    (b"running",),
+                    (job_id, b"running"),
+                    (b"1",),
+                    (job_id,),
+                    (b"running",),
+                    (job_id, b"succeeded"),
+                    (b"succeeded", receipt_id, artifact_set_id, None, None),
+                    (set_hash.encode(),),
+                )
+            )
+
+        def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+            pass
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return next(self.rows)
+
+        def close(self) -> None:
+            pass
+
+    class Connection:
+        def __init__(self) -> None:
+            self.cursor_instance = Cursor()
+
+        def cursor(self) -> Cursor:
+            return self.cursor_instance
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    connection = Connection()
+    store = PostgresRuntimeStore(lambda: connection)
+    claim = CommandClaim(Job("bytes-job", "test"), "claim", "preflight", request_hash)
+
+    assert store.claim_command(claim).state == "running"
+    success = CommandSuccess(slot_id, set_hash, (member,))
+    assert store.commit_command_success(success).state == "succeeded"
+    replay = store.commit_command_success(success)
+
+    assert replay.state == "succeeded"
+    assert replay.artifact_set_id == artifact_set_id
