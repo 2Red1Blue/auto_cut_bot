@@ -55,3 +55,11 @@ class MediaOutputsUnavailableError(RuntimeStoreError):
 
 class MediaOutputsIntegrityError(RuntimeStoreError):
     """A succeeded media-output pair violates its shared immutable provenance."""
+
+
+class SemanticResolutionProofUnavailableError(RuntimeStoreError):
+    """No exact succeeded semantic-resolution proof is available for a Job."""
+
+
+class SemanticResolutionProofIntegrityError(RuntimeStoreError):
+    """A semantic-resolution proof violates its immutable ArtifactSet contract."""

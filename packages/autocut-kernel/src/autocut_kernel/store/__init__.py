@@ -12,6 +12,8 @@ from .errors import (
     RecipeIntegrityError,
     RecipeUnavailableError,
     RuntimeStoreError,
+    SemanticResolutionProofIntegrityError,
+    SemanticResolutionProofUnavailableError,
     StaleHeadError,
     StoreConcurrencyError,
     StoreValidationError,
@@ -28,7 +30,9 @@ from .models import (
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
+    PersistedSemanticResolutionProof,
     RecipeReference,
+    SemanticResolutionProofReference,
 )
 from .postgres import PostgresRuntimeStore
 
@@ -53,10 +57,14 @@ __all__ = [
     "PersistedMediaEvidence",
     "PersistedMediaOutputs",
     "PersistedRecipe",
+    "PersistedSemanticResolutionProof",
     "RecipeIntegrityError",
     "RecipeReference",
     "RecipeUnavailableError",
     "RuntimeStoreError",
+    "SemanticResolutionProofIntegrityError",
+    "SemanticResolutionProofReference",
+    "SemanticResolutionProofUnavailableError",
     "StaleHeadError",
     "StoreConcurrencyError",
     "StoreValidationError",

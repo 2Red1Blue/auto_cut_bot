@@ -29,6 +29,7 @@ from autocut_kernel.store import (
     RecipeIntegrityError,
     RecipeReference,
     RecipeUnavailableError,
+    SemanticResolutionProofUnavailableError,
 )
 
 psycopg = pytest.importorskip("psycopg")
@@ -449,6 +450,67 @@ def test_read_succeeded_media_outputs_requires_canonical_logical_member_ids() ->
 
     with pytest.raises(MediaOutputsUnavailableError, match="output pair"):
         store.read_succeeded_media_outputs(job)
+
+
+def test_read_succeeded_semantic_resolution_proof_requires_complete_semantic_shape() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("semantic-proof-reader-job", "test")
+    running = store.claim_command(
+        CommandClaim(job, "semantic", "semantic_chain_command", _digest("request"))
+    )
+
+    def member(artifact_type: str, logical_id: str, payload: object) -> ArtifactMember:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return ArtifactMember(
+            artifact_type,
+            logical_id,
+            1,
+            ArtifactScope("pipeline", "job", job.job_key),
+            _digest(encoded),
+            encoded,
+        )
+
+    members = (
+        member("narrative_graph", "narrative_" + "a" * 32, {"narrative": True}),
+        member("story_set", "story_set", {"stories": []}),
+        member("editorial_blueprint", "blueprint_" + "b" * 32, {"blueprint": True}),
+        member(
+            "semantic_resolution_proof",
+            "semantic_resolution_proof",
+            {"candidate": {"candidate_id": "candidate_" + "c" * 32}, "policy_hash": "sha256:" + "d" * 64},
+        ),
+    )
+    succeeded = store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash(members), members)
+    )
+
+    proof = store.read_succeeded_semantic_resolution_proof(job)
+
+    assert proof.reference.logical_id == "semantic_resolution_proof"
+    assert proof.command_slot_id == running.command_slot_id
+    assert proof.receipt_id == succeeded.receipt_id
+    assert proof.artifact_set_id == succeeded.artifact_set_id
+
+
+def test_read_succeeded_semantic_resolution_proof_rejects_missing_proof_member() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("incomplete-semantic-proof-reader-job", "test")
+    running = store.claim_command(
+        CommandClaim(job, "semantic", "semantic_chain_command", _digest("request"))
+    )
+    members = (
+        _make_member(job.job_key, "narrative_graph", "narrative_" + "a" * 32, content="narrative"),
+        _make_member(job.job_key, "story_set", "story_set", content="story"),
+        _make_member(job.job_key, "editorial_blueprint", "blueprint_" + "b" * 32, content="blueprint"),
+    )
+    store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash(members), members)
+    )
+
+    with pytest.raises(SemanticResolutionProofUnavailableError, match="semantic resolution proof"):
+        store.read_succeeded_semantic_resolution_proof(job)
 
 
 # ---------------------------------------------------------------------------

@@ -17,9 +17,11 @@ from autocut_kernel.store import (
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
+    PersistedSemanticResolutionProof,
     PersistenceConflictError,
     RecipeReference,
     RuntimeStoreError,
+    SemanticResolutionProofReference,
     StaleHeadError,
     StoreValidationError,
 )
@@ -161,6 +163,29 @@ def test_persisted_media_outputs_require_shared_scope_and_uuid_provenance() -> N
         PersistedMediaOutputs(
             evidence,
             RecipeReference(ArtifactScope("pipeline", "job", "other"), "recipe", 1, digest('{"recipe":true}')),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
+
+
+def test_persisted_semantic_resolution_proof_revalidates_its_canonical_hash() -> None:
+    payload = '{"candidate":{"candidate_id":"candidate_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
+    reference = SemanticResolutionProofReference(
+        ArtifactScope("pipeline", "job", "semantic-job"),
+        "semantic_resolution_proof",
+        1,
+        digest(json.dumps(json.loads(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True)),
+    )
+    proof = PersistedSemanticResolutionProof(reference, payload, uuid4(), uuid4(), uuid4(), uuid4())
+    assert proof.reference == reference
+    with pytest.raises(StoreValidationError, match="semantic resolution proof content_hash"):
+        PersistedSemanticResolutionProof(
+            SemanticResolutionProofReference(
+                reference.scope, reference.logical_id, 1, digest("forged")
+            ),
+            payload,
             uuid4(),
             uuid4(),
             uuid4(),

@@ -225,6 +225,53 @@ class PersistedMediaOutputs:
 
 
 @dataclass(frozen=True, slots=True)
+class SemanticResolutionProofReference:
+    """The exact immutable proof member from a semantic command ArtifactSet."""
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["semantic_resolution_proof"] = "semantic_resolution_proof"
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "semantic_resolution_proof":
+            raise StoreValidationError(
+                "semantic resolution proof artifact_type must be 'semantic_resolution_proof'"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedSemanticResolutionProof:
+    """Verified proof payload and shared success provenance for replay recovery."""
+
+    reference: SemanticResolutionProofReference
+    payload_json: str
+    job_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not SemanticResolutionProofReference:  # noqa: E721
+            raise StoreValidationError("reference must be a SemanticResolutionProofReference")
+        for field_name, value in (
+            ("job_id", self.job_id),
+            ("receipt_id", self.receipt_id),
+            ("artifact_set_id", self.artifact_set_id),
+            ("command_slot_id", self.command_slot_id),
+        ):
+            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise StoreValidationError(f"{field_name} must be a UUID")
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError("payload_json does not match semantic resolution proof content_hash")
+
+
+@dataclass(frozen=True, slots=True)
 class CommandClaim:
     job: Job
     idempotency_key: str

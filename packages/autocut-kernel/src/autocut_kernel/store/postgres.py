@@ -25,6 +25,8 @@ from .errors import (
     RecipeIntegrityError,
     RecipeUnavailableError,
     RuntimeStoreError,
+    SemanticResolutionProofIntegrityError,
+    SemanticResolutionProofUnavailableError,
     StaleHeadError,
     StoreConcurrencyError,
     StoreValidationError,
@@ -40,7 +42,9 @@ from .models import (
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
+    PersistedSemanticResolutionProof,
     RecipeReference,
+    SemanticResolutionProofReference,
     canonical_payload_hash,
     canonical_recipe_scope,
 )
@@ -602,6 +606,132 @@ class PostgresRuntimeStore:
             except (StoreValidationError, TypeError, ValueError) as error:
                 raise MediaOutputsIntegrityError(
                     "succeeded media output pair failed immutable provenance validation"
+                ) from error
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # read_succeeded_semantic_resolution_proof
+    # ------------------------------------------------------------------
+
+    def read_succeeded_semantic_resolution_proof(
+        self, job: Job
+    ) -> PersistedSemanticResolutionProof:
+        """Read the proof only from a complete succeeded semantic ArtifactSet.
+
+        The query requires the four-member semantic output shape rather than a
+        generic proof lookup: narrative graph, story set, editorial blueprint,
+        and the exact resolution proof must share the command receipt/set.
+        """
+
+        def operation(cursor: DbCursor) -> PersistedSemanticResolutionProof:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise SemanticResolutionProofUnavailableError(
+                    "job has no succeeded semantic resolution proof"
+                )
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+
+            cursor.execute(
+                """
+                SELECT proof.logical_id, proof.revision, proof.content_hash,
+                       proof.payload_json::text, artifact_set.artifact_set_id,
+                       receipt.receipt_id, slot.command_slot_id
+                  FROM runtime.command_slots AS slot
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.command_slot_id = slot.command_slot_id
+                   AND artifact_set.job_id = slot.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                  JOIN runtime.artifacts AS narrative
+                    ON narrative.artifact_set_id = artifact_set.artifact_set_id
+                   AND narrative.job_id = artifact_set.job_id
+                   AND narrative.artifact_type = 'narrative_graph'
+                   AND narrative.namespace = 'pipeline'
+                   AND narrative.scope_kind = 'job'
+                   AND narrative.scope_key = %s
+                  JOIN runtime.artifact_set_members AS narrative_member
+                    ON narrative_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND narrative_member.artifact_id = narrative.artifact_id
+                  JOIN runtime.artifacts AS story
+                    ON story.artifact_set_id = artifact_set.artifact_set_id
+                   AND story.job_id = artifact_set.job_id
+                   AND story.artifact_type = 'story_set'
+                   AND story.logical_id = 'story_set'
+                   AND story.namespace = 'pipeline'
+                   AND story.scope_kind = 'job'
+                   AND story.scope_key = %s
+                  JOIN runtime.artifact_set_members AS story_member
+                    ON story_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND story_member.artifact_id = story.artifact_id
+                  JOIN runtime.artifacts AS blueprint
+                    ON blueprint.artifact_set_id = artifact_set.artifact_set_id
+                   AND blueprint.job_id = artifact_set.job_id
+                   AND blueprint.artifact_type = 'editorial_blueprint'
+                   AND blueprint.namespace = 'pipeline'
+                   AND blueprint.scope_kind = 'job'
+                   AND blueprint.scope_key = %s
+                  JOIN runtime.artifact_set_members AS blueprint_member
+                    ON blueprint_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND blueprint_member.artifact_id = blueprint.artifact_id
+                  JOIN runtime.artifacts AS proof
+                    ON proof.artifact_set_id = artifact_set.artifact_set_id
+                   AND proof.job_id = artifact_set.job_id
+                   AND proof.artifact_type = 'semantic_resolution_proof'
+                   AND proof.logical_id = 'semantic_resolution_proof'
+                   AND proof.namespace = 'pipeline'
+                   AND proof.scope_kind = 'job'
+                   AND proof.scope_key = %s
+                  JOIN runtime.artifact_set_members AS proof_member
+                    ON proof_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND proof_member.artifact_id = proof.artifact_id
+                 WHERE slot.job_id = %s
+                   AND slot.command_name = 'semantic_chain_command'
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                   AND artifact_set.member_count = 4
+                """,
+                (job.job_key, job.job_key, job.job_key, job.job_key, UUID(str(job_id))),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if not rows:
+                raise SemanticResolutionProofUnavailableError(
+                    "no complete succeeded semantic resolution proof is available"
+                )
+            if len(rows) != 1:
+                raise SemanticResolutionProofIntegrityError(
+                    "semantic resolution proof resolved to multiple durable rows"
+                )
+            logical_id, revision, content_hash, payload_json, artifact_set_id, receipt_id, command_slot_id = rows[0]
+            try:
+                reference = SemanticResolutionProofReference(
+                    canonical_recipe_scope(job),
+                    _text(logical_id),
+                    int(_text(revision)),
+                    _text(content_hash),
+                )
+                if canonical_payload_hash(_text(payload_json)) != reference.content_hash:
+                    raise StoreValidationError("semantic proof payload hash does not match artifact identity")
+                return PersistedSemanticResolutionProof(
+                    reference,
+                    _text(payload_json),
+                    UUID(str(job_id)),
+                    UUID(str(receipt_id)),
+                    UUID(str(artifact_set_id)),
+                    UUID(str(command_slot_id)),
+                )
+            except (StoreValidationError, TypeError, ValueError) as error:
+                raise SemanticResolutionProofIntegrityError(
+                    "semantic resolution proof failed immutable provenance validation"
                 ) from error
 
         return self._transaction(operation)
