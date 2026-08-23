@@ -82,7 +82,12 @@ class AgentRuntimeService:
             state = self._command_stop(AgentRunStage.SEMANTIC, semantic_outcome)
             if state is not None:
                 return AgentRunResult(intent.run_id, intent.profile, state, traces)
-            semantic_success = SemanticScenarioSuccess(semantic_plan, semantic_result)
+            try:
+                semantic_success = SemanticScenarioSuccess(semantic_plan, semantic_result)
+            except ScenarioRegistryDenied:
+                # A succeeded receipt without a re-resolvable bridge is an
+                # infrastructure/provenance failure, not a semantic denial.
+                return self._failed(intent, AgentRunState.SEMANTIC_FAILED, traces, semantic_job)
         except ScenarioRegistryDenied:
             return self._failed(intent, AgentRunState.SEMANTIC_DENIED, traces, semantic_job)
         except RuntimeStoreError:

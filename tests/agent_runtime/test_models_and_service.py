@@ -13,6 +13,7 @@ from autocut_kernel.agent_runtime import (
     AgentRuntimeService,
     LocalOutputConfiguration,
 )
+from autocut_kernel.pipeline import RenderLocalDenied, RenderLocalFailed
 from autocut_kernel.scenario_registry import ScenarioRef
 from autocut_kernel.semantic_chain import SemanticProfile
 from autocut_kernel.store import (
@@ -38,7 +39,7 @@ class _Scenarios:
 
     def prepare_upstream(self, *_):
         self.calls.append("upstream")
-        return SimpleNamespace(request=object())
+        return SimpleNamespace(request=SimpleNamespace(preflight_request=SimpleNamespace(source_path=Path("source.mp4"))))
 
     def prepare_semantic(self, *_):
         self.calls.append("semantic")
@@ -95,13 +96,20 @@ class _Renderer:
         raise AssertionError("renderer must not run in these terminal-stop tests")
 
 
-def _service(upstream: CommandOutcome, semantic: CommandOutcome):
+def _service(
+    upstream: CommandOutcome,
+    semantic: CommandOutcome,
+    *,
+    downstream: CommandOutcome | None = None,
+    reader=None,
+    renderer=None,
+):
     scenarios = _Scenarios()
     upstream_port = _Media(upstream)
     semantic_port = _Semantic(semantic)
-    downstream_port = _Media(CommandOutcome(uuid4(), "succeeded"))
-    reader = _Reader()
-    renderer = _Renderer()
+    downstream_port = _Media(downstream or CommandOutcome(uuid4(), "succeeded"))
+    reader = reader or _Reader()
+    renderer = renderer or _Renderer()
     service = AgentRuntimeService(
         scenarios,
         upstream_port,
@@ -136,6 +144,17 @@ def test_upstream_denial_stops_before_reader_semantic_downstream_and_render() ->
     assert semantic.calls == downstream.calls == reader.calls == renderer.calls == 0
 
 
+def test_upstream_failure_stops_before_all_later_ports() -> None:
+    service, scenarios, upstream, semantic, downstream, reader, renderer = _service(
+        CommandOutcome(uuid4(), "failed"), CommandOutcome(uuid4(), "succeeded")
+    )
+    result = service.run(_intent())
+    assert result.state is AgentRunState.UPSTREAM_MEDIA_FAILED
+    assert scenarios.calls == ["upstream"]
+    assert upstream.calls == 1
+    assert semantic.calls == downstream.calls == reader.calls == renderer.calls == 0
+
+
 def test_semantic_denial_stops_before_downstream_and_render() -> None:
     service, scenarios, upstream, semantic, downstream, reader, renderer = _service(
         CommandOutcome(uuid4(), "succeeded"), CommandOutcome(uuid4(), "denied")
@@ -145,6 +164,83 @@ def test_semantic_denial_stops_before_downstream_and_render() -> None:
     assert scenarios.calls == ["upstream", "semantic"]
     assert upstream.calls == semantic.calls == reader.calls == 1
     assert downstream.calls == renderer.calls == 0
+
+
+def test_succeeded_semantic_without_recoverable_bridge_is_failed_and_stops() -> None:
+    service, scenarios, _, semantic, downstream, reader, renderer = _service(
+        CommandOutcome(uuid4(), "succeeded"), CommandOutcome(uuid4(), "succeeded")
+    )
+    result = service.run(_intent())
+    assert result.state is AgentRunState.SEMANTIC_FAILED
+    assert result.traces[-1].command_state == "succeeded"
+    assert semantic.calls == reader.calls == 1
+    assert downstream.calls == renderer.calls == 0
+
+
+def _permit_semantic_bridge(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "autocut_kernel.agent_runtime.service.SemanticScenarioSuccess",
+        lambda plan, result: SimpleNamespace(plan=plan, result=result),
+    )
+
+
+def test_downstream_denial_stops_before_second_store_read_and_render(monkeypatch) -> None:
+    _permit_semantic_bridge(monkeypatch)
+    service, scenarios, _, _, downstream, reader, renderer = _service(
+        CommandOutcome(uuid4(), "succeeded"),
+        CommandOutcome(uuid4(), "succeeded"),
+        downstream=CommandOutcome(uuid4(), "denied"),
+    )
+    result = service.run(_intent())
+    assert result.state is AgentRunState.DOWNSTREAM_MEDIA_DENIED
+    assert scenarios.calls == ["upstream", "semantic", "downstream"]
+    assert downstream.calls == reader.calls == 1
+    assert renderer.calls == 0
+
+
+def test_store_failure_after_upstream_success_stops_before_semantic(monkeypatch) -> None:
+    class Reader:
+        calls = 0
+
+        def read_succeeded_media_outputs(self, _):
+            self.calls += 1
+            from autocut_kernel.store import RuntimeStoreError
+
+            raise RuntimeStoreError("unavailable")
+
+    reader = Reader()
+    service, scenarios, _, semantic, downstream, _, renderer = _service(
+        CommandOutcome(uuid4(), "succeeded"), CommandOutcome(uuid4(), "succeeded"), reader=reader
+    )
+    result = service.run(_intent())
+    assert result.state is AgentRunState.UPSTREAM_MEDIA_FAILED
+    assert scenarios.calls == ["upstream"]
+    assert semantic.calls == downstream.calls == renderer.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("render", "state"),
+    ((RenderLocalDenied("QC_DENIED", "denied"), AgentRunState.RENDER_DENIED), (RenderLocalFailed("RENDER_FAILED", "failed"), AgentRunState.RENDER_FAILED)),
+)
+def test_render_terminal_outcomes_stop_without_promoted_output(monkeypatch, render, state) -> None:
+    _permit_semantic_bridge(monkeypatch)
+
+    class Renderer:
+        calls = 0
+
+        def execute_persisted(self, _):
+            self.calls += 1
+            return render
+
+    renderer = Renderer()
+    service, _, _, _, _, reader, _ = _service(
+        CommandOutcome(uuid4(), "succeeded"), CommandOutcome(uuid4(), "succeeded"), renderer=renderer
+    )
+    result = service.run(_intent())
+    assert result.state is state
+    assert result.output_path is None
+    assert reader.calls == 2
+    assert renderer.calls == 1
 
 
 def test_intent_accepts_only_typed_scenario_ref_and_no_physical_agent_values() -> None:
