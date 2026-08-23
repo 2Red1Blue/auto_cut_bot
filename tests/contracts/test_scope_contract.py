@@ -20,6 +20,8 @@ SCOPE_SCHEMA = (
     / "source"
     / "2_1_3"
     / "common"
+    / "schemas"
+    / "primitives"
     / "scope.schema.json"
 )
 KERNEL_SOURCE = REPOSITORY_ROOT / "packages" / "autocut-kernel" / "src"

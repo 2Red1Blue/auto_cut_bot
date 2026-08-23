@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://autocut.invalid/contracts/2.1.3/common/scope.schema.json",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/scope.schema.json",
   "$comment": "Authority: v2-production-system-contracts.md#4.2; sha256:7260bf922f8852ea22142220227fdda9a4e03e81433592c68957dffe08b7531d",
   "type": "object",
   "unevaluatedProperties": false,

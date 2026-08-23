@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://autocut.invalid/contracts/2.1.3/common/source-span-ref.schema.json",
+  "$id": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/source-span-ref.schema.json",
   "$comment": "Authority: v2-production-system-contracts.md#1.1.1,#4.1 sha256:7260bf922f8852ea22142220227fdda9a4e03e81433592c68957dffe08b7531d; v2-stage-04-story-assembly-v2.md#3.1 sha256:df28393582d1cef40f5c58df58688d56169e19dd79c92482567deda24548c5ae.",
   "type": "object",
   "properties": {
-    "artifact_ref": {"$ref": "https://autocut.invalid/contracts/2.1.3/common/artifact-ref.schema.json"},
+    "artifact_ref": {"$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/artifact-ref.schema.json"},
     "source_id": {"type": "string", "minLength": 1},
     "source_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "clock_id": {"type": "string", "minLength": 1},

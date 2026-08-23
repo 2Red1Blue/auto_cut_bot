@@ -22,17 +22,18 @@ COMMON_SOURCE = (
     / "2_1_3"
     / "common"
 )
+PRIMITIVES_SOURCE = COMMON_SOURCE / "schemas" / "primitives"
 KERNEL_SOURCE = REPOSITORY_ROOT / "packages" / "autocut-kernel" / "src"
 AUTHORITY_HASH = "sha256:7260bf922f8852ea22142220227fdda9a4e03e81433592c68957dffe08b7531d"
 STAGE_04_HASH = "sha256:df28393582d1cef40f5c58df58688d56169e19dd79c92482567deda24548c5ae"
 
 
 def _schema(filename: str) -> dict[str, object]:
-    return json.loads((COMMON_SOURCE / filename).read_text(encoding="utf-8"))
+    return json.loads((PRIMITIVES_SOURCE / filename).read_text(encoding="utf-8"))
 
 
 def _validator(filename: str) -> Draft202012Validator:
-    schemas = [_schema(path.name) for path in sorted(COMMON_SOURCE.glob("*.schema.json"))]
+    schemas = [_schema(path.name) for path in sorted(PRIMITIVES_SOURCE.glob("*.schema.json"))]
     target = next(schema for schema in schemas if schema["$id"].endswith(filename))
     registry = Registry().with_resources(
         (schema["$id"], Resource.from_contents(schema)) for schema in schemas
@@ -53,9 +54,13 @@ def test_all_primitive_sources_are_closed_2020_12_and_provenance_bound() -> None
         "scope.schema.json",
         "source-span-ref.schema.json",
     }
-    assert {path.name for path in COMMON_SOURCE.glob("*.schema.json")} == expected
+    assert {path.name for path in PRIMITIVES_SOURCE.glob("*.schema.json")} == expected
+    assert not any((COMMON_SOURCE / filename).exists() for filename in expected)
     for filename in expected:
         schema = _schema(filename)
+        assert schema["$id"] == (
+            "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/" + filename
+        )
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
         assert schema["type"] == "object"
         if "properties" in schema:
@@ -65,6 +70,15 @@ def test_all_primitive_sources_are_closed_2020_12_and_provenance_bound() -> None
             assert schema["unevaluatedProperties"] is False
         assert AUTHORITY_HASH in schema["$comment"]
     assert STAGE_04_HASH in _schema("source-span-ref.schema.json")["$comment"]
+
+
+def test_primitive_cross_references_resolve_from_canonical_paths() -> None:
+    value = {
+        "artifact_ref": {"artifact_id": "art_events", "content_hash": "sha256:" + "c" * 64},
+        "object_type": "event",
+        "object_id": "event-001",
+    }
+    assert _validator("domain-ref.schema.json").is_valid(value)
 
 
 def test_artifact_and_set_refs_reject_bare_forms_unknown_keys_and_bad_hashes() -> None:
@@ -94,7 +108,7 @@ def test_domain_ref_requires_structured_artifact_provenance() -> None:
     _assert_invalid("domain-ref.schema.json", {**value, "artifact_ref": {"artifact_id": "art_events"}})
 
 
-def test_source_span_requires_source_hash_and_structured_owner_binding() -> None:
+def test_source_span_structure_requires_source_hash_and_structured_owner_binding() -> None:
     value = {
         "artifact_ref": {"artifact_id": "art_source_manifest", "content_hash": "sha256:" + "d" * 64},
         "source_id": "source-001",
