@@ -207,28 +207,21 @@ class SemanticChainCommand:
             CommandClaim(request.job, request.idempotency_key, _COMMAND_NAME, request.request_hash)
         )
         if not claimed.is_fresh_claim:
-            return SemanticChainCommandResult(claimed, self._resolved.get(claimed.command_slot_id))
+            cached = self._resolved.get(claimed.command_slot_id)
+            if cached is not None:
+                return SemanticChainCommandResult(claimed, cached)
+            try:
+                _, resolved = self._resolve(request)
+                return SemanticChainCommandResult(claimed, resolved)
+            except (SemanticChainDenied, RuntimeStoreError, TypeError, ValueError, KeyError):
+                # A closed succeeded receipt is immutable.  Do not reopen it or
+                # execute downstream work when its trusted bridge is unavailable.
+                return SemanticChainCommandResult(claimed)
         if request.job.profile == "production":
             return SemanticChainCommandResult(self._reject(claimed, _PRODUCTION_DENIAL))
         try:
-            chain = self._builder.build(request.semantic_input)
-            adapter = FixtureCatalogAdapter(
-                _StoreEvidenceLoader(
-                    self._store,
-                    request.media_job,
-                    request.media_evidence_reference,
-                    request.candidate.evidence,
-                ),
-                request.registry,
-            )
-            beat = request.beat_resolver.resolve_beat(adapter.resolve(chain, request.candidate))
-            if type(beat) is not FixtureBeatInput:  # noqa: E721
-                raise SemanticChainDenied("fixture beat resolver must return a FixtureBeatInput")
+            chain, resolved = self._resolve(request)
             artifacts = self._artifacts(request, chain)
-            refs = SemanticArtifactReferences(
-                *(SemanticArtifactReference.from_member(item) for item in artifacts)
-            )
-            resolved = ResolvedSemanticBeat(beat, refs)
         except SemanticChainDenied as error:
             return SemanticChainCommandResult(self._reject(claimed, _SEMANTIC_DENIAL, str(error)))
         except Exception:
@@ -240,6 +233,30 @@ class SemanticChainCommand:
         )
         self._resolved[claimed.command_slot_id] = resolved
         return SemanticChainCommandResult(outcome, resolved)
+
+    def _resolve(
+        self, request: SemanticChainCommandRequest
+    ) -> tuple[SemanticChain, ResolvedSemanticBeat]:
+        chain = self._builder.build(request.semantic_input)
+        adapter = FixtureCatalogAdapter(
+            _StoreEvidenceLoader(
+                self._store,
+                request.media_job,
+                request.media_evidence_reference,
+                request.candidate.evidence,
+            ),
+            request.registry,
+        )
+        beat = request.beat_resolver.resolve_beat(adapter.resolve(chain, request.candidate))
+        if type(beat) is not FixtureBeatInput:  # noqa: E721
+            raise SemanticChainDenied("fixture beat resolver must return a FixtureBeatInput")
+        refs = SemanticArtifactReferences(
+            *(
+                SemanticArtifactReference.from_member(item)
+                for item in self._artifacts(request, chain)
+            )
+        )
+        return chain, ResolvedSemanticBeat(beat, refs)
 
     @staticmethod
     def _artifacts(

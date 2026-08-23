@@ -219,6 +219,17 @@ def test_expected_adapter_denial_closes_a_receipt_without_artifacts() -> None:
     assert store.rejections[0].failure_code == "SEMANTIC_CHAIN_DENIED"
 
 
+def test_new_command_instance_replay_re_resolves_the_durable_bridge() -> None:
+    store = _Store()
+    request = _request(store)
+    first = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
+    replay = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
+
+    assert first.outcome.state == replay.outcome.state == "succeeded"
+    assert replay.resolved_beat == first.resolved_beat
+    assert len(store.successes) == 1
+
+
 def test_production_job_is_durably_denied_before_build_or_resolution() -> None:
     store, builder = _Store(), _Builder()
     result = SemanticChainCommand(store, builder=builder).execute(
