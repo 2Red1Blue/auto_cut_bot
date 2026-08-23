@@ -329,7 +329,7 @@ class PostgresRuntimeStore:
 
             cursor.execute(
                 """
-                SELECT artifact.payload_json::text, receipt.receipt_id,
+                SELECT artifact.payload_json::text, artifact.job_id, receipt.receipt_id,
                        artifact_set.artifact_set_id, slot.command_slot_id
                   FROM runtime.artifacts AS artifact
                   JOIN runtime.artifact_set_members AS member
@@ -373,11 +373,12 @@ class PostgresRuntimeStore:
                 raise RecipeUnavailableError("exact recipe artifact is unavailable")
             if len(rows) != 1:
                 raise RecipeIntegrityError("exact recipe identity resolved to multiple durable rows")
-            payload_json, receipt_id, artifact_set_id, command_slot_id = rows[0]
+            payload_json, result_job_id, receipt_id, artifact_set_id, command_slot_id = rows[0]
             try:
                 return PersistedRecipe(
                     reference=reference,
                     payload_json=_text(payload_json),
+                    job_id=UUID(str(result_job_id)),
                     receipt_id=UUID(str(receipt_id)),
                     artifact_set_id=UUID(str(artifact_set_id)),
                     command_slot_id=UUID(str(command_slot_id)),

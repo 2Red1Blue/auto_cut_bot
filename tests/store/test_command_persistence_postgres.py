@@ -174,6 +174,7 @@ def test_read_recipe_returns_only_the_exact_succeeded_recipe_identity() -> None:
 
     assert persisted.reference == reference
     assert json.loads(persisted.payload_json) == {"recipe": {"revision": 1}}
+    assert persisted.job_id == running.job_id
     assert persisted.command_slot_id == running.command_slot_id
 
     with pytest.raises(RecipeUnavailableError):

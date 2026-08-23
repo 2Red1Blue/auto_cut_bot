@@ -96,9 +96,11 @@ def test_persisted_recipe_revalidates_canonical_json_against_its_identity() -> N
         ),
     )
 
-    result = PersistedRecipe(reference, payload, uuid4(), uuid4(), uuid4())
+    job_id = uuid4()
+    result = PersistedRecipe(reference, payload, job_id, uuid4(), uuid4(), uuid4())
 
     assert result.reference == reference
+    assert result.job_id == job_id
 
 
 def test_persisted_recipe_refuses_payload_hash_mismatch() -> None:
@@ -110,7 +112,7 @@ def test_persisted_recipe_refuses_payload_hash_mismatch() -> None:
     )
 
     with pytest.raises(StoreValidationError, match="content_hash"):
-        PersistedRecipe(reference, "{}", uuid4(), uuid4(), uuid4())
+        PersistedRecipe(reference, "{}", uuid4(), uuid4(), uuid4(), uuid4())
 
 
 def test_terminal_rejection_requires_structured_failure_detail() -> None:

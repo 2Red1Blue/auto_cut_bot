@@ -114,11 +114,14 @@ class PersistedRecipe:
 
     reference: RecipeReference
     payload_json: str
+    job_id: UUID
     receipt_id: UUID
     artifact_set_id: UUID
     command_slot_id: UUID
 
     def __post_init__(self) -> None:
+        if not isinstance(self.job_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("job_id must be a UUID")
         if not isinstance(self.receipt_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise StoreValidationError("receipt_id must be a UUID")
         if not isinstance(self.artifact_set_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
