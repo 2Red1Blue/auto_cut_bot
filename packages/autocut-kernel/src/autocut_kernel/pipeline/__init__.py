@@ -14,6 +14,7 @@ from .render_local import (
 )
 from .semantic_chain_command import (
     FixtureBeatResolver,
+    ResolutionPolicyIdentity,
     ResolvedSemanticBeat,
     SemanticArtifactReference,
     SemanticArtifactReferences,
@@ -26,6 +27,7 @@ __all__ = [
     "LocalMediaCommand",
     "LocalMediaCommandRequest",
     "FixtureBeatResolver",
+    "ResolutionPolicyIdentity",
     "ResolvedSemanticBeat",
     "SemanticArtifactReference",
     "SemanticArtifactReferences",

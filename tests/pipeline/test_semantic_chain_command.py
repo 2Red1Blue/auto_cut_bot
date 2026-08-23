@@ -18,7 +18,11 @@ from autocut_kernel.media.types import (
     canonical_sha256,
 )
 from autocut_kernel.physical_edit import FixtureBeatInput
-from autocut_kernel.pipeline import SemanticChainCommand, SemanticChainCommandRequest
+from autocut_kernel.pipeline import (
+    ResolutionPolicyIdentity,
+    SemanticChainCommand,
+    SemanticChainCommandRequest,
+)
 from autocut_kernel.semantic_chain import (
     CatalogCandidateRef,
     CatalogResolution,
@@ -182,6 +186,7 @@ def _request(store: _Store, *, profile: str = "test") -> SemanticChainCommandReq
         reference,
         _Registry(),
         _BeatResolver(),
+        ResolutionPolicyIdentity("policy_v1", _hash(b"policy")),
         ArtifactScope("pipeline", "job", job.job_key),
     )
 
@@ -199,6 +204,7 @@ def test_success_persists_three_hash_bound_artifacts_and_replay_does_not_rebuild
         "narrative_graph",
         "story_set",
         "editorial_blueprint",
+        "semantic_resolution_proof",
     ]
     assert all("pts" not in item.payload_json.lower() for item in store.successes[0].artifacts)
 
@@ -226,7 +232,7 @@ def test_new_command_instance_replay_re_resolves_the_durable_bridge() -> None:
     replay = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
 
     assert first.outcome.state == replay.outcome.state == "succeeded"
-    assert replay.resolved_beat == first.resolved_beat
+    assert replay.resolved_beat is None
     assert len(store.successes) == 1
 
 

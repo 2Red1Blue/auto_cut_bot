@@ -65,6 +65,24 @@ class FixtureBeatResolver(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ResolutionPolicyIdentity:
+    policy_id: str
+    policy_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.policy_id, str)
+            or not self.policy_id
+            or not isinstance(self.policy_hash, str)
+            or not self.policy_hash.startswith("sha256:")
+        ):
+            raise ValueError("resolution policy must have an opaque id and sha256 hash")
+
+    def to_mapping(self) -> dict[str, str]:
+        return {"policy_id": self.policy_id, "policy_hash": self.policy_hash}
+
+
+@dataclass(frozen=True, slots=True)
 class _StoreEvidenceLoader:
     """Load only the exact Store artifact named by the command request."""
 
@@ -110,6 +128,7 @@ class SemanticArtifactReferences:
     narrative_graph: SemanticArtifactReference
     story_set: SemanticArtifactReference
     editorial_blueprint: SemanticArtifactReference
+    semantic_resolution_proof: SemanticArtifactReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +161,7 @@ class SemanticChainCommandRequest:
     media_evidence_reference: MediaEvidenceReference
     registry: FixtureCandidateRegistry
     beat_resolver: FixtureBeatResolver
+    resolution_policy: ResolutionPolicyIdentity
     artifact_scope: ArtifactScope
 
     def __post_init__(self) -> None:
@@ -153,6 +173,8 @@ class SemanticChainCommandRequest:
             raise ValueError("media_evidence_reference must be a MediaEvidenceReference")
         if not callable(getattr(self.registry, "resolve_exact", None)):
             raise ValueError("registry must resolve exact candidate evidence")
+        if type(self.resolution_policy) is not ResolutionPolicyIdentity:  # noqa: E721
+            raise ValueError("resolution_policy must be a ResolutionPolicyIdentity")
         if not isinstance(self.beat_resolver, FixtureBeatResolver):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise ValueError("beat_resolver must resolve exact CatalogResolution values")
         if self.artifact_scope != canonical_recipe_scope(self.job):
@@ -184,6 +206,7 @@ class SemanticChainCommandRequest:
             "media_job": {"job_key": self.media_job.job_key, "profile": self.media_job.profile},
             "idempotency_key": self.idempotency_key,
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
+            "resolution_policy": self.resolution_policy.to_mapping(),
             "semantic_input": self.semantic_input.to_mapping(),
         }
 
@@ -213,6 +236,11 @@ class SemanticChainCommand:
             if cached is not None:
                 return SemanticChainCommandResult(claimed, cached)
             try:
+                reader = getattr(self._store, "read_semantic_resolution_proof", None)
+                if not callable(reader) or canonical_sha256(
+                    reader(request.job, claimed.command_slot_id)
+                ) != canonical_sha256(_proof(request)):
+                    return SemanticChainCommandResult(claimed)
                 _, resolved = self._resolve(request)
                 return SemanticChainCommandResult(claimed, resolved)
             except (SemanticChainDenied, RuntimeStoreError, TypeError, ValueError, KeyError):
@@ -263,11 +291,12 @@ class SemanticChainCommand:
     @staticmethod
     def _artifacts(
         request: SemanticChainCommandRequest, chain: SemanticChain
-    ) -> tuple[ArtifactMember, ArtifactMember, ArtifactMember]:
+    ) -> tuple[ArtifactMember, ArtifactMember, ArtifactMember, ArtifactMember]:
         payloads = (
             ("narrative_graph", chain.narrative.narrative_id, chain.narrative.to_mapping()),
             ("story_set", "story_set", {"stories": [chain.story.to_mapping()]}),
             ("editorial_blueprint", chain.blueprint.blueprint_id, chain.blueprint.to_mapping()),
+            ("semantic_resolution_proof", "semantic_resolution_proof", _proof(request)),
         )
         return tuple(
             ArtifactMember(
@@ -313,6 +342,14 @@ def _set_hash(artifacts: tuple[ArtifactMember, ...]) -> str:
             for item in artifacts
         ]
     )
+
+
+def _proof(request: SemanticChainCommandRequest) -> dict[str, object]:
+    return {
+        "candidate": request.candidate.to_mapping(),
+        "evidence": request.candidate.evidence.to_mapping(),
+        "policy": request.resolution_policy.to_mapping(),
+    }
 
 
 def _media_evidence_from_mapping(value: object) -> MediaEvidence:
