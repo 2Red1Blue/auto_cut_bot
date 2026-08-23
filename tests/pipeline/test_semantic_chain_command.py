@@ -230,6 +230,22 @@ def test_new_command_instance_replay_re_resolves_the_durable_bridge() -> None:
     assert len(store.successes) == 1
 
 
+@pytest.mark.parametrize("state", ["denied", "failed"])
+def test_non_successful_replay_never_resolves_a_bridge(state: str) -> None:
+    store = _Store()
+    request = _request(store)
+    store.outcomes[(request.job.job_key, request.idempotency_key)] = CommandOutcome(
+        uuid4(),
+        state,  # type: ignore[arg-type]
+    )
+
+    replay = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
+
+    assert replay.outcome.state == state
+    assert replay.resolved_beat is None
+    assert not store.evidence_reads
+
+
 def test_production_job_is_durably_denied_before_build_or_resolution() -> None:
     store, builder = _Store(), _Builder()
     result = SemanticChainCommand(store, builder=builder).execute(

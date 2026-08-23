@@ -207,6 +207,8 @@ class SemanticChainCommand:
             CommandClaim(request.job, request.idempotency_key, _COMMAND_NAME, request.request_hash)
         )
         if not claimed.is_fresh_claim:
+            if claimed.state != "succeeded":
+                return SemanticChainCommandResult(claimed)
             cached = self._resolved.get(claimed.command_slot_id)
             if cached is not None:
                 return SemanticChainCommandResult(claimed, cached)
