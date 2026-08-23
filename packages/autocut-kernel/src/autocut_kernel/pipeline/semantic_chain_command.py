@@ -70,12 +70,7 @@ class ResolutionPolicyIdentity:
     policy_hash: str
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.policy_id, str)
-            or not self.policy_id
-            or not isinstance(self.policy_hash, str)
-            or not self.policy_hash.startswith("sha256:")
-        ):
+        if not self.policy_id or not self.policy_hash.startswith("sha256:"):
             raise ValueError("resolution policy must have an opaque id and sha256 hash")
 
     def to_mapping(self) -> dict[str, str]:
@@ -236,10 +231,7 @@ class SemanticChainCommand:
             if cached is not None:
                 return SemanticChainCommandResult(claimed, cached)
             try:
-                reader = getattr(self._store, "read_succeeded_semantic_resolution_proof", None)
-                if not callable(reader):
-                    return SemanticChainCommandResult(claimed)
-                persisted = reader(request.job)
+                persisted = self._store.read_succeeded_semantic_resolution_proof(request.job)
                 if persisted.command_slot_id != claimed.command_slot_id:
                     return SemanticChainCommandResult(claimed)
                 if canonical_sha256(json.loads(persisted.payload_json)) != canonical_sha256(
