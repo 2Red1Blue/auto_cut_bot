@@ -7,13 +7,12 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
-from jsonschema import Draft202012Validator
-
 from autocut_kernel.contracts.compiler.canonical import (
     CanonicalizationError,
     canonical_json_bytes,
     load_canonical_json_bytes,
 )
+from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[2]
 PACK = ROOT / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/stage_01"
@@ -75,6 +74,26 @@ def test_stage01_owner_source_is_closed_and_partial():
         {"path": "schemas/primitives/domain-ref.schema.json", "raw_sha256": "sha256:72211809fa19f967345ccc41574fea5319feb40bcbde05a3564cf6bc8c63f896"},
         {"path": "schemas/primitives/source-span-ref.schema.json", "raw_sha256": "sha256:586c57b03f44a455478d722ab3012dcb33932fcc49fe0d0d847d9cfa2043bb29"},
     ]
+    assert manifest["withheld"] == [
+        "evidence_diagnostics",
+        "conflict_diagnostics",
+        "admission_result_wrapper",
+    ]
+    assert manifest["closed_self_exclusion_protocol"] == {
+        "external_attestation": "C1-A",
+        "external_attestation_boundary": "independent",
+        "external_attestation_bound_files": [
+            {"path": "contributions/stage-01-owner-contribution.manifest.json"},
+            {"path": "contributions/stage-01-owner-contribution.manifest.schema.json"},
+        ],
+        "exclusion_reason": "self_reference",
+        "hash_binding_requirement": "later_independent_C1-A_attestation",
+        "producer_file_count_breakdown": {
+            "external_attestation_bound_files": 2,
+            "hashed_source_files": 11,
+            "total_files": 13,
+        },
+    }
 
 
 def test_stage01_owner_manifest_schema_rejects_mutated_primitive_blob_path_or_hash():
@@ -97,6 +116,14 @@ def test_stage01_owner_manifest_schema_rejects_mutated_primitive_blob_path_or_ha
     invented_producer_path = deepcopy(manifest)
     invented_producer_path["producer_files"][0]["path"] = "contracts/invented.json"
     assert not validator.is_valid(invented_producer_path)
+
+    wrong_self_exclusion_path = deepcopy(manifest)
+    wrong_self_exclusion_path["closed_self_exclusion_protocol"]["external_attestation_bound_files"][1]["path"] = "contributions/invented.schema.json"
+    assert not validator.is_valid(wrong_self_exclusion_path)
+
+    wrong_self_exclusion_attestation = deepcopy(manifest)
+    wrong_self_exclusion_attestation["closed_self_exclusion_protocol"]["external_attestation"] = "C1-B"
+    assert not validator.is_valid(wrong_self_exclusion_attestation)
 
 
 def test_stage01_manifest_and_schema_reject_duplicate_or_noncanonical_raw_bytes():
@@ -163,11 +190,23 @@ def test_stage01_source_has_no_registry_or_runtime_identity():
     manifest = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.json")
     assert len(names) == manifest["producer_file_count"] == 13
     assert len(manifest["producer_files"]) == 11
+    protocol = manifest["closed_self_exclusion_protocol"]
+    assert protocol["producer_file_count_breakdown"] == {
+        "external_attestation_bound_files": 2,
+        "hashed_source_files": len(manifest["producer_files"]),
+        "total_files": manifest["producer_file_count"],
+    }
     assert [item["path"] for item in manifest["producer_files"]] == sorted(item["path"] for item in manifest["producer_files"])
-    assert names == {
+    external_attestation_bound_paths = {
+        item["path"] for item in protocol["external_attestation_bound_files"]
+    }
+    assert external_attestation_bound_paths == {
         manifest["producer_manifest_path"],
         "contributions/stage-01-owner-contribution.manifest.schema.json",
-    } | {item["path"] for item in manifest["producer_files"]}
+    }
+    assert names == external_attestation_bound_paths | {
+        item["path"] for item in manifest["producer_files"]
+    }
     for item in manifest["producer_files"]:
         assert item["raw_sha256"] == "sha256:" + hashlib.sha256((PACK / item["path"]).read_bytes()).hexdigest()
 
