@@ -1,4 +1,4 @@
-"""Fail-closed verifier for F1 proposal packets."""
+"""Fail-closed checker for a non-authoritative proposal-shape subset."""
 # pyright: reportUnknownVariableType=none, reportUnknownArgumentType=none, reportUnknownMemberType=none, reportUnnecessaryComparison=none
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from .model import (
     F0_PRODUCER,
     PACKET_IDS,
     AmendmentError,
-    reject_f1_forbidden,
+    reject_proposal_forbidden,
     require_nonempty_strings,
 )
 
@@ -29,7 +29,19 @@ F0_INPUT_MANIFEST = f"{F0_DIRECTORY}/f-authority-input.manifest.json"
 F0_SPAN_MAP = f"{F0_DIRECTORY}/f-source-span-map.json"
 AUTHORITY_ERRATA_ROOT = "原理/authority-inputs/trellis-errata/v1"
 AUTHORITY_IMPORT_MANIFEST = f"{AUTHORITY_ERRATA_ROOT}/import-manifest.json"
-PREFLIGHT_FORMAT = "autocut.f-authority-amendment-preflight/v1"
+PROPOSAL_SHAPE_SUBSET_FORMAT = "autocut.f-authority-amendment-proposal-shape-subset/v1"
+PROPOSAL_SHAPE_SUBSET_SCOPE = {
+    "check": "proposal_shape_plus_pinned_f0_errata_subset",
+    "authority": "non_authoritative",
+    "not_a_gate_for": [
+        "f1_intake",
+        "packet_closure",
+        "authority_acceptance",
+        "source_binding",
+        "registry_generated_runtime_readiness",
+        "publish_permission",
+    ],
+}
 F0_HANDOFF_BLOB = "e26e930b655a51efd8e8c1e7771241d2c507144c"
 F0_INPUT_MANIFEST_BLOB = "87e708b8d4f803034e0c8553f967d645b46cfcb2"
 ERRATA_IMPORT_MANIFEST_BLOB = "672fe533b190b56678dbc023cbb7d4d2925d54db"
@@ -67,7 +79,7 @@ def _repository_root(packet_path: Path) -> Path:
     for ancestor in (packet_path.parent, *packet_path.parents):
         if (ancestor / ".git").exists():
             return ancestor
-    raise AmendmentError("F1 packet must be verified from a Git worktree")
+    raise AmendmentError("proposal-shape subset input must be verified from a Git worktree")
 
 
 def _accepted_f0_spans(path: Path, repository: Path) -> dict[str, dict[str, Any]]:
@@ -200,15 +212,15 @@ def _verify_f0_chain(chain: object, imports: object) -> None:
         "producer_git_commit": F0_PRODUCER,
         "topology": {"attestation_parent": F0_PRODUCER, "no_merge": True},
     }:
-        raise AmendmentError("F1 must pin the accepted non-merge F0 producer-to-attestation chain")
+        raise AmendmentError("proposal-shape subset must pin the accepted non-merge F0 producer-to-attestation chain")
     if imports != {
         "I1": {"producer_git_commit": ERRATA_I1},
         "I2": {"attestation_git_commit": ERRATA_I2, "parent_git_commit": ERRATA_I1},
     }:
-        raise AmendmentError("F1 must pin the accepted I1-to-I2 errata import chain")
+        raise AmendmentError("proposal-shape subset must pin the accepted I1-to-I2 errata import chain")
 
 
-def _verify_packet(packet: object, accepted_spans: dict[str, dict[str, Any]]) -> str:
+def _verify_proposal_shape_record(packet: object, accepted_spans: dict[str, dict[str, Any]]) -> str:
     fields = {
         "format",
         "contract_version",
@@ -224,12 +236,12 @@ def _verify_packet(packet: object, accepted_spans: dict[str, dict[str, Any]]) ->
         "version_and_migration_effect",
     }
     if not isinstance(packet, dict) or set(packet) != fields:
-        raise AmendmentError("packet is not a closed F1 proposal record")
+        raise AmendmentError("packet is not a closed proposal-shape record")
     packet_id = packet["packet_id"]
     if not isinstance(packet_id, str) or packet_id not in PACKET_IDS:
-        raise AmendmentError("packet ID is outside the accepted F1 census")
-    if packet["format"] != PREFLIGHT_FORMAT or packet["contract_version"] != "2.1.3":
-        raise AmendmentError("packet must repeat the F1 format and contract version")
+        raise AmendmentError("packet ID is outside the accepted proposal census")
+    if packet["format"] != PROPOSAL_SHAPE_SUBSET_FORMAT or packet["contract_version"] != "2.1.3":
+        raise AmendmentError("packet must repeat the proposal-shape subset format and contract version")
     if packet["disposition"] not in {"proposed", "deferred"}:
         raise AmendmentError("only proposed or deferred dispositions are allowed before attestation")
     for field in ("decision_area", "normative_delta", "data_shape_closure"):
@@ -276,51 +288,59 @@ def _verify_packet(packet: object, accepted_spans: dict[str, dict[str, Any]]) ->
     return packet_id
 
 
-def verify_preflight(
+def verify_proposal_shape_subset(
     packet_path: Path,
     f0_span_map_path: Path,
     repository_root: Path | None,
     authority_repository: Path,
 ) -> dict[str, Any]:
-    """Verify a canonical proposal preflight against immutable F0 and errata evidence."""
+    """Check proposal shape plus pinned F0/errata evidence, without authority effects."""
 
     payload = _load_jcs(packet_path)
     if (
-        set(payload) != {"format", "contract_version", "accepted_f0_chain", "errata_import", "packets"}
-        or payload["format"] != PREFLIGHT_FORMAT
+        set(payload)
+        != {"format", "contract_version", "scope_metadata", "accepted_f0_chain", "errata_import", "packets"}
+        or payload["format"] != PROPOSAL_SHAPE_SUBSET_FORMAT
         or payload["contract_version"] != "2.1.3"
+        or payload["scope_metadata"] != PROPOSAL_SHAPE_SUBSET_SCOPE
     ):
-        raise AmendmentError("F1 packet envelope header is invalid")
+        raise AmendmentError("proposal-shape subset envelope header or non-authority scope metadata is invalid")
     repository = repository_root or _repository_root(packet_path)
     _verify_immutable_f0(repository, authority_repository)
     _verify_f0_chain(payload["accepted_f0_chain"], payload["errata_import"])
     accepted_spans = _accepted_f0_spans(f0_span_map_path, repository)
     packets = payload["packets"]
     if not isinstance(packets, list) or len(packets) != len(PACKET_IDS):
-        raise AmendmentError("F1 packet census must be exact and duplicate-free")
-    packet_ids = {_verify_packet(packet, accepted_spans) for packet in packets}
+        raise AmendmentError("proposal-shape subset packet census must be exact and duplicate-free")
+    packet_ids = {_verify_proposal_shape_record(packet, accepted_spans) for packet in packets}
     if packet_ids != PACKET_IDS:
-        raise AmendmentError("F1 packet census must be exact and duplicate-free")
-    reject_f1_forbidden(payload)
+        raise AmendmentError("proposal-shape subset packet census must be exact and duplicate-free")
+    reject_proposal_forbidden(payload)
     return payload
 
-
-verify_packet = verify_preflight
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("preflight", type=Path)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check proposal shape plus pinned F0/errata evidence only. A pass is NOT F1 intake, "
+            "a packet-closure gate, authority acceptance, source binding, Registry/generated/runtime "
+            "readiness, or publish permission."
+        )
+    )
+    parser.add_argument("proposal_shape_subset", type=Path, help="canonical proposal-shape subset JSON")
     parser.add_argument("f0_span_map", type=Path)
     parser.add_argument("--repository-root", type=Path, required=True)
     parser.add_argument("--authority-repository", type=Path, required=True)
     args = parser.parse_args()
     try:
-        verify_preflight(
-            args.preflight, args.f0_span_map, args.repository_root, args.authority_repository
+        verify_proposal_shape_subset(
+            args.proposal_shape_subset, args.f0_span_map, args.repository_root, args.authority_repository
         )
     except (AmendmentError, OSError) as error:
         parser.error(str(error))
+    print(
+        "proposal-shape + pinned F0/errata subset check passed; NOT F1 intake, packet closure, "
+        "authority acceptance, source binding, Registry/generated/runtime readiness, or publish permission"
+    )
     return 0
 
 

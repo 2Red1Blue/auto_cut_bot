@@ -1,4 +1,4 @@
-"""Closed vocabulary for proposal-only F1 amendment packets."""
+"""Closed vocabulary for non-authoritative amendment proposal-shape records."""
 # pyright: reportUnknownVariableType=none, reportUnknownArgumentType=none
 
 from __future__ import annotations
@@ -36,22 +36,22 @@ FORBIDDEN_CLAIM = re.compile(
 
 
 class AmendmentError(IntakeError):
-    """Raised when an F1 packet would overclaim authority or scope."""
+    """Raised when a proposal-shape record overclaims authority or scope."""
 
 
-def reject_f1_forbidden(value: object, *, key: str = "") -> None:
+def reject_proposal_forbidden(value: object, *, key: str = "") -> None:
     """Deny implementation vocabulary, including values hidden in nested records."""
 
     if isinstance(value, str) and FORBIDDEN_CLAIM.search(value):
-        raise AmendmentError(f"forbidden F1 data claim in {key or 'value'}")
+        raise AmendmentError(f"forbidden proposal data claim in {key or 'value'}")
     if isinstance(value, dict):
         for child_key, child in value.items():
             if FORBIDDEN_FIELD.search(child_key):
-                raise AmendmentError(f"forbidden F1 field {child_key}")
-            reject_f1_forbidden(child, key=child_key)
+                raise AmendmentError(f"forbidden proposal field {child_key}")
+            reject_proposal_forbidden(child, key=child_key)
     elif isinstance(value, list):
         for child in value:
-            reject_f1_forbidden(child, key=key)
+            reject_proposal_forbidden(child, key=key)
 
 
 def require_nonempty_strings(value: Any, *, field: str) -> list[str]:
