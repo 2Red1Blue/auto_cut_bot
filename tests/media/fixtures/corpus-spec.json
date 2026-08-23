@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "lavfi-testsrc2-sine-10fps-v1",
+      "profile": "test",
+      "source_filename": "lavfi-testsrc2-sine-10fps-v1.mp4",
+      "generation": {
+        "executable": "ffmpeg",
+        "inputs": [
+          "testsrc2=size=64x48:rate=10",
+          "sine=frequency=880:sample_rate=48000"
+        ],
+        "duration_seconds": "1.2",
+        "video": {
+          "codec": "mpeg4",
+          "pixel_format": "yuv420p",
+          "quality": "5"
+        },
+        "audio": {
+          "codec": "aac",
+          "bitrate": "64k"
+        }
+      },
+      "ground_truth": {
+        "exact_pts": "Intentionally omitted. Consumers must obtain exact packet/frame PTS with ffprobe.",
+        "sidecar_role": "Records the controlled generation recipe and content hashes; it does not infer timestamps."
+      }
+    }
+  ]
+}
