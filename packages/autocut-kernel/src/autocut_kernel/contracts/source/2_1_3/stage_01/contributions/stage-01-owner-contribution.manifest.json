@@ -1,0 +1,110 @@
+{
+  "format": "autocut.stage-01-owner-contribution/v1",
+  "contract_version": "2.1.3",
+  "producer_base_commit": "50f78ea0b7f754eb8f91ef800924b86da25b3083",
+  "b_input": {
+    "producer_git_commit": "eb7e4181f63da308c405bad6d99fcd085cfdd98a",
+    "handoff_git_commit": "50f78ea0b7f754eb8f91ef800924b86da25b3083",
+    "handoff_raw_sha256": "sha256:07fd0e9d4dbe03050f9aa3f4823755e4ba1e7f4852a163ab2fa291c0b3710eb6",
+    "selected_manifest_path": "contributions/common-system-direct-contribution.manifest.json",
+    "selected_manifest_raw_sha256": "sha256:556e05d5e5e1c7eb8aad4e230e7af26420f2f401001029c692e957026d6a08e3",
+    "selected_ids": [
+      "B0-001",
+      "B0-002",
+      "B0-005",
+      "B0-006",
+      "B0-007",
+      "B0-008",
+      "B0-009",
+      "B0-010",
+      "B0-011"
+    ],
+    "used_primitive_blobs": [
+      {
+        "path": "schemas/primitives/immutable-blob-ref.schema.json",
+        "raw_sha256": "sha256:52d4ea27825976cecc86e2d96d2388acb0aa885799adb708d6f0db616cc10678"
+      },
+      {
+        "path": "schemas/primitives/domain-ref.schema.json",
+        "raw_sha256": "sha256:72211809fa19f967345ccc41574fea5319feb40bcbde05a3564cf6bc8c63f896"
+      },
+      {
+        "path": "schemas/primitives/source-span-ref.schema.json",
+        "raw_sha256": "sha256:586c57b03f44a455478d722ab3012dcb33932fcc49fe0d0d847d9cfa2043bb29"
+      }
+    ]
+  },
+  "producer_manifest_path": "contributions/stage-01-owner-contribution.manifest.json",
+  "producer_file_count": 14,
+  "producer_files": [
+    {
+      "path": "contracts/stage-01-rule-obligations.json",
+      "raw_sha256": "sha256:94905ebb7513b3600d1bd54aad0bce441036a6a31cb1704797ca909e125806c3"
+    },
+    {
+      "path": "contracts/stage-01-vector-obligations.json",
+      "raw_sha256": "sha256:09cdd5fb1a0c559d69032dc19a4280f88671e0e4cee0895d01c96152383ddc2a"
+    },
+    {
+      "path": "contributions/stage-01-owner-contribution.manifest.schema.json",
+      "raw_sha256": "sha256:eb2fa0bcb42b823b686d20bfaa5ad75c0948a5b129292d25d104edc71fd038fd"
+    },
+    {
+      "path": "fixtures/stage-01-owner-source-valid.json",
+      "raw_sha256": "sha256:335954bd92749e8eaff3206f18f66eb2186d95c6e8743d67d5dec913877b4a81"
+    },
+    {
+      "path": "schemas/admission/coverage-stage-details.schema.json",
+      "raw_sha256": "sha256:60c5b3425188405f8bf9df23ee207b946559a481ec7ce418d8478cdd8033a4e9"
+    },
+    {
+      "path": "schemas/coverage-ledger.schema.json",
+      "raw_sha256": "sha256:03f0e9e90f7254349c3e9fe4a89f66b05aafd98857394280de6e591b6ebec37e"
+    },
+    {
+      "path": "schemas/dependency-closure-proof.schema.json",
+      "raw_sha256": "sha256:2788c87007171b253daab478909802d928349e6f910d2def86a7a38b00edefd8"
+    },
+    {
+      "path": "schemas/dependency-propagation-policy.schema.json",
+      "raw_sha256": "sha256:36f9583fcb6f467c2b383b450eb8f9cb99748dd5828336669f34fdbfa9991c78"
+    },
+    {
+      "path": "schemas/episode-digest-set.schema.json",
+      "raw_sha256": "sha256:98c5713753d5e46bbadd0a27c3dfeadb14cb94dd457dde4d6f0554e51e62dbcc"
+    },
+    {
+      "path": "schemas/event-card-set.schema.json",
+      "raw_sha256": "sha256:bd22bcb5f1ca0bff6ebab4f0b56c02d3916a447523e646f8ab67460feab8c23c"
+    },
+    {
+      "path": "schemas/narrative-graph.schema.json",
+      "raw_sha256": "sha256:0e82c47391a430d5c3550b91d42b5f0153da240d1bf9d44363d68f5139f1083f"
+    },
+    {
+      "path": "schemas/source-knowledge-input-set.schema.json",
+      "raw_sha256": "sha256:b5a36512ca7fa33b333863a4f35a4ffb0b7b839dd9cdfeb41b6b1a518e913a02"
+    },
+    {
+      "path": "tests/test-stage-01-owner-source.json",
+      "raw_sha256": "sha256:f81cf5270cd664e065e3b2ff28030a1f3b5c983458cc34d4224340b71924e002"
+    }
+  ],
+  "repository_validation": {
+    "path": "tests/contracts/test_stage01_owner_contribution.py",
+    "raw_sha256": "sha256:eaf2ebcdc720471fb06dfa045ff34fbeb182649eda914800894cc7954df1c69f"
+  },
+  "withheld": [
+    "evidence_diagnostics",
+    "conflict_diagnostics",
+    "admission_result_wrapper"
+  ],
+  "status": {
+    "owner_payload_source_partial": true,
+    "stage_01_ready": false
+  },
+  "deferred_bindings": [
+    "F/G-owned identities and bindings remain unresolved.",
+    "Diagnostics and the Admission wrapper remain withheld."
+  ]
+}

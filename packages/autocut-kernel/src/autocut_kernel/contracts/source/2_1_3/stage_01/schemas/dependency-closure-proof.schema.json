@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/stage_01/schemas/dependency-closure-proof.schema.json",
+  "$comment": "Owner payload source only; no Envelope, Artifact identity, Registry, command, producer, writer, rule registration, trace identity, or readiness semantics.",
+  "type": "object",
+  "properties": {
+    "dependency_closure_proof_id": {
+      "type": "string"
+    },
+    "graph_ref": {
+      "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/artifact-ref.schema.json"
+    },
+    "policy_ref": {
+      "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/artifact-ref.schema.json"
+    },
+    "dependency_arcs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "from_ref": {
+            "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+          },
+          "to_ref": {
+            "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_ref": {
+            "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+          }
+        },
+        "required": [
+          "from_ref",
+          "to_ref",
+          "kind",
+          "source_ref"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sccs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scc_id": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "node_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          },
+          "outgoing_scc_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "required": [
+          "scc_id",
+          "node_refs",
+          "outgoing_scc_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "arc_set_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "scc_set_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "seed_proofs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "taint_seed_id": {
+            "type": "string"
+          },
+          "root_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          },
+          "affected_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          },
+          "frontier_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          },
+          "isolation_status": {
+            "enum": [
+              "bounded",
+              "unbounded"
+            ]
+          },
+          "closure_hash": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "taint_seed_id",
+          "root_refs",
+          "affected_refs",
+          "frontier_refs",
+          "isolation_status",
+          "closure_hash"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "dependency_closure_proof_id",
+    "graph_ref",
+    "policy_ref",
+    "dependency_arcs",
+    "sccs",
+    "arc_set_hash",
+    "scc_set_hash",
+    "seed_proofs"
+  ],
+  "additionalProperties": false
+}
