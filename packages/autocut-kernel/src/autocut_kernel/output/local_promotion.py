@@ -12,8 +12,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
+from uuid import UUID
 
+from ..rendering import Recipe, RecipeValidationError, parse_recipe
 from ..rendering.qc import LocalQC, QCReport
+from ..store import Job, PostgresRuntimeStore, RecipeReference, RuntimeStoreError
 
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
@@ -35,12 +38,13 @@ class LocalPromotionRequest:
     """
 
     output_root: Path
-    job_id: str
+    job: Job
     attempt_id: str
     staging_asset: Path
-    recipe_hash: str
     asset_sha256: str
     qc_report: QCReport
+    store: PostgresRuntimeStore
+    recipe_reference: RecipeReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,18 +64,31 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
     ``results/<job>/current.json``. Attempts are diagnostic evidence only.
     """
     _validate_request_shape(request)
-    report = _reverify_promotion_inputs(request)
+    recipe, store_job_id = _rehydrate_persisted_recipe(request)
+    report = _reverify_promotion_inputs(request, recipe)
     asset_hex = request.asset_sha256[7:]
     asset_relative = PurePosixPath("assets") / "sha256" / asset_hex[:2] / f"{asset_hex}.mp4"
     manifest_value: dict[str, object] = {
         "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
         "qc_report": report.to_manifest(),
-        "recipe_hash": request.recipe_hash,
+        "recipe_hash": recipe.canonical_hash,
+        "recipe_provenance": {
+            "content_hash": request.recipe_reference.content_hash,
+            "logical_id": request.recipe_reference.logical_id,
+            "revision": request.recipe_reference.revision,
+            "scope": {
+                "key": request.recipe_reference.scope.key,
+                "kind": request.recipe_reference.scope.kind,
+                "namespace": request.recipe_reference.scope.namespace,
+            },
+            "store_job_id": str(store_job_id),
+            "type": request.recipe_reference.artifact_type,
+        },
         "schema_version": 1,
     }
     manifest_bytes = _canonical_json_bytes(manifest_value, "promotion manifest")
     manifest_sha256 = _sha256(manifest_bytes)
-    result_relative = PurePosixPath("results") / request.job_id
+    result_relative = PurePosixPath("results") / request.job.job_key
     manifest_relative = result_relative / "manifests" / f"{manifest_sha256[7:]}.json"
     current_relative = result_relative / "current.json"
     root_fd = _open_output_root(request.output_root)
@@ -109,28 +126,61 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
 def _validate_request_shape(request: LocalPromotionRequest) -> None:
     _require_secure_os_apis()
+    if not isinstance(cast(object, request.store), PostgresRuntimeStore):
+        raise LocalPromotionError("store must be a PostgresRuntimeStore")
+    if not isinstance(cast(object, request.job), Job):
+        raise LocalPromotionError("job must be a Store Job")
+    if not isinstance(cast(object, request.recipe_reference), RecipeReference):
+        raise LocalPromotionError("recipe_reference must be a RecipeReference")
     _validate_digest(request.asset_sha256, "asset_sha256")
-    _validate_digest(request.recipe_hash, "recipe_hash")
-    _validate_namespace_component(request.job_id, "job_id")
+    _validate_namespace_component(request.job.job_key, "job.job_key")
     _validate_namespace_component(request.attempt_id, "attempt_id")
     if not isinstance(cast(object, request.qc_report), QCReport):
         raise LocalPromotionError("qc_report must be a QCReport observation")
 
 
-def _reverify_promotion_inputs(request: LocalPromotionRequest) -> QCReport:
+def _rehydrate_persisted_recipe(request: LocalPromotionRequest) -> tuple[Recipe, UUID]:
+    """Resolve the exact artifact again at the visibility boundary.
+
+    A prior renderer read is only staging evidence.  The pointer writer repeats
+    the semantic Store read and parse so a caller cannot authorize visibility
+    with a raw Recipe object, a supplied hash, or a look-alike reference.
+    """
+    try:
+        persisted = request.store.read_recipe(request.job, request.recipe_reference)
+        report_recipe = request.qc_report.recipe
+        if report_recipe is None:
+            raise LocalPromotionError("qc_report lacks validated recipe observation")
+        recipe = parse_recipe(
+            json.loads(persisted.payload_json),
+            expected_source_sha256=report_recipe.source_sha256,
+            profile=request.job.profile,
+        )
+    except LocalPromotionError:
+        raise
+    except (RuntimeStoreError, RecipeValidationError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise LocalPromotionError("persisted recipe provenance is unavailable or invalid") from error
+    if recipe.canonical_hash != report_recipe.canonical_hash:
+        raise LocalPromotionError("persisted recipe provenance does not match QC recipe")
+    return recipe, persisted.job_id
+
+
+def _reverify_promotion_inputs(request: LocalPromotionRequest, recipe: Recipe) -> QCReport:
     """Do not use a public report's pass flag to authorize promotion."""
-    recipe, attempt = request.qc_report.recipe, request.qc_report.attempt
-    if recipe is None or attempt is None:
+    observed_recipe, attempt = request.qc_report.recipe, request.qc_report.attempt
+    if observed_recipe is None or attempt is None:
         raise LocalPromotionError("qc_report lacks validated recipe and attempt observations")
-    if recipe.canonical_hash != request.recipe_hash or attempt.recipe_hash != request.recipe_hash:
-        raise LocalPromotionError("trusted recipe/attempt hash does not match recipe_hash")
+    # _rehydrate_persisted_recipe returned a concrete Recipe after comparing it
+    # with the observation above; retain this guard for static and defensive use.
+    if recipe.canonical_hash != attempt.recipe_hash:
+        raise LocalPromotionError("trusted recipe/attempt hash does not match persisted recipe")
     if attempt.output_sha256 != request.asset_sha256:
         raise LocalPromotionError("trusted attempt output digest does not match asset_sha256")
     if attempt.output_path.absolute() != request.staging_asset.absolute():
         raise LocalPromotionError("trusted attempt output path does not match staging_asset")
     report = LocalQC().inspect(recipe, attempt)
     if (
-        report.recipe_hash != request.recipe_hash
+        report.recipe_hash != recipe.canonical_hash
         or report.output_sha256 != request.asset_sha256
         or not report.approved
     ):

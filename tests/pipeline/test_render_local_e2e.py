@@ -11,7 +11,6 @@ from autocut_kernel.pipeline import (
     RenderLocalDenied,
     RenderLocalFailed,
     RenderLocalRequest,
-    RenderLocalSuccess,
     render_local,
 )
 from autocut_kernel.rendering.ffmpeg_renderer import FFmpegRenderer
@@ -56,21 +55,18 @@ def _request(source: Path, root: Path, recipe: object | None = None) -> RenderLo
     return RenderLocalRequest(recipe=_recipe(source) if recipe is None else recipe, source_path=source, output_root=root, job_id="job-1", attempt_id="attempt-1")
 
 
-def test_real_recipe_render_qc_and_atomic_local_pointer(tmp_path: Path) -> None:
+def test_in_memory_recipe_never_creates_an_atomic_local_pointer(tmp_path: Path) -> None:
     if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
         pytest.skip("ffmpeg and ffprobe are required")
     source, root = _source(tmp_path), tmp_path / "output"
 
     result = render_local(_request(source, root))
 
-    assert isinstance(result, RenderLocalSuccess)
-    assert result.promotion.asset_path.is_file()
-    pointer = json.loads(result.promotion.current_path.read_text())
-    assert pointer["asset"]["sha256"] == result.attempt.output_sha256
-    assert pointer["manifest"]["sha256"] == result.promotion.manifest_sha256
-    manifest = json.loads(result.promotion.manifest_path.read_text())
-    assert manifest["qc_report"]["status"] == "approved"
+    assert isinstance(result, RenderLocalDenied)
+    assert result.code == "PERSISTED_RECIPE_REQUIRED"
+    assert result.attempt is not None
     assert (result.attempt.output_path.parent / "qc-report.json").is_file()
+    assert not list(root.rglob("current.json"))
 
 
 def test_invalid_recipe_denies_before_staging_or_current(tmp_path: Path) -> None:
