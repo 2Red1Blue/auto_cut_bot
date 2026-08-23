@@ -27,3 +27,15 @@ class StoreConcurrencyError(RuntimeStoreError):
 
 class CommandStateError(RuntimeStoreError):
     """The requested terminal transition is incompatible with the claimed command."""
+
+
+class JobProfileMismatchError(RuntimeStoreError):
+    """A durable Job exists, but belongs to a different runtime profile."""
+
+
+class RecipeUnavailableError(RuntimeStoreError):
+    """The exact persisted Recipe identity is not available to this Job."""
+
+
+class RecipeIntegrityError(RuntimeStoreError):
+    """A persisted Recipe row does not satisfy its immutable provenance contract."""

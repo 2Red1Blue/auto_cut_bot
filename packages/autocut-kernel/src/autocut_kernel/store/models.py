@@ -72,6 +72,63 @@ class ArtifactMember:
             raise StoreValidationError("payload_json must contain JSON") from error
 
 
+def _canonical_payload_hash(payload_json: str) -> str:
+    """Hash parsed JSON in the canonical form used for immutable store members."""
+    try:
+        payload = json.loads(
+            payload_json,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {value}")
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError("payload_json must contain finite JSON") from error
+    encoded = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeReference:
+    """The complete immutable identity of one persisted ``recipe`` artifact."""
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["recipe"] = "recipe"
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "recipe":
+            raise StoreValidationError("recipe reference artifact_type must be 'recipe'")
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedRecipe:
+    """One verified Recipe payload plus the succeeded command provenance that owns it."""
+
+    reference: RecipeReference
+    payload_json: str
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.receipt_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("receipt_id must be a UUID")
+        if not isinstance(self.artifact_set_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("artifact_set_id must be a UUID")
+        if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("command_slot_id must be a UUID")
+        if _canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError("payload_json does not match recipe content_hash")
+
+
 @dataclass(frozen=True, slots=True)
 class CommandClaim:
     job: Job

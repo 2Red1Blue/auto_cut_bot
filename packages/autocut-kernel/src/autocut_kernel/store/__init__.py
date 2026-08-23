@@ -3,7 +3,10 @@
 from .errors import (
     CommandStateError,
     IdempotencyConflictError,
+    JobProfileMismatchError,
     PersistenceConflictError,
+    RecipeIntegrityError,
+    RecipeUnavailableError,
     RuntimeStoreError,
     StaleHeadError,
     StoreConcurrencyError,
@@ -17,6 +20,8 @@ from .models import (
     CommandRejection,
     CommandSuccess,
     Job,
+    PersistedRecipe,
+    RecipeReference,
 )
 from .postgres import PostgresRuntimeStore
 
@@ -30,8 +35,13 @@ __all__ = [
     "CommandSuccess",
     "IdempotencyConflictError",
     "Job",
+    "JobProfileMismatchError",
     "PersistenceConflictError",
     "PostgresRuntimeStore",
+    "PersistedRecipe",
+    "RecipeIntegrityError",
+    "RecipeReference",
+    "RecipeUnavailableError",
     "RuntimeStoreError",
     "StaleHeadError",
     "StoreConcurrencyError",

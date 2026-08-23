@@ -16,7 +16,10 @@ from psycopg import DatabaseError, InterfaceError
 from .errors import (
     CommandStateError,
     IdempotencyConflictError,
+    JobProfileMismatchError,
     PersistenceConflictError,
+    RecipeIntegrityError,
+    RecipeUnavailableError,
     RuntimeStoreError,
     StaleHeadError,
     StoreConcurrencyError,
@@ -29,6 +32,8 @@ from .models import (
     CommandRejection,
     CommandSuccess,
     Job,
+    PersistedRecipe,
+    RecipeReference,
 )
 
 
@@ -295,6 +300,90 @@ class PostgresRuntimeStore:
                 if command is None
                 else self._read_outcome_by_slot(cursor, UUID(str(command[0])), job_id)
             )
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # read_recipe
+    # ------------------------------------------------------------------
+
+    def read_recipe(self, job: Job, reference: RecipeReference) -> PersistedRecipe:
+        """Read one exact, succeeded immutable Recipe artifact for ``job``.
+
+        This deliberately has no "latest" mode: callers must supply the full
+        scope/type/logical/revision/content identity.  In particular, it never
+        consults ``runtime.logical_heads``.
+        """
+
+        def operation(cursor: DbCursor) -> PersistedRecipe:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise RecipeUnavailableError("job has no persisted recipe")
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+
+            cursor.execute(
+                """
+                SELECT artifact.payload_json::text, receipt.receipt_id,
+                       artifact_set.artifact_set_id, slot.command_slot_id
+                  FROM runtime.artifacts AS artifact
+                  JOIN runtime.artifact_set_members AS member
+                    ON member.artifact_set_id = artifact.artifact_set_id
+                   AND member.artifact_id = artifact.artifact_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = artifact.artifact_set_id
+                   AND artifact_set.job_id = artifact.job_id
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = artifact_set.command_slot_id
+                   AND slot.job_id = artifact.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                 WHERE artifact.job_id = %s
+                   AND artifact.namespace = %s
+                   AND artifact.scope_kind = %s
+                   AND artifact.scope_key = %s
+                   AND artifact.artifact_type = %s
+                   AND artifact.logical_id = %s
+                   AND artifact.revision = %s
+                   AND artifact.content_hash = %s
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                """,
+                (
+                    UUID(str(job_id)),
+                    reference.scope.namespace,
+                    reference.scope.kind,
+                    reference.scope.key,
+                    reference.artifact_type,
+                    reference.logical_id,
+                    reference.revision,
+                    reference.content_hash,
+                ),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if not rows:
+                raise RecipeUnavailableError("exact recipe artifact is unavailable")
+            if len(rows) != 1:
+                raise RecipeIntegrityError("exact recipe identity resolved to multiple durable rows")
+            payload_json, receipt_id, artifact_set_id, command_slot_id = rows[0]
+            try:
+                return PersistedRecipe(
+                    reference=reference,
+                    payload_json=_text(payload_json),
+                    receipt_id=UUID(str(receipt_id)),
+                    artifact_set_id=UUID(str(artifact_set_id)),
+                    command_slot_id=UUID(str(command_slot_id)),
+                )
+            except (StoreValidationError, TypeError, ValueError) as error:
+                raise RecipeIntegrityError("persisted recipe payload failed immutable hash validation") from error
 
         return self._transaction(operation)
 

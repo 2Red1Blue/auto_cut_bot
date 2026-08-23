@@ -20,7 +20,11 @@ from autocut_kernel.store import (
     CommandSuccess,
     IdempotencyConflictError,
     Job,
+    JobProfileMismatchError,
     PostgresRuntimeStore,
+    RecipeIntegrityError,
+    RecipeReference,
+    RecipeUnavailableError,
 )
 
 psycopg = pytest.importorskip("psycopg")
@@ -67,6 +71,19 @@ def _make_set_hash(members: tuple[ArtifactMember, ...]) -> str:
     return "sha256:" + hashlib.sha256(
         json.dumps(canonical, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+
+
+def _make_recipe_member(job_key: str, *, revision: int = 1, payload: object | None = None) -> ArtifactMember:
+    recipe_payload = payload if payload is not None else {"recipe": {"revision": revision}}
+    encoded = json.dumps(recipe_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return ArtifactMember(
+        artifact_type="recipe",
+        logical_id="recipe",
+        revision=revision,
+        scope=ArtifactScope("pipeline", "job", job_key),
+        content_hash=_digest(encoded),
+        payload_json=encoded,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -137,6 +154,140 @@ def test_denial_persists_a_terminal_receipt_without_an_artifact_set() -> None:
     assert denied.failure_code == "PRECHECK_INCOMPLETE"
     replay = store.read_outcome(job, "preflight-2")
     assert replay is not None and replay.state == "denied"
+
+
+# ---------------------------------------------------------------------------
+# Exact persisted Recipe reads
+# ---------------------------------------------------------------------------
+
+
+def test_read_recipe_returns_only_the_exact_succeeded_recipe_identity() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("recipe-read-job", "test")
+    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request")))
+    member = _make_recipe_member(job.job_key)
+    store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,)))
+    reference = RecipeReference(member.scope, member.logical_id, member.revision, member.content_hash)
+
+    persisted = store.read_recipe(job, reference)
+
+    assert persisted.reference == reference
+    assert json.loads(persisted.payload_json) == {"recipe": {"revision": 1}}
+    assert persisted.command_slot_id == running.command_slot_id
+
+    with pytest.raises(RecipeUnavailableError):
+        store.read_recipe(Job("other-job", "test"), reference)
+    with pytest.raises(JobProfileMismatchError):
+        store.read_recipe(Job(job.job_key, "production"), reference)
+    with pytest.raises(RecipeUnavailableError):
+        store.read_recipe(
+            job,
+            RecipeReference(member.scope, member.logical_id, member.revision, _digest("forged")),
+        )
+
+
+def test_read_recipe_rejects_a_persisted_content_hash_lie() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("recipe-tamper-job", "test")
+    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request")))
+    member = ArtifactMember(
+        artifact_type="recipe",
+        logical_id="recipe",
+        revision=1,
+        scope=ArtifactScope("pipeline", "job", job.job_key),
+        content_hash=_digest("forged-content-hash"),
+        payload_json='{"recipe":{"revision":1}}',
+    )
+    store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,)))
+    reference = RecipeReference(member.scope, member.logical_id, member.revision, member.content_hash)
+
+    with pytest.raises(RecipeIntegrityError, match="hash validation"):
+        store.read_recipe(job, reference)
+
+
+def test_read_recipe_keeps_a_prior_revision_reproducible_after_head_advance() -> None:
+    """The read path is identity-addressed, not a lookup through logical_heads."""
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("recipe-prior-revision-job", "test")
+    running = store.claim_command(CommandClaim(job, "recipe-1", "local_media", _digest("request-1")))
+    first = _make_recipe_member(job.job_key, revision=1)
+    store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((first,)), (first,)))
+    second = _make_recipe_member(job.job_key, revision=2)
+
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT job_id FROM runtime.jobs WHERE job_key = %s", (job.job_key,))
+            job_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO runtime.command_slots
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
+                VALUES (gen_random_uuid(), %s, 'recipe-2', 'local_media', %s, 'succeeded', transaction_timestamp())
+                RETURNING command_slot_id
+                """,
+                (job_id, _digest("request-2")),
+            )
+            second_slot_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO runtime.artifact_sets
+                    (artifact_set_id, command_slot_id, job_id, set_hash, member_count)
+                VALUES (gen_random_uuid(), %s, %s, %s, 1)
+                RETURNING artifact_set_id
+                """,
+                (second_slot_id, job_id, _make_set_hash((second,))),
+            )
+            second_set_id = cursor.fetchone()[0]
+            cursor.execute(
+                """
+                INSERT INTO runtime.artifacts
+                    (artifact_id, artifact_set_id, job_id, artifact_type, logical_id, revision,
+                     namespace, scope_kind, scope_key, content_hash, payload_json)
+                VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                RETURNING artifact_id
+                """,
+                (
+                    second_set_id,
+                    job_id,
+                    second.artifact_type,
+                    second.logical_id,
+                    second.revision,
+                    second.scope.namespace,
+                    second.scope.kind,
+                    second.scope.key,
+                    second.content_hash,
+                    second.payload_json,
+                ),
+            )
+            second_artifact_id = cursor.fetchone()[0]
+            cursor.execute(
+                "INSERT INTO runtime.artifact_set_members (artifact_set_id, ordinal, artifact_id) VALUES (%s, 0, %s)",
+                (second_set_id, second_artifact_id),
+            )
+            cursor.execute(
+                """
+                INSERT INTO runtime.command_receipts (receipt_id, command_slot_id, outcome, result_artifact_set_id)
+                VALUES (gen_random_uuid(), %s, 'succeeded', %s)
+                """,
+                (second_slot_id, second_set_id),
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.logical_heads SET artifact_id = %s, revision = 2
+                 WHERE job_id = %s AND namespace = %s AND scope_kind = %s AND scope_key = %s
+                   AND artifact_type = 'recipe' AND logical_id = 'recipe'
+                """,
+                (second_artifact_id, job_id, second.scope.namespace, second.scope.kind, second.scope.key),
+            )
+
+    first_reference = RecipeReference(first.scope, first.logical_id, first.revision, first.content_hash)
+    second_reference = RecipeReference(second.scope, second.logical_id, second.revision, second.content_hash)
+
+    assert json.loads(store.read_recipe(job, first_reference).payload_json) == {"recipe": {"revision": 1}}
+    assert json.loads(store.read_recipe(job, second_reference).payload_json) == {"recipe": {"revision": 2}}
 
 
 # ---------------------------------------------------------------------------

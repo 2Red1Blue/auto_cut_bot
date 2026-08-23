@@ -13,7 +13,9 @@ from autocut_kernel.store import (
     CommandRejection,
     CommandSuccess,
     Job,
+    PersistedRecipe,
     PersistenceConflictError,
+    RecipeReference,
     RuntimeStoreError,
     StaleHeadError,
     StoreValidationError,
@@ -79,6 +81,36 @@ def test_success_accepts_exact_canonical_member_set_hash() -> None:
     )
     success = CommandSuccess(command_slot_id=uuid4(), set_hash=set_hash, artifacts=(member,))
     assert success.expected_set_hash == set_hash
+
+
+def test_persisted_recipe_revalidates_canonical_json_against_its_identity() -> None:
+    payload = '{"recipe":{"span":{"end_pts":4,"start_pts":1}}}'
+    reference = RecipeReference(
+        scope=ArtifactScope("pipeline", "job", "fixture-job"),
+        logical_id="recipe",
+        revision=1,
+        content_hash=digest(
+            json.dumps(
+                json.loads(payload), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            )
+        ),
+    )
+
+    result = PersistedRecipe(reference, payload, uuid4(), uuid4(), uuid4())
+
+    assert result.reference == reference
+
+
+def test_persisted_recipe_refuses_payload_hash_mismatch() -> None:
+    reference = RecipeReference(
+        scope=ArtifactScope("pipeline", "job", "fixture-job"),
+        logical_id="recipe",
+        revision=1,
+        content_hash=digest("different payload"),
+    )
+
+    with pytest.raises(StoreValidationError, match="content_hash"):
+        PersistedRecipe(reference, "{}", uuid4(), uuid4(), uuid4())
 
 
 def test_terminal_rejection_requires_structured_failure_detail() -> None:
