@@ -528,6 +528,7 @@ class PostgresRuntimeStore:
                     ON evidence.artifact_set_id = artifact_set.artifact_set_id
                    AND evidence.job_id = artifact_set.job_id
                    AND evidence.artifact_type = 'media_evidence'
+                   AND evidence.logical_id = 'media_evidence'
                    AND evidence.namespace = 'pipeline'
                    AND evidence.scope_kind = 'job'
                    AND evidence.scope_key = %s
@@ -538,6 +539,7 @@ class PostgresRuntimeStore:
                     ON recipe.artifact_set_id = artifact_set.artifact_set_id
                    AND recipe.job_id = artifact_set.job_id
                    AND recipe.artifact_type = 'recipe'
+                   AND recipe.logical_id = 'recipe'
                    AND recipe.namespace = 'pipeline'
                    AND recipe.scope_kind = 'job'
                    AND recipe.scope_key = %s
@@ -548,6 +550,7 @@ class PostgresRuntimeStore:
                    AND slot.command_name = 'local_media_command'
                    AND slot.state = 'succeeded'
                    AND receipt.outcome = 'succeeded'
+                   AND artifact_set.member_count = 2
                 """,
                 (job.job_key, job.job_key, UUID(str(job_id))),
             )

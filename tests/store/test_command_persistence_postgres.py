@@ -423,6 +423,34 @@ def test_read_succeeded_media_outputs_rejects_an_incomplete_artifact_set() -> No
         store.read_succeeded_media_outputs(job)
 
 
+def test_read_succeeded_media_outputs_requires_canonical_logical_member_ids() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("noncanonical-media-output-reader-job", "test")
+    running = store.claim_command(
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+    )
+    evidence = _make_media_evidence_member(job.job_key)
+    noncanonical_recipe = ArtifactMember(
+        artifact_type="recipe",
+        logical_id="other_recipe",
+        revision=1,
+        scope=ArtifactScope("pipeline", "job", job.job_key),
+        content_hash=_digest('{"recipe":true}'),
+        payload_json='{"recipe":true}',
+    )
+    store.commit_command_success(
+        CommandSuccess(
+            running.command_slot_id,
+            _make_set_hash((evidence, noncanonical_recipe)),
+            (evidence, noncanonical_recipe),
+        )
+    )
+
+    with pytest.raises(MediaOutputsUnavailableError, match="output pair"):
+        store.read_succeeded_media_outputs(job)
+
+
 # ---------------------------------------------------------------------------
 # Concurrent / same-intent claim
 # ---------------------------------------------------------------------------
