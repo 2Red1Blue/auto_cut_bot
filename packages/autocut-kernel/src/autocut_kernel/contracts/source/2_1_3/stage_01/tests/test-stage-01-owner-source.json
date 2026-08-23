@@ -1,0 +1,9 @@
+{
+  "format": "autocut.stage-01-owner-source-tests/v1",
+  "boundary": "schema_only_owner_payload_source",
+  "fixtures": "structural_synthetic_only",
+  "prohibitions": [
+    "No Diagnostic dereference or semantics.",
+    "No outcome wrapper, Envelope, Artifact, Registry, command, producer, writer, rule registration, trace identity, or readiness claim."
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/stage_01/schemas/dependency-propagation-policy.schema.json",
+  "$comment": "Owner payload source only; no Envelope, Artifact identity, Registry, command, producer, writer, rule registration, trace identity, or readiness semantics.",
+  "type": "object",
+  "properties": {
+    "dependency_propagation_policy_id": {
+      "const": "dependency-propagation-2.1.3"
+    },
+    "canonical_owner_by_object_type": {
+      "type": "object",
+      "properties": {
+        "event": {
+          "const": "event_card_set"
+        },
+        "story_thread": {
+          "const": "narrative_graph"
+        },
+        "obligation": {
+          "const": "narrative_graph"
+        },
+        "fact": {
+          "const": "narrative_graph"
+        },
+        "character": {
+          "const": "narrative_graph"
+        },
+        "beat": {
+          "const": "narrative_graph"
+        },
+        "character_state": {
+          "const": "narrative_graph"
+        },
+        "question": {
+          "const": "narrative_graph"
+        },
+        "foreshadow": {
+          "const": "narrative_graph"
+        },
+        "relationship": {
+          "const": "narrative_graph"
+        },
+        "source": {
+          "const": "source_manifest"
+        },
+        "coverage_window": {
+          "const": "coverage_ledger"
+        }
+      },
+      "required": [
+        "event",
+        "story_thread",
+        "obligation",
+        "fact",
+        "character",
+        "beat",
+        "character_state",
+        "question",
+        "foreshadow",
+        "relationship",
+        "source",
+        "coverage_window"
+      ],
+      "additionalProperties": false
+    },
+    "edge_projections": {
+      "type": "object",
+      "properties": {
+        "supports": {
+          "const": "from_to"
+        },
+        "satisfies": {
+          "const": "from_to"
+        },
+        "causes": {
+          "const": "from_to"
+        },
+        "resolves": {
+          "const": "from_to"
+        },
+        "requires": {
+          "const": "to_from"
+        },
+        "precedes": {
+          "const": "no_propagation_seed_both_on_conflict"
+        },
+        "involves": {
+          "const": "attributes_only"
+        },
+        "contradicts": {
+          "const": "seed_both_no_recursive_arc"
+        }
+      },
+      "required": [
+        "supports",
+        "satisfies",
+        "causes",
+        "resolves",
+        "requires",
+        "precedes",
+        "involves",
+        "contradicts"
+      ],
+      "additionalProperties": false
+    },
+    "attribute_projections": {
+      "type": "array",
+      "const": [
+        "subject_to_fact",
+        "required_fact_to_obligation",
+        "obligation_to_beat",
+        "obligation_to_story_thread",
+        "state_fact_to_character_state",
+        "answer_fact_to_question",
+        "setup_payoff_event_to_foreshadow",
+        "subject_object_character_to_relationship"
+      ]
+    },
+    "external_root_projections": {
+      "type": "array",
+      "const": [
+        "coverage_window_to_source",
+        "coverage_window_to_event",
+        "source_to_event"
+      ]
+    },
+    "unknown_projection_action": {
+      "const": "unbounded"
+    }
+  },
+  "required": [
+    "dependency_propagation_policy_id",
+    "canonical_owner_by_object_type",
+    "edge_projections",
+    "attribute_projections",
+    "external_root_projections",
+    "unknown_projection_action"
+  ],
+  "additionalProperties": false
+}

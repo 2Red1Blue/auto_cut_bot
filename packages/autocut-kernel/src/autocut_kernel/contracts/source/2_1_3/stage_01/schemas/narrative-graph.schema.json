@@ -1,0 +1,479 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://autocut.invalid/contracts/2.1.3/stage_01/schemas/narrative-graph.schema.json",
+  "$comment": "Owner payload source only; no Envelope, Artifact identity, Registry, command, producer, writer, rule registration, trace identity, or readiness semantics.",
+  "type": "object",
+  "properties": {
+    "graph_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "node_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "node_type": {
+            "enum": [
+              "fact",
+              "event",
+              "beat",
+              "obligation",
+              "story_thread",
+              "character",
+              "relationship",
+              "question",
+              "foreshadow"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "attributes": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "fact"
+                  },
+                  "subject_node_id": {
+                    "type": "string"
+                  },
+                  "predicate": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "text"
+                          },
+                          "text": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "text"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "number"
+                          },
+                          "number": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "number"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "boolean"
+                          },
+                          "boolean": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "boolean"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "const": "entity_ref"
+                          },
+                          "node_id": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "node_id"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "conflict_status": {
+                    "enum": [
+                      "none",
+                      "conflicted"
+                    ]
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "subject_node_id",
+                  "predicate",
+                  "value",
+                  "conflict_status"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "event"
+                  },
+                  "event_card_ref": {
+                    "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+                  },
+                  "episode_id": {
+                    "type": "string"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "source_range_refs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+                    }
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "event_card_ref",
+                  "episode_id",
+                  "summary",
+                  "source_range_refs"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "beat"
+                  },
+                  "summary": {
+                    "type": "string"
+                  },
+                  "phase": {
+                    "enum": [
+                      "setup",
+                      "escalation",
+                      "turn",
+                      "reveal",
+                      "payoff",
+                      "consequence",
+                      "coda"
+                    ]
+                  },
+                  "obligation_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "summary",
+                  "phase",
+                  "obligation_ids"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "obligation"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "required_fact_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "success_criteria": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "description",
+                  "required_fact_ids",
+                  "success_criteria"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "story_thread"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "premise": {
+                    "type": "string"
+                  },
+                  "obligation_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "title",
+                  "premise",
+                  "obligation_ids"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "character"
+                  },
+                  "canonical_name": {
+                    "type": "string"
+                  },
+                  "aliases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "state_fact_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "canonical_name",
+                  "aliases",
+                  "state_fact_ids"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "relationship"
+                  },
+                  "subject_node_id": {
+                    "type": "string"
+                  },
+                  "object_node_id": {
+                    "type": "string"
+                  },
+                  "relation_type": {
+                    "enum": [
+                      "family",
+                      "ally",
+                      "opponent",
+                      "romantic",
+                      "authority",
+                      "dependency",
+                      "unknown"
+                    ]
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "subject_node_id",
+                  "object_node_id",
+                  "relation_type"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "question"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "enum": [
+                      "open",
+                      "answered",
+                      "invalidated"
+                    ]
+                  },
+                  "answer_fact_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "text",
+                  "status",
+                  "answer_fact_ids"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "attribute_type": {
+                    "const": "foreshadow"
+                  },
+                  "setup_event_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "payoff_event_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "status": {
+                    "enum": [
+                      "setup_only",
+                      "paid_off",
+                      "broken"
+                    ]
+                  }
+                },
+                "required": [
+                  "attribute_type",
+                  "setup_event_ids",
+                  "payoff_event_ids",
+                  "status"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          },
+          "confidence": {
+            "type": "object",
+            "properties": {
+              "value": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "method": {
+                "enum": [
+                  "model",
+                  "rule",
+                  "source"
+                ]
+              }
+            },
+            "required": [
+              "value",
+              "method"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "node_id",
+          "node_type",
+          "label",
+          "attributes",
+          "evidence_refs",
+          "confidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "edge_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "edge_type": {
+            "enum": [
+              "supports",
+              "satisfies",
+              "requires",
+              "precedes",
+              "causes",
+              "contradicts",
+              "involves",
+              "resolves"
+            ]
+          },
+          "from_node_id": {
+            "type": "string"
+          },
+          "to_node_id": {
+            "type": "string"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "$ref": "https://autocut.invalid/contracts/2.1.3/common/schemas/primitives/domain-ref.schema.json"
+            }
+          }
+        },
+        "required": [
+          "edge_id",
+          "edge_type",
+          "from_node_id",
+          "to_node_id",
+          "evidence_refs"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "graph_id",
+    "nodes",
+    "edges"
+  ],
+  "additionalProperties": false
+}

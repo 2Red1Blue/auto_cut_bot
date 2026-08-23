@@ -1,0 +1,13 @@
+{
+  "source_knowledge_input_set": {
+    "source_knowledge_input_set_id": "source_knowledge_1",
+    "sources": [
+      {
+        "source_id": "source-001",
+        "ingestion_mode": "media_only",
+        "items": []
+      }
+    ]
+  },
+  "dependency_propagation_policy": "schema-only structural fixture; exact literal tested separately"
+}
