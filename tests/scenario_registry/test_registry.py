@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from autocut_kernel.physical_edit import FixtureBeatInput, SpanSelectionPolicy
 from autocut_kernel.scenario_registry import (
-    FixtureScenario,
     FixtureScenarioRegistry,
     ScenarioRef,
     ScenarioRegistryDenied,
     UpstreamScenarioOutputs,
 )
+from autocut_kernel.scenario_registry.registry import _FixtureScenarioRegistration
 from autocut_kernel.semantic_chain import CatalogResolution, FactKind, SemanticProfile
 from autocut_kernel.store import ArtifactScope, Job, MediaEvidenceReference, RecipeReference
 
@@ -25,8 +25,8 @@ class _Resolver:
         return FixtureBeatInput(0, 10, 20, 30, 10)
 
 
-def _fixture(profile: SemanticProfile = SemanticProfile.TEST) -> FixtureScenario:
-    return FixtureScenario(
+def _fixture(profile: SemanticProfile = SemanticProfile.TEST) -> _FixtureScenarioRegistration:
+    return _FixtureScenarioRegistration(
         ScenarioRef("scenario_11111111111111111111111111111111"),
         profile,
         Path("source.mp4"),
@@ -48,7 +48,7 @@ def _fixture(profile: SemanticProfile = SemanticProfile.TEST) -> FixtureScenario
 
 def test_registry_creates_only_closed_upstream_plan() -> None:
     fixture = _fixture()
-    registry = FixtureScenarioRegistry((fixture,))
+    registry = FixtureScenarioRegistry._from_composition((fixture,))
     plan = registry.prepare_upstream(fixture.ref, Job("upstream", "test"))
     assert plan.request.beat == fixture.upstream_beat
     assert plan.request.preflight_request.source_path == fixture.source_path
@@ -84,7 +84,7 @@ def test_malformed_composition_registration_is_denied(field: str, value: object)
     values = {name: getattr(fixture, name) for name in fixture.__dataclass_fields__}
     values[field] = value
     with pytest.raises(ScenarioRegistryDenied):
-        FixtureScenario(**values)  # type: ignore[arg-type]
+        _FixtureScenarioRegistration(**values)  # type: ignore[arg-type]
 
 
 def test_plan_creation_never_executes_store_or_command_ports() -> None:
@@ -104,7 +104,7 @@ def test_plan_creation_never_executes_store_or_command_ports() -> None:
     values = {name: getattr(fixture, name) for name in fixture.__dataclass_fields__}
     values["registry"] = Registry()
     values["beat_resolver"] = Resolver()
-    registry = FixtureScenarioRegistry((FixtureScenario(**values),))  # type: ignore[arg-type]
+    registry = FixtureScenarioRegistry._from_composition((_FixtureScenarioRegistration(**values),))  # type: ignore[arg-type]
     upstream_job = Job("upstream-no-execute", "test")
     registry.prepare_upstream(fixture.ref, upstream_job)
     upstream = UpstreamScenarioOutputs(
@@ -124,3 +124,11 @@ def test_plan_creation_never_executes_store_or_command_ports() -> None:
     )
     registry.prepare_semantic(fixture.ref, Job("semantic-no-execute", "test"), upstream)
     assert calls == []
+
+
+def test_public_registry_constructor_and_exports_do_not_accept_physical_registration() -> None:
+    import autocut_kernel.scenario_registry as public_api
+
+    assert not hasattr(public_api, "FixtureScenario")
+    with pytest.raises(ScenarioRegistryDenied, match="application composition"):
+        FixtureScenarioRegistry((_fixture(),))  # type: ignore[arg-type]

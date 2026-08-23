@@ -2,7 +2,6 @@
 
 from .registry import (
     DownstreamScenarioPlan,
-    FixtureScenario,
     FixtureScenarioRegistry,
     ScenarioRef,
     ScenarioRegistryDenied,
@@ -14,7 +13,6 @@ from .registry import (
 
 __all__ = [
     "DownstreamScenarioPlan",
-    "FixtureScenario",
     "FixtureScenarioRegistry",
     "ScenarioRef",
     "ScenarioRegistryDenied",

@@ -51,7 +51,7 @@ class ScenarioRef:
 
 
 @dataclass(frozen=True, slots=True)
-class FixtureScenario:
+class _FixtureScenarioRegistration:
     """Application-composed fixture registration; it owns all physical data."""
 
     ref: ScenarioRef
@@ -165,16 +165,31 @@ class DownstreamScenarioPlan:
 class FixtureScenarioRegistry:
     """Read-only fixture plan creator; it never queries or executes dependencies."""
 
-    def __init__(self, scenarios: tuple[FixtureScenario, ...]) -> None:
+    _scenarios: dict[ScenarioRef, _FixtureScenarioRegistration]
+
+    def __init__(self, scenarios: object = None) -> None:
+        """Deny agent-facing construction with physical fixture registration values."""
+
+        del scenarios
+        raise ScenarioRegistryDenied("fixture registries are created only by application composition")
+
+    @classmethod
+    def _from_composition(
+        cls, scenarios: tuple[_FixtureScenarioRegistration, ...]
+    ) -> FixtureScenarioRegistry:
+        """Private application-composition factory for trusted physical registrations."""
+
         values = tuple(scenarios)
-        if not values or any(type(item) is not FixtureScenario for item in values):  # noqa: E721
+        if not values or any(type(item) is not _FixtureScenarioRegistration for item in values):  # noqa: E721
             raise ScenarioRegistryDenied(
                 "scenarios must be non-empty FixtureScenario registrations"
             )
         refs = tuple(item.ref for item in values)
         if len(refs) != len(set(refs)):
             raise ScenarioRegistryDenied("scenario registrations must have unique refs")
-        self._scenarios = {item.ref: item for item in values}
+        instance = object.__new__(cls)
+        instance._scenarios = {item.ref: item for item in values}
+        return instance
 
     def prepare_upstream(self, ref: ScenarioRef, job: Job) -> UpstreamScenarioPlan:
         scenario = self._scenario(ref, job)
@@ -263,7 +278,7 @@ class FixtureScenarioRegistry:
         )
         return DownstreamScenarioPlan(ref, semantic, request)
 
-    def _scenario(self, ref: ScenarioRef, job: Job) -> FixtureScenario:
+    def _scenario(self, ref: ScenarioRef, job: Job) -> _FixtureScenarioRegistration:
         if type(ref) is not ScenarioRef:  # noqa: E721
             raise ScenarioRegistryDenied("registry accepts only ScenarioRef")
         scenario = self._scenarios.get(ref)
