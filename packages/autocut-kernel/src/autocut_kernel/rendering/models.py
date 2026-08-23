@@ -55,6 +55,7 @@ class RenderProfile:
     crf: int = 18
     keyframe_interval: int = 48
     output_timescale: int = 90_000
+    max_output_timescale: int = 2_147_483_647
 
     def __post_init__(self) -> None:
         if not self.profile_id:
@@ -71,6 +72,8 @@ class RenderProfile:
             raise ValueError("render.keyframe_interval must be positive")
         if require_pts(self.output_timescale, "render.output_timescale") <= 0:
             raise ValueError("render.output_timescale must be positive")
+        if require_pts(self.max_output_timescale, "render.max_output_timescale") < self.output_timescale:
+            raise ValueError("render.max_output_timescale must cover render.output_timescale")
 
     @property
     def canonical_hash(self) -> str:
@@ -80,6 +83,7 @@ class RenderProfile:
                 "codec": self.codec,
                 "crf": self.crf,
                 "keyframe_interval": self.keyframe_interval,
+                "max_output_timescale": self.max_output_timescale,
                 "output_timescale": self.output_timescale,
                 "pixel_format": self.pixel_format,
                 "preset": self.preset,
@@ -98,12 +102,15 @@ class RenderPlan:
 
     recipe_hash: str
     profile_hash: str
+    output_timescale: int
     filter_graph: str
     argv: tuple[str, ...]
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.recipe_hash, "render_plan.recipe_hash")
         sha256_prefixed(self.profile_hash, "render_plan.profile_hash")
+        if require_pts(self.output_timescale, "render_plan.output_timescale") <= 0:
+            raise ValueError("render_plan.output_timescale must be positive")
         if not self.filter_graph:
             raise ValueError("render_plan.filter_graph must be non-empty")
         if not self.argv:

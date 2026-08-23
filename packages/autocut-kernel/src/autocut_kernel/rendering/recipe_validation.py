@@ -6,8 +6,15 @@ from collections.abc import Mapping
 from typing import Literal, cast
 
 from ..media.types import (
+    MediaEvidence,
     MediaValidationError,
+    PTSIndex,
+    SourceIdentity,
+    TickRange,
     TimeBase,
+    ToolEvidence,
+    ValidityIntervals,
+    VideoStreamEvidence,
     canonical_sha256,
     require_pts,
     sha256_prefixed,
@@ -60,6 +67,122 @@ def _runtime_profile(profile: object) -> RuntimeProfile:
     return cast(RuntimeProfile, profile)
 
 
+def _exact_keys(mapping: Mapping[str, object], expected: set[str], field_name: str) -> None:
+    if set(mapping) != expected:
+        raise RecipeValidationError("RECIPE_INVALID", f"{field_name} has an unsupported shape")
+
+
+def _timebase(value: object, field_name: str) -> TimeBase:
+    mapping = _mapping(value, field_name)
+    _exact_keys(mapping, {"numerator", "denominator"}, field_name)
+    try:
+        return TimeBase(
+            _pts(_required(mapping, "numerator"), f"{field_name}.numerator"),
+            _pts(_required(mapping, "denominator"), f"{field_name}.denominator"),
+        )
+    except MediaValidationError as error:
+        raise RecipeValidationError("RECIPE_INVALID", str(error)) from error
+
+
+def _parse_evidence(value: object) -> MediaEvidence:
+    evidence = _mapping(value, "recipe.evidence")
+    _exact_keys(
+        evidence,
+        {
+            "source",
+            "video_stream",
+            "pts_index",
+            "pts_index_sha256",
+            "validity_intervals",
+            "ffprobe",
+            "fixture_id",
+            "fixture_manifest_sha256",
+            "fixture_sidecar_sha256",
+            "fixture_schema_version",
+            "evidence_mode",
+        },
+        "recipe.evidence",
+    )
+    source = _mapping(_required(evidence, "source"), "recipe.evidence.source")
+    _exact_keys(source, {"sha256", "byte_size"}, "recipe.evidence.source")
+    video = _mapping(_required(evidence, "video_stream"), "recipe.evidence.video_stream")
+    _exact_keys(
+        video,
+        {"stream_index", "codec_name", "width", "height", "time_base"},
+        "recipe.evidence.video_stream",
+    )
+    frames = _required(evidence, "pts_index")
+    if not isinstance(frames, list):
+        raise RecipeValidationError("RECIPE_INVALID", "recipe.evidence.pts_index must be a list")
+    frames = cast(list[object], frames)
+    intervals_value = _required(evidence, "validity_intervals")
+    if not isinstance(intervals_value, list):
+        raise RecipeValidationError("RECIPE_INVALID", "recipe.evidence.validity_intervals must be a list")
+    intervals_value = cast(list[object], intervals_value)
+    intervals: list[TickRange] = []
+    for index, item in enumerate(intervals_value):
+        interval = _mapping(item, f"recipe.evidence.validity_intervals[{index}]")
+        _exact_keys(
+            interval,
+            {"start_pts", "end_pts"},
+            f"recipe.evidence.validity_intervals[{index}]",
+        )
+        intervals.append(
+            TickRange(
+                _pts(_required(interval, "start_pts"), f"validity_intervals[{index}].start_pts"),
+                _pts(_required(interval, "end_pts"), f"validity_intervals[{index}].end_pts"),
+            )
+        )
+    ffprobe = _mapping(_required(evidence, "ffprobe"), "recipe.evidence.ffprobe")
+    _exact_keys(ffprobe, {"executable", "version", "stderr_sha256"}, "recipe.evidence.ffprobe")
+    fixture_id = _required(evidence, "fixture_id")
+    evidence_mode = _required(evidence, "evidence_mode")
+    if not isinstance(fixture_id, str) or not fixture_id:
+        raise RecipeValidationError("RECIPE_INVALID", "recipe.evidence.fixture_id must be non-empty")
+    if not isinstance(evidence_mode, str):
+        raise RecipeValidationError("RECIPE_INVALID", "recipe.evidence.evidence_mode must be a string")
+    codec_name = _required(video, "codec_name")
+    executable = _required(ffprobe, "executable")
+    version = _required(ffprobe, "version")
+    if not isinstance(codec_name, str) or not isinstance(executable, str) or not isinstance(version, str):
+        raise RecipeValidationError("RECIPE_INVALID", "recipe evidence text fields must be strings")
+    try:
+        return MediaEvidence(
+            source=SourceIdentity(
+                _sha256(_required(source, "sha256"), "recipe.evidence.source.sha256"),
+                _pts(_required(source, "byte_size"), "recipe.evidence.source.byte_size"),
+            ),
+            video_stream=VideoStreamEvidence(
+                _pts(_required(video, "stream_index"), "recipe.evidence.video_stream.stream_index"),
+                codec_name,
+                _pts(_required(video, "width"), "recipe.evidence.video_stream.width"),
+                _pts(_required(video, "height"), "recipe.evidence.video_stream.height"),
+                _timebase(_required(video, "time_base"), "recipe.evidence.video_stream.time_base"),
+            ),
+            pts_index=PTSIndex(tuple(_pts(item, f"recipe.evidence.pts_index[{index}]") for index, item in enumerate(frames))),
+            validity_intervals=ValidityIntervals(tuple(intervals)),
+            pts_index_sha256=_sha256(_required(evidence, "pts_index_sha256"), "recipe.evidence.pts_index_sha256"),
+            ffprobe=ToolEvidence(
+                executable,
+                version,
+                _sha256(_required(ffprobe, "stderr_sha256"), "recipe.evidence.ffprobe.stderr_sha256"),
+            ),
+            fixture_id=fixture_id,
+            fixture_manifest_sha256=_sha256(
+                _required(evidence, "fixture_manifest_sha256"), "recipe.evidence.fixture_manifest_sha256"
+            ),
+            fixture_sidecar_sha256=_sha256(
+                _required(evidence, "fixture_sidecar_sha256"), "recipe.evidence.fixture_sidecar_sha256"
+            ),
+            fixture_schema_version=_pts(
+                _required(evidence, "fixture_schema_version"), "recipe.evidence.fixture_schema_version"
+            ),
+            evidence_mode=evidence_mode,
+        )
+    except MediaValidationError as error:
+        raise RecipeValidationError("RECIPE_INVALID", str(error)) from error
+
+
 def parse_recipe(
     payload: object,
     *,
@@ -98,23 +221,20 @@ def parse_recipe(
     if start_pts >= end_pts:
         raise RecipeValidationError("RECIPE_INVALID_SPAN", "recipe span must satisfy start_pts < end_pts")
 
-    timebase = _mapping(_required(recipe, "timebase"), "recipe.timebase")
-    if set(timebase) != {"numerator", "denominator"}:
-        raise RecipeValidationError("RECIPE_INVALID", "recipe.timebase has an unsupported shape")
+    parsed_timebase = _timebase(_required(recipe, "timebase"), "recipe.timebase")
+    evidence = _parse_evidence(_required(recipe, "evidence"))
+    if evidence.source.sha256 != source_hash or evidence.source.byte_size != source_size:
+        raise RecipeValidationError("SOURCE_IDENTITY_MISMATCH", "recipe source does not bind evidence source")
+    if evidence.video_stream.time_base != parsed_timebase:
+        raise RecipeValidationError("RECIPE_INVALID", "recipe timebase does not bind evidence video stream")
     try:
-        parsed_timebase = TimeBase(
-            _pts(_required(timebase, "numerator"), "recipe.timebase.numerator"),
-            _pts(_required(timebase, "denominator"), "recipe.timebase.denominator"),
-        )
+        evidence.pts_index.require_member(start_pts, "recipe.span.start_pts")
+        evidence.pts_index.require_member(end_pts, "recipe.span.end_pts")
+        if not evidence.validity_intervals.covers(TickRange(start_pts, end_pts)):
+            raise RecipeValidationError("RECIPE_INVALID_SPAN", "recipe span is outside evidence validity intervals")
     except MediaValidationError as error:
-        raise RecipeValidationError("RECIPE_INVALID", str(error)) from error
-
-    evidence = _mapping(_required(recipe, "evidence"), "recipe.evidence")
-    fixture_id = _required(evidence, "fixture_id")
-    fixture_mode = _required(evidence, "evidence_mode")
-    if not isinstance(fixture_id, str) or not fixture_id:
-        raise RecipeValidationError("RECIPE_INVALID", "recipe.evidence.fixture_id must be non-empty")
-    if not isinstance(fixture_mode, str) or fixture_mode != "fixture_ground_truth_v1":
+        raise RecipeValidationError("RECIPE_INVALID_SPAN", str(error)) from error
+    if evidence.evidence_mode != "fixture_ground_truth_v1":
         raise RecipeValidationError("RECIPE_INVALID", "recipe evidence_mode is unsupported")
     if runtime_profile == "production":
         raise RecipeValidationError("FIXTURE_PROFILE_DENIED", "fixture recipes are forbidden in production")
@@ -125,8 +245,8 @@ def parse_recipe(
         time_base=parsed_timebase,
         start_pts=start_pts,
         end_pts=end_pts,
-        fixture_id=fixture_id,
-        fixture_mode=fixture_mode,
+        fixture_id=evidence.fixture_id,
+        fixture_mode=evidence.evidence_mode,
         canonical_hash=canonical_sha256(payload),
     )
 

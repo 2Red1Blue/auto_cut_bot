@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from math import lcm
 from pathlib import Path
 
 from .models import H264_MP4_VIDEO_PROFILE, Recipe, RenderPlan, RenderProfile
+
+
+def _output_timescale(recipe: Recipe, profile: RenderProfile) -> int:
+    """Choose an MP4 clock that exactly represents every source PTS tick."""
+    timescale = lcm(profile.output_timescale, recipe.time_base.denominator)
+    if timescale > profile.max_output_timescale:
+        raise ValueError("source time base cannot be represented by the configured MP4 timescale")
+    return timescale
 
 
 def build_render_plan(
@@ -19,6 +28,7 @@ def build_render_plan(
     The graph uses FFmpeg's integer ``trim`` PTS options directly.  It never
     uses input/output seeking, float second expressions, or stream copy.
     """
+    output_timescale = _output_timescale(recipe, profile)
     filter_graph = (
         f"[0:v:0]trim=start_pts={recipe.start_pts}:end_pts={recipe.end_pts},"
         "setpts=PTS-STARTPTS[v0]"
@@ -29,6 +39,7 @@ def build_render_plan(
         "-loglevel",
         "error",
         "-y",
+        "-copyts",
         "-i",
         str(source_path),
         "-filter_complex",
@@ -47,11 +58,13 @@ def build_render_plan(
         "-g",
         str(profile.keyframe_interval),
         "-video_track_timescale",
-        str(profile.output_timescale),
+        str(output_timescale),
+        "-avoid_negative_ts",
+        "disabled",
         "-movflags",
         "+faststart",
         "-f",
         "mp4",
         str(output_path),
     )
-    return RenderPlan(recipe.canonical_hash, profile.canonical_hash, filter_graph, argv)
+    return RenderPlan(recipe.canonical_hash, profile.canonical_hash, output_timescale, filter_graph, argv)
