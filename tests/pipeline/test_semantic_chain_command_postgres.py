@@ -22,6 +22,7 @@ from autocut_kernel.physical_edit import FixtureBeatInput, SpanSelectionPolicy
 from autocut_kernel.pipeline import (
     LocalMediaCommand,
     LocalMediaCommandRequest,
+    ResolutionPolicyIdentity,
     SemanticChainCommand,
     SemanticChainCommandRequest,
 )
@@ -188,7 +189,7 @@ def test_postgres_semantic_command_reads_exact_upstream_media_evidence_and_persi
             cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
             assert cursor.fetchone() == (2,)
             cursor.execute("SELECT count(*) FROM runtime.artifacts")
-            assert cursor.fetchone() == (4,)
+            assert cursor.fetchone() == (5,)
 
 
 def test_postgres_real_local_media_to_semantic_to_distinct_local_media_job(tmp_path: Path) -> None:
@@ -236,6 +237,7 @@ def test_postgres_real_local_media_to_semantic_to_distinct_local_media_job(tmp_p
         reference,
         _Registry(),
         _BridgeBeatResolver(),
+        ResolutionPolicyIdentity("policy_bridge", "sha256:" + "e" * 64),
         ArtifactScope("pipeline", "job", semantic_job.job_key),
     )
     semantic = SemanticChainCommand(store).execute(semantic_request)
@@ -259,4 +261,4 @@ def test_postgres_real_local_media_to_semantic_to_distinct_local_media_job(tmp_p
             cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
             assert cursor.fetchone() == (3,)
             cursor.execute("SELECT count(*) FROM runtime.artifacts")
-            assert cursor.fetchone() == (7,)
+            assert cursor.fetchone() == (8,)
