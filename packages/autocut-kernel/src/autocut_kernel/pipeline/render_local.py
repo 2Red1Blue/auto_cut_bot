@@ -1,10 +1,8 @@
 """Local-only render, QC, and output-promotion orchestration.
 
-This module is deliberately a non-DB boundary.  It consumes an already
-compiled fixture recipe (or its still-to-be-parsed JSON form), produces private
-staging evidence, and exposes an asset only through the promotion module's
-atomic ``current.json`` pointer.  A durable command receipt belongs to the
-later persistence integration rather than to this local coordinator.
+The visible-output path is intentionally database-backed: it resolves an exact
+immutable recipe artifact and rehydrates it before rendering.  The old
+in-memory entry point is retained solely for fixture tests and cannot promote.
 """
 
 from __future__ import annotations
@@ -33,6 +31,14 @@ from ..rendering import (
 )
 from ..rendering.ffmpeg_renderer import FFmpegRenderer, RenderAttempt, RenderError
 from ..rendering.qc import LocalQC, QCReport
+from ..store import (
+    Job,
+    PostgresRuntimeStore,
+    RecipeIntegrityError,
+    RecipeReference,
+    RecipeUnavailableError,
+    RuntimeStoreError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,18 @@ class RenderLocalRequest:
     job_id: str
     attempt_id: str
     profile: str = "test"
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedRenderLocalRequest:
+    """One render authorized by an exact immutable Store recipe identity."""
+
+    store: PostgresRuntimeStore
+    job: Job
+    recipe_reference: RecipeReference
+    source_path: Path
+    output_root: Path
+    attempt_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +121,7 @@ class LocalRenderOrchestrator:
         self._qc = qc
 
     def execute(self, request: RenderLocalRequest) -> RenderLocalOutcome:
-        """Run one attempt without writing a database receipt or publishing externally."""
+        """Run a fixture-only attempt; this legacy path never promotes output."""
         try:
             recipe = _validate_recipe_and_source(request)
         except RecipeValidationError as error:
@@ -138,16 +156,68 @@ class LocalRenderOrchestrator:
         if not report.approved:
             return RenderLocalDenied(_qc_failure_code(report), "derived QC report rejected render", attempt, report)
 
+        return RenderLocalDenied(
+            "PERSISTED_RECIPE_REQUIRED",
+            "the in-memory render entry point is test-only and cannot promote output",
+            attempt,
+            report,
+        )
+
+    def execute_persisted(self, request: PersistedRenderLocalRequest) -> RenderLocalOutcome:
+        """Render and promote only a Store-rehydrated immutable recipe artifact."""
+        try:
+            persisted = request.store.read_recipe(request.job, request.recipe_reference)
+            source_hash, source_size = _source_identity(request.source_path)
+            recipe = parse_recipe(
+                json.loads(persisted.payload_json),
+                expected_source_sha256=source_hash,
+                profile=request.job.profile,
+            )
+            if recipe.source_sha256 != source_hash or recipe.source_byte_size != source_size:
+                raise ValueError("source identity does not match persisted recipe")
+        except (RecipeUnavailableError, RecipeIntegrityError, RuntimeStoreError) as error:
+            return RenderLocalDenied("PERSISTED_RECIPE_UNAVAILABLE", str(error))
+        except (RecipeValidationError, ValueError, TypeError, json.JSONDecodeError) as error:
+            return RenderLocalDenied("PERSISTED_RECIPE_INVALID", str(error))
+
+        try:
+            plan = build_render_plan(
+                recipe,
+                source_path=request.source_path,
+                output_path=request.output_root / "staging" / "ignored.mp4",
+                profile=H264_MP4_VIDEO_PROFILE,
+            )
+            renderer = self._renderer or FFmpegRenderer()
+            attempt = renderer.render(
+                recipe,
+                plan,
+                source_path=request.source_path,
+                staging_root=request.output_root / "staging" / request.job.job_key,
+            )
+        except RenderError as error:
+            return RenderLocalFailed(_render_failure_code(error), str(error))
+        except OSError as error:
+            return RenderLocalFailed("RENDER_INFRASTRUCTURE_FAILED", str(error))
+
+        try:
+            report = (self._qc or LocalQC()).inspect(recipe, attempt)
+            _persist_derived_qc_report(attempt, report)
+        except (OSError, ValueError) as error:
+            return RenderLocalDenied("QC_EVIDENCE_FAILED", str(error), attempt=attempt)
+        if not report.approved:
+            return RenderLocalDenied(_qc_failure_code(report), "derived QC report rejected render", attempt, report)
+
         try:
             promotion = promote_local_output(
                 LocalPromotionRequest(
                     output_root=request.output_root,
-                    job_id=request.job_id,
+                    job=request.job,
                     attempt_id=request.attempt_id,
                     staging_asset=attempt.output_path,
-                    recipe_hash=recipe.canonical_hash,
                     asset_sha256=attempt.output_sha256,
                     qc_report=report,
+                    store=request.store,
+                    recipe_reference=request.recipe_reference,
                 )
             )
         except LocalPromotionError as error:
@@ -163,6 +233,16 @@ def render_local(
 ) -> RenderLocalOutcome:
     """Convenience entry point for the local orchestration boundary."""
     return LocalRenderOrchestrator(renderer=renderer, qc=qc).execute(request)
+
+
+def render_persisted_local(
+    request: PersistedRenderLocalRequest,
+    *,
+    renderer: FFmpegRenderer | None = None,
+    qc: LocalQC | None = None,
+) -> RenderLocalOutcome:
+    """Render and atomically promote one exact Store-owned recipe artifact."""
+    return LocalRenderOrchestrator(renderer=renderer, qc=qc).execute_persisted(request)
 
 
 def _validate_recipe_and_source(request: RenderLocalRequest) -> Recipe:
