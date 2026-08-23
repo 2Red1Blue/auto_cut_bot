@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,7 @@ from typing import Any, cast
 
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
+_NAMESPACE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
 
 
 class LocalPromotionError(Exception):
@@ -35,6 +37,8 @@ class LocalPromotionRequest:
     """
 
     output_root: Path
+    job_id: str
+    attempt_id: str
     staging_asset: Path
     asset_sha256: str
     qc_manifest: Mapping[str, object]
@@ -57,8 +61,9 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
     The output layout is deliberately content-addressed:
 
-    ``assets/sha256/<hex>`` contains the bytes and
-    ``manifests/sha256/<hex>.json`` contains its canonical promotion manifest.
+    ``assets/sha256/<prefix>/<hex>.mp4`` contains the bytes and
+    ``results/<job_id>/<attempt_id>/manifests/<hex>.json`` contains its canonical
+    promotion manifest.  The mutable pointer is scoped to that same attempt.
     Existing immutable entries are accepted only when their complete contents are
     identical.  The mutable ``current.json`` pointer is written last using a
     fsynced temporary file and ``os.replace``.
@@ -66,14 +71,14 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
 
     _validate_request(request)
     output_root = request.output_root
-    output_root.mkdir(parents=True, exist_ok=True)
-    if not output_root.is_dir() or output_root.is_symlink():
-        raise LocalPromotionError("output_root must be a real directory")
+    _ensure_output_root(output_root)
 
     asset_hex = request.asset_sha256.removeprefix(_SHA256_PREFIX)
-    asset_relative = PurePosixPath("assets") / "sha256" / asset_hex
+    asset_relative = PurePosixPath("assets") / "sha256" / asset_hex[:2] / f"{asset_hex}.mp4"
     asset_path = _resolve_generated_path(output_root, asset_relative)
-    _install_asset(request.staging_asset, asset_path, request.asset_sha256)
+    _install_asset(output_root, request.staging_asset, asset_path, request.asset_sha256)
+
+    result_relative = PurePosixPath("results") / request.job_id / request.attempt_id
 
     manifest_value: dict[str, object] = {
         "asset": {"path": asset_relative.as_posix(), "sha256": request.asset_sha256},
@@ -83,9 +88,9 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
     }
     manifest_bytes = _canonical_json_bytes(manifest_value, "promotion manifest")
     manifest_sha256 = _sha256(manifest_bytes)
-    manifest_relative = PurePosixPath("manifests") / "sha256" / f"{manifest_sha256[7:]}.json"
+    manifest_relative = result_relative / "manifests" / f"{manifest_sha256[7:]}.json"
     manifest_path = _resolve_generated_path(output_root, manifest_relative)
-    _install_bytes(manifest_path, manifest_bytes, "manifest")
+    _install_bytes(output_root, manifest_path, manifest_bytes, "manifest")
 
     current_bytes = _canonical_json_bytes(
         {
@@ -95,13 +100,16 @@ def promote_local_output(request: LocalPromotionRequest) -> PromotionResult:
         },
         "current pointer",
     )
-    current_path = output_root / "current.json"
+    current_path = _resolve_generated_path(output_root, result_relative / "current.json")
+    _ensure_real_directory(output_root, current_path.parent)
     _atomic_replace(current_path, current_bytes)
     return PromotionResult(asset_path, manifest_path, current_path, request.asset_sha256, manifest_sha256)
 
 
 def _validate_request(request: LocalPromotionRequest) -> None:
     _validate_digest(request.asset_sha256, "asset_sha256")
+    _validate_namespace_component(request.job_id, "job_id")
+    _validate_namespace_component(request.attempt_id, "attempt_id")
     qc_manifest = _json_copy(request.qc_manifest, "qc_manifest")
     _json_copy(request.report_manifest, "report_manifest")
     if qc_manifest.get("status") != "approved":
@@ -118,6 +126,11 @@ def _validate_digest(value: object, field_name: str) -> None:
         raise LocalPromotionError(f"{field_name} must be a lowercase sha256 digest")
 
 
+def _validate_namespace_component(value: object, field_name: str) -> None:
+    if type(value) is not str or _NAMESPACE_COMPONENT.fullmatch(value) is None:  # noqa: E721
+        raise LocalPromotionError(f"{field_name} must be a safe non-empty namespace component")
+
+
 def _resolve_generated_path(root: Path, relative: PurePosixPath) -> Path:
     if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
         raise LocalPromotionError("generated path must be a non-empty relative path")
@@ -129,12 +142,53 @@ def _resolve_generated_path(root: Path, relative: PurePosixPath) -> Path:
     return target
 
 
-def _install_asset(source: Path, target: Path, expected_sha256: str) -> None:
+def _ensure_output_root(root: Path) -> None:
+    """Create the selected root, refusing a symlink at the boundary."""
+
+    existed = root.exists()
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink() or not root.is_dir():
+        raise LocalPromotionError("output_root must be a real directory")
+    _fsync_directory(root)
+    if not existed:
+        _fsync_directory(root.parent)
+
+
+def _ensure_real_directory(root: Path, directory: Path) -> None:
+    """Create a generated directory one component at a time without symlinks."""
+
+    try:
+        relative = directory.relative_to(root)
+    except ValueError as error:
+        raise LocalPromotionError("generated directory escapes output_root") from error
+    probe = root
+    if probe.is_symlink() or not probe.is_dir():
+        raise LocalPromotionError("output_root must be a real directory")
+    missing: list[Path] = []
+    for part in relative.parts:
+        probe = probe / part
+        if probe.exists():
+            if probe.is_symlink() or not probe.is_dir():
+                raise LocalPromotionError("generated directory component must be a real directory")
+        else:
+            missing.append(probe)
+    for item in missing:
+        if item.parent.is_symlink():
+            raise LocalPromotionError("generated directory component must not be a symlink")
+        try:
+            item.mkdir()
+        except FileExistsError:
+            pass
+        if item.is_symlink() or not item.is_dir():
+            raise LocalPromotionError("generated directory component must be a real directory")
+        _fsync_directory(item)
+        _fsync_directory(item.parent)
+
+
+def _install_asset(root: Path, source: Path, target: Path, expected_sha256: str) -> None:
     """Copy source to a private temporary file, then link it into its CAS path."""
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.parent.is_symlink():
-        raise LocalPromotionError("generated asset directory must not be a symlink")
+    _ensure_real_directory(root, target.parent)
     descriptor = _open_regular_source(source)
     temporary: Path | None = None
     try:
@@ -181,8 +235,8 @@ def _open_regular_source(path: Path) -> int:
     return descriptor
 
 
-def _install_bytes(target: Path, value: bytes, label: str) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
+def _install_bytes(root: Path, target: Path, value: bytes, label: str) -> None:
+    _ensure_real_directory(root, target.parent)
     temporary_descriptor, temporary_name = tempfile.mkstemp(prefix=f".{label}-", dir=target.parent)
     temporary = Path(temporary_name)
     try:
@@ -203,7 +257,12 @@ def _install_temp_exclusively(temp: Path, target: Path, expected_sha256: str, la
     try:
         os.link(temp, target)
     except FileExistsError:
-        if not target.is_file() or target.is_symlink() or _sha256_file(target) != expected_sha256:
+        if (
+            not target.is_file()
+            or target.is_symlink()
+            or os.stat(target).st_nlink != 1
+            or not _files_equal(temp, target)
+        ):
             raise LocalPromotionError(f"conflicting immutable {label} already exists") from None
     else:
         os.chmod(target, 0o444)
@@ -238,18 +297,33 @@ def _fsync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
-def _sha256_file(path: Path) -> str:
-    descriptor = _open_regular_source(path)
+def _files_equal(left: Path, right: Path) -> bool:
+    """Compare existing immutable bytes rather than trusting its path digest."""
+
     try:
-        digest = hashlib.sha256()
-        with os.fdopen(descriptor, "rb", closefd=True) as stream:
-            descriptor = -1
-            for chunk in iter(lambda: stream.read(_CHUNK_SIZE), b""):
-                digest.update(chunk)
-        return f"{_SHA256_PREFIX}{digest.hexdigest()}"
+        if left.stat().st_size != right.stat().st_size:
+            return False
+    except OSError:
+        return False
+    left_descriptor = _open_regular_source(left)
+    right_descriptor = _open_regular_source(right)
+    try:
+        with os.fdopen(left_descriptor, "rb", closefd=True) as left_stream, os.fdopen(
+            right_descriptor, "rb", closefd=True
+        ) as right_stream:
+            left_descriptor = right_descriptor = -1
+            while True:
+                left_chunk = left_stream.read(_CHUNK_SIZE)
+                right_chunk = right_stream.read(_CHUNK_SIZE)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        if left_descriptor >= 0:
+            os.close(left_descriptor)
+        if right_descriptor >= 0:
+            os.close(right_descriptor)
 
 
 def _sha256(value: bytes) -> str:
