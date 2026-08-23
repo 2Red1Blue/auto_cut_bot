@@ -189,16 +189,16 @@ class FFprobePort:
 
     def probe(self, source_path: Path) -> ProbeResult:
         """Collect one stream record and an exact decoded-frame PTS index."""
-        path = Path(source_path)
+        path = Path(source_path).resolve()
         metadata, metadata_stderr = self._json(
-            [self._executable, "-v", "error", "-of", "json", "-show_format", "-show_streams", str(path)]
+            [self._executable, "-v", "error", "-of", "json", "-show_format", "-show_streams", "--", str(path)]
         )
         video_stream = self._video_stream(metadata)
         frames, frames_stderr = self._json(
             [
                 self._executable, "-v", "error", "-of", "json", "-select_streams", "v:0", "-show_frames",
                 "-show_entries", "frame=media_type,stream_index,best_effort_timestamp,pkt_dts,pkt_pts,key_frame,pict_type",
-                str(path),
+                "--", str(path),
             ]
         )
         pts_index = self._pts_index(frames, video_stream.stream_index)

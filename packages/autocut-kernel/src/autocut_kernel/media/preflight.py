@@ -16,6 +16,7 @@ from .types import (
     PTSIndex,
     SourceIdentity,
     TickRange,
+    TimeBase,
     ValidityIntervals,
     canonical_sha256,
     require_pts,
@@ -149,13 +150,14 @@ def _validate_fixture_files(
     request: MediaPreflightRequest,
     source: SourceIdentity,
     pts_index: PTSIndex,
+    time_base: TimeBase,
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     manifest, manifest_sha256 = _json_file(request.manifest_path, "manifest")
     sidecar, sidecar_sha256 = _json_file(request.sidecar_path, "sidecar")
     if manifest.get("fixture_id") != request.fixture_id or sidecar.get("fixture_id") != request.fixture_id:
         raise SourceIdentityMismatchError("fixture identifiers do not match the request")
-    if manifest.get("profile") not in {"test", "shadow"} or sidecar.get("profile") not in {"test", "shadow"}:
-        raise FixtureEvidenceError("fixture manifest and sidecar must be test/shadow only")
+    if manifest.get("profile") != request.profile or sidecar.get("profile") != request.profile:
+        raise FixtureEvidenceError("fixture manifest and sidecar profiles must match the request")
     if manifest.get("schema_version") != sidecar.get("schema_version"):
         raise FixtureEvidenceError("fixture manifest and sidecar schema versions must match")
     try:
@@ -178,9 +180,39 @@ def _validate_fixture_files(
         raise SourceIdentityMismatchError("fixture source byte size does not match local source bytes")
     if manifest_sidecar.get("sha256") != sidecar_sha256:
         raise SourceIdentityMismatchError("manifest sidecar hash does not match sidecar bytes")
+    manifest_binding = sidecar.get("manifest_hash_binding")
+    if not isinstance(manifest_binding, dict):
+        raise FixtureEvidenceError("sidecar.manifest_hash_binding is required")
+    binding = cast(dict[str, Any], manifest_binding)
+    if binding.get("representation") != "canonical_manifest_without_sidecar_sha256_v1":
+        raise FixtureEvidenceError("sidecar manifest hash binding representation is invalid")
+    expected_binding = canonical_sha256(
+        {
+            "fixture_id": manifest["fixture_id"],
+            "profile": manifest["profile"],
+            "schema_version": manifest["schema_version"],
+            "source": manifest_source,
+        }
+    )
+    if binding.get("sha256") != expected_binding:
+        raise SourceIdentityMismatchError("sidecar manifest hash binding does not match manifest payload")
     declared_pts_hash = sidecar.get("pts_index_sha256")
     if declared_pts_hash != canonical_sha256(list(pts_index.ticks)):
         raise SourceIdentityMismatchError("sidecar PTS index hash does not match ffprobe frames")
+    ground_truth = sidecar.get("ground_truth")
+    if not isinstance(ground_truth, dict):
+        raise FixtureEvidenceError("sidecar.ground_truth is required")
+    exact_pts = cast(dict[str, Any], ground_truth).get("exact_pts")
+    if not isinstance(exact_pts, dict):
+        raise FixtureEvidenceError("sidecar.ground_truth.exact_pts is required")
+    exact = cast(dict[str, Any], exact_pts)
+    if exact.get("representation") != "integer_pts_index":
+        raise FixtureEvidenceError("sidecar exact PTS representation is invalid")
+    expected_time_base = f"{time_base.numerator}/{time_base.denominator}"
+    if exact.get("time_base") != expected_time_base:
+        raise SourceIdentityMismatchError("sidecar exact PTS time base does not match ffprobe")
+    if exact.get("values") != list(pts_index.ticks):
+        raise SourceIdentityMismatchError("sidecar exact PTS values do not match ffprobe")
     return manifest, sidecar, manifest_sha256, sidecar_sha256
 
 
@@ -193,7 +225,9 @@ def preflight_fixture(request: MediaPreflightRequest, *, port: FFprobePort | Non
     if source.sha256 != request.expected_source_sha256:
         raise SourceIdentityMismatchError("source SHA-256 does not match request identity")
     probe = (port or FFprobePort()).probe(request.source_path)
-    manifest, sidecar, manifest_sha256, sidecar_sha256 = _validate_fixture_files(request, source, probe.pts_index)
+    manifest, sidecar, manifest_sha256, sidecar_sha256 = _validate_fixture_files(
+        request, source, probe.pts_index, probe.video_stream.time_base
+    )
     if sidecar.get("evidence_mode") != "fixture_ground_truth_v1":
         raise FixtureEvidenceError("sidecar must declare fixture_ground_truth_v1 evidence")
     intervals = _ranges(sidecar, pts_index=probe.pts_index)
