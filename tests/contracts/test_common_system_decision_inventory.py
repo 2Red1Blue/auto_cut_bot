@@ -33,11 +33,39 @@ INITIAL_AUTHORITY_COMMIT = "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94"
 INITIAL_INVENTORY_RAW_SHA256 = (
     "sha256:c3ef8e479c713be3dfb1e21b51bb1e0f4aa29c51b210366d53af353168655901"
 )
-REVIEWED_DELTA_AUTHORITY_COMMIT = "0e3ad0766409df67fbefeeb3d04fab4ea843319b"
-REVIEWED_DELTA_SOURCE_MAP_RAW_SHA256 = (
+PREVIOUS_REVIEWED_DELTA_AUTHORITY_COMMIT = "0e3ad0766409df67fbefeeb3d04fab4ea843319b"
+PREVIOUS_REVIEWED_DELTA_SOURCE_MAP_RAW_SHA256 = (
     "sha256:53d62bbe23569ea5f6ea1c3a7fa6d41c70e21b6372aad52f43790b9ab866b12a"
 )
+PREVIOUS_REVIEWED_DELTA_DOCUMENTS = [
+    {
+        "path": "原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md",
+        "raw_utf8_sha256": "sha256:8ab12ebe823a62b06af32433bd857e2b1d67e68faee278d5c963891fb36a60c2",
+        "task_source_map_binding": "design_mechanics_not_listed_in_authority_table",
+    },
+    {
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "task_source_map_binding": "listed_authority",
+    },
+]
+REVIEWED_DELTA_AUTHORITY_COMMIT = "77f6db99019eb3e24e7b20ac92a2463a3bb3156c"
+REVIEWED_DELTA_SOURCE_MAP_RAW_SHA256 = (
+    "sha256:cf8a76bc2d0322d4f60c721728b397cc0d8ea6d08f00934a34979b7da670a7cf"
+)
 REVIEWED_DELTA_ENTRY_COUNT = 44
+REVIEWED_DELTA_DOCUMENTS = [
+    {
+        "path": "原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md",
+        "raw_utf8_sha256": "sha256:8ab12ebe823a62b06af32433bd857e2b1d67e68faee278d5c963891fb36a60c2",
+        "task_source_map_binding": "design_mechanics_not_listed_in_authority_table",
+    },
+    {
+        "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
+        "task_source_map_binding": "listed_authority",
+    },
+]
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 DISPOSITIONS = {
     "directly_transcribable",
@@ -129,39 +157,13 @@ EXPECTED_AUTHORITY_DOCUMENT_HASHES = {
     "implementation-contract-toolchain-3.1": (
         "sha256:8ab12ebe823a62b06af32433bd857e2b1d67e68faee278d5c963891fb36a60c2"
     ),
-    "production-system-contracts-3.4": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-3.5": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-4.1": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-4.4": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-4.8": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-7.1": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-7.2": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-8.4": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-9.1": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-11": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
-    "production-system-contracts-12.1": (
-        "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707"
-    ),
+    **{
+        anchor_id: (
+            "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9"
+        )
+        for anchor_id in EXPECTED_AUTHORITY_ANCHORS
+        if anchor_id != "implementation-contract-toolchain-3.1"
+    },
 }
 
 
@@ -314,6 +316,7 @@ def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
     authority = provenance["authority_input"]
     assert set(authority) == {
         "initial_inventory_snapshot",
+        "previous_reviewed_delta_snapshot",
         "reviewed_delta_snapshot",
         "refresh_relation",
     }
@@ -328,6 +331,20 @@ def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
     assert initial["inventory_git_path"] == INVENTORY_GIT_PATH
     assert initial["authority_commit"] == INITIAL_AUTHORITY_COMMIT
     assert initial["inventory_raw_sha256"] == INITIAL_INVENTORY_RAW_SHA256
+    previous_reviewed_delta = authority["previous_reviewed_delta_snapshot"]
+    assert previous_reviewed_delta == {
+        "task_source_map_path": "08-21-01-contract-codegen/research/authority-slice-map.md",
+        "task_source_map_raw_sha256": PREVIOUS_REVIEWED_DELTA_SOURCE_MAP_RAW_SHA256,
+        "authority_commit": PREVIOUS_REVIEWED_DELTA_AUTHORITY_COMMIT,
+        "documents": PREVIOUS_REVIEWED_DELTA_DOCUMENTS,
+        "entry_reattestation": {
+            "scope": "all_authority_backed_B0_entries",
+            "entry_count": 44,
+            "inventory_raw_sha256": (
+                "sha256:38fcbcdee071afe70d655eb43671ac4d7774c6f878543103b50df027ee91f7ee"
+            ),
+        },
+    }
     reviewed_delta = authority["reviewed_delta_snapshot"]
     assert set(reviewed_delta) == {
         "task_source_map_path",
@@ -338,6 +355,9 @@ def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
     }
     assert reviewed_delta["authority_commit"] == REVIEWED_DELTA_AUTHORITY_COMMIT
     assert reviewed_delta["task_source_map_raw_sha256"] == REVIEWED_DELTA_SOURCE_MAP_RAW_SHA256
+    assert reviewed_delta["task_source_map_path"] == (
+        "08-21-01-contract-codegen/research/authority-slice-map.md"
+    )
     assert reviewed_delta["documents"] == sorted(
         reviewed_delta["documents"], key=lambda item: item["path"].encode("utf-8")
     )
@@ -352,6 +372,7 @@ def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
     assert {
         document["task_source_map_binding"] for document in reviewed_delta["documents"]
     } == {"listed_authority", "design_mechanics_not_listed_in_authority_table"}
+    assert reviewed_delta["documents"] == REVIEWED_DELTA_DOCUMENTS
     assert reviewed_delta["entry_reattestation"] == {
         "scope": "all_authority_backed_B0_entries",
         "entry_count": REVIEWED_DELTA_ENTRY_COUNT,
@@ -360,7 +381,7 @@ def test_common_system_provenance_has_a_closed_non_business_shape() -> None:
     assert authority["refresh_relation"] == {
         "initial_inventory_created_before_current_task_map": True,
         "required_git_relation": (
-            "initial_authority_is_ancestor_of_reviewed_delta_authority"
+            "initial_and_previous_reviewed_delta_authorities_are_ancestors_of_reviewed_delta_authority"
         ),
         "required_blob_relation": "reviewed_delta_authority_documents_match_pinned_hashes",
     }
@@ -464,6 +485,13 @@ def test_external_authority_map_design_and_git_blobs_are_one_fresh_snapshot() ->
         "merge-base",
         "--is-ancestor",
         authority["initial_inventory_snapshot"]["authority_commit"],
+        reviewed_delta["authority_commit"],
+    )
+    _git_bytes(
+        authority_root,
+        "merge-base",
+        "--is-ancestor",
+        authority["previous_reviewed_delta_snapshot"]["authority_commit"],
         reviewed_delta["authority_commit"],
     )
     inventory = _load()

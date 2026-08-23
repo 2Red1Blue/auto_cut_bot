@@ -15,7 +15,7 @@
       "inventory_raw_sha256": "sha256:c3ef8e479c713be3dfb1e21b51bb1e0f4aa29c51b210366d53af353168655901",
       "authority_commit": "079f0b7c1539a8fb3b7b48f4cd5b0d0cbdc0cb94"
     },
-    "reviewed_delta_snapshot": {
+    "previous_reviewed_delta_snapshot": {
       "task_source_map_path": "08-21-01-contract-codegen/research/authority-slice-map.md",
       "task_source_map_raw_sha256": "sha256:53d62bbe23569ea5f6ea1c3a7fa6d41c70e21b6372aad52f43790b9ab866b12a",
       "authority_commit": "0e3ad0766409df67fbefeeb3d04fab4ea843319b",
@@ -37,9 +37,31 @@
         "inventory_raw_sha256": "sha256:38fcbcdee071afe70d655eb43671ac4d7774c6f878543103b50df027ee91f7ee"
       }
     },
+    "reviewed_delta_snapshot": {
+      "task_source_map_path": "08-21-01-contract-codegen/research/authority-slice-map.md",
+      "task_source_map_raw_sha256": "sha256:cf8a76bc2d0322d4f60c721728b397cc0d8ea6d08f00934a34979b7da670a7cf",
+      "authority_commit": "77f6db99019eb3e24e7b20ac92a2463a3bb3156c",
+      "documents": [
+        {
+          "path": "原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md",
+          "raw_utf8_sha256": "sha256:8ab12ebe823a62b06af32433bd857e2b1d67e68faee278d5c963891fb36a60c2",
+          "task_source_map_binding": "design_mechanics_not_listed_in_authority_table"
+        },
+        {
+          "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
+          "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
+          "task_source_map_binding": "listed_authority"
+        }
+      ],
+      "entry_reattestation": {
+        "scope": "all_authority_backed_B0_entries",
+        "entry_count": 44,
+        "inventory_raw_sha256": "sha256:b9ce518e6941ea60937982c56ab3efa2e6e0d7a7fb462b69890232a0f5564cff"
+      }
+    },
     "refresh_relation": {
       "initial_inventory_created_before_current_task_map": true,
-      "required_git_relation": "initial_authority_is_ancestor_of_reviewed_delta_authority",
+      "required_git_relation": "initial_and_previous_reviewed_delta_authorities_are_ancestors_of_reviewed_delta_authority",
       "required_blob_relation": "reviewed_delta_authority_documents_match_pinned_hashes"
     }
   },
@@ -49,7 +71,7 @@
   },
   "inventory_output": {
     "path": "contracts/system-contracts/common-system-decision-inventory.json",
-    "raw_sha256": "sha256:38fcbcdee071afe70d655eb43671ac4d7774c6f878543103b50df027ee91f7ee"
+    "raw_sha256": "sha256:b9ce518e6941ea60937982c56ab3efa2e6e0d7a7fb462b69890232a0f5564cff"
   },
   "readiness": {
     "common_pack_ready": false,

@@ -4,7 +4,7 @@
   "inventory_scope": "B0_common_system_source_decisions",
   "provenance_ref": "contracts/system-contracts/common-system-provenance.json",
   "authority": {
-    "commit": "0e3ad0766409df67fbefeeb3d04fab4ea843319b",
+    "commit": "77f6db99019eb3e24e7b20ac92a2463a3bb3156c",
     "documents": [
       {
         "anchor_id": "implementation-contract-toolchain-3.1",
@@ -17,77 +17,77 @@
         "anchor_id": "production-system-contracts-3.4",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "3.4",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-3.5",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "3.5",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-4.1",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "4.1",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-4.4",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "4.4",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-4.8",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "4.8",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-7.1",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "7.1",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-7.2",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "7.2",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-8.4",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "8.4",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-9.1",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "9.1",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-11",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "11",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       },
       {
         "anchor_id": "production-system-contracts-12.1",
         "path": "原理/v2.1-production-spec/v2-production-system-contracts.md",
         "section": "12.1",
-        "raw_utf8_sha256": "sha256:9418faf746c2a710219b060a9c5ec020bedad1927e6516975eb2938943d54707",
+        "raw_utf8_sha256": "sha256:c34af7451919ad9a895644b40136062834b7ba9e857139f10b61f7dc51be67e9",
         "jcs_hash_applicability": "not_applicable_non_json_markdown"
       }
     ]
