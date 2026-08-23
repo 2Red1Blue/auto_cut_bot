@@ -6,7 +6,14 @@ import os
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
+
+from autocut_kernel.contracts.compiler.canonical import (
+    CanonicalizationError,
+    canonical_json_bytes,
+    load_canonical_json_bytes,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 PACK = ROOT / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/stage_01"
@@ -14,6 +21,14 @@ PACK = ROOT / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3
 
 def load(path):
     return json.loads(path.read_text())
+
+
+def load_strict_jcs(path):
+    raw = path.read_bytes()
+    value, canonical = load_canonical_json_bytes(raw, origin=str(path))
+    if raw != canonical:
+        raise ValueError(f"{path}: source bytes must be canonical JCS")
+    return value
 
 
 def file_paths(root):
@@ -50,8 +65,8 @@ def schema_strings(value):
 
 
 def test_stage01_owner_source_is_closed_and_partial():
-    manifest=load(PACK/"contributions/stage-01-owner-contribution.manifest.json")
-    schema=load(PACK/"contributions/stage-01-owner-contribution.manifest.schema.json")
+    manifest = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.json")
+    schema = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.schema.json")
     assert Draft202012Validator(schema).is_valid(manifest)
     assert manifest["status"] == {"owner_payload_source_partial": True, "stage_01_ready": False}
     assert manifest["b_input"]["selected_ids"] == ["B0-001", "B0-002", "B0-005", "B0-006", "B0-007", "B0-008", "B0-009", "B0-010", "B0-011"]
@@ -63,8 +78,8 @@ def test_stage01_owner_source_is_closed_and_partial():
 
 
 def test_stage01_owner_manifest_schema_rejects_mutated_primitive_blob_path_or_hash():
-    manifest = load(PACK / "contributions/stage-01-owner-contribution.manifest.json")
-    schema = load(PACK / "contributions/stage-01-owner-contribution.manifest.schema.json")
+    manifest = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.json")
+    schema = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.schema.json")
     validator = Draft202012Validator(schema)
 
     wrong_path = deepcopy(manifest)
@@ -75,30 +90,84 @@ def test_stage01_owner_manifest_schema_rejects_mutated_primitive_blob_path_or_ha
     wrong_hash["b_input"]["used_primitive_blobs"][1]["raw_sha256"] = "sha256:" + "0" * 64
     assert not validator.is_valid(wrong_hash)
 
+    wrong_base_commit = deepcopy(manifest)
+    wrong_base_commit["producer_base_commit"] = "0" * 40
+    assert not validator.is_valid(wrong_base_commit)
+
+    invented_producer_path = deepcopy(manifest)
+    invented_producer_path["producer_files"][0]["path"] = "contracts/invented.json"
+    assert not validator.is_valid(invented_producer_path)
+
+
+def test_stage01_manifest_and_schema_reject_duplicate_or_noncanonical_raw_bytes():
+    manifest_path = PACK / "contributions/stage-01-owner-contribution.manifest.json"
+    schema_path = PACK / "contributions/stage-01-owner-contribution.manifest.schema.json"
+
+    for path in (manifest_path, schema_path):
+        raw = path.read_bytes()
+        assert raw == canonical_json_bytes(load_strict_jcs(path))
+        with pytest.raises((ValueError, CanonicalizationError)):
+            load_strict_jcs_bytes(raw + b"\\n", origin=str(path))
+
+    with pytest.raises(CanonicalizationError, match="duplicate JSON object key"):
+        load_strict_jcs_bytes(manifest_path.read_bytes()[:-1] + b',"format":"duplicate"}', origin=str(manifest_path))
+
+
+def load_strict_jcs_bytes(raw, *, origin):
+    value, canonical = load_canonical_json_bytes(raw, origin=origin)
+    if raw != canonical:
+        raise ValueError(f"{origin}: source bytes must be canonical JCS")
+    return value
+
 
 def test_rule_obligations_are_a_non_executable_source_anchor_worklist():
-    worklist = load(PACK / "contracts/stage-01-rule-obligations.json")
-    assert worklist == {
-        "format": "autocut.stage-01-source-anchor-worklist/v1",
-        "contract_version": "2.1.3",
-        "source_anchors": [
-            {
-                "source_anchor": "v2-stage-01-knowledge-chain-v2.md#7",
-                "expected_shape": "knowledge-chain source material",
-            }
-        ],
-    }
+    for suffix in ("rule-obligations", "vector-obligations"):
+        worklist = load(PACK / f"contracts/stage-01-{suffix}.json")
+        assert worklist["format"] == "autocut.stage-01-source-anchor-worklist/v1"
+        assert worklist["contract_version"] == "2.1.3"
+        assert worklist["source_anchors"]
+        assert all("source_anchor" in anchor for anchor in worklist["source_anchors"])
+        assert not set(walk_keys(worklist)) & {
+            "registration", "status", "vectors", "vector_id", "rule_id", "rule_version",
+            "outcome", "outcomes", "evaluator", "evaluation",
+        }
+        assert not any("KC-" in string for string in walk_strings(worklist))
+
+
+def walk_keys(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield key
+            yield from walk_keys(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from walk_keys(nested)
+
+
+def walk_strings(value):
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            yield key
+            yield from walk_strings(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from walk_strings(nested)
+    elif isinstance(value, str):
+        yield value
 
 
 def test_stage01_source_has_no_registry_or_runtime_identity():
     names = file_paths(PACK)
     assert not any(part in {"registry","generated","commands","authority","handoff"} for name in names for part in name.split("/"))
     assert "artifacts.yaml" not in names and "rules.yaml" not in names and "traces.yaml" not in names
-    manifest = load(PACK / "contributions/stage-01-owner-contribution.manifest.json")
+    manifest = load_strict_jcs(PACK / "contributions/stage-01-owner-contribution.manifest.json")
     assert len(names) == manifest["producer_file_count"] == 13
-    assert len(manifest["producer_files"]) == 12
+    assert len(manifest["producer_files"]) == 11
     assert [item["path"] for item in manifest["producer_files"]] == sorted(item["path"] for item in manifest["producer_files"])
-    assert names == {manifest["producer_manifest_path"]} | {item["path"] for item in manifest["producer_files"]}
+    assert names == {
+        manifest["producer_manifest_path"],
+        "contributions/stage-01-owner-contribution.manifest.schema.json",
+    } | {item["path"] for item in manifest["producer_files"]}
     for item in manifest["producer_files"]:
         assert item["raw_sha256"] == "sha256:" + hashlib.sha256((PACK / item["path"]).read_bytes()).hexdigest()
 
