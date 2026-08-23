@@ -24,6 +24,7 @@ from autocut_kernel.store import (
     MediaEvidenceIntegrityError,
     MediaEvidenceReference,
     MediaEvidenceUnavailableError,
+    MediaOutputsUnavailableError,
     PostgresRuntimeStore,
     RecipeIntegrityError,
     RecipeReference,
@@ -375,6 +376,51 @@ def test_read_media_evidence_rejects_a_persisted_content_hash_lie() -> None:
 
     with pytest.raises(MediaEvidenceIntegrityError, match="hash validation"):
         store.read_media_evidence(job, reference)
+
+
+def test_read_succeeded_media_outputs_returns_the_pair_with_shared_provenance() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("media-output-reader-job", "test")
+    running = store.claim_command(
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+    )
+    evidence = _make_media_evidence_member(job.job_key)
+    recipe = _make_recipe_member(job.job_key)
+    succeeded = store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash((evidence, recipe)), (evidence, recipe))
+    )
+
+    first = store.read_succeeded_media_outputs(job)
+    restarted = store.read_succeeded_media_outputs(job)
+
+    assert first == restarted
+    assert first.media_evidence.content_hash == evidence.content_hash
+    assert first.recipe.content_hash == recipe.content_hash
+    assert first.job_id == running.job_id
+    assert first.receipt_id == succeeded.receipt_id
+    assert first.artifact_set_id == succeeded.artifact_set_id
+    assert first.command_slot_id == running.command_slot_id
+    with pytest.raises(MediaOutputsUnavailableError):
+        store.read_succeeded_media_outputs(Job("other-media-output-job", "test"))
+    with pytest.raises(JobProfileMismatchError):
+        store.read_succeeded_media_outputs(Job(job.job_key, "production"))
+
+
+def test_read_succeeded_media_outputs_rejects_an_incomplete_artifact_set() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("incomplete-media-output-reader-job", "test")
+    running = store.claim_command(
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+    )
+    evidence = _make_media_evidence_member(job.job_key)
+    store.commit_command_success(
+        CommandSuccess(running.command_slot_id, _make_set_hash((evidence,)), (evidence,))
+    )
+
+    with pytest.raises(MediaOutputsUnavailableError, match="output pair"):
+        store.read_succeeded_media_outputs(job)
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ from autocut_kernel.store import (
     Job,
     MediaEvidenceReference,
     PersistedMediaEvidence,
+    PersistedMediaOutputs,
     PersistedRecipe,
     PersistenceConflictError,
     RecipeReference,
@@ -148,6 +149,23 @@ def test_persisted_media_evidence_refuses_payload_hash_mismatch() -> None:
 
     with pytest.raises(StoreValidationError, match="media evidence content_hash"):
         PersistedMediaEvidence(reference, "{}", uuid4(), uuid4(), uuid4(), uuid4())
+
+
+def test_persisted_media_outputs_require_shared_scope_and_uuid_provenance() -> None:
+    scope = ArtifactScope("pipeline", "job", "fixture-job")
+    evidence = MediaEvidenceReference(scope, "media_evidence", 1, digest('{"evidence":true}'))
+    recipe = RecipeReference(scope, "recipe", 1, digest('{"recipe":true}'))
+    outputs = PersistedMediaOutputs(evidence, recipe, uuid4(), uuid4(), uuid4(), uuid4())
+    assert outputs.media_evidence == evidence
+    with pytest.raises(StoreValidationError, match="share one artifact scope"):
+        PersistedMediaOutputs(
+            evidence,
+            RecipeReference(ArtifactScope("pipeline", "job", "other"), "recipe", 1, digest('{"recipe":true}')),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
 
 
 def test_terminal_rejection_requires_structured_failure_detail() -> None:

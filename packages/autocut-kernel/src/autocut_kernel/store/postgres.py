@@ -19,6 +19,8 @@ from .errors import (
     JobProfileMismatchError,
     MediaEvidenceIntegrityError,
     MediaEvidenceUnavailableError,
+    MediaOutputsIntegrityError,
+    MediaOutputsUnavailableError,
     PersistenceConflictError,
     RecipeIntegrityError,
     RecipeUnavailableError,
@@ -36,8 +38,11 @@ from .models import (
     Job,
     MediaEvidenceReference,
     PersistedMediaEvidence,
+    PersistedMediaOutputs,
     PersistedRecipe,
     RecipeReference,
+    canonical_payload_hash,
+    canonical_recipe_scope,
 )
 
 
@@ -478,6 +483,122 @@ class PostgresRuntimeStore:
             except (StoreValidationError, TypeError, ValueError) as error:
                 raise MediaEvidenceIntegrityError(
                     "persisted media evidence payload failed immutable hash validation"
+                ) from error
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # read_succeeded_media_outputs
+    # ------------------------------------------------------------------
+
+    def read_succeeded_media_outputs(self, job: Job) -> PersistedMediaOutputs:
+        """Read the exact paired output from one succeeded LocalMediaCommand.
+
+        This is deliberately not a generic artifact or logical-head lookup.
+        One query binds the Job, command slot, success receipt, ArtifactSet,
+        and both members before canonical payload hashes are verified.
+        """
+
+        def operation(cursor: DbCursor) -> PersistedMediaOutputs:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise MediaOutputsUnavailableError("job has no succeeded local media outputs")
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+
+            cursor.execute(
+                """
+                SELECT evidence.logical_id, evidence.revision, evidence.content_hash,
+                       evidence.payload_json::text, recipe.logical_id, recipe.revision,
+                       recipe.content_hash, recipe.payload_json::text, artifact_set.artifact_set_id,
+                       receipt.receipt_id, slot.command_slot_id
+                  FROM runtime.command_slots AS slot
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.command_slot_id = slot.command_slot_id
+                   AND artifact_set.job_id = slot.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                  JOIN runtime.artifacts AS evidence
+                    ON evidence.artifact_set_id = artifact_set.artifact_set_id
+                   AND evidence.job_id = artifact_set.job_id
+                   AND evidence.artifact_type = 'media_evidence'
+                   AND evidence.namespace = 'pipeline'
+                   AND evidence.scope_kind = 'job'
+                   AND evidence.scope_key = %s
+                  JOIN runtime.artifact_set_members AS evidence_member
+                    ON evidence_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND evidence_member.artifact_id = evidence.artifact_id
+                  JOIN runtime.artifacts AS recipe
+                    ON recipe.artifact_set_id = artifact_set.artifact_set_id
+                   AND recipe.job_id = artifact_set.job_id
+                   AND recipe.artifact_type = 'recipe'
+                   AND recipe.namespace = 'pipeline'
+                   AND recipe.scope_kind = 'job'
+                   AND recipe.scope_key = %s
+                  JOIN runtime.artifact_set_members AS recipe_member
+                    ON recipe_member.artifact_set_id = artifact_set.artifact_set_id
+                   AND recipe_member.artifact_id = recipe.artifact_id
+                 WHERE slot.job_id = %s
+                   AND slot.command_name = 'local_media_command'
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                """,
+                (job.job_key, job.job_key, UUID(str(job_id))),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if not rows:
+                raise MediaOutputsUnavailableError("no succeeded LocalMediaCommand output pair is available")
+            if len(rows) != 1:
+                raise MediaOutputsIntegrityError("succeeded media output pair resolved to multiple durable rows")
+            (
+                evidence_logical_id,
+                evidence_revision,
+                evidence_hash,
+                evidence_payload,
+                recipe_logical_id,
+                recipe_revision,
+                recipe_hash,
+                recipe_payload,
+                artifact_set_id,
+                receipt_id,
+                command_slot_id,
+            ) = rows[0]
+            try:
+                evidence_reference = MediaEvidenceReference(
+                    canonical_recipe_scope(job),
+                    _text(evidence_logical_id),
+                    int(_text(evidence_revision)),
+                    _text(evidence_hash),
+                )
+                recipe_reference = RecipeReference(
+                    canonical_recipe_scope(job),
+                    _text(recipe_logical_id),
+                    int(_text(recipe_revision)),
+                    _text(recipe_hash),
+                )
+                if canonical_payload_hash(_text(evidence_payload)) != evidence_reference.content_hash:
+                    raise StoreValidationError("media evidence payload hash does not match artifact identity")
+                if canonical_payload_hash(_text(recipe_payload)) != recipe_reference.content_hash:
+                    raise StoreValidationError("recipe payload hash does not match artifact identity")
+                return PersistedMediaOutputs(
+                    evidence_reference,
+                    recipe_reference,
+                    UUID(str(job_id)),
+                    UUID(str(receipt_id)),
+                    UUID(str(artifact_set_id)),
+                    UUID(str(command_slot_id)),
+                )
+            except (StoreValidationError, TypeError, ValueError) as error:
+                raise MediaOutputsIntegrityError(
+                    "succeeded media output pair failed immutable provenance validation"
                 ) from error
 
         return self._transaction(operation)

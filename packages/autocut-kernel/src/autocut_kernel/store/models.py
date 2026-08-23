@@ -82,7 +82,7 @@ class ArtifactMember:
             raise StoreValidationError("payload_json must contain JSON") from error
 
 
-def _canonical_payload_hash(payload_json: str) -> str:
+def canonical_payload_hash(payload_json: str) -> str:
     """Hash parsed JSON in the canonical form used for immutable store members."""
     try:
         payload = json.loads(
@@ -138,7 +138,7 @@ class PersistedRecipe:
             raise StoreValidationError("artifact_set_id must be a UUID")
         if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise StoreValidationError("command_slot_id must be a UUID")
-        if _canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
             raise StoreValidationError("payload_json does not match recipe content_hash")
 
 
@@ -188,8 +188,40 @@ class PersistedMediaEvidence:
             raise StoreValidationError("artifact_set_id must be a UUID")
         if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise StoreValidationError("command_slot_id must be a UUID")
-        if _canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
             raise StoreValidationError("payload_json does not match media evidence content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedMediaOutputs:
+    """The exact evidence/recipe pair produced by one succeeded media command.
+
+    References are intentionally returned with their shared success provenance,
+    rather than independently resolving logical heads or unrelated artifacts.
+    """
+
+    media_evidence: MediaEvidenceReference
+    recipe: RecipeReference
+    job_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        if type(self.media_evidence) is not MediaEvidenceReference:  # noqa: E721
+            raise StoreValidationError("media_evidence must be a MediaEvidenceReference")
+        if type(self.recipe) is not RecipeReference:  # noqa: E721
+            raise StoreValidationError("recipe must be a RecipeReference")
+        if self.media_evidence.scope != self.recipe.scope:
+            raise StoreValidationError("media output references must share one artifact scope")
+        for field_name, value in (
+            ("job_id", self.job_id),
+            ("receipt_id", self.receipt_id),
+            ("artifact_set_id", self.artifact_set_id),
+            ("command_slot_id", self.command_slot_id),
+        ):
+            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise StoreValidationError(f"{field_name} must be a UUID")
 
 
 @dataclass(frozen=True, slots=True)

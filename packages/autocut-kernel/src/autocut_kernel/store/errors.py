@@ -47,3 +47,11 @@ class MediaEvidenceUnavailableError(RuntimeStoreError):
 
 class MediaEvidenceIntegrityError(RuntimeStoreError):
     """A MediaEvidence row does not satisfy its immutable provenance contract."""
+
+
+class MediaOutputsUnavailableError(RuntimeStoreError):
+    """No exact succeeded LocalMediaCommand output pair is available for a Job."""
+
+
+class MediaOutputsIntegrityError(RuntimeStoreError):
+    """A succeeded media-output pair violates its shared immutable provenance."""
