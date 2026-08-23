@@ -27,6 +27,7 @@ from ..store import (
     Job,
     PostgresRuntimeStore,
 )
+from ..store.models import canonical_recipe_scope
 
 _COMMAND_NAME = "local_media_command"
 _UNEXPECTED_FAILURE_CODE = "UNEXPECTED_INFRASTRUCTURE_ERROR"
@@ -55,6 +56,8 @@ class LocalMediaCommandRequest:
     def __post_init__(self) -> None:
         if self.job.profile != self.preflight_request.profile:
             raise ValueError("job.profile must match preflight_request.profile")
+        if self.artifact_scope != canonical_recipe_scope(self.job):
+            raise ValueError("artifact_scope must be the canonical recipe scope for job")
 
     def canonical_payload(self) -> dict[str, object]:
         """Return the full command intent as an immutable JSON-ready mapping."""

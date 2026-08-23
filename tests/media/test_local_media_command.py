@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from autocut_kernel.media.ffprobe_port import ProbeResult
 from autocut_kernel.media.preflight import MediaPreflightRequest
 from autocut_kernel.media.types import PTSIndex, TimeBase, ToolEvidence, VideoStreamEvidence
@@ -95,7 +97,9 @@ class _Store:
         raise AssertionError("unknown command slot")
 
 
-def _request(tmp_path: Path, *, profile: str = "test", minimum_duration_pts: int = 10) -> LocalMediaCommandRequest:
+def _request(
+    tmp_path: Path, *, profile: str = "test", minimum_duration_pts: int = 10
+) -> LocalMediaCommandRequest:
     source_path = tmp_path / "fixture.mp4"
     source_path.write_bytes(b"fixture media bytes")
     source_hash = _hash_bytes(source_path.read_bytes())
@@ -151,7 +155,9 @@ def _request(tmp_path: Path, *, profile: str = "test", minimum_duration_pts: int
     )
 
 
-def test_success_persists_exactly_evidence_and_recipe_and_replay_does_not_probe(tmp_path: Path) -> None:
+def test_success_persists_exactly_evidence_and_recipe_and_replay_does_not_probe(
+    tmp_path: Path,
+) -> None:
     store = _Store()
     port = _Port()
     command = LocalMediaCommand(store, port=port)  # type: ignore[arg-type]
@@ -171,6 +177,18 @@ def test_success_persists_exactly_evidence_and_recipe_and_replay_does_not_probe(
     assert recipe["selection_key"] == [0, 0, 10, 10, 20]
     assert recipe["timebase"] == {"denominator": 10, "numerator": 1}
     assert recipe["span"] == {"end_pts": 20, "start_pts": 10}
+
+
+def test_rejects_a_recipe_scope_that_does_not_belong_to_its_job_before_claiming(
+    tmp_path: Path,
+) -> None:
+    store = _Store()
+    request = _request(tmp_path)
+
+    with pytest.raises(ValueError, match="canonical recipe scope"):
+        replace(request, artifact_scope=ArtifactScope("pipeline", "job", "other-job"))
+
+    assert not store.claims
 
 
 def test_no_legal_span_is_a_denial_without_artifacts(tmp_path: Path) -> None:

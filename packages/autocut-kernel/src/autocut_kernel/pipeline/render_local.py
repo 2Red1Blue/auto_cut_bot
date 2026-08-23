@@ -39,6 +39,7 @@ from ..store import (
     RecipeUnavailableError,
     RuntimeStoreError,
 )
+from ..store.models import JobProfile, canonical_recipe_scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +56,7 @@ class RenderLocalRequest:
     output_root: Path
     job_id: str
     attempt_id: str
-    profile: str = "test"
+    profile: JobProfile = "test"
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,7 +163,9 @@ class LocalRenderOrchestrator:
         except (OSError, ValueError) as error:
             return RenderLocalDenied("QC_EVIDENCE_FAILED", str(error), attempt=attempt)
         if not report.approved:
-            return RenderLocalDenied(_qc_failure_code(report), "derived QC report rejected render", attempt, report)
+            return RenderLocalDenied(
+                _qc_failure_code(report), "derived QC report rejected render", attempt, report
+            )
 
         return RenderLocalDenied(
             "PERSISTED_RECIPE_REQUIRED",
@@ -176,6 +179,8 @@ class LocalRenderOrchestrator:
         try:
             if self._store is None:
                 raise ValueError("persisted rendering requires a trusted Store")
+            if request.recipe_reference.scope != canonical_recipe_scope(request.job):
+                raise ValueError("recipe_reference scope is not the canonical scope for job")
             persisted = self._store.read_recipe(request.job, request.recipe_reference)
             source_hash, source_size = _source_identity(request.source_path)
             recipe = parse_recipe(
@@ -215,7 +220,9 @@ class LocalRenderOrchestrator:
         except (OSError, ValueError) as error:
             return RenderLocalDenied("QC_EVIDENCE_FAILED", str(error), attempt=attempt)
         if not report.approved:
-            return RenderLocalDenied(_qc_failure_code(report), "derived QC report rejected render", attempt, report)
+            return RenderLocalDenied(
+                _qc_failure_code(report), "derived QC report rejected render", attempt, report
+            )
 
         try:
             promotion = LocalPromotionService(self._store).promote(
@@ -261,7 +268,9 @@ def _validate_recipe_and_source(request: RenderLocalRequest) -> Recipe:
     if isinstance(request.recipe, Recipe):
         recipe = request.recipe
     else:
-        recipe = parse_recipe(request.recipe, expected_source_sha256=source_hash, profile=request.profile)  # type: ignore[arg-type]
+        recipe = parse_recipe(
+            request.recipe, expected_source_sha256=source_hash, profile=request.profile
+        )  # type: ignore[arg-type]
     if recipe.source_sha256 != source_hash or recipe.source_byte_size != source_size:
         raise ValueError("source identity does not match recipe")
     return recipe
@@ -304,7 +313,9 @@ def _qc_failure_code(report: QCReport) -> str:
 def _persist_derived_qc_report(attempt: RenderAttempt, report: QCReport) -> Path:
     """Durably record the QC observation in staging before promotion can begin."""
     value = report.to_manifest()
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
+        "utf-8"
+    )
     target = attempt.output_path.parent / "qc-report.json"
     descriptor, name = tempfile.mkstemp(prefix=".qc-report-", dir=target.parent)
     temporary = Path(name)

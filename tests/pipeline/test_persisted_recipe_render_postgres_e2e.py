@@ -28,7 +28,15 @@ from autocut_kernel.pipeline import (
     RenderLocalSuccess,
     render_persisted_local,
 )
-from autocut_kernel.store import ArtifactScope, Job, PostgresRuntimeStore, RecipeReference
+from autocut_kernel.store import (
+    ArtifactMember,
+    ArtifactScope,
+    CommandClaim,
+    CommandSuccess,
+    Job,
+    PostgresRuntimeStore,
+    RecipeReference,
+)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -59,7 +67,9 @@ def _fixture_corpus_module() -> ModuleType:
     return module
 
 
-def _recipe_reference(store: PostgresRuntimeStore, job: Job, scope: ArtifactScope) -> RecipeReference:
+def _recipe_reference(
+    store: PostgresRuntimeStore, job: Job, scope: ArtifactScope
+) -> RecipeReference:
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -74,6 +84,27 @@ def _recipe_reference(store: PostgresRuntimeStore, job: Job, scope: ArtifactScop
             row = cursor.fetchone()
     assert row is not None
     return RecipeReference(scope, "recipe", 1, str(row[0]))
+
+
+def _set_hash(member: ArtifactMember) -> str:
+    payload = [
+        {
+            "artifact_type": member.artifact_type,
+            "content_hash": member.content_hash,
+            "logical_id": member.logical_id,
+            "payload_json": json.loads(member.payload_json),
+            "revision": member.revision,
+            "scope": {
+                "key": member.scope.key,
+                "kind": member.scope.kind,
+                "namespace": member.scope.namespace,
+            },
+        }
+    ]
+    encoded = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def test_persisted_recipe_renders_qcs_and_promotes_only_the_exact_reference(tmp_path: Path) -> None:
@@ -117,7 +148,7 @@ def test_persisted_recipe_renders_qcs_and_promotes_only_the_exact_reference(tmp_
             source_path=registration.source_path,
             output_root=output_root,
             attempt_id="render-1",
-        )
+        ),
     )
 
     assert isinstance(rendered, RenderLocalSuccess)
@@ -147,7 +178,7 @@ def test_persisted_recipe_renders_qcs_and_promotes_only_the_exact_reference(tmp_
             source_path=registration.source_path,
             output_root=forged_root,
             attempt_id="render-2",
-        )
+        ),
     )
     assert isinstance(denied, RenderLocalDenied)
     assert denied.code == "PERSISTED_RECIPE_UNAVAILABLE"
@@ -163,8 +194,49 @@ def test_persisted_recipe_renders_qcs_and_promotes_only_the_exact_reference(tmp_
             source_path=registration.source_path,
             output_root=wrong_job_root,
             attempt_id="render-3",
-        )
+        ),
     )
     assert isinstance(wrong_job_denied, RenderLocalDenied)
     assert wrong_job_denied.code == "PERSISTED_RECIPE_UNAVAILABLE"
     assert not (wrong_job_root / "results" / wrong_job.job_key / "current.json").exists()
+
+    # The generic Store intentionally permits non-local artifact scopes.  Seed
+    # one such succeeded recipe for this Job to prove the render boundary—not
+    # Store lookup—refuses it before FFmpeg or pointer promotion.
+    wrong_scope = ArtifactScope("pipeline", "job", f"{job.job_key}-wrong")
+    persisted = store.read_recipe(job, reference)
+    bad_member = ArtifactMember(
+        artifact_type="recipe",
+        logical_id="recipe",
+        revision=1,
+        scope=wrong_scope,
+        content_hash=reference.content_hash,
+        payload_json=persisted.payload_json,
+    )
+    claimed = store.claim_command(
+        CommandClaim(
+            job=job,
+            idempotency_key="generic-wrong-scope-recipe-v1",
+            command_name="generic_test_recipe_producer",
+            request_hash="sha256:" + hashlib.sha256(b"generic wrong scope recipe").hexdigest(),
+        )
+    )
+    assert claimed.is_fresh_claim
+    store.commit_command_success(
+        CommandSuccess(claimed.command_slot_id, _set_hash(bad_member), (bad_member,))
+    )
+    wrong_scope_reference = RecipeReference(wrong_scope, "recipe", 1, reference.content_hash)
+    wrong_scope_root = tmp_path / "wrong-scope-output"
+    wrong_scope_denied = render_persisted_local(
+        store,
+        PersistedRenderLocalRequest(
+            job=job,
+            recipe_reference=wrong_scope_reference,
+            source_path=registration.source_path,
+            output_root=wrong_scope_root,
+            attempt_id="render-4",
+        ),
+    )
+    assert isinstance(wrong_scope_denied, RenderLocalDenied)
+    assert wrong_scope_denied.code == "PERSISTED_RECIPE_INVALID"
+    assert not (wrong_scope_root / "results" / job.job_key / "current.json").exists()

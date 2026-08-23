@@ -50,6 +50,16 @@ class ArtifactScope:
         _text(self.key, "scope.key")
 
 
+def canonical_recipe_scope(job: Job) -> ArtifactScope:
+    """Return the only artifact scope a local Job recipe may occupy.
+
+    The generic Store deliberately permits other scopes for other artifact
+    producers. Local-media production and persisted rendering use this helper
+    as their shared policy boundary.
+    """
+    return ArtifactScope("pipeline", "job", job.job_key)
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactMember:
     artifact_type: str
@@ -83,9 +93,9 @@ def _canonical_payload_hash(payload_json: str) -> str:
         )
     except (TypeError, ValueError) as error:
         raise StoreValidationError("payload_json must contain finite JSON") from error
-    encoded = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
