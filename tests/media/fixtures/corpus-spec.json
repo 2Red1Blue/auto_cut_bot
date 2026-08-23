@@ -31,9 +31,9 @@
         },
         "validity_intervals": {
           "schema_version": 1,
-          "representation": "integer_pts_closed_intervals",
-          "coverage": "all_indexed_video_pts",
-          "population": "Generated from the ffprobe integer PTS index."
+          "representation": "integer_pts_half_open",
+          "coverage": "consecutive_indexed_pts_pairs",
+          "population": "Generated as [start_pts, end_pts) pairs from consecutive ffprobe integer PTS values; both endpoints must be index members."
         },
         "sidecar_role": "Records the controlled generation recipe, tool provenance, exact ffprobe evidence, and content hashes."
       }

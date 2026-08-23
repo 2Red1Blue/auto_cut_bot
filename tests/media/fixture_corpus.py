@@ -59,13 +59,19 @@ def _sha256_file(path: Path) -> str:
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
-    return digest.hexdigest()
+    return f"sha256:{digest.hexdigest()}"
 
 
 def _write_canonical_json(path: Path, payload: dict[str, Any]) -> str:
     encoded = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     path.write_bytes(encoded)
-    return hashlib.sha256(encoded).hexdigest()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _canonical_sha256(payload: object) -> str:
+    """Hash a canonical JSON value using the schema's prefixed digest form."""
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _fixture_definition(spec: dict[str, Any]) -> dict[str, Any]:
@@ -221,6 +227,7 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
         raise RuntimeError("ffmpeg completed without producing a non-empty MP4 fixture")
 
     source_sha256 = _sha256_file(source_path)
+    source_byte_size = source_path.stat().st_size
     time_base, pts_index = _probe_video_evidence(ffprobe, source_path)
     ground_truth_template = definition.get("ground_truth")
     if not isinstance(ground_truth_template, dict):
@@ -231,6 +238,29 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
     interval_schema_version = validity_template.get("schema_version")
     if not isinstance(interval_schema_version, int):
         raise ValueError("media fixture validity interval schema_version must be an integer")
+    interval_representation = validity_template.get("representation")
+    if interval_representation != "integer_pts_half_open":
+        raise ValueError("media fixture validity intervals must use integer_pts_half_open")
+    validity_intervals = [
+        {
+            "end_pts": end_pts,
+            "representation": interval_representation,
+            "start_pts": start_pts,
+        }
+        for start_pts, end_pts in zip(pts_index, pts_index[1:])
+    ]
+    if not validity_intervals:
+        raise RuntimeError("ffprobe needs at least two video PTS values for half-open fixture coverage")
+    manifest_binding = {
+        "fixture_id": _FIXTURE_ID,
+        "profile": profile,
+        "schema_version": spec_schema_version(spec),
+        "source": {
+            "byte_size": source_byte_size,
+            "content_sha256": source_sha256,
+            "filename": source_path.name,
+        },
+    }
 
     sidecar_path = output_dir / "lavfi-testsrc2-sine-10fps-v1.sidecar.json"
     sidecar = {
@@ -245,18 +275,25 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
                 "values": list(pts_index),
             },
             "validity_intervals": {
-                "coverage": "all_indexed_video_pts",
-                "intervals": [{"end_pts": pts_index[-1], "start_pts": pts_index[0]}],
-                "representation": "integer_pts_closed_intervals",
+                "coverage": "consecutive_indexed_pts_pairs",
+                "representation": interval_representation,
                 "schema_version": interval_schema_version,
             },
         },
+        "evidence_mode": "fixture_ground_truth_v1",
+        "manifest_hash_binding": {
+            "representation": "canonical_manifest_without_sidecar_sha256_v1",
+            "sha256": _canonical_sha256(manifest_binding),
+        },
         "profile": profile,
+        "pts_index_sha256": _canonical_sha256(list(pts_index)),
         "schema_version": spec_schema_version(spec),
         "source": {
+            "byte_size": source_byte_size,
             "content_sha256": source_sha256,
             "filename": source_path.name,
         },
+        "validity_intervals": validity_intervals,
     }
     sidecar_sha256 = _write_canonical_json(sidecar_path, sidecar)
 
@@ -267,7 +304,7 @@ def register_fixture_corpus(tmp_path: Path, *, profile: str = _TEST_PROFILE) -> 
         "probe": {"ffprobe_path": ffprobe, "ffprobe_version": _executable_version(ffprobe)},
         "schema_version": spec_schema_version(spec),
         "sidecar": {"filename": sidecar_path.name, "sha256": sidecar_sha256},
-        "source": {"content_sha256": source_sha256, "filename": source_path.name},
+        "source": manifest_binding["source"],
     }
     manifest_sha256 = _write_canonical_json(manifest_path, manifest)
 

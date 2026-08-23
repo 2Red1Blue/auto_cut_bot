@@ -8,6 +8,7 @@ import shutil
 import subprocess
 
 import pytest
+from autocut_kernel.media.preflight import MediaPreflightRequest, preflight_fixture
 
 from tests.media.fixture_corpus import (
     ffmpeg_available,
@@ -18,7 +19,12 @@ from tests.media.fixture_corpus import (
 
 
 def _sha256(path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _independent_video_probe(source_path) -> tuple[str, list[int]]:
@@ -60,7 +66,7 @@ def test_corpus_spec_declares_ffprobe_as_the_exact_pts_authority() -> None:
     assert fixture["ground_truth"]["exact_pts"]["representation"] == "integer_pts_index"
     validity = fixture["ground_truth"]["validity_intervals"]
     assert validity["schema_version"] == 1
-    assert validity["representation"] == "integer_pts_closed_intervals"
+    assert validity["representation"] == "integer_pts_half_open"
 
 
 def test_fixture_registration_rejects_production_before_external_work(tmp_path, monkeypatch) -> None:
@@ -87,19 +93,51 @@ def test_fixture_registration_generates_hashed_local_mp4(tmp_path, profile) -> N
     sidecar = json.loads(registration.sidecar_path.read_text(encoding="utf-8"))
     manifest = json.loads(registration.manifest_path.read_text(encoding="utf-8"))
     assert sidecar["source"]["content_sha256"] == registration.source_content_sha256
+    assert sidecar["source"]["byte_size"] == registration.source_path.stat().st_size
     assert registration.profile == profile
     assert sidecar["generator"]["ffmpeg_path"] == shutil.which("ffmpeg")
     assert sidecar["generator"]["ffmpeg_version"].startswith("ffmpeg version")
     assert manifest["sidecar"]["sha256"] == registration.sidecar_sha256
     assert manifest["source"]["content_sha256"] == registration.source_content_sha256
+    assert manifest["source"]["byte_size"] == registration.source_path.stat().st_size
     assert manifest["probe"]["ffprobe_path"] == shutil.which("ffprobe")
     assert manifest["probe"]["ffprobe_version"].startswith("ffprobe version")
 
     time_base, pts_index = _independent_video_probe(registration.source_path)
     exact_pts = sidecar["ground_truth"]["exact_pts"]
-    validity = sidecar["ground_truth"]["validity_intervals"]
     assert exact_pts["time_base"] == time_base
     assert exact_pts["values"] == pts_index
     assert all(isinstance(value, int) and not isinstance(value, bool) for value in pts_index)
-    assert validity["intervals"] == [{"end_pts": pts_index[-1], "start_pts": pts_index[0]}]
-    assert all(pts_index[0] <= value <= pts_index[-1] for value in pts_index)
+    assert sidecar["evidence_mode"] == "fixture_ground_truth_v1"
+    assert sidecar["pts_index_sha256"] == _canonical_sha256(pts_index)
+    intervals = sidecar["validity_intervals"]
+    assert intervals == [
+        {"end_pts": end, "representation": "integer_pts_half_open", "start_pts": start}
+        for start, end in zip(pts_index, pts_index[1:])
+    ]
+    assert all(interval["start_pts"] in pts_index and interval["end_pts"] in pts_index for interval in intervals)
+    assert all(interval["start_pts"] < interval["end_pts"] for interval in intervals)
+
+    manifest_binding = {
+        "fixture_id": registration.fixture_id,
+        "profile": profile,
+        "schema_version": manifest["schema_version"],
+        "source": manifest["source"],
+    }
+    assert sidecar["manifest_hash_binding"] == {
+        "representation": "canonical_manifest_without_sidecar_sha256_v1",
+        "sha256": _canonical_sha256(manifest_binding),
+    }
+
+    evidence = preflight_fixture(
+        MediaPreflightRequest(
+            profile=profile,
+            source_path=registration.source_path,
+            fixture_id=registration.fixture_id,
+            expected_source_sha256=registration.source_content_sha256,
+            manifest_path=registration.manifest_path,
+            sidecar_path=registration.sidecar_path,
+        )
+    )
+    assert evidence.pts_index.ticks == tuple(pts_index)
+    assert evidence.validity_intervals.intervals[-1].end_pts == pts_index[-1]
