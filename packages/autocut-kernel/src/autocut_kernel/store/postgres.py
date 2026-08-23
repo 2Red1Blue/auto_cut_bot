@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import UUID, uuid4
 
-from psycopg import DatabaseError, InterfaceError, ProgrammingError
+from psycopg import DatabaseError, InterfaceError
 
 from .errors import (
     CommandStateError,
@@ -74,37 +74,14 @@ class PostgresRuntimeStore:
 
         def operation(cursor: DbCursor) -> CommandOutcome:
             job_id = self._ensure_job(cursor, claim.job)
-
-            slot_id = uuid4()
+            # Every mutation of this aggregate uses the same lock order:
+            # Job first, then command slot.  In particular, take the Job lock
+            # before deciding whether a key is fresh, so a terminal transition
+            # and a fresh claim are serialized.
+            job_state = self._locked_job_state(cursor, job_id)
             cursor.execute(
                 """
-                INSERT INTO runtime.command_slots
-                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
-                VALUES (%s, %s, %s, %s, %s, 'running')
-                ON CONFLICT (job_id, idempotency_key) DO NOTHING
-                RETURNING command_slot_id
-                """,
-                (slot_id, job_id, claim.idempotency_key, claim.command_name, claim.request_hash),
-            )
-            row = cursor.fetchone()
-            if row is not None:
-                # A new key may only be claimed while the aggregate Job is open.
-                # Locking this row makes terminal-is-closed deterministic even
-                # when completion races a new command claim.
-                job_state = self._locked_job_state(cursor, job_id)
-                if job_state not in ("pending", "running"):
-                    raise CommandStateError("job is already terminal; new commands are closed")
-                if job_state == "pending":
-                    cursor.execute(
-                        "UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s",
-                        (job_id,),
-                    )
-                return CommandOutcome(command_slot_id=slot_id, state="running", job_id=job_id)
-
-            # Idempotency replay: lock and re-read the existing slot.
-            cursor.execute(
-                """
-                SELECT command_slot_id, command_name, request_hash, state
+                SELECT command_slot_id, command_name, request_hash
                   FROM runtime.command_slots
                  WHERE job_id = %s AND idempotency_key = %s
                    FOR UPDATE
@@ -112,14 +89,31 @@ class PostgresRuntimeStore:
                 (job_id, claim.idempotency_key),
             )
             existing = cursor.fetchone()
-            if existing is None:
-                raise RuntimeStoreError("command slot vanished after conflict")
-            slot_id_existing, command_name, request_hash, _state = existing
-            if command_name != claim.command_name or request_hash != claim.request_hash:
-                raise IdempotencyConflictError(
-                    "idempotency key was already claimed by a different command"
+            if existing is not None:
+                slot_id_existing, command_name, request_hash = existing
+                if command_name != claim.command_name or request_hash != claim.request_hash:
+                    raise IdempotencyConflictError(
+                        "idempotency key was already claimed by a different command"
+                    )
+                return self._read_outcome_by_slot(cursor, UUID(str(slot_id_existing)), job_id)
+
+            if job_state not in ("pending", "running"):
+                raise CommandStateError("job is already terminal; new commands are closed")
+            slot_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.command_slots
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
+                VALUES (%s, %s, %s, %s, %s, 'running')
+                """,
+                (slot_id, job_id, claim.idempotency_key, claim.command_name, claim.request_hash),
+            )
+            if job_state == "pending":
+                cursor.execute(
+                    "UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s",
+                    (job_id,),
                 )
-            return self._read_outcome_by_slot(cursor, UUID(str(slot_id_existing)), job_id)
+            return CommandOutcome(command_slot_id=slot_id, state="running", job_id=job_id)
 
         return self._transaction(operation)
 
@@ -131,7 +125,7 @@ class PostgresRuntimeStore:
         """Atomically persist one non-empty immutable result set and success Receipt."""
 
         def operation(cursor: DbCursor) -> CommandOutcome:
-            job_id, state = self._locked_slot(cursor, success.command_slot_id)
+            job_id, state = self._locked_job_then_slot(cursor, success.command_slot_id)
             if state != "running":
                 return self._replay_or_raise(
                     cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
@@ -229,7 +223,7 @@ class PostgresRuntimeStore:
         """Atomically persist a terminal deny/fail Receipt without inventing an ArtifactSet."""
 
         def operation(cursor: DbCursor) -> CommandOutcome:
-            job_id, state = self._locked_slot(cursor, rejection.command_slot_id)
+            job_id, state = self._locked_job_then_slot(cursor, rejection.command_slot_id)
             if state != "running":
                 return self._replay_or_raise(
                     cursor, rejection.command_slot_id, job_id, rejection.outcome, None
@@ -338,6 +332,21 @@ class PostgresRuntimeStore:
             raise StoreValidationError("command_slot_id is unknown")
         return UUID(str(row[0])), str(row[1])
 
+    def _locked_job_then_slot(self, cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str]:
+        """Lock an existing slot's aggregate in the global Job → slot order."""
+        cursor.execute(
+            "SELECT job_id FROM runtime.command_slots WHERE command_slot_id = %s", (slot_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("command_slot_id is unknown")
+        job_id = UUID(str(row[0]))
+        self._locked_job_state(cursor, job_id)
+        locked_job_id, state = self._locked_slot(cursor, slot_id)
+        if locked_job_id != job_id:
+            raise RuntimeStoreError("command slot changed jobs while being completed")
+        return job_id, state
+
     @staticmethod
     def _locked_job_state(cursor: DbCursor, job_id: UUID) -> str:
         cursor.execute("SELECT state FROM runtime.jobs WHERE job_id = %s FOR UPDATE", (job_id,))
@@ -353,7 +362,7 @@ class PostgresRuntimeStore:
             " WHERE command_slot_id = %s",
             (outcome, slot_id),
         )
-        # Only transition job state forward from running to terminal.
+        # The caller already holds Job then slot locks. Only transition job state forward from running to terminal.
         # Once a job is terminal it stays terminal — later commands never
         # overwrite the aggregate outcome.
         cursor.execute(
@@ -464,6 +473,4 @@ class PostgresRuntimeStore:
     @staticmethod
     def _is_runtime_database_error(error: Exception) -> bool:
         """Keep caller mistakes visible while hiding driver-level failures."""
-        return isinstance(error, (DatabaseError, InterfaceError)) and not isinstance(
-            error, ProgrammingError
-        )
+        return isinstance(error, (DatabaseError, InterfaceError))

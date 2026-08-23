@@ -12,10 +12,12 @@ from autocut_kernel.store import (
     CommandRejection,
     CommandSuccess,
     Job,
+    RuntimeStoreError,
     StaleHeadError,
     StoreValidationError,
 )
 from autocut_kernel.store.postgres import PostgresRuntimeStore
+from psycopg import ProgrammingError
 
 
 def digest(value: str) -> str:
@@ -114,3 +116,32 @@ def test_first_head_unique_violation_maps_to_stable_error() -> None:
 
     assert PostgresRuntimeStore._is_first_head_race(UniqueViolationError())
     assert isinstance(StaleHeadError("race"), Exception)
+
+
+def test_programming_database_errors_are_mapped_to_runtime_store_error() -> None:
+    class Cursor:
+        def execute(self, query: str, params: tuple[object, ...] = ()) -> None:
+            raise ProgrammingError("broken SQL")
+
+        def fetchone(self) -> None:
+            return None
+
+        def close(self) -> None:
+            pass
+
+    class Connection:
+        def cursor(self) -> Cursor:
+            return Cursor()
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    store = PostgresRuntimeStore(Connection)
+    with pytest.raises(RuntimeStoreError, match="database operation failed"):
+        store.claim_command(CommandClaim(Job("programming-error", "test"), "cmd", "x", digest("x")))

@@ -39,3 +39,9 @@ def test_follow_up_migration_binds_head_to_its_exact_scoped_revision() -> None:
     assert "artifact job must match its artifact set job" in sql
     assert "runtime.assert_artifact_job_matches_set" in sql
     assert "runtime_artifact_job_matches_set_check" in sql
+    # Deferred command lifecycle and monotonic terminal state guards.
+    assert "runtime.assert_command_slot_receipt_lifecycle" in sql
+    assert "terminal command slot must have exactly one matching receipt" in sql
+    assert "pending or running command slot must not have a receipt" in sql
+    assert "terminal jobs are immutable" in sql
+    assert "terminal command slots are immutable" in sql

@@ -520,6 +520,13 @@ def test_wrong_receipt_set_link_is_rejected() -> None:
                 " VALUES (gen_random_uuid(), %s, 'succeeded', %s)",
                 (slot_b, set_a),
             )
+            # Make the slot terminal so the receipt/slot lifecycle check passes;
+            # the commit must then reach the independent receipt/set binding check.
+            cur.execute(
+                "UPDATE runtime.command_slots SET state = 'succeeded', completed_at = transaction_timestamp()"
+                " WHERE command_slot_id = %s",
+                (slot_b,),
+            )
             with pytest.raises(
                 Exception, match="successful receipt must reference its command slot artifact set"
             ):
@@ -635,6 +642,90 @@ def test_terminal_job_closes_fresh_keys_but_replays_existing_keys() -> None:
         with conn.cursor() as cur:
             cur.execute("SELECT state FROM runtime.jobs WHERE job_key = %s", (job.job_key,))
             assert cur.fetchone()[0] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("slot_state", "receipt_outcome", "expectation"),
+    (
+        ("running", "denied", "pending or running command slot must not have a receipt"),
+        ("denied", None, "terminal command slot must have exactly one matching receipt"),
+        ("denied", "failed", "terminal command slot must have exactly one matching receipt"),
+    ),
+)
+def test_command_slot_receipt_lifecycle_is_enforced_at_commit(
+    slot_state: str, receipt_outcome: str | None, expectation: str
+) -> None:
+    """Deferred checks reject invalid final lifecycle states at the real commit boundary."""
+    assert DSN is not None
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO runtime.jobs (job_id, job_key, profile, state)"
+                " VALUES (gen_random_uuid(), %s, 'test', 'running') RETURNING job_id",
+                (f"receipt-lifecycle-{slot_state}-{receipt_outcome}",),
+            )
+            job_id = cur.fetchone()[0]
+            cur.execute(
+                "INSERT INTO runtime.command_slots"
+                " (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)"
+                " VALUES (gen_random_uuid(), %s, 'key', 'preflight', %s, %s,"
+                " CASE WHEN %s IN ('denied', 'failed', 'succeeded') THEN transaction_timestamp() END)"
+                " RETURNING command_slot_id",
+                (job_id, _digest("receipt-lifecycle"), slot_state, slot_state),
+            )
+            slot_id = cur.fetchone()[0]
+            if receipt_outcome is not None:
+                cur.execute(
+                    "INSERT INTO runtime.command_receipts"
+                    " (receipt_id, command_slot_id, outcome, failure_code, failure_detail)"
+                    " VALUES (gen_random_uuid(), %s, %s, 'TEST', '{}'::jsonb)",
+                    (slot_id, receipt_outcome),
+                )
+            with pytest.raises(Exception, match=expectation):
+                conn.commit()
+            conn.rollback()
+
+
+def test_terminal_job_and_fresh_claim_are_serialized() -> None:
+    """A fresh claim blocked behind the aggregate lock observes the committed terminal state."""
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("terminal-race-job", "test")
+    first = store.claim_command(CommandClaim(job, "first", "preflight", _digest("first")))
+
+    terminal_connection = psycopg.connect(DSN)
+    terminal_cursor = terminal_connection.cursor()
+    terminal_cursor.execute("SELECT job_id FROM runtime.jobs WHERE job_key = %s FOR UPDATE", (job.job_key,))
+    terminal_cursor.execute(
+        "UPDATE runtime.jobs SET state = 'denied' WHERE job_key = %s", (job.job_key,)
+    )
+
+    outcome: list[object] = []
+
+    def claim_fresh() -> None:
+        try:
+            outcome.append(
+                store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+            )
+        except Exception as error:  # pragma: no cover - asserted below
+            outcome.append(error)
+
+    worker = threading.Thread(target=claim_fresh)
+    worker.start()
+    terminal_connection.commit()
+    worker.join()
+    terminal_cursor.close()
+    terminal_connection.close()
+
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], CommandStateError)
+    with psycopg.connect(DSN) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT state FROM runtime.command_slots WHERE job_id = %s AND idempotency_key = 'fresh'",
+                (first.job_id,),
+            )
+            assert cur.fetchone() is None
 
 
 def test_revision_race_returns_one_success_and_one_stale_head() -> None:
