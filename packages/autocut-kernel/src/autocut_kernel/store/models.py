@@ -164,6 +164,7 @@ class CommandRejection:
 class CommandOutcome:
     command_slot_id: UUID
     state: CommandOutcomeKind
+    is_fresh_claim: bool = False
     receipt_id: UUID | None = None
     artifact_set_id: UUID | None = None
     failure_code: str | None = None

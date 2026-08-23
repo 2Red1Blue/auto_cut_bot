@@ -53,6 +53,11 @@ class DbConnection(Protocol):
 _Result = TypeVar("_Result")
 
 
+def _text(value: object) -> str:
+    """Normalize PostgreSQL text values returned in either wire format."""
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
 class PostgresRuntimeStore:
     """Persist one Job's idempotent commands, receipts and immutable artifacts."""
 
@@ -92,7 +97,7 @@ class PostgresRuntimeStore:
             existing = cursor.fetchone()
             if existing is not None:
                 slot_id_existing, command_name, request_hash = existing
-                if command_name != claim.command_name or request_hash != claim.request_hash:
+                if _text(command_name) != claim.command_name or _text(request_hash) != claim.request_hash:
                     raise IdempotencyConflictError(
                         "idempotency key was already claimed by a different command"
                     )
@@ -114,7 +119,15 @@ class PostgresRuntimeStore:
                     "UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s",
                     (job_id,),
                 )
-            return CommandOutcome(command_slot_id=slot_id, state="running", job_id=job_id)
+            # This is the sole path that creates a command slot.  The result
+            # therefore records durable ownership from this same transaction;
+            # a read of an existing running or terminal slot is always replay.
+            return CommandOutcome(
+                command_slot_id=slot_id,
+                state="running",
+                is_fresh_claim=True,
+                job_id=job_id,
+            )
 
         return self._transaction(operation)
 
@@ -318,7 +331,7 @@ class PostgresRuntimeStore:
         if existing is None:
             raise RuntimeStoreError("job vanished after conflict")
         existing_id, profile = existing
-        if profile != job.profile:
+        if _text(profile) != job.profile:
             raise StoreValidationError("job_key cannot be reused with a different profile")
         return UUID(str(existing_id))
 
@@ -331,7 +344,7 @@ class PostgresRuntimeStore:
         row = cursor.fetchone()
         if row is None:
             raise StoreValidationError("command_slot_id is unknown")
-        return UUID(str(row[0])), str(row[1])
+        return UUID(str(row[0])), _text(row[1])
 
     def _locked_job_then_slot(self, cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str]:
         """Lock an existing slot's aggregate in the global Job → slot order."""
@@ -354,7 +367,7 @@ class PostgresRuntimeStore:
         row = cursor.fetchone()
         if row is None:
             raise RuntimeStoreError("job vanished before command claim")
-        return str(row[0])
+        return _text(row[0])
 
     @staticmethod
     def _complete(cursor: DbCursor, slot_id: UUID, job_id: UUID, outcome: str) -> None:
@@ -388,7 +401,7 @@ class PostgresRuntimeStore:
             ),
         )
         current = cursor.fetchone()
-        expected = 1 if current is None else int(str(current[0])) + 1
+        expected = 1 if current is None else int(_text(current[0])) + 1
         if member.revision != expected:
             raise StaleHeadError(f"expected revision {expected}, received {member.revision}")
 
@@ -404,7 +417,7 @@ class PostgresRuntimeStore:
                 (outcome.artifact_set_id,),
             )
             row = cursor.fetchone()
-            if row is None or row[0] != set_hash:
+            if row is None or _text(row[0]) != set_hash:
                 raise CommandStateError("command already completed with a different artifact set")
         return outcome
 
@@ -426,11 +439,11 @@ class PostgresRuntimeStore:
         state, receipt_id, set_id, failure_code, failure_detail = row
         return CommandOutcome(
             command_slot_id=slot_id,
-            state=str(state),  # type: ignore[arg-type]
+            state=_text(state),  # type: ignore[arg-type]
             receipt_id=None if receipt_id is None else UUID(str(receipt_id)),
             artifact_set_id=None if set_id is None else UUID(str(set_id)),
-            failure_code=None if failure_code is None else str(failure_code),
-            failure_detail_json=None if failure_detail is None else str(failure_detail),
+            failure_code=None if failure_code is None else _text(failure_code),
+            failure_detail_json=None if failure_detail is None else _text(failure_detail),
             job_id=job_id,
         )
 

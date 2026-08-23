@@ -91,6 +91,7 @@ def test_claim_success_and_replay_are_one_durable_command() -> None:
     claim = CommandClaim(job, "preflight-1", "media_preflight", _digest("request"))
     running = store.claim_command(claim)
     assert running.state == "running"
+    assert running.is_fresh_claim is True
 
     member = _make_member(job.job_key)
     set_hash = _make_set_hash((member,))
@@ -99,7 +100,23 @@ def test_claim_success_and_replay_are_one_durable_command() -> None:
     )
     assert succeeded.state == "succeeded"
     assert succeeded.receipt_id is not None and succeeded.artifact_set_id is not None
-    assert store.claim_command(claim).artifact_set_id == succeeded.artifact_set_id
+    replay = store.claim_command(claim)
+    assert replay.artifact_set_id == succeeded.artifact_set_id
+    assert replay.is_fresh_claim is False
+
+
+def test_running_claim_replay_is_not_a_fresh_owner() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    claim = CommandClaim(Job("running-replay-job", "test"), "preflight", "media_preflight", _digest("request"))
+
+    fresh = store.claim_command(claim)
+    replay = store.claim_command(claim)
+
+    assert fresh.is_fresh_claim is True
+    assert replay.command_slot_id == fresh.command_slot_id
+    assert replay.state == "running"
+    assert replay.is_fresh_claim is False
 
 
 def test_denial_persists_a_terminal_receipt_without_an_artifact_set() -> None:
@@ -162,6 +179,7 @@ def test_concurrent_same_intent_claim_is_replay_safe() -> None:
     outcome_a, outcome_b = outcomes  # type: ignore[misc]
     assert outcome_b.state == "running"
     assert outcome_b.command_slot_id == outcome_a.command_slot_id
+    assert {outcome_a.is_fresh_claim, outcome_b.is_fresh_claim} == {False, True}
 
 
 # ---------------------------------------------------------------------------
@@ -641,7 +659,8 @@ def test_terminal_job_closes_fresh_keys_but_replays_existing_keys() -> None:
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT state FROM runtime.jobs WHERE job_key = %s", (job.job_key,))
-            assert cur.fetchone()[0] == "succeeded"
+            state = cur.fetchone()[0]
+            assert (state.decode() if isinstance(state, bytes) else state) == "succeeded"
 
 
 @pytest.mark.parametrize(

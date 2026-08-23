@@ -9,6 +9,7 @@ from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
     CommandClaim,
+    CommandOutcome,
     CommandRejection,
     CommandSuccess,
     Job,
@@ -28,6 +29,12 @@ def digest(value: str) -> str:
 def test_command_claim_requires_canonical_digest_and_identity() -> None:
     with pytest.raises(StoreValidationError, match="request_hash"):
         CommandClaim(Job("fixture-job", "test"), "run-1", "preflight", "not-a-hash")
+
+
+def test_command_outcome_defaults_to_a_replay_claim() -> None:
+    outcome = CommandOutcome(command_slot_id=uuid4(), state="running")
+
+    assert outcome.is_fresh_claim is False
 
 
 def test_success_requires_a_non_empty_set_with_bound_member_hash() -> None:
