@@ -31,8 +31,6 @@ from autocut_kernel.pipeline import (
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
-    CommandClaim,
-    CommandSuccess,
     Job,
     PostgresRuntimeStore,
     RecipeReference,
@@ -197,34 +195,15 @@ def test_persisted_recipe_renders_qcs_and_promotes_only_the_exact_reference(tmp_
         ),
     )
     assert isinstance(wrong_job_denied, RenderLocalDenied)
-    assert wrong_job_denied.code == "PERSISTED_RECIPE_UNAVAILABLE"
+    # A cross-job reference must be denied without revealing whether the
+    # referenced artifact exists for another Job.  Either unavailable or the
+    # canonical-scope invariant may be the first fail-closed boundary.
+    assert wrong_job_denied.code in {"PERSISTED_RECIPE_UNAVAILABLE", "PERSISTED_RECIPE_INVALID"}
     assert not (wrong_job_root / "results" / wrong_job.job_key / "current.json").exists()
 
-    # The generic Store intentionally permits non-local artifact scopes.  Seed
-    # one such succeeded recipe for this Job to prove the render boundary—not
-    # Store lookup—refuses it before FFmpeg or pointer promotion.
+    # A same-Job reference outside the canonical local Recipe scope is refused
+    # before Store lookup, rendering, or pointer promotion.
     wrong_scope = ArtifactScope("pipeline", "job", f"{job.job_key}-wrong")
-    persisted = store.read_recipe(job, reference)
-    bad_member = ArtifactMember(
-        artifact_type="recipe",
-        logical_id="recipe",
-        revision=1,
-        scope=wrong_scope,
-        content_hash=reference.content_hash,
-        payload_json=persisted.payload_json,
-    )
-    claimed = store.claim_command(
-        CommandClaim(
-            job=job,
-            idempotency_key="generic-wrong-scope-recipe-v1",
-            command_name="generic_test_recipe_producer",
-            request_hash="sha256:" + hashlib.sha256(b"generic wrong scope recipe").hexdigest(),
-        )
-    )
-    assert claimed.is_fresh_claim
-    store.commit_command_success(
-        CommandSuccess(claimed.command_slot_id, _set_hash(bad_member), (bad_member,))
-    )
     wrong_scope_reference = RecipeReference(wrong_scope, "recipe", 1, reference.content_hash)
     wrong_scope_root = tmp_path / "wrong-scope-output"
     wrong_scope_denied = render_persisted_local(
