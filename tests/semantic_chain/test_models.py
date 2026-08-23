@@ -58,6 +58,13 @@ def test_models_reject_free_text_and_non_hash_evidence() -> None:
         RegisteredFact(_token("fact"), FactKind.OBSERVATION, _evidence(), _candidate(EvidenceRef(_token("evidence", "b"), _hash("b"))))
 
 
+def test_evidence_accepts_the_trusted_local_media_logical_id_only() -> None:
+    assert EvidenceRef("media_evidence", _hash()).artifact_id == "media_evidence"
+    for unsafe in ("/tmp/clip.mp4", "start_pts=42", "12.5_seconds", "score=0.99"):
+        with pytest.raises(SemanticChainDenied, match="media_evidence"):
+            EvidenceRef(unsafe, _hash())
+
+
 @pytest.mark.parametrize("payload", ("candidate_12.5_seconds", "/tmp/clip.mp4", "start_pts=42", "score=0.99"))
 def test_boundary_tokens_reject_timing_path_and_score_payloads(payload: str) -> None:
     with pytest.raises(SemanticChainDenied, match="opaque token"):

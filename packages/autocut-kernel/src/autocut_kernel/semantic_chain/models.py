@@ -18,6 +18,7 @@ from typing import Final
 
 _SHA256: Final = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _TOKEN: Final = re.compile(r"[a-z]+_[0-9a-f]{32}\Z")
+_EVIDENCE_ARTIFACT_ID: Final = re.compile(r"(?:media_evidence|evidence_[0-9a-f]{32})\Z")
 
 
 class SemanticChainError(ValueError):
@@ -78,6 +79,19 @@ def _opaque_id(value: object, field_name: str, prefix: str) -> str:
     return value
 
 
+def _evidence_artifact_id(value: object) -> str:
+    """Accept only trusted local-media's canonical ID or a future digest token.
+
+    ``media_evidence`` is a persisted logical ID emitted by local-media,
+    rather than caller prose. Other evidence records must use a typed digest
+    token, so paths, PTS values, float seconds, and scores remain denied.
+    """
+
+    if type(value) is not str or not _EVIDENCE_ARTIFACT_ID.fullmatch(value):  # noqa: E721
+        raise SemanticChainDenied("evidence.artifact_id must be media_evidence or evidence_<32 lowercase-hex>")
+    return value
+
+
 def _sha256(value: object, field_name: str) -> str:
     if type(value) is not str or not _SHA256.fullmatch(value):  # noqa: E721
         raise SemanticChainDenied(f"{field_name} must be a lowercase sha256 digest")
@@ -112,7 +126,7 @@ class EvidenceRef:
     content_hash: str
 
     def __post_init__(self) -> None:
-        _opaque_id(self.artifact_id, "evidence.artifact_id", "evidence")
+        _evidence_artifact_id(self.artifact_id)
         _sha256(self.content_hash, "evidence.content_hash")
 
     def to_mapping(self) -> dict[str, str]:
