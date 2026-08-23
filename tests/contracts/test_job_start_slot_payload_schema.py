@@ -35,7 +35,7 @@ def _schema(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _validator() -> Draft202012Validator:
+def _validator(*, format_checker: FormatChecker | None = FormatChecker()) -> Draft202012Validator:
     resources = [_schema(BOOTSTRAP_SOURCE / SCHEMA_FILENAME)]
     resources.extend(
         _schema(PRIMITIVES_SOURCE / filename)
@@ -44,7 +44,7 @@ def _validator() -> Draft202012Validator:
     registry = Registry().with_resources(
         (resource["$id"], Resource.from_contents(resource)) for resource in resources
     )
-    return Draft202012Validator(resources[0], registry=registry, format_checker=FormatChecker())
+    return Draft202012Validator(resources[0], registry=registry, format_checker=format_checker)
 
 
 def _artifact_ref(name: str) -> dict[str, str]:
@@ -87,6 +87,7 @@ def _assert_invalid(value: object) -> None:
 def test_job_start_slot_schema_is_closed_payload_only_and_authority_bound() -> None:
     schema = _schema(BOOTSTRAP_SOURCE / SCHEMA_FILENAME)
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["$vocabulary"] == {"https://json-schema.org/draft/2020-12/vocab/format-assertion": True}
     assert schema["$id"] == SCHEMA_ID
     assert AUTHORITY_HASH in schema["$comment"]
     assert "payload-only" in schema["$comment"]
@@ -159,3 +160,11 @@ def test_job_start_slot_schema_does_not_claim_deferred_cross_revision_semantics(
     derived = _artifact_ref("derived-run")
     payload["derived_run_manifest_refs"] = [derived, deepcopy(derived)]
     assert _validator().is_valid(payload)
+
+
+def test_job_start_slot_requires_format_assertion_validation_for_calendar_dates() -> None:
+    """A consumer that ignores the required vocabulary is non-conformant."""
+
+    invalid_calendar_date = {**_active_payload(), "updated_at": "2026-02-30T12:34:56.789Z"}
+    assert _validator(format_checker=None).is_valid(invalid_calendar_date)
+    assert not _validator().is_valid(invalid_calendar_date)
