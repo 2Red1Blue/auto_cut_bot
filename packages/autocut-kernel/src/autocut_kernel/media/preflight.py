@@ -6,13 +6,14 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from .ffprobe_port import FFprobeError, FFprobePort
 from .types import (
     MediaDomainError,
     MediaEvidence,
     MediaValidationError,
+    PTSIndex,
     SourceIdentity,
     TickRange,
     ValidityIntervals,
@@ -56,7 +57,7 @@ class MediaPreflightRequest:
     def __post_init__(self) -> None:
         if self.profile not in {"production", "test", "shadow"}:
             raise PreflightError("unsupported_profile")
-        if not isinstance(self.fixture_id, str) or not self.fixture_id:
+        if not self.fixture_id:
             raise PreflightError("fixture_id must be a non-empty string")
         sha256_prefixed(self.expected_source_sha256, "expected_source_sha256")
 
@@ -108,7 +109,7 @@ def _json_file(path: Path, field_name: str) -> tuple[dict[str, Any], str]:
         raise FixtureEvidenceError(f"{field_name} must be readable UTF-8 JSON") from error
     if not isinstance(value, dict):
         raise FixtureEvidenceError(f"{field_name} must be a JSON object")
-    return value, f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    return cast(dict[str, Any], value), f"sha256:{hashlib.sha256(raw).hexdigest()}"
 
 
 def _identity(payload: dict[str, Any], field_name: str) -> str:
@@ -121,17 +122,18 @@ def _identity(payload: dict[str, Any], field_name: str) -> str:
         raise FixtureEvidenceError(str(error)) from error
 
 
-def _ranges(sidecar: dict[str, Any], evidence: MediaEvidence | None, *, pts_index) -> ValidityIntervals:
+def _ranges(sidecar: dict[str, Any], *, pts_index: PTSIndex) -> ValidityIntervals:
     raw = sidecar.get("validity_intervals")
     if not isinstance(raw, list) or not raw:
         raise FixtureEvidenceError("sidecar.validity_intervals must be a non-empty list")
     ranges: list[TickRange] = []
-    for position, item in enumerate(raw):
+    for position, item in enumerate(cast(list[object], raw)):
         if not isinstance(item, dict):
             raise FixtureEvidenceError(f"validity_intervals[{position}] must be an object")
+        interval = cast(dict[str, Any], item)
         try:
-            start = require_pts(item.get("start_pts"), f"validity_intervals[{position}].start_pts")
-            end = require_pts(item.get("end_pts"), f"validity_intervals[{position}].end_pts")
+            start = require_pts(interval.get("start_pts"), f"validity_intervals[{position}].start_pts")
+            end = require_pts(interval.get("end_pts"), f"validity_intervals[{position}].end_pts")
             ranges.append(TickRange(start, end))
         except MediaValidationError as error:
             raise FixtureEvidenceError(str(error)) from error
@@ -146,7 +148,7 @@ def _ranges(sidecar: dict[str, Any], evidence: MediaEvidence | None, *, pts_inde
 def _validate_fixture_files(
     request: MediaPreflightRequest,
     source: SourceIdentity,
-    pts_index,
+    pts_index: PTSIndex,
 ) -> tuple[dict[str, Any], dict[str, Any], str, str]:
     manifest, manifest_sha256 = _json_file(request.manifest_path, "manifest")
     sidecar, sidecar_sha256 = _json_file(request.sidecar_path, "sidecar")
@@ -167,6 +169,9 @@ def _validate_fixture_files(
     manifest_sidecar = manifest.get("sidecar")
     if not isinstance(manifest_source, dict) or not isinstance(sidecar_source, dict) or not isinstance(manifest_sidecar, dict):
         raise FixtureEvidenceError("fixture provenance objects are required")
+    manifest_source = cast(dict[str, Any], manifest_source)
+    sidecar_source = cast(dict[str, Any], sidecar_source)
+    manifest_sidecar = cast(dict[str, Any], manifest_sidecar)
     if _identity(manifest_source, "manifest.source") != source.sha256 or _identity(sidecar_source, "sidecar.source") != source.sha256:
         raise SourceIdentityMismatchError("fixture source hash does not match local source bytes")
     if manifest_source.get("byte_size") not in {None, source.byte_size} or sidecar_source.get("byte_size") not in {None, source.byte_size}:
@@ -191,7 +196,7 @@ def preflight_fixture(request: MediaPreflightRequest, *, port: FFprobePort | Non
     manifest, sidecar, manifest_sha256, sidecar_sha256 = _validate_fixture_files(request, source, probe.pts_index)
     if sidecar.get("evidence_mode") != "fixture_ground_truth_v1":
         raise FixtureEvidenceError("sidecar must declare fixture_ground_truth_v1 evidence")
-    intervals = _ranges(sidecar, None, pts_index=probe.pts_index)
+    intervals = _ranges(sidecar, pts_index=probe.pts_index)
     return MediaEvidence(
         source=source,
         video_stream=probe.video_stream,
@@ -202,8 +207,8 @@ def preflight_fixture(request: MediaPreflightRequest, *, port: FFprobePort | Non
         fixture_id=request.fixture_id,
         fixture_manifest_sha256=manifest_sha256,
         fixture_sidecar_sha256=sidecar_sha256,
-        fixture_schema_version=manifest["schema_version"],
-        evidence_mode=sidecar["evidence_mode"],
+        fixture_schema_version=require_pts(manifest["schema_version"], "manifest.schema_version"),
+        evidence_mode=cast(str, sidecar["evidence_mode"]),
     )
 
 

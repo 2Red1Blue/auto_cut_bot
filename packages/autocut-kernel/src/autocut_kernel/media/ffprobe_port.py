@@ -69,6 +69,15 @@ def _as_object(value: object, label: str) -> dict[str, Any]:
     return cast(dict[str, Any], value)
 
 
+def _objects(value: object, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise FFprobeOutputError(f"ffprobe {label} must be an array")
+    objects: list[dict[str, Any]] = []
+    for position, item in enumerate(cast(list[object], value)):
+        objects.append(_as_object(item, f"{label}[{position}]"))
+    return objects
+
+
 def _strict_decimal_integer(value: object, label: str) -> int:
     if type(value) is int:
         return value
@@ -136,14 +145,8 @@ class FFprobePort:
 
     @staticmethod
     def _video_stream(metadata: dict[str, Any]) -> VideoStreamEvidence:
-        streams = metadata.get("streams")
-        if not isinstance(streams, list):
-            raise FFprobeOutputError("ffprobe metadata has no streams array")
-        video_streams = [
-            _as_object(item, "stream")
-            for item in cast(list[object], streams)
-            if isinstance(item, dict) and item.get("codec_type") == "video"
-        ]
+        streams = _objects(metadata.get("streams"), "metadata.streams")
+        video_streams = [item for item in streams if item.get("codec_type") == "video"]
         if len(video_streams) != 1:
             raise FFprobeOutputError("source must contain exactly one video stream")
         stream = video_streams[0]
@@ -169,12 +172,11 @@ class FFprobePort:
 
     @staticmethod
     def _pts_index(frames_payload: dict[str, Any], stream_index: int) -> PTSIndex:
-        frames = frames_payload.get("frames")
-        if not isinstance(frames, list) or not frames:
+        frames = _objects(frames_payload.get("frames"), "frames")
+        if not frames:
             raise FFprobePtsIndexError("ffprobe frames must be a non-empty array")
         ticks: list[int] = []
-        for position, frame in enumerate(cast(list[object], frames)):
-            frame_object = _as_object(frame, f"frames[{position}]")
+        for position, frame_object in enumerate(frames):
             if frame_object.get("media_type") != "video":
                 raise FFprobePtsIndexError("frame listing contains a non-video frame")
             if frame_object.get("stream_index") != stream_index:

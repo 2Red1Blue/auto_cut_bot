@@ -137,7 +137,7 @@ class ValidityIntervals:
         return any(interval.contains(candidate) for interval in self.intervals)
 
 
-def sha256_prefixed(value: str, field_name: str) -> str:
+def sha256_prefixed(value: object, field_name: str) -> str:
     """Validate and normalize a ``sha256:<lowercase hex>`` identity."""
     if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
         raise MediaValidationError(f"{field_name} must be a sha256:<lowercase-hex> identity")
@@ -180,7 +180,7 @@ class VideoStreamEvidence:
     def __post_init__(self) -> None:
         if require_pts(self.stream_index, "stream_index") < 0:
             raise MediaValidationError("stream_index must be non-negative")
-        if not isinstance(self.codec_name, str) or not self.codec_name:
+        if not self.codec_name:
             raise MediaValidationError("codec_name must be a non-empty string")
         if require_pts(self.width, "width") <= 0 or require_pts(self.height, "height") <= 0:
             raise MediaValidationError("video dimensions must be positive")
@@ -195,9 +195,9 @@ class ToolEvidence:
     stderr_sha256: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.executable, str) or not self.executable:
+        if not self.executable:
             raise MediaValidationError("ffprobe executable must be a non-empty string")
-        if not isinstance(self.version, str) or not self.version:
+        if not self.version:
             raise MediaValidationError("ffprobe version must be a non-empty string")
         sha256_prefixed(self.stderr_sha256, "ffprobe.stderr_sha256")
 
@@ -222,7 +222,7 @@ class MediaEvidence:
         if self.pts_index_sha256 != canonical_sha256(list(self.pts_index.ticks)):
             raise MediaValidationError("pts_index_sha256 must match the complete PTS index")
         self.validity_intervals.require_indexed(self.pts_index)
-        if not isinstance(self.fixture_id, str) or not self.fixture_id:
+        if not self.fixture_id:
             raise MediaValidationError("fixture_id must be a non-empty string")
         sha256_prefixed(self.fixture_manifest_sha256, "fixture_manifest_sha256")
         sha256_prefixed(self.fixture_sidecar_sha256, "fixture_sidecar_sha256")
