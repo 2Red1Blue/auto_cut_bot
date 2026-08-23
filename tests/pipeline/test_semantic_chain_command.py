@@ -52,6 +52,7 @@ class _Store:
         self.outcomes: dict[tuple[str, str], CommandOutcome] = {}
         self.media: dict[tuple[str, str], str] = {}
         self.evidence_reads: list[tuple[Job, MediaEvidenceReference]] = []
+        self.proof_reads = 0
 
     def read_media_evidence(self, job: Job, reference: MediaEvidenceReference):
         self.evidence_reads.append((job, reference))
@@ -63,6 +64,7 @@ class _Store:
             raise MediaEvidenceUnavailableError("exact media evidence unavailable") from error
 
     def read_succeeded_semantic_resolution_proof(self, job: Job):
+        self.proof_reads += 1
         for success in self.successes:
             for member in success.artifacts:
                 if member.artifact_type == "semantic_resolution_proof":
@@ -250,7 +252,7 @@ def test_new_command_instance_replay_re_resolves_the_durable_bridge() -> None:
     assert len(store.successes) == 1
 
 
-@pytest.mark.parametrize("state", ["denied", "failed"])
+@pytest.mark.parametrize("state", ["running", "denied", "failed"])
 def test_non_successful_replay_never_resolves_a_bridge(state: str) -> None:
     store = _Store()
     request = _request(store)
@@ -264,6 +266,7 @@ def test_non_successful_replay_never_resolves_a_bridge(state: str) -> None:
     assert replay.outcome.state == state
     assert replay.resolved_beat is None
     assert not store.evidence_reads
+    assert store.proof_reads == 0
 
 
 def test_production_job_is_durably_denied_before_build_or_resolution() -> None:
