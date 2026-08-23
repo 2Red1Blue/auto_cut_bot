@@ -56,6 +56,36 @@ class SemanticChain:
             raise SemanticChainDenied("story must bind its exact narrative artifact")
         if self.blueprint.story_hash != self.story.canonical_hash:
             raise SemanticChainDenied("blueprint must bind its exact story artifact")
+        self._require_exact_stage_correspondence()
+
+    def _require_exact_stage_correspondence(self) -> None:
+        """Reject hand-assembled stages that only share artifact hashes.
+
+        The immutable hash links whole artifacts, while these field-level
+        checks prove the event and beat records are the deterministic expansion
+        of the immediately preceding stage.
+        """
+
+        if len(self.narrative.nodes) != len(self.story.events) or len(self.story.events) != len(self.blueprint.beats):
+            raise SemanticChainDenied("semantic stages must have matching node, event, and beat counts")
+        for node, event in zip(self.narrative.nodes, self.story.events, strict=True):
+            if (
+                event.event_id != _derived_id("event", node.to_mapping())
+                or event.node_id != node.node_id
+                or event.kind is not EventKind(node.kind.value)
+                or event.evidence != node.evidence
+                or event.candidate != node.candidate
+            ):
+                raise SemanticChainDenied("story event must be the exact deterministic expansion of its narrative node")
+        for index, (event, beat) in enumerate(zip(self.story.events, self.blueprint.beats, strict=True)):
+            if (
+                beat.beat_id != _derived_id("beat", event.to_mapping())
+                or beat.event_id != event.event_id
+                or beat.role is not _beat_role(index, len(self.story.events))
+                or beat.evidence != event.evidence
+                or beat.candidate != event.candidate
+            ):
+                raise SemanticChainDenied("blueprint beat must be the exact deterministic expansion of its story event")
 
     @property
     def profile(self) -> SemanticProfile:
@@ -78,6 +108,7 @@ class SemanticChainBuilder:
             NarrativeNode(
                 _derived_id("node", {"fact_id": fact.fact_id, "candidate": fact.candidate.to_mapping()}),
                 fact.fact_id,
+                fact.kind,
                 fact.evidence,
                 fact.candidate,
             )

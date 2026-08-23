@@ -17,7 +17,7 @@ from enum import Enum
 from typing import Final
 
 _SHA256: Final = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_OPAQUE_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_TOKEN: Final = re.compile(r"[a-z]+_[0-9a-f]{32}\Z")
 
 
 class SemanticChainError(ValueError):
@@ -64,9 +64,17 @@ class BeatRole(str, Enum):
     PAYOFF = "payoff"
 
 
-def _opaque_id(value: object, field_name: str) -> str:
-    if type(value) is not str or not _OPAQUE_ID.fullmatch(value):  # noqa: E721
-        raise SemanticChainDenied(f"{field_name} must be an opaque identifier")
+def _opaque_id(value: object, field_name: str, prefix: str) -> str:
+    """Validate a typed, non-semantic opaque token.
+
+    Evidence artifact IDs cross into the trusted provenance loader, so they
+    must be as non-semantic as catalog candidate/source identities. Fact IDs
+    do not cross that boundary, but use the same grammar to keep the persisted
+    semantic artifacts incapable of transporting paths, clocks, or scores.
+    """
+
+    if type(value) is not str or not _TOKEN.fullmatch(value) or not value.startswith(f"{prefix}_"):  # noqa: E721
+        raise SemanticChainDenied(f"{field_name} must be a {prefix}_<32 lowercase-hex> opaque token")
     return value
 
 
@@ -104,7 +112,7 @@ class EvidenceRef:
     content_hash: str
 
     def __post_init__(self) -> None:
-        _opaque_id(self.artifact_id, "evidence.artifact_id")
+        _opaque_id(self.artifact_id, "evidence.artifact_id", "evidence")
         _sha256(self.content_hash, "evidence.content_hash")
 
     def to_mapping(self) -> dict[str, str]:
@@ -127,8 +135,8 @@ class CatalogCandidateRef:
     profile: SemanticProfile
 
     def __post_init__(self) -> None:
-        _opaque_id(self.candidate_id, "candidate.candidate_id")
-        _opaque_id(self.catalog_source_id, "candidate.catalog_source_id")
+        _opaque_id(self.candidate_id, "candidate.candidate_id", "candidate")
+        _opaque_id(self.catalog_source_id, "candidate.catalog_source_id", "catalog")
         _sha256(self.catalog_source_hash, "candidate.catalog_source_hash")
         if type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("candidate.evidence must be an EvidenceRef")
@@ -155,7 +163,7 @@ class RegisteredFact:
     candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
-        _opaque_id(self.fact_id, "fact.fact_id")
+        _opaque_id(self.fact_id, "fact.fact_id", "fact")
         if type(self.kind) is not FactKind:  # noqa: E721
             raise SemanticChainDenied("fact.kind must be a FactKind")
         if type(self.evidence) is not EvidenceRef:  # noqa: E721
@@ -227,19 +235,22 @@ class SemanticChainInput:
 class NarrativeNode:
     node_id: str
     fact_id: str
+    kind: FactKind
     evidence: EvidenceRef
     candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
-        _opaque_id(self.node_id, "narrative_node.node_id")
-        _opaque_id(self.fact_id, "narrative_node.fact_id")
+        _opaque_id(self.node_id, "narrative_node.node_id", "node")
+        _opaque_id(self.fact_id, "narrative_node.fact_id", "fact")
+        if type(self.kind) is not FactKind:  # noqa: E721
+            raise SemanticChainDenied("narrative_node.kind must be a FactKind")
         if type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("narrative_node.evidence must be an EvidenceRef")
         if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
             raise SemanticChainDenied("narrative_node must bind its exact candidate evidence")
 
     def to_mapping(self) -> dict[str, object]:
-        return {"candidate": self.candidate.to_mapping(), "evidence": self.evidence.to_mapping(), "fact_id": self.fact_id, "node_id": self.node_id}
+        return {"candidate": self.candidate.to_mapping(), "evidence": self.evidence.to_mapping(), "fact_id": self.fact_id, "kind": self.kind.value, "node_id": self.node_id}
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +261,7 @@ class NarrativeGraph:
     input_hash: str
 
     def __post_init__(self) -> None:
-        _opaque_id(self.narrative_id, "narrative.narrative_id")
+        _opaque_id(self.narrative_id, "narrative.narrative_id", "narrative")
         if type(self.profile) is not SemanticProfile or self.profile is SemanticProfile.PRODUCTION:  # noqa: E721
             raise SemanticChainDenied("narrative.profile must be a non-production SemanticProfile")
         nodes = tuple(self.nodes)
@@ -277,8 +288,8 @@ class EventCard:
     candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
-        _opaque_id(self.event_id, "event.event_id")
-        _opaque_id(self.node_id, "event.node_id")
+        _opaque_id(self.event_id, "event.event_id", "event")
+        _opaque_id(self.node_id, "event.node_id", "node")
         if type(self.kind) is not EventKind or type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("event must contain an EventKind and EvidenceRef")
         if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
@@ -296,7 +307,7 @@ class Story:
     events: tuple[EventCard, ...]
 
     def __post_init__(self) -> None:
-        _opaque_id(self.story_id, "story.story_id")
+        _opaque_id(self.story_id, "story.story_id", "story")
         _sha256(self.narrative_hash, "story.narrative_hash")
         if type(self.profile) is not SemanticProfile or self.profile is SemanticProfile.PRODUCTION:  # noqa: E721
             raise SemanticChainDenied("story.profile must be a non-production SemanticProfile")
@@ -323,8 +334,8 @@ class BlueprintBeat:
     candidate: CatalogCandidateRef
 
     def __post_init__(self) -> None:
-        _opaque_id(self.beat_id, "blueprint_beat.beat_id")
-        _opaque_id(self.event_id, "blueprint_beat.event_id")
+        _opaque_id(self.beat_id, "blueprint_beat.beat_id", "beat")
+        _opaque_id(self.event_id, "blueprint_beat.event_id", "event")
         if type(self.role) is not BeatRole or type(self.evidence) is not EvidenceRef:  # noqa: E721
             raise SemanticChainDenied("blueprint beat must contain a BeatRole and EvidenceRef")
         if type(self.candidate) is not CatalogCandidateRef or self.candidate.evidence != self.evidence:  # noqa: E721
@@ -342,7 +353,7 @@ class EditorialBlueprint:
     beats: tuple[BlueprintBeat, ...]
 
     def __post_init__(self) -> None:
-        _opaque_id(self.blueprint_id, "blueprint.blueprint_id")
+        _opaque_id(self.blueprint_id, "blueprint.blueprint_id", "blueprint")
         _sha256(self.story_hash, "blueprint.story_hash")
         if type(self.profile) is not SemanticProfile or self.profile is SemanticProfile.PRODUCTION:  # noqa: E721
             raise SemanticChainDenied("blueprint.profile must be a non-production SemanticProfile")

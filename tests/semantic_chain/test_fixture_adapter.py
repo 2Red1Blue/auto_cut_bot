@@ -33,6 +33,10 @@ def _hash(digit: str) -> str:
     return f"sha256:{digit * 64}"
 
 
+def _token(kind: str, digit: str) -> str:
+    return f"{kind}_{digit * 32}"
+
+
 def _media() -> MediaEvidence:
     ticks = PTSIndex((0, 10, 20, 30, 40))
     return MediaEvidence(
@@ -71,7 +75,7 @@ class _Registry:
             raise FixtureAdapterDenied("candidate is not registered by this fixture catalog")
         if media_evidence is not self.evidence:
             raise FixtureAdapterDenied("registry requires the exact persisted MediaEvidence identity")
-        if candidate.catalog_source_id != "fixture_catalog_v1" or candidate.catalog_source_hash != _hash("e"):
+        if candidate.catalog_source_id != _token("catalog", "e") or candidate.catalog_source_hash != _hash("e"):
             raise FixtureAdapterDenied("catalog source ID/hash do not match registration")
         if candidate.profile is not SemanticProfile.TEST:
             raise FixtureAdapterDenied("candidate profile does not match registration")
@@ -88,10 +92,10 @@ class _Registry:
 
 def _registered() -> tuple[FixtureCatalogAdapter, SemanticChain, CatalogCandidateRef, MediaEvidence]:
     media = _media()
-    evidence = EvidenceRef("media_evidence_v1", canonical_sha256(media.to_json()))
-    candidate = CatalogCandidateRef("candidate_v1", "fixture_catalog_v1", _hash("e"), evidence, SemanticProfile.TEST)
+    evidence = EvidenceRef(_token("evidence", "a"), canonical_sha256(media.to_json()))
+    candidate = CatalogCandidateRef(_token("candidate", "a"), _token("catalog", "e"), _hash("e"), evidence, SemanticProfile.TEST)
     chain = SemanticChainBuilder().build(
-        SemanticChainInput(SemanticProfile.TEST, (evidence,), (RegisteredFact("fact_v1", FactKind.OBSERVATION, evidence, candidate),))
+        SemanticChainInput(SemanticProfile.TEST, (evidence,), (RegisteredFact(_token("fact", "a"), FactKind.OBSERVATION, evidence, candidate),))
     )
     return FixtureCatalogAdapter(_Loader(media), _Registry(candidate, media)), chain, candidate, media
 
@@ -99,7 +103,7 @@ def _registered() -> tuple[FixtureCatalogAdapter, SemanticChain, CatalogCandidat
 def test_adapter_resolves_only_candidate_bound_through_the_semantic_chain() -> None:
     adapter, chain, candidate, _ = _registered()
     assert adapter.resolve(chain, candidate) == CatalogResolution(candidate, candidate.evidence)
-    foreign = CatalogCandidateRef("candidate_other", "fixture_catalog_v1", _hash("e"), candidate.evidence, SemanticProfile.TEST)
+    foreign = CatalogCandidateRef(_token("candidate", "b"), _token("catalog", "e"), _hash("e"), candidate.evidence, SemanticProfile.TEST)
     with pytest.raises(FixtureAdapterDenied, match="exact catalog candidate"):
         adapter.resolve(chain, foreign)
 
