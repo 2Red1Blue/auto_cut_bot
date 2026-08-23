@@ -236,10 +236,15 @@ class SemanticChainCommand:
             if cached is not None:
                 return SemanticChainCommandResult(claimed, cached)
             try:
-                reader = getattr(self._store, "read_semantic_resolution_proof", None)
-                if not callable(reader) or canonical_sha256(
-                    reader(request.job, claimed.command_slot_id)
-                ) != canonical_sha256(_proof(request)):
+                reader = getattr(self._store, "read_succeeded_semantic_resolution_proof", None)
+                if not callable(reader):
+                    return SemanticChainCommandResult(claimed)
+                persisted = reader(request.job)
+                if persisted.command_slot_id != claimed.command_slot_id:
+                    return SemanticChainCommandResult(claimed)
+                if canonical_sha256(json.loads(persisted.payload_json)) != canonical_sha256(
+                    _proof(request)
+                ):
                     return SemanticChainCommandResult(claimed)
                 _, resolved = self._resolve(request)
                 return SemanticChainCommandResult(claimed, resolved)

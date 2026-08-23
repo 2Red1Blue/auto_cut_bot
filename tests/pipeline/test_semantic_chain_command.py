@@ -62,6 +62,20 @@ class _Store:
         except KeyError as error:
             raise MediaEvidenceUnavailableError("exact media evidence unavailable") from error
 
+    def read_succeeded_semantic_resolution_proof(self, job: Job):
+        for success in self.successes:
+            for member in success.artifacts:
+                if member.artifact_type == "semantic_resolution_proof":
+                    return type(
+                        "Proof",
+                        (),
+                        {
+                            "command_slot_id": success.command_slot_id,
+                            "payload_json": member.payload_json,
+                        },
+                    )()
+        raise MediaEvidenceUnavailableError("semantic proof unavailable")
+
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         key = (claim.job.job_key, claim.idempotency_key)
         if key in self.outcomes:
@@ -232,7 +246,7 @@ def test_new_command_instance_replay_re_resolves_the_durable_bridge() -> None:
     replay = SemanticChainCommand(store).execute(request)  # type: ignore[arg-type]
 
     assert first.outcome.state == replay.outcome.state == "succeeded"
-    assert replay.resolved_beat is None
+    assert replay.resolved_beat == first.resolved_beat
     assert len(store.successes) == 1
 
 
