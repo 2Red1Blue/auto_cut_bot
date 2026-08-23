@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from ..media.preflight import MediaPreflightRequest
 from ..physical_edit import FixtureBeatInput, SpanSelectionPolicy
@@ -16,6 +17,7 @@ from ..pipeline import (
 )
 from ..semantic_chain import (
     CatalogCandidateRef,
+    EvidenceRef,
     FactKind,
     FixtureCandidateRegistry,
     RegisteredFact,
@@ -26,6 +28,11 @@ from ..store import Job, MediaEvidenceReference, RecipeReference
 from ..store.models import canonical_recipe_scope
 
 _SCENARIO = re.compile(r"scenario_[0-9a-f]{32}\Z")
+_FIXTURE = re.compile(r"fixture_[0-9a-f]{32}\Z")
+_CANDIDATE = re.compile(r"candidate_[0-9a-f]{32}\Z")
+_CATALOG = re.compile(r"catalog_[0-9a-f]{32}\Z")
+_FACT = re.compile(r"fact_[0-9a-f]{32}\Z")
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ScenarioRegistryDenied(ValueError):  # noqa: N818 - outcome vocabulary is intentional.
@@ -65,8 +72,31 @@ class FixtureScenario:
     beat_resolver: FixtureBeatResolver
 
     def __post_init__(self) -> None:
+        if type(self.ref) is not ScenarioRef:  # noqa: E721
+            raise ScenarioRegistryDenied("fixture scenario requires a ScenarioRef")
+        if type(self.profile) is not SemanticProfile:  # noqa: E721
+            raise ScenarioRegistryDenied("fixture scenario profile must be a SemanticProfile")
         if self.profile is SemanticProfile.PRODUCTION:
             raise ScenarioRegistryDenied("production scenarios are forbidden")
+        for field_name, value, pattern in (
+            ("fixture_id", self.fixture_id, _FIXTURE),
+            ("candidate_id", self.candidate_id, _CANDIDATE),
+            ("catalog_source_id", self.catalog_source_id, _CATALOG),
+            ("fact_id", self.fact_id, _FACT),
+        ):
+            if type(value) is not str or not pattern.fullmatch(value):  # noqa: E721
+                raise ScenarioRegistryDenied(f"{field_name} must be a closed typed token")
+        if type(self.expected_source_sha256) is not str or not _SHA256.fullmatch(self.expected_source_sha256):  # noqa: E721
+            raise ScenarioRegistryDenied("expected_source_sha256 must be a lowercase sha256 digest")
+        if type(self.catalog_source_hash) is not str or not _SHA256.fullmatch(self.catalog_source_hash):  # noqa: E721
+            raise ScenarioRegistryDenied("catalog_source_hash must be a lowercase sha256 digest")
+        if type(self.fact_kind) is not FactKind:  # noqa: E721
+            raise ScenarioRegistryDenied("fact_kind must be a FactKind")
+        if not all(
+            isinstance(cast(object, path), Path)
+            for path in (self.source_path, self.manifest_path, self.sidecar_path)
+        ):
+            raise ScenarioRegistryDenied("fixture scenario paths must be Path values")
         if (
             type(self.upstream_beat) is not FixtureBeatInput
             or type(self.policy) is not SpanSelectionPolicy
@@ -74,7 +104,7 @@ class FixtureScenario:
             raise ScenarioRegistryDenied("fixture scenario requires closed physical fixture values")
         if not callable(getattr(self.registry, "resolve_exact", None)):
             raise ScenarioRegistryDenied("fixture scenario requires an exact candidate registry")
-        if not isinstance(self.beat_resolver, FixtureBeatResolver):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not callable(getattr(self.beat_resolver, "resolve_beat", None)):
             raise ScenarioRegistryDenied("fixture scenario requires a fixture beat resolver")
 
 
@@ -176,10 +206,6 @@ class FixtureScenarioRegistry:
             raise ScenarioRegistryDenied(
                 "upstream evidence must be the canonical media_evidence artifact"
             )
-        from ..semantic_chain import (
-            EvidenceRef,
-        )  # Local import keeps plan types' boundary explicit.
-
         evidence_ref = EvidenceRef(evidence.logical_id, evidence.content_hash)
         candidate = CatalogCandidateRef(
             scenario.candidate_id,
