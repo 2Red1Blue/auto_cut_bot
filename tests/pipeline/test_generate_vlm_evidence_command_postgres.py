@@ -105,6 +105,8 @@ def migrated_database() -> None:
                 "0001_runtime_core.sql",
                 "0002_runtime_core_constraints.sql",
                 "0003_vlm_generation_and_run_finalization.sql",
+                "0004_provider_media_objects.sql",
+                "0006_ark_provider_recovery.sql",
             ):
                 cursor.execute((MIGRATIONS / name).read_text())
 
@@ -127,6 +129,66 @@ class FakeProvider:
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
         self.reconcile_calls.append(query)
         return self.reconcile_result
+
+
+class CreatedThenInterruptedProvider:
+    def __init__(self, completed: ProviderCompleted) -> None:
+        self.completed = completed
+        self.reconcile_calls: list[ProviderReconcileQuery] = []
+
+    def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
+        assert request.on_provider_request_id is not None
+        request.on_provider_request_id("provider-request-created-before-crash")
+        raise TimeoutError("worker crashed after response.created")
+
+    def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
+        self.reconcile_calls.append(query)
+        return self.completed
+
+
+class CallbackCasFailureProvider:
+    def __init__(self, completed: ProviderCompleted) -> None:
+        self.completed = completed
+        self.dispatch_calls: list[ProviderDispatchRequest] = []
+        self.reconcile_calls: list[ProviderReconcileQuery] = []
+
+    def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
+        self.dispatch_calls.append(request)
+        assert request.on_provider_request_id is not None
+        try:
+            request.on_provider_request_id("provider-request-callback-fallback")
+        except RuntimeError:
+            return ProviderIndeterminate(
+                "PROVIDER_REQUEST_ID_PERSIST_FAILED",
+                "provider-request-callback-fallback",
+            )
+        raise AssertionError("the first provider request-id CAS must fail")
+
+    def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
+        self.reconcile_calls.append(query)
+        return self.completed
+
+
+class FailFirstProviderRequestIdStore:
+    def __init__(self, delegate: PostgresRuntimeStore) -> None:
+        self.delegate = delegate
+        self.failed = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.delegate, name)
+
+    def record_generation_provider_request_id(
+        self,
+        attempt_id: object,
+        *,
+        expected_version: int,
+        provider_request_id: str,
+    ) -> object:
+        del attempt_id, expected_version, provider_request_id
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated response.created CAS failure")
+        raise AssertionError("dispatch must not be retried after callback failure")
 
 
 def _request(
@@ -304,6 +366,68 @@ def test_indeterminate_dispatch_reconciles_same_attempt_without_redispatch() -> 
     assert len(provider.reconcile_calls) == 1
     assert recovered.attempt is not None
     assert recovered.attempt.attempt_id == first.attempt.attempt_id
+
+
+def test_response_created_callback_persists_request_id_before_stream_crash() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-created-crash", "test"))
+    provider = CreatedThenInterruptedProvider(
+        ProviderCompleted(
+            _raw_success(request),
+            "provider-request-created-before-crash",
+        )
+    )
+    command = GenerateVlmEvidenceCommand(store, provider)
+
+    interrupted = command.execute(request)
+
+    assert interrupted.outcome.state == "running"
+    assert interrupted.attempt is not None
+    assert interrupted.attempt.state == "indeterminate"
+    assert (
+        interrupted.attempt.provider_request_id
+        == "provider-request-created-before-crash"
+    )
+    recovered = command.execute(request)
+    assert recovered.outcome.state == "succeeded"
+    assert len(provider.reconcile_calls) == 1
+    assert (
+        provider.reconcile_calls[0].provider_request_id
+        == "provider-request-created-before-crash"
+    )
+
+
+def test_callback_failure_fallback_persists_id_and_replay_only_reconciles() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-created-cas-fallback", "test"))
+    wrapped_store = FailFirstProviderRequestIdStore(store)
+    provider = CallbackCasFailureProvider(
+        ProviderCompleted(
+            _raw_success(request),
+            "provider-request-callback-fallback",
+        )
+    )
+    command = GenerateVlmEvidenceCommand(wrapped_store, provider)  # type: ignore[arg-type]
+
+    interrupted = command.execute(request)
+
+    assert interrupted.outcome.state == "running"
+    assert interrupted.attempt is not None
+    assert interrupted.attempt.state == "indeterminate"
+    assert (
+        interrupted.attempt.provider_request_id
+        == "provider-request-callback-fallback"
+    )
+    recovered = command.execute(request)
+    assert recovered.outcome.state == "succeeded"
+    assert len(provider.dispatch_calls) == 1
+    assert len(provider.reconcile_calls) == 1
+    assert (
+        provider.reconcile_calls[0].provider_request_id
+        == "provider-request-callback-fallback"
+    )
 
 
 def test_invalid_response_is_denied_without_observation_artifact() -> None:

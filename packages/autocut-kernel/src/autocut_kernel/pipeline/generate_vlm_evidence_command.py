@@ -114,6 +114,14 @@ class GenerationStore(Protocol):
         provider_request_id: str | None = None,
     ) -> GenerationAttempt: ...
 
+    def record_generation_provider_request_id(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_request_id: str,
+    ) -> GenerationAttempt: ...
+
     def record_generation_response(
         self,
         attempt_id: UUID,
@@ -358,6 +366,16 @@ class GenerateVlmEvidenceCommand:
                 attempt.attempt_id,
                 expected_version=attempt.version,
             )
+            attempt_box = [attempt]
+
+            def persist_provider_request_id(provider_request_id: str) -> None:
+                current = attempt_box[0]
+                attempt_box[0] = self._store.record_generation_provider_request_id(
+                    current.attempt_id,
+                    expected_version=current.version,
+                    provider_request_id=provider_request_id,
+                )
+
             try:
                 provider_result = self._provider.dispatch(
                     ProviderDispatchRequest(
@@ -368,14 +386,17 @@ class GenerateVlmEvidenceCommand:
                         request.request_identity.request_payload_sha256,
                         request.manifest.proxy_blob_ref,
                         proxy_content,
+                        persist_provider_request_id,
                     )
                 )
             except Exception:
+                attempt = attempt_box[0]
                 attempt = self._store.mark_generation_indeterminate(
                     attempt.attempt_id,
                     expected_version=attempt.version,
                 )
                 return GenerateVlmEvidenceResult(outcome, attempt)
+            attempt = attempt_box[0]
             return self._handle_provider_result(request, outcome, attempt, provider_result)
 
         if attempt.state in ("dispatched", "indeterminate"):

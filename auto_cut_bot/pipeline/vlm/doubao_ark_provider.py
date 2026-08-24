@@ -15,6 +15,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from autocut_kernel.vlm import (
     ProviderCompleted,
@@ -23,10 +24,11 @@ from autocut_kernel.vlm import (
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
+    ProviderRequestIdCallback,
     ProviderResult,
 )
 
-from .ark_file_cache import ArkFileCachePort
+from .ark_file_cache import ArkFileCachePort, ArkFileCacheRecord
 
 DOUBAO_ARK_PROVIDER_ID = "doubao-ark-responses-stream"
 DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v1"
@@ -54,18 +56,29 @@ _EXPECTED_PARAMETER_FIELDS = frozenset(
 @dataclass(frozen=True, slots=True)
 class DoubaoArkVlmProviderConfig:
     api_key: str
+    tenant_id: str
+    project_id: str
     base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     timeout_seconds: float = 300.0
     upload_timeout_seconds: float = 300.0
     upload_poll_interval_seconds: float = 2.0
     provider_file_ttl_seconds: int = 5 * 24 * 60 * 60
+    file_cache_lease_seconds: int = 15 * 60
+    unknown_upload_quarantine_seconds: int = 5 * 24 * 60 * 60
     max_video_bytes: int = 512 * 1024 * 1024
+    max_stream_bytes: int = 8 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if type(self.api_key) is not str or not self.api_key.strip():  # noqa: E721
             raise ValueError("Ark API key must be non-empty")
+        for value, name in ((self.tenant_id, "tenant_id"), (self.project_id, "project_id")):
+            if type(value) is not str or not value.strip() or len(value) > 256:  # noqa: E721
+                raise ValueError(f"Ark {name} must be non-empty non-secret identity text")
         if type(self.base_url) is not str or not self.base_url.startswith("https://"):  # noqa: E721
             raise ValueError("Ark base_url must use HTTPS")
+        split = urlsplit(self.base_url)
+        if not split.hostname or split.username or split.password or split.query or split.fragment:
+            raise ValueError("Ark base_url must have a host and no credentials, query, or fragment")
         for name, value in (
             ("timeout_seconds", self.timeout_seconds),
             ("upload_timeout_seconds", self.upload_timeout_seconds),
@@ -75,8 +88,36 @@ class DoubaoArkVlmProviderConfig:
                 raise ValueError(f"Ark {name} must be positive")
         if type(self.provider_file_ttl_seconds) is not int or self.provider_file_ttl_seconds < 60:  # noqa: E721
             raise ValueError("Ark provider_file_ttl_seconds must be at least 60")
+        if (
+            type(self.file_cache_lease_seconds) is not int  # noqa: E721
+            or self.file_cache_lease_seconds
+            < self.upload_timeout_seconds + (2 * self.timeout_seconds)
+        ):
+            raise ValueError("Ark file_cache_lease_seconds must cover Files API recovery")
+        if (
+            type(self.unknown_upload_quarantine_seconds) is not int  # noqa: E721
+            or self.unknown_upload_quarantine_seconds < self.provider_file_ttl_seconds
+        ):
+            raise ValueError(
+                "Ark unknown_upload_quarantine_seconds must cover provider_file_ttl_seconds"
+            )
         if type(self.max_video_bytes) is not int or self.max_video_bytes < 1:  # noqa: E721
             raise ValueError("Ark max_video_bytes must be a positive integer")
+        if type(self.max_stream_bytes) is not int or self.max_stream_bytes < 1:  # noqa: E721
+            raise ValueError("Ark max_stream_bytes must be a positive integer")
+
+    @property
+    def provider_scope_fingerprint(self) -> str:
+        encoded = json.dumps(
+            {
+                "origin": _ark_origin(self.base_url),
+                "project": self.project_id,
+                "tenant": self.tenant_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 class ClientFactory(Protocol):
@@ -113,6 +154,8 @@ class DoubaoArkVlmProvider:
             raise TypeError("request must be an exact ProviderDispatchRequest")
         if request.provider_id != self.provider_id:
             return _failure("PROVIDER_ID_MISMATCH")
+        if request.on_provider_request_id is None:
+            return _failure("PROVIDER_REQUEST_ID_CALLBACK_REQUIRED")
         if len(request.proxy_content) > self._config.max_video_bytes:
             return _failure(
                 "PROVIDER_MEDIA_LIMIT_EXCEEDED",
@@ -173,8 +216,14 @@ class DoubaoArkVlmProvider:
                 max_output_tokens=parameters["max_output_tokens"],
                 temperature=parameters["temperature"],
                 stream=True,
+                store=True,
             )
-            return _consume_stream(stream)
+            return _consume_stream(
+                stream,
+                expected_model=request.model_id,
+                max_stream_bytes=self._config.max_stream_bytes,
+                on_provider_request_id=request.on_provider_request_id,
+            )
         except Exception as error:
             return _map_provider_error(error)
 
@@ -197,11 +246,26 @@ class DoubaoArkVlmProvider:
             )
             response = client.responses.retrieve(query.provider_request_id)
             status = str(getattr(response, "status", "")).lower()
-            response_id = _response_id(response) or query.provider_request_id
+            response_id = _response_id(response)
+            response_model = _response_model(response)
+            if response_id != query.provider_request_id or response_model != query.model_id:
+                return _failure(
+                    "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
+                    provider_request_id=query.provider_request_id,
+                )
+            assert response_id is not None
             if status == "completed":
-                text = _response_text(response)
-                if not text:
-                    return _failure("PROVIDER_EMPTY_RESPONSE", provider_request_id=response_id)
+                text = _authoritative_response_text(response)
+                if text is None:
+                    return _failure(
+                        "PROVIDER_RESPONSE_OUTPUT_INVALID",
+                        provider_request_id=response_id,
+                    )
+                if len(text.encode("utf-8")) > self._config.max_stream_bytes:
+                    return _failure(
+                        "PROVIDER_STREAM_LIMIT_EXCEEDED",
+                        provider_request_id=response_id,
+                    )
                 return ProviderCompleted(text.encode("utf-8"), response_id)
             if status in {"queued", "in_progress", "processing"}:
                 return ProviderPending(response_id)
@@ -222,12 +286,17 @@ class DoubaoArkVlmProvider:
         video_fps: float,
     ) -> str | ProviderResult:
         policy_hash = _preprocess_policy_hash(video_fps)
-        record, created = self._file_cache.claim(
+        record, lease_acquired = self._file_cache.claim(
             provider_id=self.provider_id,
+            provider_scope_fingerprint=self._config.provider_scope_fingerprint,
             content_hash=request.proxy_blob_ref.content_hash,
             byte_length=request.proxy_blob_ref.byte_length,
             media_type=request.proxy_blob_ref.media_type,
             preprocess_policy_hash=policy_hash,
+            lease_seconds=self._config.file_cache_lease_seconds,
+            unknown_outcome_quarantine_seconds=(
+                self._config.unknown_upload_quarantine_seconds
+            ),
         )
         if record.state == "available":
             if record.expires_at is None or record.expires_at <= datetime.now(timezone.utc):
@@ -261,8 +330,20 @@ class DoubaoArkVlmProvider:
                 provider_status=status or "provider_status_unknown",
             )
             return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status=status)
-        if not created:
-            if record.state in {"reserved", "processing"}:
+        if record.state == "processing":
+            if not lease_acquired:
+                return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_IN_PROGRESS")
+            if record.provider_file_id is None:
+                return _failure("PROVIDER_MEDIA_CACHE_INVALID")
+            return self._finish_processing_file(
+                client=client,
+                record=record,
+                file_id=record.provider_file_id,
+            )
+        if record.state == "indeterminate":
+            return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN")
+        if not lease_acquired:
+            if record.state == "reserved":
                 return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_IN_PROGRESS")
             return _failure(
                 "PROVIDER_MEDIA_TERMINAL",
@@ -280,6 +361,7 @@ class DoubaoArkVlmProvider:
             processing = self._file_cache.record_processing(
                 record.media_object_id,
                 expected_version=record.version,
+                expected_lease_token=record.lease_token,
                 provider_file_id=file_id,
                 provider_status=str(getattr(uploaded, "status", "processing")),
             )
@@ -289,6 +371,7 @@ class DoubaoArkVlmProvider:
                 self._file_cache.record_failed(
                     record.media_object_id,
                     expected_version=record.version,
+                    expected_lease_token=record.lease_token,
                     provider_status="upload_failed",
                     failure_code=mapped.failure_code,
                 )
@@ -296,35 +379,61 @@ class DoubaoArkVlmProvider:
                 self._file_cache.record_indeterminate(
                     record.media_object_id,
                     expected_version=record.version,
+                    expected_lease_token=record.lease_token,
                     provider_status="upload_outcome_unknown",
+                    audit_expires_at=datetime.now(timezone.utc)
+                    + timedelta(
+                        seconds=self._config.unknown_upload_quarantine_seconds
+                    ),
                 )
             return mapped
+        return self._finish_processing_file(
+            client=client,
+            record=processing,
+            file_id=file_id,
+        )
+
+    def _finish_processing_file(
+        self,
+        *,
+        client: Any,
+        record: ArkFileCacheRecord,
+        file_id: str,
+    ) -> str | ProviderResult:
+        if type(record) is not ArkFileCacheRecord:  # noqa: E721
+            raise TypeError("record must be an ArkFileCacheRecord")
         try:
-            client.files.wait_for_processing(
-                file_id,
-                poll_interval=self._config.upload_poll_interval_seconds,
-                max_wait_seconds=self._config.upload_timeout_seconds,
-            )
             info = client.files.retrieve(file_id)
             status = str(getattr(info, "status", "")).lower()
+            if status not in _READY_FILE_STATUSES and status not in _ERROR_FILE_STATUSES:
+                client.files.wait_for_processing(
+                    file_id,
+                    poll_interval=self._config.upload_poll_interval_seconds,
+                    max_wait_seconds=self._config.upload_timeout_seconds,
+                )
+                info = client.files.retrieve(file_id)
+                status = str(getattr(info, "status", "")).lower()
             if status not in _READY_FILE_STATUSES:
                 if status in _ERROR_FILE_STATUSES:
                     self._file_cache.record_failed(
-                        processing.media_object_id,
-                        expected_version=processing.version,
+                        record.media_object_id,
+                        expected_version=record.version,
+                        expected_lease_token=record.lease_token,
                         provider_status=status,
                         failure_code="PROVIDER_MEDIA_PROCESSING_FAILED",
                     )
                     return _failure("PROVIDER_MEDIA_PROCESSING_FAILED", provider_status=status)
-                self._file_cache.record_indeterminate(
-                    processing.media_object_id,
-                    expected_version=processing.version,
+                self._file_cache.release_processing(
+                    record.media_object_id,
+                    expected_version=record.version,
+                    expected_lease_token=record.lease_token,
                     provider_status=status or "provider_status_unknown",
                 )
                 return ProviderIndeterminate("PROVIDER_MEDIA_STATUS_UNKNOWN")
             self._file_cache.record_available(
-                processing.media_object_id,
-                expected_version=processing.version,
+                record.media_object_id,
+                expected_version=record.version,
+                expected_lease_token=record.lease_token,
                 provider_status=status,
                 expires_at=datetime.now(timezone.utc)
                 + timedelta(seconds=self._config.provider_file_ttl_seconds),
@@ -334,15 +443,17 @@ class DoubaoArkVlmProvider:
             mapped = _map_provider_error(error)
             if isinstance(mapped, ProviderFailed):
                 self._file_cache.record_failed(
-                    processing.media_object_id,
-                    expected_version=processing.version,
+                    record.media_object_id,
+                    expected_version=record.version,
+                    expected_lease_token=record.lease_token,
                     provider_status="processing_failed",
                     failure_code=mapped.failure_code,
                 )
                 return mapped
-            self._file_cache.record_indeterminate(
-                processing.media_object_id,
-                expected_version=processing.version,
+            self._file_cache.release_processing(
+                record.media_object_id,
+                expected_version=record.version,
+                expected_lease_token=record.lease_token,
                 provider_status="processing_outcome_unknown",
             )
             return ProviderIndeterminate(
@@ -422,31 +533,78 @@ def _preprocess_policy_hash(video_fps: float) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _consume_stream(stream: object) -> ProviderResult:
-    text = ""
+def _consume_stream(
+    stream: object,
+    *,
+    expected_model: str,
+    max_stream_bytes: int,
+    on_provider_request_id: ProviderRequestIdCallback,
+) -> ProviderResult:
     request_id: str | None = None
+    stream_bytes = 0
     try:
         for event in cast(Any, stream):
             event_type = str(getattr(event, "type", ""))
             response = getattr(event, "response", None)
-            request_id = _response_id(response) or request_id
-            if event_type == "response.output_text.delta":
-                delta = getattr(event, "delta", "")
-                if isinstance(delta, str):
-                    text += delta
-            elif event_type == "response.output_text.done":
-                done_text = getattr(event, "text", "")
-                if isinstance(done_text, str) and done_text:
-                    text = done_text
+            if event_type in {"response.output_text.delta", "response.output_text.done"}:
+                field_name = "delta" if event_type.endswith("delta") else "text"
+                telemetry = getattr(event, field_name, "")
+                if isinstance(telemetry, str):
+                    stream_bytes += len(telemetry.encode("utf-8"))
+                    if stream_bytes > max_stream_bytes:
+                        return _failure(
+                            "PROVIDER_STREAM_LIMIT_EXCEEDED",
+                            provider_request_id=request_id,
+                            limit=max_stream_bytes,
+                        )
             elif event_type == "response.created":
-                request_id = _response_id(response) or request_id
+                created_id = _response_id(response)
+                created_model = _response_model(response)
+                if (
+                    created_id is None
+                    or created_model != expected_model
+                    or (request_id is not None and request_id != created_id)
+                ):
+                    return _failure(
+                        "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
+                        provider_request_id=request_id,
+                    )
+                if request_id is None:
+                    request_id = created_id
+                    try:
+                        on_provider_request_id(created_id)
+                    except Exception:
+                        return ProviderIndeterminate(
+                            "PROVIDER_REQUEST_ID_PERSIST_FAILED",
+                            request_id,
+                        )
             elif event_type == "response.completed":
-                final_text = _response_text(response)
-                if final_text:
-                    text = final_text
-                if not text:
-                    return _failure("PROVIDER_EMPTY_RESPONSE", provider_request_id=request_id)
-                return ProviderCompleted(text.encode("utf-8"), request_id)
+                completed_id = _response_id(response)
+                completed_model = _response_model(response)
+                if (
+                    request_id is None
+                    or completed_id != request_id
+                    or completed_model != expected_model
+                    or str(getattr(response, "status", "")).lower() != "completed"
+                ):
+                    return _failure(
+                        "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
+                        provider_request_id=request_id,
+                    )
+                final_text = _authoritative_response_text(response)
+                if final_text is None:
+                    return _failure(
+                        "PROVIDER_RESPONSE_OUTPUT_INVALID",
+                        provider_request_id=request_id,
+                    )
+                stream_bytes += len(final_text.encode("utf-8"))
+                if stream_bytes > max_stream_bytes:
+                    return _failure(
+                        "PROVIDER_STREAM_LIMIT_EXCEEDED",
+                        provider_request_id=request_id,
+                        limit=max_stream_bytes,
+                    )
+                return ProviderCompleted(final_text.encode("utf-8"), request_id)
             elif event_type == "response.incomplete":
                 return _failure("PROVIDER_RESPONSE_INCOMPLETE", provider_request_id=request_id)
             elif event_type in {"response.failed", "error"}:
@@ -461,17 +619,41 @@ def _response_id(response: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _response_text(response: object) -> str:
-    parts: list[str] = []
-    for item in cast(Any, getattr(response, "output", ()) or ()):
-        if getattr(item, "type", None) != "message":
-            continue
-        for content in cast(Any, getattr(item, "content", ()) or ()):
-            if getattr(content, "type", None) in {"output_text", "text"}:
-                value = getattr(content, "text", "")
-                if isinstance(value, str) and value:
-                    parts.append(value)
-    return "".join(parts)
+def _response_model(response: object) -> str | None:
+    value = getattr(response, "model", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _authoritative_response_text(response: object) -> str | None:
+    output = getattr(response, "output", None)
+    if not isinstance(output, (list, tuple)):
+        return None
+    output_items = cast(list[object] | tuple[object, ...], output)
+    messages: list[object] = [
+        item for item in output_items if getattr(item, "type", None) == "message"
+    ]
+    if len(messages) != 1:
+        return None
+    content = getattr(messages[0], "content", None)
+    if not isinstance(content, (list, tuple)):
+        return None
+    content_items = cast(list[object] | tuple[object, ...], content)
+    if len(content_items) != 1:
+        return None
+    item = content_items[0]
+    value = getattr(item, "text", None)
+    if getattr(item, "type", None) != "output_text" or not isinstance(value, str) or not value:
+        return None
+    return value
+
+
+def _ark_origin(base_url: str) -> str:
+    split = urlsplit(base_url)
+    host = cast(str, split.hostname).lower()
+    default_port = 443 if split.scheme.lower() == "https" else None
+    port = split.port
+    authority = host if port in (None, default_port) else f"{host}:{port}"
+    return f"{split.scheme.lower()}://{authority}"
 
 
 def _required_text(value: object, field_name: str) -> str:

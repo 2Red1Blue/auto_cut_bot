@@ -79,3 +79,17 @@ def test_provider_media_migration_binds_file_id_to_content_and_policy() -> None:
     assert "runtime_one_live_provider_media_identity" in sql
     assert "provider file identity is immutable once known" in sql
     assert "provider media objects must begin as a clean reservation" in sql
+
+
+def test_ark_recovery_migration_adds_scope_leases_and_immediate_request_id_cas() -> None:
+    sql = (MIGRATIONS / "0006_ark_provider_recovery.sql").read_text()
+
+    assert "provider_scope_fingerprint" in sql
+    assert "lease_token" in sql
+    assert "lease_expires_at" in sql
+    assert "audit_expires_at" in sql
+    assert "runtime_one_live_provider_media_identity" in sql
+    assert "provider_media_scoped_generation_unique" in sql
+    assert "provider_media_scoped_file_id_unique" in sql
+    assert "generation provider request identity is immutable once known" in sql
+    assert "OLD.state = 'dispatched' AND NEW.state = 'dispatched'" in sql

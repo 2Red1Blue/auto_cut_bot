@@ -18,6 +18,7 @@ from .provider_port import (
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
+    ProviderRequestIdCallback,
     ProviderResult,
     VlmProviderPort,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "ProviderFailed",
     "ProviderIndeterminate",
     "ProviderPending",
+    "ProviderRequestIdCallback",
     "ProviderReconcileQuery",
     "ProviderResult",
     "VlmContractError",

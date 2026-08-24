@@ -24,6 +24,13 @@ def _text(value: object, field_name: str) -> str:
     return value
 
 
+@runtime_checkable
+class ProviderRequestIdCallback(Protocol):
+    """Persist the immutable provider request identity at ``response.created``."""
+
+    def __call__(self, provider_request_id: str) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderDispatchRequest:
     provider_id: str
@@ -33,6 +40,7 @@ class ProviderDispatchRequest:
     request_payload_sha256: str
     proxy_blob_ref: WindowProxyBlobRef
     proxy_content: bytes
+    on_provider_request_id: ProviderRequestIdCallback | None = None
 
     def __post_init__(self) -> None:
         _text(self.provider_id, "dispatch.provider_id")
@@ -53,6 +61,10 @@ class ProviderDispatchRequest:
             != self.proxy_blob_ref.content_hash
         ):
             raise VlmValidationError("dispatch proxy bytes do not match the immutable BlobRef")
+        if self.on_provider_request_id is not None and not callable(
+            self.on_provider_request_id
+        ):
+            raise VlmValidationError("dispatch.on_provider_request_id must be callable")
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,6 +150,7 @@ __all__ = [
     "ProviderFailed",
     "ProviderIndeterminate",
     "ProviderPending",
+    "ProviderRequestIdCallback",
     "ProviderReconcileQuery",
     "ProviderResult",
     "VlmProviderPort",

@@ -60,6 +60,8 @@ from .models import (
 
 
 class DbCursor(Protocol):
+    rowcount: int
+
     def execute(self, query: str, params: tuple[object, ...] = ()) -> object: ...
 
     def fetchone(self) -> tuple[object, ...] | None: ...
@@ -596,6 +598,57 @@ class PostgresRuntimeStore:
             source_state="dispatched",
             target_state="responded",
         )
+
+    def record_generation_provider_request_id(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_request_id: str,
+    ) -> GenerationAttempt:
+        """CAS-bind ``response.created`` identity while the stream is still open."""
+
+        if type(provider_request_id) is not str or not provider_request_id.strip():  # noqa: E721
+            raise StoreValidationError("provider_request_id must be non-empty")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(
+                cursor, attempt_id
+            )
+            if attempt.provider_request_id is not None:
+                if attempt.provider_request_id != provider_request_id:
+                    raise IdempotencyConflictError(
+                        "provider_request_id cannot change for one attempt"
+                    )
+                return attempt
+            self._require_attempt_transition(
+                attempt,
+                expected_version,
+                ("dispatched",),
+                "bind provider request id",
+            )
+            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError(
+                    "generation slot cannot bind a provider request identity"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET provider_request_id = %s, version = version + 1
+                 WHERE attempt_id = %s AND version = %s
+                   AND state = 'dispatched' AND provider_request_id IS NULL
+                """,
+                (provider_request_id, attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise GenerationAttemptStateError(
+                    "stale generation provider request identity CAS"
+                )
+            return self._read_generation_attempt_by_id(
+                cursor, attempt_id, for_update=False
+            )
+
+        return self._transaction(operation)
 
     def mark_generation_indeterminate(
         self,
