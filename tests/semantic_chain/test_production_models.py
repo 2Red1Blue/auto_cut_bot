@@ -29,6 +29,7 @@ from autocut_kernel.semantic_chain.production_models import (
     CoverageAdmissionEvaluator,
     CoverageDisposition,
     CoverageLedger,
+    CoveragePolicy,
     CoverageResolution,
     CoverageRow,
     CoverageUnitType,
@@ -746,7 +747,11 @@ def test_coverage_admission_binds_exact_set_and_unresolved_never_continues() -> 
         evidence_diagnostics=evidence,
         conflict_diagnostics=conflicts,
         dependency_proof=proof,
-        coverage_mode="strict_global",
+        coverage_policy_ref=_artifact(
+            "art_coverage_policy",
+            CoveragePolicy("coverage-policy-strict", "strict_global").canonical_hash,
+        ),
+        coverage_policy=CoveragePolicy("coverage-policy-strict", "strict_global"),
     )
     assert clean.next_action == "continue"
 
@@ -803,7 +808,11 @@ def test_coverage_admission_binds_exact_set_and_unresolved_never_continues() -> 
         evidence_diagnostics=evidence,
         conflict_diagnostics=conflicts,
         dependency_proof=unresolved_proof,
-        coverage_mode="dependency_scoped",
+        coverage_policy_ref=_artifact(
+            "art_coverage_policy",
+            CoveragePolicy("coverage-policy-scoped", "dependency_scoped").canonical_hash,
+        ),
+        coverage_policy=CoveragePolicy("coverage-policy-scoped", "dependency_scoped"),
     )
     assert admission.next_action == "quarantine"
     with pytest.raises(TypeError):
@@ -957,8 +966,13 @@ def test_context_projection_and_semantic_admission_join_every_authority() -> Non
         proposal_set=proposal_set,
         portfolio_ref=_artifact("art_portfolio", portfolio.canonical_hash),
         portfolio=portfolio,
+        portfolio_admission_ref=_artifact(
+            "art_portfolio_admission", portfolio_admission.canonical_hash
+        ),
         portfolio_admission=portfolio_admission,
+        source_usage_ledger_ref=portfolio_admission.source_usage_ledger_ref,
         source_usage_ledger=usage,
+        candidate_catalog_ref=_artifact("art_candidate_catalog", catalog.canonical_hash),
         candidate_catalog=catalog,
     )
     assert admission.next_action == "continue"
@@ -1005,8 +1019,13 @@ def test_context_projection_and_semantic_admission_join_every_authority() -> Non
             proposal_set=proposal_set,
             portfolio_ref=_artifact("art_portfolio", portfolio.canonical_hash),
             portfolio=portfolio,
+            portfolio_admission_ref=_artifact(
+                "art_portfolio_admission", portfolio_admission.canonical_hash
+            ),
             portfolio_admission=portfolio_admission,
+            source_usage_ledger_ref=portfolio_admission.source_usage_ledger_ref,
             source_usage_ledger=usage,
+            candidate_catalog_ref=_artifact("art_candidate_catalog", catalog.canonical_hash),
             candidate_catalog=catalog,
         )
 

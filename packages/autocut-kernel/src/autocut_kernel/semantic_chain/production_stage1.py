@@ -63,6 +63,20 @@ class CoverageDisposition(str, Enum):
     UNASSIGNED = "unassigned"
 
 
+@dataclass(frozen=True, slots=True)
+class CoveragePolicy(CanonicalModel):
+    policy_id: str
+    coverage_mode: str
+
+    def __post_init__(self) -> None:
+        identifier(self.policy_id, "coverage policy_id")
+        if self.coverage_mode not in {"strict_global", "dependency_scoped"}:
+            raise ProductionModelError("coverage_mode is unknown")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {"coverage_mode": self.coverage_mode, "policy_id": self.policy_id}
+
+
 _EDGE_TYPES: Final = frozenset(
     {
         "supports",
@@ -988,6 +1002,7 @@ class CoverageAdmission(EvaluatorOwnedModel):
     admission_id: str
     pending_set_hash: str
     ledger_ref: ArtifactRef
+    coverage_policy_ref: ArtifactRef
     coverage_mode: str
     next_action: str
     taint_seed_ids: tuple[str, ...]
@@ -1000,6 +1015,7 @@ class CoverageAdmission(EvaluatorOwnedModel):
         return {
             "admission_id": self.admission_id,
             "coverage_mode": self.coverage_mode,
+            "coverage_policy_ref": self.coverage_policy_ref.to_mapping(),
             "dependency_closure_hash": self.dependency_closure_hash,
             "dependency_closure_proof_ref": self.dependency_closure_proof_ref.to_mapping(),
             "kind": "coverage",
@@ -1049,7 +1065,8 @@ class CoverageAdmissionEvaluator:
         evidence_diagnostics: EvidenceDiagnostics,
         conflict_diagnostics: ConflictDiagnostics,
         dependency_proof: DependencyClosureProof,
-        coverage_mode: str,
+        coverage_policy_ref: ArtifactRef,
+        coverage_policy: CoveragePolicy,
     ) -> CoverageAdmission:
         identifier(admission_id, "admission_id")
         if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "coverage":  # noqa: E721
@@ -1064,6 +1081,11 @@ class CoverageAdmissionEvaluator:
         proof_ref = pending_set.require_member("dependency_closure_proof", dependency_proof)
         if dependency_proof.graph_ref != graph_ref:
             raise ProductionModelError("dependency proof does not bind the exact NarrativeGraph")
+        if type(coverage_policy_ref) is not ArtifactRef or type(coverage_policy) is not CoveragePolicy:  # noqa: E721
+            raise ProductionModelError("coverage evaluator requires a frozen CoveragePolicy")
+        if coverage_policy_ref.content_hash != coverage_policy.canonical_hash:
+            raise ProductionModelError("coverage policy ref does not bind the exact policy")
+        coverage_mode = coverage_policy.coverage_mode
         event_ids = {item.event_id for item in event_cards.events}
         for node in graph.nodes:
             if node.node_type is NarrativeNodeType.EVENT:
@@ -1081,8 +1103,6 @@ class CoverageAdmissionEvaluator:
         proof_by_id = {item.taint_seed_id: item for item in dependency_proof.seed_proofs}
         if set(seed_ids) != set(proof_by_id):
             raise ProductionModelError("coverage taint seeds and dependency proofs do not join exactly")
-        if coverage_mode not in {"strict_global", "dependency_scoped"}:
-            raise ProductionModelError("coverage_mode is unknown")
         unresolved = tuple(
             row for row in ledger.rows if row.resolution_status is CoverageResolution.UNRESOLVED
         )
@@ -1106,6 +1126,7 @@ class CoverageAdmissionEvaluator:
         object.__setattr__(instance, "admission_id", admission_id)
         object.__setattr__(instance, "pending_set_hash", pending_set.canonical_hash)
         object.__setattr__(instance, "ledger_ref", ledger_ref)
+        object.__setattr__(instance, "coverage_policy_ref", coverage_policy_ref)
         object.__setattr__(instance, "coverage_mode", coverage_mode)
         object.__setattr__(instance, "next_action", next_action)
         ordered_seeds = tuple(sorted(seed_ids, key=jcs_key))
@@ -1128,6 +1149,7 @@ __all__ = [
     "CoverageConservation",
     "CoverageDisposition",
     "CoverageLedger",
+    "CoveragePolicy",
     "CoverageResolution",
     "CoverageRow",
     "CoverageUnitType",

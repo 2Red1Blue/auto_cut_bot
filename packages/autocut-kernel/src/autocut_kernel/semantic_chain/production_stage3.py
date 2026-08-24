@@ -1047,6 +1047,9 @@ class SemanticFeasibilityAdmission(EvaluatorOwnedModel):
     generation_partition_plan_ref: ArtifactRef
     proposal_ref: DomainRef
     portfolio_ref: ArtifactRef
+    portfolio_admission_ref: ArtifactRef
+    source_usage_ledger_ref: ArtifactRef
+    candidate_catalog_ref: ArtifactRef
     required_obligations_hash: str
     required_requirements_hash: str
     next_action: str
@@ -1062,11 +1065,14 @@ class SemanticFeasibilityAdmission(EvaluatorOwnedModel):
             "kind": "semantic_feasibility",
             "next_action": self.next_action,
             "pending_set_hash": self.pending_set_hash,
+            "candidate_catalog_ref": self.candidate_catalog_ref.to_mapping(),
             "portfolio_ref": self.portfolio_ref.to_mapping(),
+            "portfolio_admission_ref": self.portfolio_admission_ref.to_mapping(),
             "proposal_ref": self.proposal_ref.to_mapping(),
             "required_obligations_hash": self.required_obligations_hash,
             "required_requirements_hash": self.required_requirements_hash,
             "rule_results": [item.to_mapping() for item in self.rule_results],
+            "source_usage_ledger_ref": self.source_usage_ledger_ref.to_mapping(),
             "story_id": self.story_id,
         }
 
@@ -1106,8 +1112,11 @@ class SemanticFeasibilityEvaluator:
         proposal_set: ProposalSet,
         portfolio_ref: ArtifactRef,
         portfolio: Portfolio,
+        portfolio_admission_ref: ArtifactRef,
         portfolio_admission: PortfolioAdmission,
+        source_usage_ledger_ref: ArtifactRef,
         source_usage_ledger: SourceUsageLedger,
+        candidate_catalog_ref: ArtifactRef,
         candidate_catalog: CandidateCatalog,
     ) -> SemanticFeasibilityAdmission:
         identifier(admission_id, "admission_id")
@@ -1133,10 +1142,30 @@ class SemanticFeasibilityEvaluator:
         )
         if context_manifest.required_closures != expected_projection:
             raise ProductionModelError("Context required_closures is not full closure projection")
+        if any(
+            type(value) is not ArtifactRef
+            for value in (
+                portfolio_ref,
+                portfolio_admission_ref,
+                source_usage_ledger_ref,
+                candidate_catalog_ref,
+            )
+        ):
+            raise ProductionModelError("semantic evaluator input refs must be ArtifactRefs")
         if portfolio_ref.content_hash != portfolio.canonical_hash:
             raise ProductionModelError("portfolio_ref does not bind exact Portfolio")
+        if portfolio.proposal_set_ref.content_hash != proposal_set.canonical_hash:
+            raise ProductionModelError("Portfolio does not bind exact ProposalSet payload")
+        if portfolio_admission_ref.content_hash != portfolio_admission.canonical_hash:
+            raise ProductionModelError("portfolio_admission_ref does not bind exact Admission")
+        if source_usage_ledger_ref.content_hash != source_usage_ledger.canonical_hash:
+            raise ProductionModelError("source_usage_ledger_ref does not bind exact ledger")
+        if candidate_catalog_ref.content_hash != candidate_catalog.canonical_hash:
+            raise ProductionModelError("candidate_catalog_ref does not bind exact catalog")
         if portfolio_admission.portfolio_ref != portfolio_ref or portfolio_admission.next_action != "continue":
             raise ProductionModelError("Story is not backed by exact continuing PortfolioAdmission")
+        if portfolio_admission.source_usage_ledger_ref != source_usage_ledger_ref:
+            raise ProductionModelError("PortfolioAdmission does not bind exact SourceUsageLedger")
         if portfolio_admission.target_story_ids != portfolio.target_story_ids:
             raise ProductionModelError("PortfolioAdmission target freeze mismatch")
         if blueprint.story_id not in portfolio.target_story_ids:
@@ -1182,6 +1211,8 @@ class SemanticFeasibilityEvaluator:
                 alternative_statuses: list[bool] = []
                 for alternative in requirement.alternative_sets:
                     resolved = tuple(candidates.get(ref.object_id) for ref in alternative.candidate_refs)
+                    if any(ref.artifact_ref != candidate_catalog_ref for ref in alternative.candidate_refs):
+                        raise ProductionModelError("alternative Candidate has the wrong catalog owner")
                     if any(item is None for item in resolved):
                         raise ProductionModelError("alternative points outside CandidateCatalog")
                     typed = cast(tuple[Candidate, ...], resolved)
@@ -1228,6 +1259,16 @@ class SemanticFeasibilityEvaluator:
                         raise ProductionModelError(
                             "required Candidate is not an authorized alternative"
                         )
+        for closure in closure_set.closures:
+            for member in closure.members:
+                if member.kind == "candidate_metadata" and (
+                    member.source_artifact_ref != candidate_catalog_ref
+                    or member.object_id not in candidates
+                    or member.object_content_hash != candidates[member.object_id].canonical_hash
+                ):
+                    raise ProductionModelError(
+                        "Candidate closure member does not bind exact CandidateCatalog object"
+                    )
         beat_minimum = sum(item.duration_seconds.minimum for item in blueprint.beats)
         beat_maximum = sum(item.duration_seconds.maximum for item in blueprint.beats)
         if (
@@ -1260,6 +1301,9 @@ class SemanticFeasibilityEvaluator:
         object.__setattr__(instance, "generation_partition_plan_ref", plan_ref)
         object.__setattr__(instance, "proposal_ref", blueprint.proposal_ref)
         object.__setattr__(instance, "portfolio_ref", portfolio_ref)
+        object.__setattr__(instance, "portfolio_admission_ref", portfolio_admission_ref)
+        object.__setattr__(instance, "source_usage_ledger_ref", source_usage_ledger_ref)
+        object.__setattr__(instance, "candidate_catalog_ref", candidate_catalog_ref)
         object.__setattr__(
             instance,
             "required_obligations_hash",
