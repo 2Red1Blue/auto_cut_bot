@@ -39,6 +39,13 @@ class CanonicalModel:
         return canonical_json_hash(self.to_mapping())
 
 
+class EvaluatorOwnedModel(CanonicalModel):
+    """A value whose public construction is restricted to a verifier/compiler."""
+
+    def __new__(cls, *_args: object, **_kwargs: object) -> EvaluatorOwnedModel:
+        raise TypeError(f"{cls.__name__} can only be constructed by its evaluator")
+
+
 def mapping(value: object, expected: set[str], label: str) -> Mapping[str, object]:
     reject_forbidden_fields(value, label)
     if type(value) is not dict:  # noqa: E721 - the JSON boundary is exact.
@@ -315,9 +322,26 @@ def require_passed_rules(
     return rules
 
 
+def computed_rule_results(
+    rule_ids: set[str], subject_hash: str, *, failed_rule_ids: set[str] | None = None
+) -> tuple[RuleResult, ...]:
+    """Create evaluator-owned results for one exact pending-set subject."""
+
+    sha256(subject_hash, "rule result subject_hash")
+    failed: set[str] = set() if failed_rule_ids is None else failed_rule_ids
+    if not failed <= rule_ids:
+        raise ProductionModelError("failed rule IDs are outside the frozen evaluator rules")
+    values = tuple(
+        RuleResult(rule_id, "fail" if rule_id in failed else "pass", subject_hash)
+        for rule_id in rule_ids
+    )
+    return tuple(sorted(values, key=jcs_key))
+
+
 __all__ = [
     "CanonicalModel",
     "DurationRangeSeconds",
+    "EvaluatorOwnedModel",
     "PendingBusinessMember",
     "PendingBusinessSet",
     "ProductionModelError",
@@ -328,6 +352,7 @@ __all__ = [
     "canonical_domain_refs",
     "canonical_ids",
     "canonical_values",
+    "computed_rule_results",
     "domain_ref",
     "exact_decimal",
     "identifier",

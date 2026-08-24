@@ -11,6 +11,7 @@ from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_
 from ..contracts.compiler.refs import ArtifactRef, DomainRef
 from .production_common import (
     CanonicalModel,
+    EvaluatorOwnedModel,
     PendingBusinessSet,
     ProductionModelError,
     RuleResult,
@@ -18,13 +19,13 @@ from .production_common import (
     canonical_domain_refs,
     canonical_ids,
     canonical_values,
+    computed_rule_results,
     domain_ref,
     identifier,
     integer,
     jcs_key,
     mapping,
     object_list,
-    require_passed_rules,
     safe_token,
     text,
 )
@@ -644,7 +645,7 @@ class CoverageConservation(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class CoverageLedger(CanonicalModel):
+class CoverageLedger(EvaluatorOwnedModel):
     ledger_id: str
     rows: tuple[CoverageRow, ...]
     conservation: CoverageConservation
@@ -839,7 +840,7 @@ class DependencyArc(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class DependencyScc(CanonicalModel):
+class DependencyScc(EvaluatorOwnedModel):
     scc_id: str
     node_refs: tuple[DomainRef, ...]
     outgoing_scc_ids: tuple[str, ...]
@@ -869,7 +870,7 @@ class DependencyScc(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class TaintSeedProof(CanonicalModel):
+class TaintSeedProof(EvaluatorOwnedModel):
     taint_seed_id: str
     root_refs: tuple[DomainRef, ...]
     affected_refs: tuple[DomainRef, ...]
@@ -983,7 +984,7 @@ class DependencyClosureProof(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class CoverageAdmission(CanonicalModel):
+class CoverageAdmission(EvaluatorOwnedModel):
     admission_id: str
     pending_set_hash: str
     ledger_ref: ArtifactRef
@@ -1049,7 +1050,6 @@ class CoverageAdmissionEvaluator:
         conflict_diagnostics: ConflictDiagnostics,
         dependency_proof: DependencyClosureProof,
         coverage_mode: str,
-        rule_results: Sequence[RuleResult],
     ) -> CoverageAdmission:
         identifier(admission_id, "admission_id")
         if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "coverage":  # noqa: E721
@@ -1094,7 +1094,14 @@ class CoverageAdmissionEvaluator:
             # The production repair deliberately does not allow an unresolved row
             # to mint continue merely because a caller supplied a bounded label.
             next_action = "quarantine"
-        rules = require_passed_rules(rule_results, _COVERAGE_RULES, pending_set.canonical_hash)
+        failed_rules: set[str] = (
+            {"KC-GATE-001"} if next_action != "continue" else set()
+        )
+        rules = computed_rule_results(
+            _COVERAGE_RULES,
+            pending_set.canonical_hash,
+            failed_rule_ids=failed_rules,
+        )
         instance = object.__new__(CoverageAdmission)
         object.__setattr__(instance, "admission_id", admission_id)
         object.__setattr__(instance, "pending_set_hash", pending_set.canonical_hash)

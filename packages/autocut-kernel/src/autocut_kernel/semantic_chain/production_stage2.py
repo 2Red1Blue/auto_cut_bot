@@ -14,6 +14,7 @@ from ..vlm.models import VlmObservation, VlmObservationSet, VlmRequestIdentity
 from .production_common import (
     CanonicalModel,
     DurationRangeSeconds,
+    EvaluatorOwnedModel,
     PendingBusinessSet,
     ProductionModelError,
     RuleResult,
@@ -21,13 +22,12 @@ from .production_common import (
     canonical_domain_refs,
     canonical_ids,
     canonical_values,
+    computed_rule_results,
     exact_decimal,
     identifier,
     integer,
     jcs_key,
-    require_passed_rules,
     safe_token,
-    sha256,
     text,
 )
 
@@ -72,7 +72,7 @@ _PHYSICAL_REQUIREMENTS: Final = {
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class CommittedVlmObservation(CanonicalModel):
+class CommittedVlmObservation(EvaluatorOwnedModel):
     """Reader output binding one observation to the exact committed set/request."""
 
     observation_set_ref: ArtifactRef
@@ -354,7 +354,7 @@ class CandidateCapabilityPolicy(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class CandidateCapabilityAssessment(CanonicalModel):
+class CandidateCapabilityAssessment(EvaluatorOwnedModel):
     evaluator_id: str
     evaluator_version: str
     evaluation_policy_ref: ArtifactRef
@@ -380,7 +380,7 @@ class CandidateCapabilityAssessment(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class OwnerBoundVlmObservationRef(CanonicalModel):
+class OwnerBoundVlmObservationRef(EvaluatorOwnedModel):
     observation_ref: DomainRef
     vlm_observation_sha256: str
     source_ref: DomainRef
@@ -545,7 +545,7 @@ class DeclaredSpan(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class TickDurationProof(CanonicalModel):
+class TickDurationProof(EvaluatorOwnedModel):
     time_base: TimeBaseValue
     total_ticks: int
     span_set_hash: str
@@ -609,7 +609,7 @@ class SourceAuthorizationRef(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class Candidate(CanonicalModel):
+class Candidate(EvaluatorOwnedModel):
     candidate_id: str
     event_refs: tuple[DomainRef, ...]
     source_ref: DomainRef
@@ -818,34 +818,14 @@ class MaterialRequirement(CanonicalModel):
         }
 
 
-@dataclass(frozen=True, slots=True)
-class RequirementProof(CanonicalModel):
+@dataclass(frozen=True, slots=True, init=False)
+class RequirementProof(EvaluatorOwnedModel):
     requirement_id: str
     status: str
     safe_candidate_refs: tuple[DomainRef, ...]
     excluded_tainted_candidate_refs: tuple[DomainRef, ...]
     source_refs: tuple[DomainRef, ...]
     physical_requirements_hash: str
-
-    def __post_init__(self) -> None:
-        identifier(self.requirement_id, "requirement proof ID")
-        if self.status not in {"supported", "unsupported", "indeterminate"}:
-            raise ProductionModelError("requirement proof status is unknown")
-        safe = canonical_domain_refs(self.safe_candidate_refs, "safe_candidate_refs")
-        excluded = canonical_domain_refs(
-            self.excluded_tainted_candidate_refs, "excluded_tainted_candidate_refs"
-        )
-        sources = canonical_domain_refs(self.source_refs, "source_refs")
-        if any(item.object_type != "candidate" for item in (*safe, *excluded)):
-            raise ProductionModelError("requirement proof candidate refs have wrong type")
-        if any(item.object_type != "source" for item in sources):
-            raise ProductionModelError("requirement proof source refs have wrong type")
-        if self.status == "supported" and not safe:
-            raise ProductionModelError("supported requirement must have a safe Candidate")
-        sha256(self.physical_requirements_hash, "physical_requirements_hash")
-        object.__setattr__(self, "safe_candidate_refs", safe)
-        object.__setattr__(self, "excluded_tainted_candidate_refs", excluded)
-        object.__setattr__(self, "source_refs", sources)
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -860,28 +840,11 @@ class RequirementProof(CanonicalModel):
         }
 
 
-@dataclass(frozen=True, slots=True)
-class MaterialSupport(CanonicalModel):
+@dataclass(frozen=True, slots=True, init=False)
+class MaterialSupport(EvaluatorOwnedModel):
     status: str
     requirement_proofs: tuple[RequirementProof, ...]
     rule_results: tuple[RuleResult, ...]
-
-    def __post_init__(self) -> None:
-        if self.status not in {"supported", "unsupported", "indeterminate"}:
-            raise ProductionModelError("material support status is unknown")
-        proofs = cast(
-            tuple[RequirementProof, ...],
-            canonical_values(
-                self.requirement_proofs, RequirementProof, "requirement_proofs", nonempty=True
-            ),
-        )
-        rules = cast(
-            tuple[RuleResult, ...], canonical_values(self.rule_results, RuleResult, "rule_results")
-        )
-        if self.status == "supported" and any(item.status != "supported" for item in proofs):
-            raise ProductionModelError("supported Proposal must have every requirement supported")
-        object.__setattr__(self, "requirement_proofs", proofs)
-        object.__setattr__(self, "rule_results", rules)
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -889,6 +852,105 @@ class MaterialSupport(CanonicalModel):
             "rule_results": [item.to_mapping() for item in self.rule_results],
             "status": self.status,
         }
+
+
+class MaterialSupportEvaluator:
+    """Recompute per-requirement support from the exact CandidateCatalog."""
+
+    @staticmethod
+    def evaluate(
+        *,
+        requirements: Sequence[MaterialRequirement],
+        candidate_catalog_ref: ArtifactRef,
+        candidate_catalog: CandidateCatalog,
+        tainted_candidate_ids: Sequence[str] = (),
+    ) -> MaterialSupport:
+        if candidate_catalog_ref.content_hash != candidate_catalog.canonical_hash:
+            raise ProductionModelError("CandidateCatalog ref does not bind exact catalog")
+        requirement_values = cast(
+            tuple[MaterialRequirement, ...],
+            canonical_values(
+                requirements, MaterialRequirement, "material requirements", nonempty=True
+            ),
+        )
+        tainted = set(canonical_ids(tainted_candidate_ids, "tainted_candidate_ids"))
+        proofs: list[RequirementProof] = []
+        for requirement in requirement_values:
+            safe: list[Candidate] = []
+            excluded: list[Candidate] = []
+            allowed = {jcs_key(item) for item in requirement.allowed_source_refs}
+            forbidden = {jcs_key(item) for item in requirement.forbidden_source_refs}
+            for candidate in candidate_catalog.candidates:
+                if candidate.candidate_id in tainted:
+                    excluded.append(candidate)
+                    continue
+                source_key = jcs_key(candidate.source_ref)
+                if allowed and source_key not in allowed:
+                    continue
+                if source_key in forbidden:
+                    continue
+                if candidate.authorization_ref.purpose != "render":
+                    continue
+                if candidate.duration_proof.supports_seconds(
+                    requirement.minimum_usable_seconds
+                ):
+                    safe.append(candidate)
+            safe_refs = tuple(
+                sorted(
+                    (
+                        DomainRef(candidate_catalog_ref, "candidate", item.candidate_id)
+                        for item in safe
+                    ),
+                    key=jcs_key,
+                )
+            )
+            excluded_refs = tuple(
+                sorted(
+                    (
+                        DomainRef(candidate_catalog_ref, "candidate", item.candidate_id)
+                        for item in excluded
+                    ),
+                    key=jcs_key,
+                )
+            )
+            source_refs = tuple(
+                sorted({item.source_ref for item in safe}, key=jcs_key)
+            )
+            proof = object.__new__(RequirementProof)
+            object.__setattr__(proof, "requirement_id", requirement.requirement_id)
+            object.__setattr__(proof, "status", "supported" if safe_refs else "unsupported")
+            object.__setattr__(proof, "safe_candidate_refs", safe_refs)
+            object.__setattr__(proof, "excluded_tainted_candidate_refs", excluded_refs)
+            object.__setattr__(proof, "source_refs", source_refs)
+            object.__setattr__(
+                proof,
+                "physical_requirements_hash",
+                requirement.physical_requirements_hash,
+            )
+            proofs.append(proof)
+        ordered_proofs = tuple(sorted(proofs, key=jcs_key))
+        subject_hash = canonical_json_hash(
+            {
+                "candidate_catalog_ref": candidate_catalog_ref.to_mapping(),
+                "requirements": [item.to_mapping() for item in requirement_values],
+                "tainted_candidate_ids": sorted(tainted, key=jcs_key),
+            }
+        )
+        support = object.__new__(MaterialSupport)
+        object.__setattr__(
+            support,
+            "status",
+            "supported"
+            if all(item.status == "supported" for item in ordered_proofs)
+            else "unsupported",
+        )
+        object.__setattr__(support, "requirement_proofs", ordered_proofs)
+        object.__setattr__(
+            support,
+            "rule_results",
+            computed_rule_results({"SD-MAT-001"}, subject_hash),
+        )
+        return support
 
 
 @dataclass(frozen=True, slots=True)
@@ -1142,7 +1204,7 @@ class PortfolioSelectionRecord(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class Portfolio(CanonicalModel):
+class Portfolio(EvaluatorOwnedModel):
     portfolio_id: str
     proposal_set_ref: ArtifactRef
     job_policy_ref: ArtifactRef
@@ -1286,7 +1348,7 @@ class SourceUsageLedger(CanonicalModel):
 
 
 @dataclass(frozen=True, slots=True, init=False)
-class PortfolioAdmission(CanonicalModel):
+class PortfolioAdmission(EvaluatorOwnedModel):
     admission_id: str
     pending_set_hash: str
     portfolio_ref: ArtifactRef
@@ -1343,13 +1405,12 @@ class PortfolioAdmissionEvaluator:
         proposal_set: ProposalSet,
         portfolio: Portfolio,
         source_usage_ledger: SourceUsageLedger,
-        rule_results: Sequence[RuleResult],
     ) -> PortfolioAdmission:
         identifier(admission_id, "admission_id")
         if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "portfolio":  # noqa: E721
             raise ProductionModelError("Portfolio evaluator requires portfolio pending set")
         pending_set.require_exact_types(_STAGE2_MEMBER_TYPES)
-        pending_set.require_member("candidate_catalog", candidate_catalog)
+        catalog_ref = pending_set.require_member("candidate_catalog", candidate_catalog)
         proposal_ref = pending_set.require_member("proposal_set", proposal_set)
         portfolio_ref = pending_set.require_member("portfolio", portfolio)
         usage_ref = pending_set.require_member("source_usage_ledger", source_usage_ledger)
@@ -1365,13 +1426,20 @@ class PortfolioAdmissionEvaluator:
                 raise ProductionModelError("Portfolio selection record does not join ProposalSet")
             if proposal_by_id[record.proposal_id].material_support.status != "supported":
                 raise ProductionModelError("Portfolio selected an unsupported Proposal")
+            recomputed_support = MaterialSupportEvaluator.evaluate(
+                requirements=proposal.material_requirements,
+                candidate_catalog_ref=catalog_ref,
+                candidate_catalog=candidate_catalog,
+            )
+            if recomputed_support != proposal.material_support:
+                raise ProductionModelError("Proposal material support was not evaluator-derived")
             for proof in proposal.material_support.requirement_proofs:
                 if any(ref.object_id not in candidate_ids for ref in proof.safe_candidate_refs):
                     raise ProductionModelError("material support refers outside CandidateCatalog")
         usage_targets = tuple(item.story_id for item in source_usage_ledger.rows)
         if usage_targets != portfolio.target_story_ids:
             raise ProductionModelError("SourceUsageLedger does not exactly match frozen targets")
-        rules = require_passed_rules(rule_results, _PORTFOLIO_RULES, pending_set.canonical_hash)
+        rules = computed_rule_results(_PORTFOLIO_RULES, pending_set.canonical_hash)
         instance = object.__new__(PortfolioAdmission)
         object.__setattr__(instance, "admission_id", admission_id)
         object.__setattr__(instance, "pending_set_hash", pending_set.canonical_hash)
@@ -1400,6 +1468,7 @@ __all__ = [
     "EditingMode",
     "MaterialRequirement",
     "MaterialSupport",
+    "MaterialSupportEvaluator",
     "NarrativeFunction",
     "OwnerBoundVlmObservationRef",
     "PhysicalRequirement",
