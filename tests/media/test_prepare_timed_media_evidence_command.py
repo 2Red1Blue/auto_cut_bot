@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import replace
 from uuid import UUID, uuid4
 
-from autocut_kernel.media import AdaptiveEvidenceWindowPolicy, RootMediaEvidenceBundle
+from autocut_kernel.media import (
+    AdaptiveEvidenceWindowPolicy,
+    CalibrationBinding,
+    RootMediaEvidenceBundle,
+)
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import (
     FinalizeTimedMediaEvidenceBatchCommand,
     FinalizeTimedMediaEvidenceBatchRequest,
@@ -126,7 +132,13 @@ class _Producer:
             bundle.visual_validity,
             bundle.subtitle_cues,
         )
-        return ProducedTimedMediaEvidence(HASH_A, bundle, _bindings(values))
+        bindings = _bindings(values)
+        return ProducedTimedMediaEvidence(
+            HASH_A,
+            bundle,
+            bindings,
+            _provenance(request.source_provenance_sha256, bindings),
+        )
 
 
 def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
@@ -153,6 +165,8 @@ def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
         observation_set=observation_set,
         frame_pts_index=manifest.frame_pts_index_set,
         audio_sample_boundaries=template.audio_sample_boundaries,
+        frame_detector_sha256=HASH_B,
+        audio_detector_sha256=HASH_B,
         adaptive_policy=AdaptiveEvidenceWindowPolicy(
             "whole-episode-test-policy-v1",
             manifest.source_time_base,
@@ -168,6 +182,58 @@ def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
 
 def _hash(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _provenance(
+    source_provenance_sha256: str,
+    bindings: tuple[CalibrationBinding, ...],
+) -> str:
+    invocation = {
+        "argv_sha256": HASH_A,
+        "executable": "ffmpeg",
+        "executable_sha256": HASH_A,
+        "producer_kind": "visual",
+        "stderr_sha256": HASH_A,
+        "stdout_sha256": HASH_A,
+        "version_evidence_sha256": HASH_A,
+    }
+    identities = [
+        {
+            "calibration_policy_sha256": HASH_A,
+            "calibration_record_sha256": binding.calibration_record_sha256,
+            "detector_sha256": binding.detector_sha256,
+            "producer_id": binding.producer_id,
+            "producer_kind": kind,
+            "producer_policy_sha256": binding.policy_sha256,
+            "producer_version": binding.producer_version,
+            "timing_error_bound_tick": binding.timing_error_bound_tick,
+        }
+        for kind, binding in zip(
+            (
+                "frame",
+                "audio",
+                "asr",
+                "vad",
+                "shot",
+                "scene",
+                "visual",
+                "subtitle",
+            ),
+            bindings,
+            strict=True,
+        )
+    ]
+    return json.dumps(
+        {
+            "producer_identities": identities,
+            "schema_version": "local-media-producer-provenance-v1",
+            "source_provenance_sha256": source_provenance_sha256,
+            "tool_invocations": [invocation],
+            "tool_trace_sha256": canonical_sha256([invocation]),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -> None:
@@ -188,6 +254,16 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
         "candidate_timed_evidence_index",
         "root_media_evidence_bundle",
     }
+
+
+def test_command_rejects_producer_that_replaces_committed_physical_detector() -> None:
+    store = _Store()
+    request = replace(_request(store), frame_detector_sha256=HASH_A)
+
+    result = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.failure_code == "TIMED_MEDIA_EVIDENCE_INVALID"
 
 
 def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -> None:

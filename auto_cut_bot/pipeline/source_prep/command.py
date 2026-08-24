@@ -54,19 +54,14 @@ from autocut_kernel.vlm.window import ProxyTimelineMap, ProxyTimelineSegment
 
 from .census import snapshot_series_sources
 from .models import AuthorizedSeriesSourceRoot, SeriesCensusError, SeriesSourceCensus
-from .probe import FFprobeSourceMediaPort, SourceMediaProbe
+from .probe import (
+    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
+    FFprobeSourceMediaPort,
+    SourceMediaProbe,
+)
 
 _COMMAND_NAME = "PrepareWholeSeriesSourcesCommand"
 _SHOWINFO_PTS = re.compile(rb"\bpts:\s*(-?(?:0|[1-9][0-9]*))\b")
-IDENTITY_FRAME_GENERATION_POLICY_SHA256 = canonical_sha256(
-    {
-        "endpoint_rule": "complete-decoded-frame-pts-membership-v1",
-        "operation": "identity",
-        "producer": "identity-source-window-v2",
-    }
-)
-
-
 class FrameSampleEvidenceError(SeriesCensusError):
     """The sampled image does not bind the requested decoded frame PTS."""
 
@@ -823,8 +818,18 @@ def _decode_probe(value: object, source: object) -> SourceMediaProbe:
     if _int_value(video["duration_tick"], "video.duration_tick") != video_range.duration_pts:
         raise ValueError("video duration is inconsistent")
     tool_raw = _closed_mapping(
-        raw["ffprobe"], {"executable", "stderr_sha256", "version"}, "ffprobe"
+        raw["ffprobe"],
+        {
+            "audio_detector_sha256",
+            "executable",
+            "frame_detector_sha256",
+            "stderr_sha256",
+            "version",
+        },
+        "ffprobe",
     )
+    if tool_raw["executable"] != "ffprobe":
+        raise ValueError("ffprobe executable identity is not canonical")
     result = ProbeResult(
         VideoStreamEvidence(
             _int_value(video["index"], "video.index"),
@@ -879,6 +884,14 @@ def _decode_probe(value: object, source: object) -> SourceMediaProbe:
         result,
         video_range,
         audio,
+        _text_value(
+            tool_raw["frame_detector_sha256"],
+            "ffprobe.frame_detector_sha256",
+        ),
+        _text_value(
+            tool_raw["audio_detector_sha256"],
+            "ffprobe.audio_detector_sha256",
+        ),
     )
     if probe.to_mapping() != raw:
         raise ValueError("media probe is not canonical")

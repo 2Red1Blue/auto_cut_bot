@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from .census import SeriesSourceSnapshot, census_series_sources, snapshot_series_sources
 from .command import (
-    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     IdentitySourceWindowBuilder,
     PersistedPreparedSources,
     PreparedSeriesSources,
@@ -27,6 +26,7 @@ from .models import (
 )
 from .probe import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
+    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     FFprobeSourceMediaPort,
     SourceMediaProbe,
 )

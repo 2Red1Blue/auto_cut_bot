@@ -6,6 +6,7 @@ import hashlib
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -262,12 +263,20 @@ def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, 
             for tick in (0, 4000)
         ),
     )
-    policy = _policy(model.resolve(), frame_policy, audio_policy)
     port = LocalMediaPreflightPort(
         ffprobe_executable=str(executables[0]),
         ffmpeg_executable=str(executables[1]),
         whisper_executable=str(executables[2]),
         runner=runner,
+    )
+    policy = _policy(model.resolve(), frame_policy, audio_policy)
+    measured = port.measure_detector_identity_sha256s(policy)
+    policy = replace(
+        policy,
+        calibrations=tuple(
+            replace(item, detector_sha256=measured[item.producer_kind])
+            for item in policy.calibrations
+        ),
     )
     request = LocalMediaPreflightRequest(
         source.resolve(),
@@ -279,6 +288,8 @@ def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, 
         "sha256:" + "5" * 64,
         frame_set,
         audio_set,
+        measured["frame"],
+        measured["audio"],
         policy,
     )
     return port, request
@@ -301,9 +312,31 @@ def test_prepare_builds_conjunctive_real_tool_evidence(tmp_path: Path) -> None:
     ]
     assert len(result.producer_identities) == 8
     assert len(result.calibration_bindings) == 8
+    assert result.provenance_mapping()["tool_trace_sha256"] == (
+        result.tool_trace.canonical_hash
+    )
+    assert {item.executable for item in result.tool_trace.invocations} <= {
+        "ffmpeg",
+        "ffprobe",
+        "whisper",
+    }
     assert all("-nostdin" in argv for argv in runner.argvs if "ffmpeg" in Path(argv[0]).name)
     rawvideo_argv = next(argv for argv in runner.argvs if "rawvideo" in argv)
     assert "-copyts" in rawvideo_argv
+
+
+def test_replaced_detector_binary_cannot_reuse_old_calibration(tmp_path: Path) -> None:
+    port, request = _request(tmp_path, _Runner())
+    mismatched = replace(
+        request.policy,
+        calibrations=(
+            replace(request.policy.calibrations[0], detector_sha256="sha256:" + "0" * 64),
+            *request.policy.calibrations[1:],
+        ),
+    )
+
+    with pytest.raises(LocalMediaEvidenceError, match="detector bytes/version/model"):
+        port.prepare(replace(request, policy=mismatched))
 
 
 def test_incomplete_whisper_sentence_is_indeterminate(tmp_path: Path) -> None:

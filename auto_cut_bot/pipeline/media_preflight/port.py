@@ -51,6 +51,8 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256
 
+from auto_cut_bot.pipeline.detector_identity import local_detector_identity_sha256
+
 from .models import (
     LocalMediaEvidenceError,
     LocalMediaPreflightPolicy,
@@ -265,6 +267,14 @@ class LocalMediaPreflightPort:
             self._ffmpeg: self._version(self._ffmpeg, request.policy),
             self._whisper: self._version(self._whisper, request.policy),
         }
+        measured_detectors = self._detector_identity_sha256s(
+            request.policy,
+            versions=versions,
+            model_sha256=model_hash,
+        )
+        measured_detectors["frame"] = request.frame_detector_sha256
+        measured_detectors["audio"] = request.audio_detector_sha256
+        self._validate_detector_identities(request.policy, measured_detectors)
         metadata_output, metadata_trace = self._invoke(
             "probe",
             self._ffprobe,
@@ -408,6 +418,100 @@ class LocalMediaPreflightPort:
             request.source_provenance_sha256,
         )
 
+    def measure_detector_identity_sha256s(
+        self,
+        policy: LocalMediaPreflightPolicy,
+    ) -> dict[ProducerKind, str]:
+        """Measure the exact local tool/model identities used by a deployment policy."""
+
+        try:
+            model_path = policy.whisper_model_path.resolve(strict=True)
+        except OSError as error:
+            raise LocalMediaSourceError("calibrated Whisper model is unavailable") from error
+        model_hash, _ = _sha_file(model_path)
+        if model_hash != policy.whisper_model_sha256:
+            raise LocalMediaSourceError(
+                "Whisper model bytes do not match the calibrated identity"
+            )
+        versions = {
+            self._ffprobe: self._version(self._ffprobe, policy),
+            self._ffmpeg: self._version(self._ffmpeg, policy),
+            self._whisper: self._version(self._whisper, policy),
+        }
+        return self._detector_identity_sha256s(
+            policy,
+            versions=versions,
+            model_sha256=model_hash,
+        )
+
+    def _detector_identity_sha256s(
+        self,
+        policy: LocalMediaPreflightPolicy,
+        *,
+        versions: dict[Path, str],
+        model_sha256: str,
+    ) -> dict[ProducerKind, str]:
+        tools = {
+            "ffmpeg": {
+                "executable_sha256": _sha_file(self._ffmpeg)[0],
+                "version_evidence_sha256": versions[self._ffmpeg],
+            },
+            "ffprobe": {
+                "executable_sha256": _sha_file(self._ffprobe)[0],
+                "version_evidence_sha256": versions[self._ffprobe],
+            },
+            "whisper": {
+                "executable_sha256": _sha_file(self._whisper)[0],
+                "version_evidence_sha256": versions[self._whisper],
+            },
+        }
+        tool_kinds: dict[ProducerKind, tuple[str, ...]] = {
+            "frame": ("ffprobe",),
+            "audio": ("ffprobe",),
+            "asr": ("whisper",),
+            "vad": ("ffmpeg",),
+            "shot": ("ffmpeg",),
+            "scene": ("ffmpeg",),
+            "visual": ("ffmpeg",),
+            "subtitle": ("ffmpeg", "ffprobe"),
+        }
+        result: dict[ProducerKind, str] = {}
+        for kind, names in tool_kinds.items():
+            result[kind] = local_detector_identity_sha256(
+                producer_kind=kind,
+                producer_generation_policy_sha256=policy.producer_policy_sha256(kind),
+                tools=tuple(
+                    (
+                        name,
+                        tools[name]["executable_sha256"],
+                        tools[name]["version_evidence_sha256"],
+                    )
+                    for name in names
+                ),
+                model_sha256=model_sha256 if kind == "asr" else None,
+            )
+        return result
+
+    @staticmethod
+    def _validate_detector_identities(
+        policy: LocalMediaPreflightPolicy,
+        measured: dict[ProducerKind, str],
+    ) -> None:
+        for kind in (
+            "frame",
+            "audio",
+            "asr",
+            "vad",
+            "shot",
+            "scene",
+            "visual",
+            "subtitle",
+        ):
+            if measured[kind] != policy.calibration(kind).detector_sha256:
+                raise LocalMediaEvidenceError(
+                    f"{kind} detector bytes/version/model do not match calibration"
+                )
+
     @staticmethod
     def _validate_physical_calibrations(request: LocalMediaPreflightRequest) -> None:
         physical: tuple[tuple[ProducerKind, EvidenceContext], ...] = (
@@ -476,9 +580,20 @@ class LocalMediaPreflightPort:
             else:
                 normalized.append(item)
         executable_sha, _ = _sha_file(executable)
+        executable_name = (
+            "ffprobe"
+            if executable == self._ffprobe
+            else "ffmpeg"
+            if executable == self._ffmpeg
+            else "whisper"
+            if executable == self._whisper
+            else None
+        )
+        if executable_name is None:  # pragma: no cover - closed constructor tools
+            raise LocalMediaToolError("producer used an unregistered local executable")
         trace = ToolInvocationTrace(
             producer_kind,
-            str(executable),
+            executable_name,
             executable_sha,
             versions[executable],
             canonical_sha256(normalized),

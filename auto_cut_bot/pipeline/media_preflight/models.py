@@ -419,6 +419,8 @@ class LocalMediaPreflightRequest:
     root_input_manifest_sha256: str
     frame_pts_index: FramePtsIndexSet
     audio_sample_boundaries: AudioSampleBoundarySet
+    frame_detector_sha256: str
+    audio_detector_sha256: str
     policy: LocalMediaPreflightPolicy
 
     def __post_init__(self) -> None:
@@ -432,6 +434,8 @@ class LocalMediaPreflightRequest:
             "source_provenance_sha256",
             "source_manifest_sha256",
             "root_input_manifest_sha256",
+            "frame_detector_sha256",
+            "audio_detector_sha256",
         ):
             try:
                 sha256_prefixed(getattr(self, name), name)
@@ -455,6 +459,17 @@ class ToolInvocationTrace:
     stdout_sha256: str
     stderr_sha256: str
 
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            "argv_sha256": self.argv_sha256,
+            "executable": self.executable,
+            "executable_sha256": self.executable_sha256,
+            "producer_kind": self.producer_kind,
+            "stderr_sha256": self.stderr_sha256,
+            "stdout_sha256": self.stdout_sha256,
+            "version_evidence_sha256": self.version_evidence_sha256,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class ToolTrace:
@@ -466,20 +481,10 @@ class ToolTrace:
 
     @property
     def canonical_hash(self) -> str:
-        return canonical_sha256(
-            [
-                {
-                    "argv_sha256": item.argv_sha256,
-                    "executable": item.executable,
-                    "executable_sha256": item.executable_sha256,
-                    "producer_kind": item.producer_kind,
-                    "stderr_sha256": item.stderr_sha256,
-                    "stdout_sha256": item.stdout_sha256,
-                    "version_evidence_sha256": item.version_evidence_sha256,
-                }
-                for item in self.invocations
-            ]
-        )
+        return canonical_sha256(self.to_mapping())
+
+    def to_mapping(self) -> list[dict[str, str]]:
+        return [item.to_mapping() for item in self.invocations]
 
 
 @dataclass(frozen=True, slots=True)
@@ -492,6 +497,18 @@ class ProducerIdentity:
     calibration_policy_sha256: str
     calibration_record_sha256: str
     timing_error_bound_tick: int
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "calibration_policy_sha256": self.calibration_policy_sha256,
+            "calibration_record_sha256": self.calibration_record_sha256,
+            "detector_sha256": self.detector_sha256,
+            "producer_id": self.producer_id,
+            "producer_kind": self.producer_kind,
+            "producer_policy_sha256": self.producer_policy_sha256,
+            "producer_version": self.producer_version,
+            "timing_error_bound_tick": self.timing_error_bound_tick,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,6 +528,21 @@ class LocalMediaPreflightResult:
             sha256_prefixed(self.source_provenance_sha256, "source_provenance_sha256")
         except ValueError as error:
             raise LocalMediaEvidenceError(str(error)) from error
+
+    def provenance_mapping(self) -> dict[str, object]:
+        return {
+            "producer_identities": [
+                item.to_mapping() for item in self.producer_identities
+            ],
+            "schema_version": "local-media-producer-provenance-v1",
+            "source_provenance_sha256": self.source_provenance_sha256,
+            "tool_invocations": self.tool_trace.to_mapping(),
+            "tool_trace_sha256": self.tool_trace.canonical_hash,
+        }
+
+    @property
+    def provenance_sha256(self) -> str:
+        return canonical_sha256(self.provenance_mapping())
 
 
 __all__ = [

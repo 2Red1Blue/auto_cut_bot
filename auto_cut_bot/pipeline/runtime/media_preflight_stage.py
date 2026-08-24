@@ -111,6 +111,8 @@ class _ClaimOwnedLocalProducer:
                         root_input_manifest_sha256=request.root_input_manifest_sha256,
                         frame_pts_index=request.frame_pts_index,
                         audio_sample_boundaries=request.audio_sample_boundaries,
+                        frame_detector_sha256=request.frame_detector_sha256,
+                        audio_detector_sha256=request.audio_detector_sha256,
                         policy=self._policy,
                     )
                 )
@@ -126,6 +128,12 @@ class _ClaimOwnedLocalProducer:
             self._policy.canonical_hash,
             local.evidence,
             local.calibration_bindings,
+            json.dumps(
+                local.provenance_mapping(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
         )
 
 
@@ -254,6 +262,8 @@ class MediaPreflightPipelineStage:
                     observation_set=persisted.observation_set,
                     frame_pts_index=episode.manifest.frame_pts_index_set,
                     audio_sample_boundaries=episode.media_probe.audio_sample_boundaries,
+                    frame_detector_sha256=episode.media_probe.frame_detector_sha256,
+                    audio_detector_sha256=episode.media_probe.audio_detector_sha256,
                     adaptive_policy=adaptive,
                     producer_policy_sha256=self._policy.canonical_hash,
                 )

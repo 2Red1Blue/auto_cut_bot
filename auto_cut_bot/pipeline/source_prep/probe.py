@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,11 +31,20 @@ from autocut_kernel.media.ffprobe_port import (
     FFprobePort,
     ProbeResult,
 )
-from autocut_kernel.media.types import canonical_sha256
+from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
+
+from auto_cut_bot.pipeline.detector_identity import local_detector_identity_sha256
 
 from .models import SeriesCensusError, SeriesSource
 
 _INTEGER = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+IDENTITY_FRAME_GENERATION_POLICY_SHA256 = canonical_sha256(
+    {
+        "endpoint_rule": "complete-decoded-frame-pts-membership-v1",
+        "operation": "identity",
+        "producer": "identity-source-window-v2",
+    }
+)
 DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256 = canonical_sha256(
     {
         "coverage_policy": "strict-contiguous-decoded-frames-no-gap-v1",
@@ -62,6 +72,12 @@ class SourceMediaProbe:
     video_probe: ProbeResult
     video_range: TickRange
     audio_sample_boundaries: AudioSampleBoundarySet
+    frame_detector_sha256: str
+    audio_detector_sha256: str
+
+    def __post_init__(self) -> None:
+        sha256_prefixed(self.frame_detector_sha256, "frame_detector_sha256")
+        sha256_prefixed(self.audio_detector_sha256, "audio_detector_sha256")
 
     def to_mapping(self) -> dict[str, object]:
         stream = self.video_probe.video_stream
@@ -69,7 +85,9 @@ class SourceMediaProbe:
             "audio_sample_boundaries": self.audio_sample_boundaries.to_mapping(),
             "decoded_video_frame_pts": list(self.video_probe.pts_index.ticks),
             "ffprobe": {
-                "executable": self.video_probe.tool.executable,
+                "audio_detector_sha256": self.audio_detector_sha256,
+                "executable": "ffprobe",
+                "frame_detector_sha256": self.frame_detector_sha256,
                 "stderr_sha256": self.video_probe.tool.stderr_sha256,
                 "version": self.video_probe.tool.version,
             },
@@ -113,6 +131,7 @@ class FFprobeSourceMediaPort:
 
     def probe(self, source_path: Path, source: SeriesSource) -> SourceMediaProbe:
         path = Path(source_path).resolve(strict=True)
+        before_executable_sha256, version_evidence_sha256 = self._tool_identity()
         try:
             video = self._video_port.probe(path)
         except FFprobeOutputError as error:
@@ -152,7 +171,61 @@ class FFprobeSourceMediaPort:
                 "decoded video PTS do not close over the declared video stream"
             )
         audio = self._audio_boundaries(path, source, audio_records[0])
-        return SourceMediaProbe(source, video, video_range, audio)
+        after_executable_sha256, after_version_evidence_sha256 = self._tool_identity()
+        if (
+            before_executable_sha256 != after_executable_sha256
+            or version_evidence_sha256 != after_version_evidence_sha256
+        ):
+            raise SourceMediaToolError("ffprobe identity changed during source preparation")
+        tool = (("ffprobe", before_executable_sha256, version_evidence_sha256),)
+        normalized_video = replace(
+            video,
+            tool=replace(video.tool, executable="ffprobe"),
+        )
+        return SourceMediaProbe(
+            source,
+            normalized_video,
+            video_range,
+            audio,
+            local_detector_identity_sha256(
+                producer_kind="frame",
+                producer_generation_policy_sha256=(
+                    IDENTITY_FRAME_GENERATION_POLICY_SHA256
+                ),
+                tools=tool,
+            ),
+            local_detector_identity_sha256(
+                producer_kind="audio",
+                producer_generation_policy_sha256=(
+                    DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256
+                ),
+                tools=tool,
+            ),
+        )
+
+    def _tool_identity(self) -> tuple[str, str]:
+        try:
+            executable = Path(self._executable).resolve(strict=True)
+            content = executable.read_bytes()
+            completed = subprocess.run(
+                [str(executable), "-version"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=self._timeout_seconds,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise SourceMediaToolError("ffprobe identity command failed") from error
+        if not content or completed.returncode != 0 or not (
+            completed.stdout or completed.stderr
+        ):
+            raise SourceMediaToolError("ffprobe identity command failed")
+        return (
+            "sha256:" + hashlib.sha256(content).hexdigest(),
+            "sha256:"
+            + hashlib.sha256(completed.stdout + completed.stderr).hexdigest(),
+        )
 
     def _audio_boundaries(
         self,

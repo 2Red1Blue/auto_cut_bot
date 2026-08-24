@@ -11,7 +11,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from ..media import (
@@ -79,6 +79,7 @@ class ProducedTimedMediaEvidence:
     producer_policy_sha256: str
     root_bundle: RootMediaEvidenceBundle
     calibration_bindings: tuple[CalibrationBinding, ...]
+    producer_provenance_json: str
 
     def __post_init__(self) -> None:
         if not _is_sha256(self.producer_policy_sha256):
@@ -93,6 +94,11 @@ class ProducedTimedMediaEvidence:
                 "calibration_bindings must contain exact CalibrationBinding values"
             )
         object.__setattr__(self, "calibration_bindings", bindings)
+        _validate_producer_provenance_json(self.producer_provenance_json)
+
+    @property
+    def producer_provenance_sha256(self) -> str:
+        return canonical_sha256(json.loads(self.producer_provenance_json))
 
 
 class TimedMediaEvidenceProducerPort(Protocol):
@@ -142,6 +148,8 @@ class PrepareTimedMediaEvidenceRequest:
     observation_set: VlmObservationSet
     frame_pts_index: FramePtsIndexSet
     audio_sample_boundaries: AudioSampleBoundarySet
+    frame_detector_sha256: str
+    audio_detector_sha256: str
     adaptive_policy: AdaptiveEvidenceWindowPolicy
     producer_policy_sha256: str
 
@@ -173,6 +181,12 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("frame_pts_index must be exact")
         if type(self.audio_sample_boundaries) is not AudioSampleBoundarySet:  # noqa: E721
             raise TimedMediaEvidenceCommandError("audio boundaries must be exact")
+        if not _is_sha256(self.frame_detector_sha256) or not _is_sha256(
+            self.audio_detector_sha256
+        ):
+            raise TimedMediaEvidenceCommandError(
+                "physical detector identities must be sha256"
+            )
         if type(self.adaptive_policy) is not AdaptiveEvidenceWindowPolicy:  # noqa: E721
             raise TimedMediaEvidenceCommandError("adaptive_policy must be exact")
         manifest = self.window_manifest
@@ -193,11 +207,13 @@ class PrepareTimedMediaEvidenceRequest:
             {
                 "adaptive_policy_sha256": self.adaptive_policy.canonical_hash,
                 "episode_index": self.episode_index,
+                "frame_detector_sha256": self.frame_detector_sha256,
                 "observation_set_sha256": self.observation_set.canonical_hash,
                 "producer_policy_sha256": self.producer_policy_sha256,
                 "source_blob": _blob_mapping(self.source_blob),
                 "source_manifest_sha256": self.source_manifest_sha256,
                 "source_provenance_sha256": self.source_provenance_sha256,
+                "audio_detector_sha256": self.audio_detector_sha256,
                 "strategy_version": TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION,
                 "window_manifest_sha256": self.window_manifest.canonical_hash,
             }
@@ -208,8 +224,10 @@ class PrepareTimedMediaEvidenceRequest:
             "artifact_revision": self.artifact_revision,
             "artifact_scope": _scope_mapping(self.artifact_scope),
             "audio_sample_boundary_set_sha256": self.audio_sample_boundaries.canonical_hash,
+            "audio_detector_sha256": self.audio_detector_sha256,
             "episode_index": self.episode_index,
             "frame_pts_index_set_sha256": self.frame_pts_index.canonical_hash,
+            "frame_detector_sha256": self.frame_detector_sha256,
             "idempotency_key": self.idempotency_key,
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
             "observation_set_sha256": self.observation_set.canonical_hash,
@@ -444,6 +462,47 @@ class PrepareTimedMediaEvidenceCommand:
         root = produced.root_bundle
         if produced.producer_policy_sha256 != request.producer_policy_sha256:
             raise TimedMediaEvidenceCommandError("producer policy identity changed")
+        provenance = json.loads(produced.producer_provenance_json)
+        if provenance["source_provenance_sha256"] != request.source_provenance_sha256:
+            raise TimedMediaEvidenceCommandError(
+                "producer provenance does not bind the committed source provenance"
+            )
+        provenance_bindings = {
+            (
+                item["producer_id"],
+                item["producer_policy_sha256"],
+                item["detector_sha256"],
+                item["calibration_record_sha256"],
+                item["producer_version"],
+                item["timing_error_bound_tick"],
+            )
+            for item in provenance["producer_identities"]
+        }
+        provenance_identities = provenance["producer_identities"]
+        if (
+            provenance_identities[0]["detector_sha256"]
+            != request.frame_detector_sha256
+            or provenance_identities[1]["detector_sha256"]
+            != request.audio_detector_sha256
+        ):
+            raise TimedMediaEvidenceCommandError(
+                "producer provenance replaced committed physical detector identities"
+            )
+        committed_bindings = {
+            (
+                item.producer_id,
+                item.policy_sha256,
+                item.detector_sha256,
+                item.calibration_record_sha256,
+                item.producer_version,
+                item.timing_error_bound_tick,
+            )
+            for item in produced.calibration_bindings
+        }
+        if provenance_bindings != committed_bindings:
+            raise TimedMediaEvidenceCommandError(
+                "producer provenance does not bind the committed calibration set"
+            )
         if (
             root.source_id != request.window_manifest.source_id
             or root.source_sha256 != request.window_manifest.source_sha256
@@ -516,7 +575,7 @@ class PrepareTimedMediaEvidenceCommand:
         produced: ProducedTimedMediaEvidence,
         plans: tuple[CandidateEvidenceWindowPlan, ...],
         candidates: tuple[CandidateTimedEvidenceSet, ...],
-    ) -> tuple[ArtifactMember, ArtifactMember]:
+    ) -> tuple[ArtifactMember, ...]:
         root_blob = self._put_json_blob(
             request.job,
             produced.root_bundle,
@@ -539,9 +598,16 @@ class PrepareTimedMediaEvidenceCommand:
             )
             for candidate in candidates
         )
+        provenance_blob = self._put_mapping_blob(
+            request.job,
+            json.loads(produced.producer_provenance_json),
+            "application/vnd.autocut.local-media-producer-provenance+json",
+        )
         root_payload = {
             "blob": _blob_mapping(root_blob),
             "episode_index": request.episode_index,
+            "producer_provenance_blob": _blob_mapping(provenance_blob),
+            "producer_provenance_sha256": produced.producer_provenance_sha256,
             "root_bundle_sha256": produced.root_bundle.canonical_hash,
             "source_manifest_sha256": request.source_manifest_sha256,
             "source_provenance_sha256": request.source_provenance_sha256,
@@ -740,6 +806,120 @@ def _is_sha256(value: object) -> bool:
         and value.startswith("sha256:")
         and all(character in "0123456789abcdef" for character in value[7:])
     )
+
+
+def _validate_producer_provenance_json(value: object) -> None:
+    if type(value) is not str:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("producer provenance must be canonical JSON")
+    try:
+        decoded: object = json.loads(value)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise TimedMediaEvidenceCommandError(
+            "producer provenance must be canonical JSON"
+        ) from error
+    if type(decoded) is not dict:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("producer provenance JSON is not canonical")
+    payload = cast(dict[str, object], decoded)
+    if _json(payload) != value:
+        raise TimedMediaEvidenceCommandError("producer provenance JSON is not canonical")
+    expected = {
+        "producer_identities",
+        "schema_version",
+        "source_provenance_sha256",
+        "tool_invocations",
+        "tool_trace_sha256",
+    }
+    if set(payload) != expected or payload["schema_version"] != (
+        "local-media-producer-provenance-v1"
+    ):
+        raise TimedMediaEvidenceCommandError("producer provenance schema is not closed")
+    if not _is_sha256(payload["source_provenance_sha256"]) or not _is_sha256(
+        payload["tool_trace_sha256"]
+    ):
+        raise TimedMediaEvidenceCommandError("producer provenance hashes are invalid")
+    invocations_raw = payload["tool_invocations"]
+    identities_raw = payload["producer_identities"]
+    if type(invocations_raw) is not list:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("producer tool trace must not be empty")
+    invocations = cast(list[object], invocations_raw)
+    if not invocations:
+        raise TimedMediaEvidenceCommandError("producer tool trace must not be empty")
+    if type(identities_raw) is not list:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("producer identity set must be closed")
+    identities = cast(list[object], identities_raw)
+    if len(identities) != 8:
+        raise TimedMediaEvidenceCommandError("producer identity set must be closed")
+    invocation_fields = {
+        "argv_sha256",
+        "executable",
+        "executable_sha256",
+        "producer_kind",
+        "stderr_sha256",
+        "stdout_sha256",
+        "version_evidence_sha256",
+    }
+    canonical_invocations: list[dict[str, object]] = []
+    allowed_invocations = {
+        ("asr", "whisper"),
+        ("probe", "ffprobe"),
+        ("subtitle", "ffprobe"),
+        ("vad", "ffmpeg"),
+        ("visual", "ffmpeg"),
+    }
+    for invocation_raw in invocations:
+        if type(invocation_raw) is not dict:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("producer tool trace schema is not closed")
+        invocation = cast(dict[str, object], invocation_raw)
+        if set(invocation) != invocation_fields:
+            raise TimedMediaEvidenceCommandError("producer tool trace schema is not closed")
+        for field in invocation_fields - {"executable", "producer_kind"}:
+            if not _is_sha256(invocation[field]):
+                raise TimedMediaEvidenceCommandError("producer tool trace hash is invalid")
+        if (invocation["producer_kind"], invocation["executable"]) not in (
+            allowed_invocations
+        ):
+            raise TimedMediaEvidenceCommandError(
+                "producer tool trace executable identity is not registered"
+            )
+        canonical_invocations.append(invocation)
+    if payload["tool_trace_sha256"] != canonical_sha256(canonical_invocations):
+        raise TimedMediaEvidenceCommandError("producer tool trace hash does not close")
+    identity_fields = {
+        "calibration_policy_sha256",
+        "calibration_record_sha256",
+        "detector_sha256",
+        "producer_id",
+        "producer_kind",
+        "producer_policy_sha256",
+        "producer_version",
+        "timing_error_bound_tick",
+    }
+    expected_kinds = (
+        "frame",
+        "audio",
+        "asr",
+        "vad",
+        "shot",
+        "scene",
+        "visual",
+        "subtitle",
+    )
+    for position, identity_raw in enumerate(identities):
+        if type(identity_raw) is not dict:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
+        identity = cast(dict[str, object], identity_raw)
+        if set(identity) != identity_fields:
+            raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
+        if identity["producer_kind"] != expected_kinds[position]:
+            raise TimedMediaEvidenceCommandError("producer identity order is not canonical")
+        for field in (
+            "calibration_policy_sha256",
+            "calibration_record_sha256",
+            "detector_sha256",
+            "producer_policy_sha256",
+        ):
+            if not _is_sha256(identity[field]):
+                raise TimedMediaEvidenceCommandError("producer identity hash is invalid")
 
 
 __all__ = (
