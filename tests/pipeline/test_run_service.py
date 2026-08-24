@@ -6,11 +6,12 @@ from uuid import uuid4
 
 import pytest
 from autocut_kernel.store import RuntimeStoreError
-from autocut_kernel.vlm import (
-    GENERATION_RETRY_STRATEGY_VERSION,
-    GenerationRetryPolicy,
-)
+from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION
 from psycopg import OperationalError
+from runtime_profile_fixture import (
+    execution_profile as frozen_execution_profile,
+)
+from runtime_profile_fixture import media_preflight_policy
 
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
@@ -33,7 +34,6 @@ from auto_cut_bot.pipeline.runtime import (
     SourceDeniedError,
     StaleRunVersionError,
 )
-from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 
 class FakeRunStore:
@@ -130,14 +130,15 @@ def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
 
 
 def execution_profile(*, model_id: str = "doubao-seed-2-1-pro-260628") -> PipelineExecutionProfile:
-    return PipelineExecutionProfile.from_doubao_policy(
-        DoubaoVlmRequestPolicy(model_id=model_id),
-        retry_policy=GenerationRetryPolicy(
-            GENERATION_RETRY_STRATEGY_VERSION,
-            3,
-            (2, 8),
-        ),
-    )
+    return frozen_execution_profile(model_id=model_id)
+
+
+def _v2_execution_profile() -> PipelineExecutionProfile:
+    mapping = execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v2"
+    del mapping["media_preflight_policy"]
+    del mapping["media_preflight_policy_hash"]
+    return PipelineExecutionProfile.from_mapping(mapping)
 
 
 def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
@@ -218,8 +219,9 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
     assert reconstructed.canonical_hash == profile.canonical_hash
     assert profile.canonical_hash.startswith("sha256:")
     assert (
-        PipelineExecutionProfile.from_doubao_policy(
+        PipelineExecutionProfile.from_policies(
             profile.to_doubao_policy(),
+            profile.to_media_preflight_policy(),
             retry_policy=profile.to_generation_retry_policy(),
         )
         == profile
@@ -237,7 +239,8 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
 
 
 def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() -> None:
-    v2 = execution_profile()
+    v3 = execution_profile()
+    v2 = _v2_execution_profile()
     v1_mapping = v2.to_mapping()
     v1_mapping["schema_version"] = "pipeline-execution-profile-v1"
     del v1_mapping["generation_retry_policy"]
@@ -248,6 +251,9 @@ def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() ->
     assert v1.to_generation_retry_policy().backoff_seconds == ()
     assert v2.to_generation_retry_policy().max_attempts == 3
     assert v2.to_generation_retry_policy().backoff_seconds == (2, 8)
+    assert v3.to_media_preflight_policy().canonical_hash == v3.media_preflight_policy_hash
+    with pytest.raises(PipelineRunValidationError, match="no frozen media-preflight"):
+        v2.to_media_preflight_policy()
     assert v1.canonical_hash != v2.canonical_hash
 
     invalid_v2 = v2.to_mapping()
@@ -258,6 +264,61 @@ def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() ->
     }
     with pytest.raises(PipelineRunValidationError, match="retry policy is invalid"):
         PipelineExecutionProfile.from_mapping(invalid_v2)
+
+
+def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -> None:
+    profile = execution_profile()
+    tampered = profile.to_mapping()
+    tampered["media_preflight_policy_hash"] = "sha256:" + "0" * 64
+
+    with pytest.raises(PipelineRunValidationError, match="hash does not bind"):
+        PipelineExecutionProfile.from_mapping(tampered)
+
+    with pytest.raises(PipelineRunValidationError, match="requires exact word timing"):
+        PipelineExecutionProfile.from_policies(
+            profile.to_doubao_policy(),
+            media_preflight_policy(word_timing_capability="sentence_only"),
+            retry_policy=profile.to_generation_retry_policy(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_run_rejects_v2_execution_profile_before_persistence() -> None:
+    store = FakeRunStore()
+    service = DurablePipelineRunService(
+        store,
+        FakeScheduler(),
+        FakeAuthorizer(),
+        execution_profile=_v2_execution_profile(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="frozen media-preflight"):
+        await service.submit(request(), "legacy-v2-new-run")
+
+    assert store.by_run_id == {}
+
+
+@pytest.mark.asyncio
+async def test_idempotency_replay_rejects_persisted_v2_profile() -> None:
+    store = FakeRunStore()
+    old_profile = _v2_execution_profile()
+    old_claim = await store.claim_run(
+        run_id="pipeline_run_" + "b" * 32,
+        idempotency_key="legacy-v2-replay",
+        request=request(),
+        request_hash=request().request_hash,
+        execution_profile=old_profile,
+    )
+    assert old_claim.snapshot.execution_profile == old_profile
+    service = DurablePipelineRunService(
+        store,
+        FakeScheduler(),
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="persisted pipeline run"):
+        await service.submit(request(), "legacy-v2-replay")
 
 
 def test_execution_profile_rejects_open_or_unclosed_embedded_json() -> None:
@@ -296,7 +357,12 @@ def test_execution_profile_rejects_unregistered_or_object_shaped_schema_tamperin
 async def test_replay_repairs_claim_succeeded_enqueue_failed_window() -> None:
     store = FakeRunStore()
     scheduler = FailOnceScheduler()
-    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
 
     with pytest.raises(RuntimeError, match="queue unavailable"):
         await service.submit(request(), "request-1")
@@ -311,7 +377,12 @@ async def test_replay_repairs_claim_succeeded_enqueue_failed_window() -> None:
 
 @pytest.mark.asyncio
 async def test_same_key_with_different_canonical_request_is_conflict() -> None:
-    service = DurablePipelineRunService(FakeRunStore(), FakeScheduler(), FakeAuthorizer())
+    service = DurablePipelineRunService(
+        FakeRunStore(),
+        FakeScheduler(),
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
     await service.submit(request("/authorized/a"), "request-1")
 
     with pytest.raises(IdempotencyConflictError):
@@ -322,7 +393,12 @@ async def test_same_key_with_different_canonical_request_is_conflict() -> None:
 async def test_status_and_resume_use_the_same_persisted_run() -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
-    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
     submitted = await service.submit(request(), "request-1")
 
     status = await service.status(submitted.snapshot.run_id)
@@ -339,7 +415,12 @@ async def test_status_and_resume_use_the_same_persisted_run() -> None:
 async def test_resume_rejects_terminal_run_without_creating_a_job() -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
-    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
     submitted = await service.submit(request(), "request-1")
     run_id = submitted.snapshot.run_id
     store.by_run_id[run_id] = replace(
@@ -359,7 +440,12 @@ async def test_resume_rejects_terminal_run_without_creating_a_job() -> None:
 async def test_concurrent_resume_uses_caller_version_as_cas() -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
-    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
     run_id = (await service.submit(request(), "request-1")).snapshot.run_id
 
     outcomes = await asyncio.gather(
@@ -377,7 +463,12 @@ async def test_concurrent_resume_uses_caller_version_as_cas() -> None:
 async def test_restart_reconstructs_from_store_not_memory_tasks() -> None:
     store = FakeRunStore()
     first_scheduler = FakeScheduler()
-    first_service = DurablePipelineRunService(store, first_scheduler, FakeAuthorizer())
+    first_service = DurablePipelineRunService(
+        store,
+        first_scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
+    )
     submitted = await first_service.submit(request(), "request-1")
 
     restarted_scheduler = FakeScheduler()
@@ -391,7 +482,12 @@ async def test_restart_reconstructs_from_store_not_memory_tasks() -> None:
 @pytest.mark.asyncio
 async def test_unauthorized_source_is_denied_before_persistence() -> None:
     store = FakeRunStore()
-    service = DurablePipelineRunService(store, FakeScheduler(), FakeAuthorizer(False))
+    service = DurablePipelineRunService(
+        store,
+        FakeScheduler(),
+        FakeAuthorizer(False),
+        execution_profile=execution_profile(),
+    )
 
     with pytest.raises(SourceDeniedError):
         await service.submit(request(), "request-1")

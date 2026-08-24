@@ -502,6 +502,19 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                        )
                    )
+                   AND (
+                       candidate.stage <> 'media_preflight'
+                       OR EXISTS (
+                           SELECT 1 FROM runtime.pipeline_runs AS profile_run
+                            WHERE profile_run.run_id = candidate.run_id
+                              AND profile_run.execution_profile
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v3'
+                              AND profile_run.execution_profile
+                                  ? 'media_preflight_policy'
+                              AND profile_run.execution_profile
+                                  ? 'media_preflight_policy_hash'
+                       )
+                   )
                    AND NOT EXISTS (
                        SELECT 1 FROM runtime.pipeline_commands AS predecessor
                         WHERE predecessor.run_id = candidate.run_id

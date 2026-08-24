@@ -8,10 +8,10 @@ from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from autocut_kernel.vlm import (
-    GENERATION_RETRY_STRATEGY_VERSION,
-    GenerationRetryPolicy,
+from runtime_profile_fixture import (
+    execution_profile as frozen_execution_profile,
 )
+from runtime_profile_fixture import media_preflight_policy
 
 from auto_cut_bot.api.server import create_app
 from auto_cut_bot.pipeline.runtime import (
@@ -30,7 +30,6 @@ from auto_cut_bot.pipeline.runtime import (
 )
 from auto_cut_bot.pipeline.runtime.composition import ConfiguredSourceCatalog, SourceCatalogEntry
 from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
-from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -98,14 +97,11 @@ def _source_catalog(
 def _execution_profile(
     *,
     model_id: str = "doubao-seed-2-1-pro-260628",
+    asr_model_revision: str = "v1.0.0",
 ) -> PipelineExecutionProfile:
-    return PipelineExecutionProfile.from_doubao_policy(
-        DoubaoVlmRequestPolicy(model_id=model_id),
-        retry_policy=GenerationRetryPolicy(
-            GENERATION_RETRY_STRATEGY_VERSION,
-            3,
-            (2, 8),
-        ),
+    return frozen_execution_profile(
+        model_id=model_id,
+        media_policy=media_preflight_policy(asr_model_revision=asr_model_revision),
     )
 
 
@@ -186,8 +182,14 @@ async def test_postgres_replay_uses_frozen_profile_and_new_key_uses_changed_prof
     store = PostgresPipelineRunStore(factory)
     scheduler = PostgresPipelineScheduler(factory)
     authority = _source_catalog(tmp_path / "input")
-    first_profile = _execution_profile(model_id="doubao-model-v1")
-    changed_profile = _execution_profile(model_id="doubao-model-v2")
+    first_profile = _execution_profile(
+        model_id="doubao-model-v1",
+        asr_model_revision="sensevoice-frozen-v1",
+    )
+    changed_profile = _execution_profile(
+        model_id="doubao-model-v2",
+        asr_model_revision="sensevoice-new-v2",
+    )
     first_service = DurablePipelineRunService(
         store,
         scheduler,
@@ -209,6 +211,14 @@ async def test_postgres_replay_uses_frozen_profile_and_new_key_uses_changed_prof
     assert replay.replayed is True
     assert replay.snapshot.execution_profile == first_profile
     assert replay.snapshot.execution_profile_hash == first_profile.canonical_hash
+    assert (
+        replay.snapshot.execution_profile.to_media_preflight_policy().asr_model_revision
+        == "sensevoice-frozen-v1"
+    )
+    assert (
+        replay.snapshot.execution_profile.to_media_preflight_policy().word_timing_capability
+        == "required"
+    )
     assert changed.snapshot.execution_profile == changed_profile
     assert changed.snapshot.execution_profile_hash == changed_profile.canonical_hash
     assert first.snapshot.request_hash == changed.snapshot.request_hash
@@ -260,6 +270,45 @@ async def test_postgres_read_recomputes_execution_profile_hash(tmp_path: Path) -
 
     with pytest.raises(PipelineRunValidationError, match="hash does not bind"):
         await store.read_run(submitted.snapshot.run_id)
+
+
+@pytest.mark.asyncio
+async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: Path) -> None:
+    assert DSN is not None
+    service, _store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        "postgres-profile-v2-downgrade",
+    )
+    mapping = submitted.snapshot.execution_profile.to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v2"
+    del mapping["media_preflight_policy"]
+    del mapping["media_preflight_policy_hash"]
+    v2 = PipelineExecutionProfile.from_mapping(mapping)
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE runtime.pipeline_runs DISABLE TRIGGER runtime_pipeline_run_transition_guard"
+            )
+            try:
+                with pytest.raises(
+                    psycopg.errors.CheckViolation,
+                    match="pipeline_runs_execution_profile_closed_check",
+                ):
+                    cursor.execute(
+                        """
+                        UPDATE runtime.pipeline_runs
+                           SET execution_profile = %s::jsonb,
+                               execution_profile_hash = %s
+                         WHERE run_id = %s
+                        """,
+                        (v2.canonical_json, v2.canonical_hash, submitted.snapshot.run_id),
+                    )
+            finally:
+                cursor.execute(
+                    "ALTER TABLE runtime.pipeline_runs ENABLE TRIGGER runtime_pipeline_run_transition_guard"
+                )
 
 
 @pytest.mark.asyncio
@@ -346,6 +395,18 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
         result=PipelineStageResult(vlm.command_id, "succeeded", vlm_receipt_id),
         expected_version=vlm.version,
         lease_id="worker-lease-2",
+    )
+    media = await restarted.claim_next_pending(
+        run_id,
+        expected_version=0,
+        lease_id="worker-lease-3",
+    )
+    assert media is not None and media.stage == "media_preflight"
+    await restarted.record_result(
+        run_id,
+        result=PipelineStageResult(media.command_id, "succeeded", uuid4()),
+        expected_version=media.version,
+        lease_id="worker-lease-3",
     )
     completed = await restarted.read_run(run_id)
     assert completed is not None and completed.status == "succeeded"
@@ -451,7 +512,7 @@ async def test_blocked_command_rejects_later_failed_blocker(tmp_path: Path) -> N
         PipelineRunRequest("test", source_root=str(tmp_path / "later")),
         "postgres-blocker-later",
     )
-    source, vlm = submitted.snapshot.commands
+    source, vlm, _media = submitted.snapshot.commands
 
     with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
         with psycopg.connect(DSN) as connection:
@@ -478,7 +539,7 @@ async def test_blocked_command_rejects_non_failure_predecessor(tmp_path: Path) -
         PipelineRunRequest("test", source_root=str(tmp_path / "success")),
         "postgres-blocker-success",
     )
-    source, vlm = submitted.snapshot.commands
+    source, vlm, _media = submitted.snapshot.commands
 
     with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
         with psycopg.connect(DSN) as connection:
@@ -545,6 +606,7 @@ async def test_expired_outbox_lease_is_reclaimed_with_a_new_cas_version(
         store,
         scheduler,
         _source_catalog(tmp_path / "input"),
+        execution_profile=_execution_profile(),
     )
     submitted = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "input")),
@@ -585,6 +647,7 @@ async def test_expired_lease_resumes_only_through_reconciler(tmp_path: Path) -> 
         store,
         scheduler,
         _source_catalog(tmp_path / "input"),
+        execution_profile=_execution_profile(),
     )
     submitted = await service.submit(
         PipelineRunRequest.from_mapping(

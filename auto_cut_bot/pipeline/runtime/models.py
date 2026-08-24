@@ -17,6 +17,7 @@ from .errors import PipelineRunValidationError
 if TYPE_CHECKING:
     from autocut_kernel.vlm import GenerationRetryPolicy
 
+    from auto_cut_bot.pipeline.media_preflight import LocalMediaPreflightPolicy
     from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 PipelineProfile = Literal["test", "shadow"]
@@ -173,6 +174,7 @@ _PARSE_POLICY_FIELDS = frozenset(
 )
 _EXECUTION_PROFILE_SCHEMA_VERSION_V1 = "pipeline-execution-profile-v1"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V2 = "pipeline-execution-profile-v2"
+_EXECUTION_PROFILE_SCHEMA_VERSION_V3 = "pipeline-execution-profile-v3"
 _RETRY_POLICY_FIELDS = frozenset(
     {"backoff_seconds", "max_attempts", "strategy_version"}
 )
@@ -198,6 +200,8 @@ class PipelineExecutionProfile:
     parse_policy_json: str | None
     vlm_stage_strategy_version: str | None
     generation_retry_policy_json: str | None = None
+    media_preflight_policy_json: str | None = None
+    media_preflight_policy_hash: str | None = None
     schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V2
     kind: PipelineExecutionProfileKind = "doubao_vlm"
 
@@ -216,6 +220,8 @@ class PipelineExecutionProfile:
                     self.parse_policy_json,
                     self.vlm_stage_strategy_version,
                     self.generation_retry_policy_json,
+                    self.media_preflight_policy_json,
+                    self.media_preflight_policy_hash,
                 )
             ):
                 raise PipelineRunValidationError(
@@ -312,12 +318,32 @@ class PipelineExecutionProfile:
                 "parse policy per-observation summary budget exceeds its total budget"
             )
         if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
-            if self.generation_retry_policy_json is not None:
+            if any(
+                value is not None
+                for value in (
+                    self.generation_retry_policy_json,
+                    self.media_preflight_policy_json,
+                    self.media_preflight_policy_hash,
+                )
+            ):
                 raise PipelineRunValidationError(
-                    "execution profile v1 cannot claim a generation retry policy"
+                    "execution profile v1 cannot claim retry or media-preflight policy"
                 )
         elif self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+            if any(
+                value is not None
+                for value in (
+                    self.media_preflight_policy_json,
+                    self.media_preflight_policy_hash,
+                )
+            ):
+                raise PipelineRunValidationError(
+                    "execution profile v2 cannot claim a media-preflight policy"
+                )
             self._decode_generation_retry_policy()
+        elif self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+            self._decode_generation_retry_policy()
+            self._decode_media_preflight_policy()
         else:
             raise PipelineRunValidationError("execution profile schema version is unsupported")
         _build_registered_doubao_policy(self)
@@ -337,6 +363,8 @@ class PipelineExecutionProfile:
             parse_policy_json=None,
             vlm_stage_strategy_version=None,
             generation_retry_policy_json=None,
+            media_preflight_policy_json=None,
+            media_preflight_policy_hash=None,
             schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V1,
             kind="legacy_unresolved",
         )
@@ -372,6 +400,39 @@ class PipelineExecutionProfile:
             vlm_stage_strategy_version=policy.stage_strategy_version,
             generation_retry_policy_json=_canonical_json(retry_policy.to_mapping()),
             schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V2,
+        )
+
+    @classmethod
+    def from_policies(
+        cls,
+        policy: DoubaoVlmRequestPolicy,
+        media_preflight_policy: LocalMediaPreflightPolicy,
+        *,
+        retry_policy: GenerationRetryPolicy,
+    ) -> PipelineExecutionProfile:
+        """Freeze every process-supplied VLM and physical-evidence strategy."""
+
+        from auto_cut_bot.pipeline.media_preflight import LocalMediaPreflightPolicy
+
+        if type(media_preflight_policy) is not LocalMediaPreflightPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution profile requires an exact LocalMediaPreflightPolicy"
+            )
+        vlm_profile = cls.from_doubao_policy(policy, retry_policy=retry_policy)
+        return cls(
+            provider_id=vlm_profile.provider_id,
+            model_id=vlm_profile.model_id,
+            adapter_strategy_version=vlm_profile.adapter_strategy_version,
+            prompt_version=vlm_profile.prompt_version,
+            kernel_parser_strategy_version=vlm_profile.kernel_parser_strategy_version,
+            response_schema_json=vlm_profile.response_schema_json,
+            request_parameters_json=vlm_profile.request_parameters_json,
+            parse_policy_json=vlm_profile.parse_policy_json,
+            vlm_stage_strategy_version=vlm_profile.vlm_stage_strategy_version,
+            generation_retry_policy_json=vlm_profile.generation_retry_policy_json,
+            media_preflight_policy_json=_canonical_json(media_preflight_policy.to_mapping()),
+            media_preflight_policy_hash=media_preflight_policy.canonical_hash,
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V3,
         )
 
     @classmethod
@@ -412,6 +473,12 @@ class PipelineExecutionProfile:
             allowed = base_allowed
         elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
             allowed = base_allowed | {"generation_retry_policy"}
+        elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+            allowed = base_allowed | {
+                "generation_retry_policy",
+                "media_preflight_policy",
+                "media_preflight_policy_hash",
+            }
         else:
             raise PipelineRunValidationError("execution profile schema version is invalid")
         unsupported = set(value) - allowed
@@ -426,7 +493,10 @@ class PipelineExecutionProfile:
             )
         if kind != "doubao_vlm":
             raise PipelineRunValidationError("execution profile kind or schema version is invalid")
-        for field_name in ("response_schema", "request_parameters", "parse_policy"):
+        embedded_objects = {"response_schema", "request_parameters", "parse_policy"}
+        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+            embedded_objects.add("media_preflight_policy")
+        for field_name in embedded_objects:
             if type(value[field_name]) is not dict:  # noqa: E721
                 raise PipelineRunValidationError(
                     f"execution profile {field_name} must be a JSON object"
@@ -458,12 +528,29 @@ class PipelineExecutionProfile:
                 if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1
                 else _canonical_json(value["generation_retry_policy"])
             ),
+            media_preflight_policy_json=(
+                _canonical_json(value["media_preflight_policy"])
+                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
+                else None
+            ),
+            media_preflight_policy_hash=(
+                _profile_text(
+                    value["media_preflight_policy_hash"],
+                    "execution_profile.media_preflight_policy_hash",
+                )
+                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
+                else None
+            ),
             schema_version=cast(str, schema_version),
         )
 
     @property
     def is_legacy_unresolved(self) -> bool:
         return self.kind == "legacy_unresolved"
+
+    @property
+    def has_media_preflight_policy(self) -> bool:
+        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
 
     def to_mapping(self) -> dict[str, object]:
         if self.is_legacy_unresolved:
@@ -490,11 +577,20 @@ class PipelineExecutionProfile:
             "schema_version": self.schema_version,
             "vlm_stage_strategy_version": self.vlm_stage_strategy_version,
         }
-        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+        if self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+        }:
             result["generation_retry_policy"] = _decode_canonical_json(
                 self.generation_retry_policy_json,
                 "generation_retry_policy_json",
             )
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+            result["media_preflight_policy"] = _decode_canonical_json(
+                self.media_preflight_policy_json,
+                "media_preflight_policy_json",
+            )
+            result["media_preflight_policy_hash"] = self.media_preflight_policy_hash
         return result
 
     @property
@@ -509,6 +605,45 @@ class PipelineExecutionProfile:
         """Rebuild the exact registered policy without consulting process defaults."""
 
         return _build_registered_doubao_policy(self)
+
+    def to_media_preflight_policy(self) -> LocalMediaPreflightPolicy:
+        """Rebuild the frozen physical-evidence policy without environment defaults."""
+
+        return self._decode_media_preflight_policy()
+
+    def _decode_media_preflight_policy(self) -> LocalMediaPreflightPolicy:
+        from auto_cut_bot.pipeline.media_preflight import (
+            LocalMediaPolicyError,
+            LocalMediaPreflightPolicy,
+        )
+
+        if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+            raise PipelineRunValidationError(
+                "execution profile has no frozen media-preflight policy"
+            )
+        value = _decode_canonical_json(
+            self.media_preflight_policy_json,
+            "media_preflight_policy_json",
+        )
+        try:
+            policy = LocalMediaPreflightPolicy.from_mapping(value)
+        except LocalMediaPolicyError as error:
+            raise PipelineRunValidationError(
+                "media_preflight_policy_json is invalid"
+            ) from error
+        if policy.word_timing_capability != "required":
+            raise PipelineRunValidationError(
+                "pipeline execution profile requires exact word timing"
+            )
+        if policy.canonical_hash != self.media_preflight_policy_hash:
+            raise PipelineRunValidationError(
+                "media-preflight policy hash does not bind its canonical JSON"
+            )
+        if _canonical_json(policy.to_mapping()) != self.media_preflight_policy_json:
+            raise PipelineRunValidationError(
+                "media-preflight policy is not canonical"
+            )
+        return policy
 
     def _decode_generation_retry_policy(self) -> GenerationRetryPolicy:
         from autocut_kernel.vlm import GenerationRetryPolicy
@@ -632,9 +767,19 @@ def _build_registered_doubao_policy(
         "schema_version": profile.schema_version,
         "vlm_stage_strategy_version": rebuilt.stage_strategy_version,
     }
-    if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+    if profile.schema_version in {
+        _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
+        _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+    }:
         registered_mapping["generation_retry_policy"] = (
             profile.to_generation_retry_policy().to_mapping()
+        )
+    if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        registered_mapping["media_preflight_policy"] = (
+            profile.to_media_preflight_policy().to_mapping()
+        )
+        registered_mapping["media_preflight_policy_hash"] = (
+            profile.media_preflight_policy_hash
         )
     if _canonical_json(registered_mapping) != profile.canonical_json:
         raise PipelineRunValidationError(
@@ -903,6 +1048,13 @@ class PipelineStageContext:
         if self.command.stage == "vlm" and self.execution_profile.is_legacy_unresolved:
             raise PipelineRunValidationError(
                 "legacy-unresolved execution profile cannot execute VLM"
+            )
+        if (
+            self.command.stage == "media_preflight"
+            and not self.execution_profile.has_media_preflight_policy
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight cannot execute without its frozen policy"
             )
 
     @property

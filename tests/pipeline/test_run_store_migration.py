@@ -5,6 +5,9 @@ WORKER_MIGRATION = Path("packages/autocut-kernel/migrations/0007_pipeline_stage_
 EXECUTION_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0008_pipeline_execution_profile.sql"
 )
+MEDIA_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0012_pipeline_media_preflight_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -63,3 +66,22 @@ def test_execution_profile_migration_is_immutable_closed_and_legacy_fail_closed(
     assert "NEW.execution_profile_hash" in sql
     assert "OLD.execution_profile_hash" in sql
     assert "distinct from request_hash" in sql
+
+
+def test_media_profile_migration_requires_v3_for_reconstructible_runs() -> None:
+    sql = MEDIA_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE" in sql
+    assert "WHERE state IN ('accepted', 'running')" in sql
+    assert "pipeline-execution-profile-v3" in sql
+    assert "0012 refuses accepted/running pipeline runs" in sql
+    assert "media_preflight_policy_hash" in sql
+    assert "timed_speech_endpoint_url" in sql
+    assert "asr_model_revision" in sql
+    assert "vad_model_sha256" in sql
+    assert "funasr_version" in sql
+    assert "torch_version" in sql
+    assert "word_timing_capability' = 'required'" in sql
+    assert "calibrations" in sql
+    assert "state IN ('succeeded', 'denied', 'failed')" in sql
+    assert ") IS TRUE);" in sql

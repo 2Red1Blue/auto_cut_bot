@@ -276,8 +276,9 @@ def compose_pipeline_runtime_from_environment(
         media_policy = LocalMediaPreflightPolicy.from_mapping(
             cast(dict[str, object], decoded_media_policy)
         )
-        execution_profile = PipelineExecutionProfile.from_doubao_policy(
+        execution_profile = PipelineExecutionProfile.from_policies(
             policy,
+            media_policy,
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
         )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
@@ -318,7 +319,6 @@ def compose_pipeline_runtime_from_environment(
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(),
-        media_policy,
     )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),

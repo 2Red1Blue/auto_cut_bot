@@ -176,14 +176,9 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
-        policy: LocalMediaPreflightPolicy,
     ) -> None:
         self._store = store
-        self._policy = policy
-        self._command = PrepareTimedMediaEvidenceCommand(
-            store,
-            _ClaimOwnedLocalProducer(port, policy),
-        )
+        self._port = port
         self._finalizer = FinalizeTimedMediaEvidenceBatchCommand(store)
 
     @staticmethod
@@ -200,6 +195,7 @@ class MediaPreflightPipelineStage:
     def _requests(
         self,
         context: PipelineStageContext,
+        policy: LocalMediaPreflightPolicy,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
         job = self._job(context)
         source_outcome = self._store.read_outcome(
@@ -245,13 +241,13 @@ class MediaPreflightPipelineStage:
                 raise PipelineRunValidationError(
                     "VLM evidence does not bind the exact committed source episode"
                 )
-            adaptive = self._policy.adaptive_window_policy(episode.manifest.source_time_base)
+            adaptive = policy.adaptive_window_policy(episode.manifest.source_time_base)
             key = media_preflight_kernel_idempotency_key(
                 run_id=context.run_id,
                 episode_index=episode_index,
                 source_bundle=source_bundle,
                 observation=persisted,
-                producer_policy_sha256=self._policy.canonical_hash,
+                producer_policy_sha256=policy.canonical_hash,
                 adaptive_policy_sha256=adaptive.canonical_hash,
             )
             requests.append(
@@ -271,7 +267,7 @@ class MediaPreflightPipelineStage:
                     frame_detector_sha256=episode.media_probe.frame_detector_sha256,
                     audio_detector_sha256=episode.media_probe.audio_detector_sha256,
                     adaptive_policy=adaptive,
-                    producer_policy_sha256=self._policy.canonical_hash,
+                    producer_policy_sha256=policy.canonical_hash,
                 )
             )
         if not requests:
@@ -281,17 +277,19 @@ class MediaPreflightPipelineStage:
         return source_bundle, tuple(requests)
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
-        prepared = await asyncio.to_thread(self._requests, context)
+        policy = context.execution_profile.to_media_preflight_policy()
+        prepared = await asyncio.to_thread(self._requests, context, policy)
         if prepared is None:
             return PipelineStageResult(context.command.command_id, "indeterminate")
-        result = await self._execute_batch(context, *prepared)
+        result = await self._execute_batch(context, *prepared, policy)
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
-        prepared = await asyncio.to_thread(self._requests, context)
+        policy = context.execution_profile.to_media_preflight_policy()
+        prepared = await asyncio.to_thread(self._requests, context, policy)
         if prepared is None:
             return None
-        result = await self._execute_batch(context, *prepared)
+        result = await self._execute_batch(context, *prepared, policy)
         projected = self._project(context, result.outcome)
         return None if projected.outcome == "indeterminate" else projected
 
@@ -300,10 +298,15 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         source_bundle: PersistedPreparedSources,
         requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        policy: LocalMediaPreflightPolicy,
     ) -> FinalizeTimedMediaEvidenceBatchResult | PrepareTimedMediaEvidenceResult:
+        command = PrepareTimedMediaEvidenceCommand(
+            self._store,
+            _ClaimOwnedLocalProducer(self._port, policy),
+        )
         children: list[TimedMediaEvidenceBatchChild] = []
         for request in requests:
-            result = await asyncio.to_thread(self._command.execute, request)
+            result = await asyncio.to_thread(command.execute, request)
             outcome = result.outcome
             if outcome.state in ("pending", "running"):
                 return result
@@ -330,7 +333,7 @@ class MediaPreflightPipelineStage:
         job = Job(context.run_id, context.request.profile)
         finalizer = FinalizeTimedMediaEvidenceBatchRequest(
             job,
-            self._batch_idempotency_key(context, source_bundle),
+            self._batch_idempotency_key(context, source_bundle, policy),
             canonical_recipe_scope(job),
             _ARTIFACT_REVISION,
             source_bundle.artifact_reference.content_hash,
@@ -343,10 +346,11 @@ class MediaPreflightPipelineStage:
         self,
         context: PipelineStageContext,
         source_bundle: PersistedPreparedSources,
+        policy: LocalMediaPreflightPolicy,
     ) -> str:
         encoded = json.dumps(
             {
-                "producer_policy_sha256": self._policy.canonical_hash,
+                "producer_policy_sha256": policy.canonical_hash,
                 "run_id": context.run_id,
                 "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
                 "source_provenance_sha256": source_bundle.canonical_hash,

@@ -84,6 +84,13 @@ class PipelineStageRunner:
             raise PipelineRunValidationError(
                 "legacy-unresolved execution profile cannot execute VLM"
             )
+        if (
+            pending.stage == "media_preflight"
+            and not snapshot.execution_profile.has_media_preflight_policy
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight cannot execute without its frozen policy"
+            )
         command = await self._command_store.claim_next_pending(
             snapshot.run_id,
             expected_version=pending.version,
@@ -208,6 +215,13 @@ class PipelineStageReconciler:
         if command.status != "indeterminate" or command.version != uncertain.version:
             raise PipelineRunValidationError(
                 "reconcile command must bind the indeterminate version"
+            )
+        if (
+            command.stage == "media_preflight"
+            and not snapshot.execution_profile.has_media_preflight_policy
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight cannot reconcile without its frozen policy"
             )
         result = await self._require(command.stage).reconcile(
             PipelineStageContext(

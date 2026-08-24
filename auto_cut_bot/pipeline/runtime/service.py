@@ -47,6 +47,10 @@ class DurablePipelineRunService:
         if type(request) is not PipelineRunRequest:  # noqa: E721
             raise TypeError("submit accepts only PipelineRunRequest")
         validate_idempotency_key(idempotency_key)
+        if not self._execution_profile.has_media_preflight_policy:
+            raise PipelineRunValidationError(
+                "new pipeline runs require a frozen media-preflight execution profile"
+            )
         if not self._source_authority.allows(request):
             raise SourceDeniedError("source is outside the configured authority")
         claim = await self._store.claim_run(
@@ -56,6 +60,10 @@ class DurablePipelineRunService:
             request_hash=request.request_hash,
             execution_profile=self._execution_profile,
         )
+        if not claim.snapshot.execution_profile.has_media_preflight_policy:
+            raise PipelineRunValidationError(
+                "persisted pipeline run has no frozen media-preflight execution profile"
+            )
         if claim.snapshot.request != request or claim.snapshot.request_hash != request.request_hash:
             raise PipelineRunValidationError(
                 "claimed run does not bind the submitted canonical request"
@@ -77,6 +85,13 @@ class DurablePipelineRunService:
         validate_run_id(run_id)
         if type(expected_version) is not int or expected_version < 0:  # noqa: E721
             raise ValueError("expected_version must be a non-negative integer")
+        persisted = await self._store.read_run(run_id)
+        if persisted is None:
+            raise PipelineRunNotFoundError(run_id)
+        if not persisted.execution_profile.has_media_preflight_policy:
+            raise PipelineRunValidationError(
+                "persisted pipeline run has no frozen media-preflight execution profile"
+            )
         snapshot = await self._store.claim_resume(run_id, expected_version=expected_version)
         if (
             snapshot.run_id != run_id
@@ -100,6 +115,10 @@ class DurablePipelineRunService:
                 for command in snapshot.commands
             ):
                 continue
+            if not snapshot.execution_profile.has_media_preflight_policy:
+                raise PipelineRunValidationError(
+                    "reconstructible run has no frozen media-preflight execution profile"
+                )
             await self._scheduler.enqueue(snapshot.run_id)
             run_ids.append(snapshot.run_id)
         return tuple(run_ids)
