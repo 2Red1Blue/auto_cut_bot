@@ -1,0 +1,8 @@
+{"file":"packages/autocut-kernel/src/autocut_kernel/pipeline/generate_vlm_evidence_command.py","reason":"VLM Command 和 Attempt 状态机"}
+{"file":"packages/autocut-kernel/src/autocut_kernel/store/models.py","reason":"持久化 Attempt/Receipt 模型"}
+{"file":"packages/autocut-kernel/src/autocut_kernel/store/postgres.py","reason":"Attempt CAS 与 Command 终态提交"}
+{"file":"packages/autocut-kernel/migrations/0003_vlm_generation_and_run_finalization.sql","reason":"当前一对一 Attempt 约束"}
+{"file":"auto_cut_bot/pipeline/vlm/doubao_ark_provider.py","reason":"豆包错误映射与单次远端调用"}
+{"file":"auto_cut_bot/pipeline/runtime/models.py","reason":"冻结执行 Profile"}
+{"file":"auto_cut_bot/pipeline/runtime/vlm_stage.py","reason":"批次停止边界"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-04-command-admission-recovery/design.md","reason":"共享 Recovery 权威边界"}

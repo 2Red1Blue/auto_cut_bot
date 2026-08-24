@@ -1,0 +1,12 @@
+{
+  "id": "vlm-bounded-retry-recovery",
+  "title": "为豆包 VLM 增加有界、可审计的分类重试",
+  "status": "completed",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "归档并提交，随后进入 Media Preflight",
+  "createdAt": "2026-08-24T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
