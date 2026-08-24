@@ -13,4 +13,3 @@
   business hashes for identical committed inputs.
 - Prove one real committed drama episode reaches an admitted Blueprint before
   starting the production Stage 4 command.
-
