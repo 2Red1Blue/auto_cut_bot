@@ -1,61 +1,341 @@
-"""Fail-closed runtime composition for the PostgreSQL pipeline control plane."""
+"""Fail-closed composition for the local PostgreSQL/Doubao pipeline runtime."""
+
+# pyright: reportMissingTypeStubs=false
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Protocol, cast
 
 import psycopg
+from autocut_kernel.store import PostgresRuntimeStore
+from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
 
-from .models import PipelineRunRequest
+from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
+from auto_cut_bot.pipeline.vlm import (
+    DoubaoArkVlmProvider,
+    DoubaoArkVlmProviderConfig,
+    DoubaoVlmRequestPolicy,
+    PostgresArkFileCache,
+)
+from auto_cut_bot.pipeline.vlm.ark_file_cache import DbConnection as ArkDbConnection
+
+from .models import PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
 from .service import DurablePipelineRunService
+from .source_prep_stage import SourcePrepPipelineStage
+from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
+from .vlm_stage import VlmPipelineStage
+from .worker import DurablePipelineWorker
 
 PIPELINE_POSTGRES_DSN_ENV = "AUTO_CUT_BOT_PIPELINE_POSTGRES_DSN"
+PIPELINE_KERNEL_POSTGRES_DSN_ENV = "AUTO_CUT_BOT_PIPELINE_KERNEL_POSTGRES_DSN"
+PIPELINE_SOURCE_CATALOG_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_CATALOG"
+PIPELINE_ARK_API_KEY_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_API_KEY"
+PIPELINE_ARK_TENANT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_TENANT_ID"
+PIPELINE_ARK_PROJECT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID"
+PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
+PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
+
+# Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
 PIPELINE_SOURCE_REFERENCES_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_REFERENCES"
 
+_REQUIRED_ENVIRONMENT = (
+    PIPELINE_POSTGRES_DSN_ENV,
+    PIPELINE_SOURCE_CATALOG_ENV,
+    PIPELINE_ARK_API_KEY_ENV,
+    PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_ARK_PROJECT_ID_ENV,
+    PIPELINE_ARK_MODEL_ID_ENV,
+)
+_CATALOG_FIELDS = frozenset(
+    {"authorization_id", "authorized_path", "expected_source_count", "series_id"}
+)
 
-class ConfiguredSourceAuthority:
-    """Authorize roots by containment and references by exact opaque identity."""
 
-    def __init__(
-        self,
-        source_roots: tuple[Path, ...],
-        source_references: frozenset[str],
-    ) -> None:
-        self._source_roots = tuple(
-            root.expanduser().resolve(strict=False) for root in source_roots
-        )
-        self._source_references = source_references
+class PipelineRuntimeConfigurationError(ValueError):
+    """Raised when an enabled paid runtime has incomplete or invalid config."""
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCatalogEntry:
+    """One exact local source boundary and its non-secret authorization identity."""
+
+    authorized_root: AuthorizedSeriesSourceRoot
+
+    @property
+    def path(self) -> Path:
+        return self.authorized_root.root
+
+    @property
+    def authorization_id(self) -> str:
+        return self.authorized_root.authorization_id
+
+
+class ConfiguredSourceCatalog:
+    """Authorize and resolve only exact entries from a closed source catalog."""
+
+    def __init__(self, entries: tuple[SourceCatalogEntry, ...]) -> None:
+        if not entries:
+            raise PipelineRuntimeConfigurationError("source catalog must not be empty")
+        paths = tuple(entry.path for entry in entries)
+        authorization_ids = tuple(entry.authorization_id for entry in entries)
+        series_ids = tuple(entry.authorized_root.series_id for entry in entries)
+        if len(set(paths)) != len(paths):
+            raise PipelineRuntimeConfigurationError("source catalog paths must be unique")
+        if len(set(authorization_ids)) != len(authorization_ids):
+            raise PipelineRuntimeConfigurationError(
+                "source catalog authorization_id values must be unique"
+            )
+        if len(set(series_ids)) != len(series_ids):
+            raise PipelineRuntimeConfigurationError(
+                "source catalog series_id values must be unique"
+            )
+        self._entries = entries
+
+    @classmethod
+    def from_json(cls, raw: str) -> ConfiguredSourceCatalog:
+        try:
+            decoded = cast(object, json.loads(raw))
+        except (json.JSONDecodeError, UnicodeError) as error:
+            raise PipelineRuntimeConfigurationError(
+                f"{PIPELINE_SOURCE_CATALOG_ENV} must be valid JSON"
+            ) from error
+        if type(decoded) is not list or not decoded:  # noqa: E721
+            raise PipelineRuntimeConfigurationError(
+                f"{PIPELINE_SOURCE_CATALOG_ENV} must be a non-empty JSON array"
+            )
+        entries: list[SourceCatalogEntry] = []
+        for index, value in enumerate(cast(list[object], decoded)):
+            if type(value) is not dict:  # noqa: E721
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} must be an object"
+                )
+            item = cast(dict[object, object], value)
+            if any(type(key) is not str for key in item) or frozenset(item) != _CATALOG_FIELDS:
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} must contain only the closed catalog fields"
+                )
+            authorized_path = _catalog_text(item["authorized_path"], index, "authorized_path")
+            path = Path(authorized_path).expanduser()
+            if not path.is_absolute():
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} authorized_path must be absolute"
+                )
+            expected_count = item["expected_source_count"]
+            if type(expected_count) is not int or expected_count < 1:  # noqa: E721
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} expected_source_count must be positive"
+                )
+            entries.append(
+                SourceCatalogEntry(
+                    AuthorizedSeriesSourceRoot(
+                        root=path.resolve(strict=False),
+                        authorization_id=_catalog_text(
+                            item["authorization_id"], index, "authorization_id"
+                        ),
+                        series_id=_catalog_text(item["series_id"], index, "series_id"),
+                        expected_source_count=expected_count,
+                    )
+                )
+            )
+        return cls(tuple(entries))
 
     def allows(self, request: PipelineRunRequest) -> bool:
+        return self._match(request) is not None
+
+    def resolve(self, context: object) -> AuthorizedSeriesSourceRoot:
+        request = getattr(context, "request", None)
+        if type(request) is not PipelineRunRequest:  # noqa: E721
+            raise PipelineRuntimeConfigurationError(
+                "source catalog resolver requires a pipeline stage context"
+            )
+        matched = self._match(request)
+        if matched is None:
+            raise PipelineRuntimeConfigurationError(
+                "persisted source is not present in the configured source catalog"
+            )
+        return matched.authorized_root
+
+    def _match(self, request: PipelineRunRequest) -> SourceCatalogEntry | None:
         if request.source_root is not None:
-            candidate = Path(request.source_root).expanduser().resolve(strict=False)
-            return any(candidate.is_relative_to(root) for root in self._source_roots)
+            candidate = Path(request.source_root).expanduser()
+            if not candidate.is_absolute():
+                return None
+            resolved = candidate.resolve(strict=False)
+            return next((entry for entry in self._entries if entry.path == resolved), None)
         reference = request.source_reference
-        return reference is not None and reference in self._source_references
+        return next(
+            (entry for entry in self._entries if entry.authorization_id == reference),
+            None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineRuntime:
+    """Composed service/worker pair with an application-owned lifecycle surface."""
+
+    service: DurablePipelineRunService
+    worker: DurablePipelineWorker
+    execution_profile: PipelineExecutionProfile
+
+    async def startup_reconstruct(self) -> tuple[str, ...]:
+        return await self.worker.startup_reconstruct()
+
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        await self.worker.run_forever(
+            stop_event,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+
+class PipelineRuntimePort(Protocol):
+    """Structural lifecycle seam accepted by the HTTP app for local test injection."""
+
+    @property
+    def service(self) -> PipelineRunService: ...
+
+    async def startup_reconstruct(self) -> tuple[str, ...]: ...
+
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None: ...
+
+
+def compose_pipeline_runtime_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> PipelineRuntime | None:
+    """Compose the paid runtime, rejecting every partial configuration."""
+    values = os.environ if environ is None else environ
+    relevant = _REQUIRED_ENVIRONMENT + (
+        PIPELINE_KERNEL_POSTGRES_DSN_ENV,
+        PIPELINE_ARK_BASE_URL_ENV,
+    )
+    if not any(values.get(name, "").strip() for name in relevant):
+        return None
+    missing = tuple(name for name in _REQUIRED_ENVIRONMENT if not values.get(name, "").strip())
+    if missing:
+        raise PipelineRuntimeConfigurationError(
+            "pipeline runtime configuration is incomplete; missing: " + ", ".join(missing)
+        )
+
+    control_dsn = values[PIPELINE_POSTGRES_DSN_ENV].strip()
+    kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
+    catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
+    try:
+        policy = DoubaoVlmRequestPolicy(model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip())
+        execution_profile = PipelineExecutionProfile.from_doubao_policy(policy)
+        api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
+        tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
+        project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
+        configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
+        provider_config = (
+            DoubaoArkVlmProviderConfig(
+                api_key=api_key,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                base_url=configured_base_url,
+            )
+            if configured_base_url
+            else DoubaoArkVlmProviderConfig(
+                api_key=api_key,
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+        )
+    except (TypeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            "pipeline Doubao policy or provider configuration is invalid"
+        ) from error
+
+    control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
+
+    def kernel_factory() -> psycopg.Connection[tuple[object, ...]]:
+        return psycopg.connect(kernel_dsn)
+
+    control_store = PostgresPipelineRunStore(control_factory)
+    scheduler = PostgresPipelineScheduler(control_factory)
+    kernel_store = PostgresRuntimeStore(
+        cast(Callable[[], KernelDbConnection], kernel_factory)
+    )
+    file_cache = PostgresArkFileCache(
+        cast(Callable[[], ArkDbConnection], kernel_factory)
+    )
+    provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
+    source_stage = SourcePrepPipelineStage(kernel_store, catalog)
+    vlm_stage = VlmPipelineStage(kernel_store, provider)
+    registry = PipelineStageRegistry.from_ports(
+        ("source_prep", source_stage),
+        ("vlm", vlm_stage),
+    )
+    runner = PipelineStageRunner(registry, control_store)
+    reconciler = PipelineStageReconciler.from_ports(
+        control_store,
+        ("source_prep", source_stage),
+        ("vlm", vlm_stage),
+    )
+    service = DurablePipelineRunService(
+        control_store,
+        scheduler,
+        catalog,
+        execution_profile=execution_profile,
+    )
+    worker = DurablePipelineWorker(
+        worker_id=f"pipeline-http-{os.getpid()}",
+        service=service,
+        scheduler=scheduler,
+        store=control_store,
+        runner=runner,
+        reconciler=reconciler,
+    )
+    return PipelineRuntime(service, worker, execution_profile)
 
 
 def compose_pipeline_run_service_from_environment() -> PipelineRunService | None:
-    """Build the real service only when DB and source authority are configured."""
-    dsn = os.environ.get(PIPELINE_POSTGRES_DSN_ENV, "").strip()
-    roots_value = os.environ.get(PIPELINE_SOURCE_ROOTS_ENV, "").strip()
-    references_value = os.environ.get(PIPELINE_SOURCE_REFERENCES_ENV, "").strip()
-    roots = tuple(Path(value) for value in roots_value.split(os.pathsep) if value.strip())
-    references = frozenset(
-        value.strip() for value in references_value.split(",") if value.strip()
-    )
-    if not dsn or (not roots and not references):
-        return None
+    """Compatibility seam returning the service from the fully composed runtime."""
+    runtime = compose_pipeline_runtime_from_environment()
+    return None if runtime is None else runtime.service
 
-    connection_factory = cast(ConnectionFactory, lambda: psycopg.connect(dsn))
-    store = PostgresPipelineRunStore(connection_factory)
-    scheduler = PostgresPipelineScheduler(connection_factory)
-    return DurablePipelineRunService(
-        store,
-        scheduler,
-        ConfiguredSourceAuthority(roots, references),
-    )
+
+def _catalog_text(value: object, index: int, field_name: str) -> str:
+    if type(value) is not str or not value.strip() or value != value.strip():  # noqa: E721
+        raise PipelineRuntimeConfigurationError(
+            f"source catalog entry {index} {field_name} must be canonical non-empty text"
+        )
+    return value
+
+
+__all__ = (
+    "ConfiguredSourceCatalog",
+    "PIPELINE_ARK_API_KEY_ENV",
+    "PIPELINE_ARK_BASE_URL_ENV",
+    "PIPELINE_ARK_MODEL_ID_ENV",
+    "PIPELINE_ARK_PROJECT_ID_ENV",
+    "PIPELINE_ARK_TENANT_ID_ENV",
+    "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
+    "PIPELINE_POSTGRES_DSN_ENV",
+    "PIPELINE_SOURCE_CATALOG_ENV",
+    "PIPELINE_SOURCE_REFERENCES_ENV",
+    "PIPELINE_SOURCE_ROOTS_ENV",
+    "PipelineRuntime",
+    "PipelineRuntimeConfigurationError",
+    "PipelineRuntimePort",
+    "SourceCatalogEntry",
+    "compose_pipeline_run_service_from_environment",
+    "compose_pipeline_runtime_from_environment",
+)

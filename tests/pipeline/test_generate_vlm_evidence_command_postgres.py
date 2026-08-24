@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
@@ -19,12 +20,15 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import (
+    FinalizeVlmBatchCommand,
+    FinalizeVlmBatchRequest,
     GenerateVlmEvidenceCommand,
     GenerateVlmEvidenceRequest,
+    VlmBatchChildOutcome,
     adapt_vlm_observations,
 )
 from autocut_kernel.semantic_chain import SemanticChainBuilder, SemanticProfile
-from autocut_kernel.store import Job, PostgresRuntimeStore
+from autocut_kernel.store import Job, PostgresRuntimeStore, StoreValidationError
 from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import (
     ProviderCompleted,
@@ -269,6 +273,7 @@ def _request(
         model_id="fake-vlm-v1",
         provider_id="fake-provider",
         parse_policy=VlmParsePolicy(Decimal("0.80"), 4_096, 4, 128, 256),
+        episode_index=0,
     )
 
 
@@ -340,6 +345,107 @@ def test_success_is_persisted_once_and_replay_never_calls_provider() -> None:
                 "SELECT state FROM runtime.jobs WHERE job_key = 'vlm-success'"
             )
             assert cursor.fetchone()[0] == "running"
+
+
+def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("vlm-independent-proof", "test")
+    request = replace(
+        _request(store, job),
+        episode_index=0,
+        source_manifest_sha256="sha256:" + "8" * 64,
+        source_provenance_sha256="sha256:" + "9" * 64,
+    )
+    provider = FakeProvider(ProviderCompleted(_raw_success(request), "provider-proof-1"))
+    child_result = GenerateVlmEvidenceCommand(store, provider).execute(request)
+
+    persisted = store.read_committed_vlm_generation_child(job, request.idempotency_key)
+
+    assert child_result.attempt is not None
+    assert persisted.request_hash == request.request_hash
+    assert persisted.attempt_id == child_result.attempt.attempt_id
+    assert persisted.window_manifest_sha256 == request.manifest.canonical_hash
+    assert persisted.window_manifest_set_sha256 == request.manifest_set.canonical_hash
+    assert persisted.source_manifest_sha256 == request.source_manifest_sha256
+    assert persisted.source_provenance_sha256 == request.source_provenance_sha256
+    assert child_result.outcome.receipt_id is not None
+    assert child_result.outcome.artifact_set_id is not None
+    batch = FinalizeVlmBatchCommand(store).execute(
+        FinalizeVlmBatchRequest(
+            job,
+            "vlm-independent-proof-batch",
+            canonical_recipe_scope(job),
+            1,
+            1,
+            persisted.source_manifest_sha256,
+            persisted.source_provenance_sha256,
+            (
+                VlmBatchChildOutcome(
+                    0,
+                    request.idempotency_key,
+                    request.manifest.canonical_hash,
+                    persisted.source_manifest_sha256,
+                    persisted.source_provenance_sha256,
+                    request.request_hash,
+                    "succeeded",
+                    child_result.outcome.receipt_id,
+                    child_result.outcome.artifact_set_id,
+                ),
+            ),
+        )
+    )
+    assert batch.outcome.state == "succeeded"
+    assert batch.artifact is not None
+
+
+def test_postgres_reader_rejects_missing_and_duplicate_relabelled_child() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("vlm-independent-proof-negative", "test")
+    with pytest.raises(StoreValidationError, match="unavailable"):
+        store.read_committed_vlm_generation_child(job, "missing-child")
+
+    request = replace(
+        _request(store, job),
+        episode_index=0,
+        source_manifest_sha256="sha256:" + "8" * 64,
+        source_provenance_sha256="sha256:" + "9" * 64,
+    )
+    result = GenerateVlmEvidenceCommand(
+        store,
+        FakeProvider(ProviderCompleted(_raw_success(request), "provider-proof-negative")),
+    ).execute(request)
+    assert result.outcome.receipt_id is not None
+    assert result.outcome.artifact_set_id is not None
+    assert request.source_manifest_sha256 is not None
+    assert request.source_provenance_sha256 is not None
+    first = VlmBatchChildOutcome(
+        0,
+        request.idempotency_key,
+        request.manifest.canonical_hash,
+        request.source_manifest_sha256,
+        request.source_provenance_sha256,
+        request.request_hash,
+        "succeeded",
+        result.outcome.receipt_id,
+        result.outcome.artifact_set_id,
+    )
+    duplicate = replace(first, episode_index=1)
+    batch_request = FinalizeVlmBatchRequest(
+        job,
+        "vlm-duplicate-proof-batch",
+        canonical_recipe_scope(job),
+        1,
+        2,
+        first.source_manifest_sha256,
+        first.source_provenance_sha256,
+        (first, duplicate),
+    )
+
+    with pytest.raises(ValueError, match="exact persisted Kernel outcome|duplicate"):
+        FinalizeVlmBatchCommand(store).execute(batch_request)
+    assert store.read_outcome(job, "vlm-duplicate-proof-batch") is None
 
 
 def test_indeterminate_dispatch_reconciles_same_attempt_without_redispatch() -> None:

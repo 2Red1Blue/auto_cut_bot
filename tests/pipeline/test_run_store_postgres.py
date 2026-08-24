@@ -24,11 +24,8 @@ from auto_cut_bot.pipeline.runtime import (
     SourceDeniedError,
     StaleRunVersionError,
 )
-from auto_cut_bot.pipeline.runtime.composition import (
-    PIPELINE_POSTGRES_DSN_ENV,
-    PIPELINE_SOURCE_ROOTS_ENV,
-    ConfiguredSourceAuthority,
-)
+from auto_cut_bot.pipeline.runtime.composition import ConfiguredSourceCatalog, SourceCatalogEntry
+from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
 from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 psycopg = pytest.importorskip("psycopg")
@@ -53,7 +50,7 @@ def migrated_database() -> None:
                 cursor.execute(migration.read_text(encoding="utf-8"))
 
 
-def _composition(source_root: Path):
+def _composition(source_root: Path, *additional_source_roots: Path):
     assert DSN is not None
 
     def factory():
@@ -61,7 +58,7 @@ def _composition(source_root: Path):
 
     store = PostgresPipelineRunStore(factory)
     scheduler = PostgresPipelineScheduler(factory)
-    authority = ConfiguredSourceAuthority((source_root,), frozenset({"source:fixture-1"}))
+    authority = _source_catalog(source_root / "input", *additional_source_roots)
     return (
         DurablePipelineRunService(
             store,
@@ -71,6 +68,26 @@ def _composition(source_root: Path):
         ),
         store,
         scheduler,
+    )
+
+
+def _source_catalog(
+    source_root: Path,
+    *additional_source_roots: Path,
+) -> ConfiguredSourceCatalog:
+    roots = (source_root, *additional_source_roots)
+    return ConfiguredSourceCatalog(
+        tuple(
+            SourceCatalogEntry(
+                AuthorizedSeriesSourceRoot(
+                    root=root.resolve(),
+                    authorization_id=f"source:fixture-{index}",
+                    series_id=f"series:fixture-{index}",
+                    expected_source_count=1,
+                )
+            )
+            for index, root in enumerate(roots, start=1)
+        )
     )
 
 
@@ -141,7 +158,7 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
     restarted = DurablePipelineRunService(
         PostgresPipelineRunStore(store.connection_factory),
         PostgresPipelineScheduler(store.connection_factory),
-        ConfiguredSourceAuthority((tmp_path,), frozenset()),
+        _source_catalog(tmp_path / "input"),
     )
     assert await restarted.status(first.snapshot.run_id) == first.snapshot
     assert await restarted.reconstruct() == (first.snapshot.run_id,)
@@ -158,7 +175,7 @@ async def test_postgres_replay_uses_frozen_profile_and_new_key_uses_changed_prof
 
     store = PostgresPipelineRunStore(factory)
     scheduler = PostgresPipelineScheduler(factory)
-    authority = ConfiguredSourceAuthority((tmp_path,), frozenset())
+    authority = _source_catalog(tmp_path / "input")
     first_profile = _execution_profile(model_id="doubao-model-v1")
     changed_profile = _execution_profile(model_id="doubao-model-v2")
     first_service = DurablePipelineRunService(
@@ -237,7 +254,7 @@ async def test_postgres_read_recomputes_execution_profile_hash(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_postgres_idempotency_conflict_and_resume_cas(tmp_path: Path) -> None:
-    service, _store, scheduler = _composition(tmp_path)
+    service, _store, scheduler = _composition(tmp_path, tmp_path / "different")
     first_request = PipelineRunRequest.from_mapping(
         {"profile": "shadow", "source_reference": "source:fixture-1"}
     )
@@ -373,7 +390,11 @@ async def test_predecessor_denial_atomically_blocks_vlm_and_terminates_run(
 @pytest.mark.asyncio
 async def test_blocked_command_rejects_cross_run_blocker(tmp_path: Path) -> None:
     assert DSN is not None
-    service, store, _scheduler = _composition(tmp_path)
+    service, store, _scheduler = _composition(
+        tmp_path,
+        tmp_path / "denied",
+        tmp_path / "target",
+    )
     denied_run = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "denied")),
         "postgres-blocker-cross-a",
@@ -415,7 +436,7 @@ async def test_blocked_command_rejects_cross_run_blocker(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_blocked_command_rejects_later_failed_blocker(tmp_path: Path) -> None:
     assert DSN is not None
-    service, _store, _scheduler = _composition(tmp_path)
+    service, _store, _scheduler = _composition(tmp_path, tmp_path / "later")
     submitted = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "later")),
         "postgres-blocker-later",
@@ -442,7 +463,7 @@ async def test_blocked_command_rejects_later_failed_blocker(tmp_path: Path) -> N
 @pytest.mark.asyncio
 async def test_blocked_command_rejects_non_failure_predecessor(tmp_path: Path) -> None:
     assert DSN is not None
-    service, _store, _scheduler = _composition(tmp_path)
+    service, _store, _scheduler = _composition(tmp_path, tmp_path / "success")
     submitted = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "success")),
         "postgres-blocker-success",
@@ -513,7 +534,7 @@ async def test_expired_outbox_lease_is_reclaimed_with_a_new_cas_version(
     service = DurablePipelineRunService(
         store,
         scheduler,
-        ConfiguredSourceAuthority((tmp_path,), frozenset()),
+        _source_catalog(tmp_path / "input"),
     )
     submitted = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "input")),
@@ -553,7 +574,7 @@ async def test_expired_lease_resumes_only_through_reconciler(tmp_path: Path) -> 
     service = DurablePipelineRunService(
         store,
         scheduler,
-        ConfiguredSourceAuthority((tmp_path,), frozenset()),
+        _source_catalog(tmp_path / "input"),
     )
     submitted = await service.submit(
         PipelineRunRequest.from_mapping(
@@ -897,15 +918,15 @@ def _agent() -> MagicMock:
 @pytest.mark.asyncio
 async def test_real_http_run_status_resume_survive_app_restart(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert DSN is not None
-    monkeypatch.setenv(PIPELINE_POSTGRES_DSN_ENV, DSN)
-    monkeypatch.setenv(PIPELINE_SOURCE_ROOTS_ENV, str(tmp_path))
+    first_service, _, _ = _composition(tmp_path)
     headers = {"Idempotency-Key": "http-postgres-request-1"}
     payload = {"profile": "test", "source_root": str(tmp_path / "input")}
 
-    first_client = TestClient(TestServer(create_app(_agent())))
+    first_client = TestClient(
+        TestServer(create_app(_agent(), pipeline_run_service=first_service))
+    )
     await first_client.start_server()
     created = await first_client.post("/v1/pipeline/run", headers=headers, json=payload)
     assert created.status == 202
@@ -913,7 +934,10 @@ async def test_real_http_run_status_resume_survive_app_restart(
     run_id = created_body["run_id"]
     await first_client.close()
 
-    restarted_client = TestClient(TestServer(create_app(_agent())))
+    restarted_service, _, _ = _composition(tmp_path)
+    restarted_client = TestClient(
+        TestServer(create_app(_agent(), pipeline_run_service=restarted_service))
+    )
     await restarted_client.start_server()
     replay = await restarted_client.post("/v1/pipeline/run", headers=headers, json=payload)
     status = await restarted_client.get("/v1/pipeline/status", params={"run_id": run_id})

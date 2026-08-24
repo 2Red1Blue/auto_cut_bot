@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,7 @@ from autocut_kernel.store import (
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    IdempotencyConflictError,
     Job,
     PersistedWholeSeriesSourceManifest,
     PostgresRuntimeStore,
@@ -34,6 +36,7 @@ from auto_cut_bot.pipeline.source_prep import (
     IdentitySourceWindowBuilder,
     PrepareWholeSeriesSourcesCommand,
     PrepareWholeSeriesSourcesRequest,
+    PrepareWholeSeriesSourcesResult,
 )
 from auto_cut_bot.pipeline.source_prep.command import (
     FrameSampleEvidenceError,
@@ -62,7 +65,10 @@ class Store:
         key = (claim.job.job_key, claim.idempotency_key)
         existing = self.claims.get(key)
         if existing is not None:
-            assert existing[0].request_hash == claim.request_hash
+            if existing[0].request_hash != claim.request_hash:
+                raise IdempotencyConflictError(
+                    "idempotency key was already claimed by a different request hash"
+                )
             return existing[1]
         outcome = CommandOutcome(uuid4(), "running", is_fresh_claim=True)
         self.claims[key] = (claim, outcome)
@@ -157,6 +163,28 @@ class CountingProbe(FFprobeSourceMediaPort):
     def probe(self, source_path: Path, source: object):
         self.calls += 1
         return super().probe(source_path, source)  # type: ignore[arg-type]
+
+
+class SimulatedProcessCrash(BaseException):
+    pass
+
+
+class CrashAfterPartialBlobBuilder:
+    def build(self, *, store, job, source_path, source):
+        del source_path, source
+        content = b"partial-source-prep-checkpoint"
+        store.put_immutable_blob(
+            job,
+            content=content,
+            content_hash="sha256:" + hashlib.sha256(content).hexdigest(),
+            media_type="application/octet-stream",
+        )
+        raise SimulatedProcessCrash
+
+
+class MustNotBuild:
+    def build(self, **_kwargs):
+        raise AssertionError("changed request hash must fail before rebuilding")
 
 
 def _make_nonzero_media(path: Path) -> None:
@@ -343,6 +371,102 @@ def test_terminal_replay_uses_committed_snapshot_after_source_mutation(tmp_path:
     assert replay.outcome.state == "succeeded"
     assert replay.prepared == first.prepared
     assert probe.calls == 1
+
+
+def test_running_claim_recomputes_census_and_rejects_changed_request_hash(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "videos"
+    root.mkdir()
+    source = root / "episode.mp4"
+    source.write_bytes(b"first immutable source")
+    store = Store()
+    job = Job("source-prep-changed-census", "test")
+    request = PrepareWholeSeriesSourcesRequest(
+        job,
+        "prepare-v1",
+        ArtifactScope("pipeline", "job", job.job_key),
+        1,
+        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        PrepareWholeSeriesSourcesCommand(
+            store,
+            builder=CrashAfterPartialBlobBuilder(),  # type: ignore[arg-type]
+        ).execute(request)
+    running = store.read_outcome(job, request.idempotency_key)
+    assert running is not None and running.state == "running"
+    source.write_bytes(b"changed immutable source")
+
+    with pytest.raises(IdempotencyConflictError, match="different request hash"):
+        PrepareWholeSeriesSourcesCommand(
+            store,
+            builder=MustNotBuild(),  # type: ignore[arg-type]
+        ).resume(request)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("AUTOCUT_TEST_POSTGRES_DSN")
+    or shutil.which("ffmpeg") is None
+    or shutil.which("ffprobe") is None,
+    reason="disposable PostgreSQL, ffmpeg and ffprobe are required",
+)
+def test_crash_after_partial_blob_concurrent_exact_replays_converge(
+    tmp_path: Path,
+) -> None:
+    import psycopg
+
+    dsn = os.environ["AUTOCUT_TEST_POSTGRES_DSN"]
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+            cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+            migrations = Path("packages/autocut-kernel/migrations")
+            for name in (
+                "0001_runtime_core.sql",
+                "0002_runtime_core_constraints.sql",
+                "0003_vlm_generation_and_run_finalization.sql",
+                "0004_provider_media_objects.sql",
+            ):
+                cursor.execute((migrations / name).read_text())
+    root = tmp_path / "videos"
+    root.mkdir()
+    _make_nonzero_media(root / "episode.mp4")
+    job = Job("source-prep-concurrent-resume", "test")
+    request = PrepareWholeSeriesSourcesRequest(
+        job,
+        "prepare-v1",
+        ArtifactScope("pipeline", "job", job.job_key),
+        1,
+        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+    )
+    store = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
+    with pytest.raises(SimulatedProcessCrash):
+        PrepareWholeSeriesSourcesCommand(
+            store,
+            builder=CrashAfterPartialBlobBuilder(),  # type: ignore[arg-type]
+        ).execute(request)
+    running = store.read_outcome(job, request.idempotency_key)
+    assert running is not None and running.state == "running"
+
+    def resume() -> PrepareWholeSeriesSourcesResult:
+        return PrepareWholeSeriesSourcesCommand(
+            store,
+            builder=IdentitySourceWindowBuilder(sample_count=1),
+        ).resume(request)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(lambda _index: resume(), range(2)))
+
+    assert all(result.outcome.state == "succeeded" for result in results)
+    assert results[0].outcome.receipt_id == results[1].outcome.receipt_id
+    assert results[0].outcome.artifact_set_id == results[1].outcome.artifact_set_id
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT count(*) FROM runtime.command_receipts")
+            assert cursor.fetchone() == (1,)
+            cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
+            assert cursor.fetchone() == (1,)
 
 
 @pytest.mark.skipif(

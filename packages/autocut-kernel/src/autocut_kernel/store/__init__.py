@@ -36,9 +36,11 @@ from .models import (
     PersistedMediaOutputs,
     PersistedRecipe,
     PersistedSemanticResolutionProof,
+    PersistedVlmGenerationChild,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    VlmRequestRecordReference,
     WholeSeriesSourceManifestReference,
 )
 from .postgres import PostgresRuntimeStore
@@ -70,6 +72,7 @@ __all__ = [
     "PersistedMediaOutputs",
     "PersistedRecipe",
     "PersistedSemanticResolutionProof",
+    "PersistedVlmGenerationChild",
     "PersistedWholeSeriesSourceManifest",
     "RecipeIntegrityError",
     "RecipeReference",
@@ -82,4 +85,5 @@ __all__ = [
     "StoreConcurrencyError",
     "StoreValidationError",
     "WholeSeriesSourceManifestReference",
+    "VlmRequestRecordReference",
 ]

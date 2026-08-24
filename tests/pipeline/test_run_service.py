@@ -5,6 +5,8 @@ from dataclasses import FrozenInstanceError, replace
 from uuid import uuid4
 
 import pytest
+from autocut_kernel.store import RuntimeStoreError
+from psycopg import OperationalError
 
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
@@ -686,8 +688,13 @@ class ShortLeaseScheduler:
         self._lease_seconds = lease_seconds
         self._active: dict[object, tuple[OutboxLease, float]] = {}
         self.acknowledged: list[OutboxLease] = []
+        self.claimed_run_ids: list[str] = []
         self.renewals = 0
         self.max_active = 0
+
+    @property
+    def pending_run_ids(self) -> tuple[str, ...]:
+        return tuple(self._pending)
 
     async def enqueue(self, run_id: str) -> None:
         self._pending.append(run_id)
@@ -696,6 +703,7 @@ class ShortLeaseScheduler:
         if not self._pending:
             return None
         lease = OutboxLease(uuid4(), self._pending.pop(0), 1, lease_id)
+        self.claimed_run_ids.append(lease.run_id)
         self._active[lease.outbox_id] = (
             lease,
             asyncio.get_running_loop().time() + self._lease_seconds,
@@ -727,6 +735,25 @@ class ShortLeaseScheduler:
         self._pending.append(lease.run_id)
 
 
+class StoppingShortLeaseScheduler(ShortLeaseScheduler):
+    def __init__(
+        self,
+        run_ids: tuple[str, ...],
+        *,
+        lease_seconds: float,
+        stop_event: asyncio.Event,
+        stop_after_acknowledgements: int,
+    ) -> None:
+        super().__init__(run_ids, lease_seconds=lease_seconds)
+        self._stop_event = stop_event
+        self._stop_after_acknowledgements = stop_after_acknowledgements
+
+    async def acknowledge(self, lease: OutboxLease) -> None:
+        await super().acknowledge(lease)
+        if len(self.acknowledged) >= self._stop_after_acknowledgements:
+            self._stop_event.set()
+
+
 class SlowWorker(DurablePipelineWorker):
     def __init__(self, *args, delay_seconds: float, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -737,6 +764,102 @@ class SlowWorker(DurablePipelineWorker):
         await asyncio.sleep(self._delay_seconds)
         self.processed.append(run_id)
         return True
+
+
+class OneShotDatabaseFailureWorker(DurablePipelineWorker):
+    def __init__(self, *args, failing_run_id: str, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._failing_run_id = failing_run_id
+        self._failed = False
+        self.processed: list[str] = []
+
+    async def _process_run(self, run_id: str) -> bool:
+        if run_id == self._failing_run_id and not self._failed:
+            self._failed = True
+            raise OperationalError("one-shot database outage")
+        self.processed.append(run_id)
+        return True
+
+
+class ArbitraryRuntimeWrapperFailureWorker(DurablePipelineWorker):
+    async def _process_run(self, run_id: str) -> bool:
+        del run_id
+        try:
+            raise OperationalError("database outage")
+        except OperationalError as error:
+            raise RuntimeError("unapproved application wrapper") from error
+
+
+class ReconcileWorkerStore(WorkerStore):
+    def __init__(self, failing_run_id: str, successful_run_id: str) -> None:
+        super().__init__()
+        self.command = PipelineCommand(
+            "command-reconcile",
+            "source_prep",
+            "indeterminate",
+            None,
+            2,
+        )
+        failing = replace(
+            _snapshot(self.command),
+            run_id=failing_run_id,
+            status="running",
+        )
+        succeeded_command = PipelineCommand(
+            "command-succeeded",
+            "source_prep",
+            "succeeded",
+            uuid4(),
+            1,
+        )
+        successful = replace(
+            _snapshot(PipelineCommand("command-succeeded", "source_prep", "pending")),
+            run_id=successful_run_id,
+            status="succeeded",
+            commands=(succeeded_command,),
+        )
+        self.snapshots = {
+            failing_run_id: failing,
+            successful_run_id: successful,
+        }
+
+    async def read_run(self, run_id: str) -> PipelineRunSnapshot | None:
+        return self.snapshots.get(run_id)
+
+    async def record_reconciled_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+    ) -> None:
+        await super().record_reconciled_result(
+            run_id,
+            result=result,
+            expected_version=expected_version,
+        )
+        snapshot = self.snapshots[run_id]
+        self.snapshots[run_id] = replace(
+            snapshot,
+            status=result.outcome,
+            commands=(self.command,),
+            version=snapshot.version + 1,
+        )
+
+
+class OneShotWrappedFailureReconcileStage(FakeReconcileStage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        self.attempts += 1
+        if self.attempts == 1:
+            try:
+                raise OperationalError("one-shot database outage")
+            except OperationalError as error:
+                raise RuntimeStoreError("kernel store operation failed") from error
+        return await super().reconcile(context)
 
 
 @pytest.mark.asyncio
@@ -764,10 +887,7 @@ async def test_bounded_worker_passes_strict_context_and_acks_terminal_run() -> N
     assert stage.contexts[0].run_id == store.snapshot.run_id
     assert stage.contexts[0].request == store.snapshot.request
     assert stage.contexts[0].execution_profile == store.snapshot.execution_profile
-    assert (
-        stage.contexts[0].execution_profile_hash
-        == store.snapshot.execution_profile_hash
-    )
+    assert stage.contexts[0].execution_profile_hash == store.snapshot.execution_profile_hash
     assert scheduler.acknowledged == [scheduler.lease]
     assert scheduler.requeued == []
 
@@ -800,6 +920,157 @@ async def test_worker_claims_only_from_free_slots_and_heartbeats_short_leases() 
     assert scheduler.max_active == 1
     assert scheduler.renewals >= 3
     assert len(scheduler.acknowledged) == 3
+
+
+@pytest.mark.asyncio
+async def test_worker_shutdown_after_completion_leaves_later_work_unclaimed() -> None:
+    first_run_id = "pipeline_run_" + "1" * 32
+    later_run_id = "pipeline_run_" + "2" * 32
+    stop_event = asyncio.Event()
+    scheduler = StoppingShortLeaseScheduler(
+        (first_run_id, later_run_id),
+        lease_seconds=0.1,
+        stop_event=stop_event,
+        stop_after_acknowledgements=1,
+    )
+    store = WorkerStore()
+    stage = SuccessStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    runner = PipelineStageRunner(registry, store, heartbeat_seconds=60)
+    reconciler = PipelineStageReconciler.from_ports(store, ("source_prep", stage))
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = SlowWorker(
+        worker_id="draining-worker",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=1,
+        max_batch_size=2,
+        delay_seconds=0.001,
+    )
+
+    await asyncio.wait_for(
+        worker.run_forever(stop_event, poll_interval_seconds=0.001),
+        timeout=1,
+    )
+
+    assert worker.processed == [first_run_id]
+    assert scheduler.claimed_run_ids == [first_run_id]
+    assert scheduler.pending_run_ids == (later_run_id,)
+
+
+@pytest.mark.asyncio
+async def test_recoverable_lease_failure_does_not_abort_unrelated_slot() -> None:
+    failing_run_id = "pipeline_run_" + "1" * 32
+    successful_run_id = "pipeline_run_" + "2" * 32
+    scheduler = ShortLeaseScheduler(
+        (failing_run_id, successful_run_id),
+        lease_seconds=0.1,
+    )
+    store = WorkerStore()
+    stage = SuccessStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    runner = PipelineStageRunner(registry, store, heartbeat_seconds=60)
+    reconciler = PipelineStageReconciler.from_ports(store, ("source_prep", stage))
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = OneShotDatabaseFailureWorker(
+        worker_id="recoverable-worker",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=2,
+        max_batch_size=2,
+        outbox_heartbeat_seconds=0.01,
+        failing_run_id=failing_run_id,
+    )
+
+    assert await worker.run_once() == 2
+    assert worker.processed == [successful_run_id]
+    assert [lease.run_id for lease in scheduler.acknowledged] == [successful_run_id]
+
+
+@pytest.mark.asyncio
+async def test_wrapped_reconcile_database_failure_requeues_and_continues() -> None:
+    failing_run_id = "pipeline_run_" + "3" * 32
+    successful_run_id = "pipeline_run_" + "4" * 32
+    stop_event = asyncio.Event()
+    scheduler = StoppingShortLeaseScheduler(
+        (failing_run_id, successful_run_id),
+        lease_seconds=0.1,
+        stop_event=stop_event,
+        stop_after_acknowledgements=2,
+    )
+    store = ReconcileWorkerStore(failing_run_id, successful_run_id)
+    execute_stage = SuccessStage()
+    reconcile_stage = OneShotWrappedFailureReconcileStage()
+    runner = PipelineStageRunner(
+        PipelineStageRegistry.from_ports(("source_prep", execute_stage)),
+        store,
+        heartbeat_seconds=60,
+    )
+    reconciler = PipelineStageReconciler.from_ports(
+        store,
+        ("source_prep", reconcile_stage),
+    )
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = DurablePipelineWorker(
+        worker_id="wrapped-recovery-worker",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=1,
+        max_batch_size=2,
+        outbox_heartbeat_seconds=0.01,
+    )
+
+    await asyncio.wait_for(
+        worker.run_forever(stop_event, poll_interval_seconds=0.001),
+        timeout=1,
+    )
+
+    assert reconcile_stage.attempts == 2
+    assert scheduler.claimed_run_ids == [
+        failing_run_id,
+        successful_run_id,
+        failing_run_id,
+    ]
+    assert [lease.run_id for lease in scheduler.acknowledged] == [
+        successful_run_id,
+        failing_run_id,
+    ]
+    assert scheduler.pending_run_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_runtime_wrapper_is_not_recoverable() -> None:
+    store = WorkerStore()
+    scheduler = WorkerScheduler(store.snapshot.run_id)
+    stage = SuccessStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    runner = PipelineStageRunner(registry, store, heartbeat_seconds=60)
+    reconciler = PipelineStageReconciler.from_ports(store, ("source_prep", stage))
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = ArbitraryRuntimeWrapperFailureWorker(
+        worker_id="fatal-wrapper-worker",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=1,
+        max_batch_size=1,
+    )
+
+    with pytest.raises(RuntimeError, match="unapproved application wrapper"):
+        await worker.run_once()
+
+    assert scheduler.requeued == []
 
 
 def test_request_decoder_is_closed_and_rejects_production() -> None:

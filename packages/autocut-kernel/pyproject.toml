@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "autocut-kernel"
 version = "0.1.0"
-description = "Dependency-free shared kernel boundary for AutoCut runtimes"
+description = "Shared kernel boundary for AutoCut runtimes"
 requires-python = ">=3.11"
 dependencies = ["psycopg>=3.0"]
 

@@ -12,6 +12,7 @@ import hmac
 import json as _json
 import time
 import uuid
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from aiohttp import web
@@ -31,7 +32,9 @@ from auto_cut_bot.pipeline.runtime import (
     validate_run_id,
 )
 from auto_cut_bot.pipeline.runtime.composition import (
-    compose_pipeline_run_service_from_environment,
+    PipelineRuntimeConfigurationError,
+    PipelineRuntimePort,
+    compose_pipeline_runtime_from_environment,
 )
 from auto_cut_bot.utils.helpers import safe_filename
 from auto_cut_bot.utils.media_decode import (
@@ -68,7 +71,13 @@ _REQUEST_TIMEOUT_KEY = web.AppKey[float]("request_timeout")
 _SESSION_LOCKS_KEY = web.AppKey[dict[str, asyncio.Lock]]("session_locks")
 _PREPARE_AGENT_KEY = web.AppKey[Callable[[], Awaitable[None]] | None]("prepare_agent")
 _PIPELINE_RUN_SERVICE_KEY = web.AppKey[PipelineRunService | None]("pipeline_run_service")
+_PIPELINE_RUNTIME_KEY = web.AppKey[PipelineRuntimePort | None]("pipeline_runtime")
+_PIPELINE_AUTH_REQUIRED_KEY = web.AppKey[bool]("pipeline_auth_required")
+_PIPELINE_WORKER_ERROR_KEY = web.AppKey[list[str]]("pipeline_worker_error")
 _MISSING = object()
+_PIPELINE_PATHS = frozenset(
+    {"/v1/pipeline/run", "/v1/pipeline/resume", "/v1/pipeline/status"}
+)
 
 
 def _app_value(
@@ -468,6 +477,21 @@ async def handle_models(request: web.Request) -> web.Response:
 
 async def handle_health(request: web.Request) -> web.Response:
     """GET /health"""
+    worker_errors: list[str] = _app_value(
+        request.app,
+        _PIPELINE_WORKER_ERROR_KEY,
+        "pipeline_worker_error",
+        [],
+    )
+    if worker_errors:
+        return web.json_response(
+            {
+                "status": "degraded",
+                "component": "pipeline_runtime",
+                "reason": worker_errors[-1],
+            },
+            status=503,
+        )
     return web.json_response({"status": "ok"})
 
 
@@ -483,6 +507,8 @@ def create_app(
     api_key: str = "",
     prepare_agent: Callable[[], Awaitable[None]] | None = None,
     pipeline_run_service: PipelineRunService | None = None,
+    pipeline_runtime: PipelineRuntimePort | None = None,
+    pipeline_poll_interval_seconds: float = 1.0,
 ) -> web.Application:
     """Create the aiohttp application.
 
@@ -493,18 +519,88 @@ def create_app(
         api_key: Optional API key for Bearer-token authentication on API routes.
         prepare_agent: Optional application-owned readiness callback run before each turn.
         pipeline_run_service: Injected durable pipeline control-plane service.
+        pipeline_runtime: Injected composed runtime, including its worker lifecycle.
+        pipeline_poll_interval_seconds: Delay between bounded worker polls.
     """
+    if pipeline_run_service is not None and pipeline_runtime is not None:
+        raise ValueError("inject either pipeline_run_service or pipeline_runtime, not both")
+    if (
+        isinstance(pipeline_poll_interval_seconds, bool)
+        or type(pipeline_poll_interval_seconds) not in (int, float)
+        or pipeline_poll_interval_seconds <= 0
+    ):
+        raise ValueError("pipeline_poll_interval_seconds must be positive")
+    environment_runtime = (
+        compose_pipeline_runtime_from_environment()
+        if pipeline_run_service is None and pipeline_runtime is None
+        else None
+    )
+    if environment_runtime is not None and not api_key:
+        raise PipelineRuntimeConfigurationError(
+            "environment-composed pipeline runtime requires configured HTTP API authentication"
+        )
+    composed_runtime = pipeline_runtime or environment_runtime
     app = web.Application(client_max_size=20 * 1024 * 1024)  # 20MB for base64 images
     app[_AGENT_LOOP_KEY] = agent_loop
     app[_MODEL_NAME_KEY] = model_name
     app[_REQUEST_TIMEOUT_KEY] = request_timeout
     app[_SESSION_LOCKS_KEY] = {}  # per-user locks, keyed by session_key
     app[_PREPARE_AGENT_KEY] = prepare_agent
+    app[_PIPELINE_RUNTIME_KEY] = composed_runtime
     app[_PIPELINE_RUN_SERVICE_KEY] = (
         pipeline_run_service
         if pipeline_run_service is not None
-        else compose_pipeline_run_service_from_environment()
+        else (None if composed_runtime is None else composed_runtime.service)
     )
+    app[_PIPELINE_AUTH_REQUIRED_KEY] = environment_runtime is not None
+    app[_PIPELINE_WORKER_ERROR_KEY] = []
+
+    if composed_runtime is not None:
+
+        async def pipeline_runtime_lifecycle(_app: web.Application) -> AsyncIterator[None]:
+            await composed_runtime.startup_reconstruct()
+            stop_event = asyncio.Event()
+            worker_task = asyncio.create_task(
+                composed_runtime.run_forever(
+                    stop_event,
+                    poll_interval_seconds=float(pipeline_poll_interval_seconds),
+                ),
+                name="pipeline-runtime-worker",
+            )
+            shutdown_started = asyncio.Event()
+
+            def observe_worker_result(task: asyncio.Task[None]) -> None:
+                if task.cancelled():
+                    return
+                error = task.exception()
+                if error is None:
+                    if shutdown_started.is_set():
+                        return
+                    _app[_PIPELINE_WORKER_ERROR_KEY].append(
+                        "pipeline worker stopped before application shutdown"
+                    )
+                    logger.error("Pipeline runtime worker stopped before application shutdown")
+                    return
+                _app[_PIPELINE_WORKER_ERROR_KEY].append("pipeline worker failed")
+                logger.error(
+                    "Pipeline runtime worker failed with {}",
+                    type(error).__name__,
+                )
+
+            worker_task.add_done_callback(observe_worker_result)
+            try:
+                yield
+            finally:
+                shutdown_started.set()
+                stop_event.set()
+                # run_forever stops claiming immediately, then returns only after
+                # the active bounded batch and its lease heartbeats have drained.
+                # Cancelling an asyncio.to_thread call would not stop local media
+                # or provider work and would discard supervision of its outcome.
+                with contextlib.suppress(Exception):
+                    await worker_task
+
+        app.cleanup_ctx.append(pipeline_runtime_lifecycle)
 
     @web.middleware
     async def auth_middleware(
@@ -514,6 +610,21 @@ def create_app(
         # Allow unauthenticated health checks.
         if request.path == "/health":
             return await handler(request)
+        if (
+            request.path in _PIPELINE_PATHS
+            and _app_value(
+                request.app,
+                _PIPELINE_AUTH_REQUIRED_KEY,
+                "pipeline_auth_required",
+                False,
+            )
+            and not api_key
+        ):
+            return _error_json(
+                503,
+                "Pipeline API authentication is not configured",
+                "server_error",
+            )
         if not api_key:
             return await handler(request)
         auth = request.headers.get("Authorization", "")

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
+from auto_cut_bot.api import server as pipeline_server
 from auto_cut_bot.api.server import create_app
 from auto_cut_bot.pipeline.runtime import DurablePipelineRunService, PipelineRunValidationError
 from tests.pipeline.test_run_service import FakeAuthorizer, FakeRunStore, FakeScheduler
@@ -38,6 +40,63 @@ def _service(*, allowed: bool = True):
     store = FakeRunStore()
     scheduler = FakeScheduler()
     return DurablePipelineRunService(store, scheduler, FakeAuthorizer(allowed)), store, scheduler
+
+
+class FakePipelineRuntime:
+    def __init__(self, service) -> None:
+        self.service = service
+        self.startup_calls = 0
+        self.worker_started = asyncio.Event()
+        self.worker_stopped = asyncio.Event()
+
+    async def startup_reconstruct(self) -> tuple[str, ...]:
+        self.startup_calls += 1
+        return ("pipeline_run_" + "a" * 32,)
+
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        assert poll_interval_seconds > 0
+        self.worker_started.set()
+        try:
+            await stop_event.wait()
+        finally:
+            self.worker_stopped.set()
+
+
+class FailingPipelineRuntime(FakePipelineRuntime):
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        del stop_event, poll_interval_seconds
+        self.worker_started.set()
+        raise RuntimeError("provider-secret-must-not-escape")
+
+
+class DrainingPipelineRuntime(FakePipelineRuntime):
+    def __init__(self, service) -> None:
+        super().__init__(service)
+        self.stop_seen = asyncio.Event()
+        self.allow_work_to_finish = asyncio.Event()
+
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        assert poll_interval_seconds > 0
+        self.worker_started.set()
+        await stop_event.wait()
+        self.stop_seen.set()
+        await self.allow_work_to_finish.wait()
+        self.worker_stopped.set()
 
 
 @pytest.mark.asyncio
@@ -105,6 +164,103 @@ async def test_pipeline_endpoints_fail_closed_without_service(aiohttp_client) ->
     )
 
     assert response.status == 503
+
+
+@pytest.mark.asyncio
+async def test_injected_runtime_reconstructs_polls_and_stops_cleanly() -> None:
+    service, _, _ = _service()
+    runtime = FakePipelineRuntime(service)
+    client = TestClient(
+        TestServer(create_app(_agent(), pipeline_runtime=runtime))
+    )
+
+    await client.start_server()
+    await asyncio.wait_for(runtime.worker_started.wait(), timeout=1)
+    assert runtime.startup_calls == 1
+    await client.close()
+
+    assert runtime.worker_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_cleanup_stops_polling_then_drains_in_flight_work() -> None:
+    service, _, _ = _service()
+    runtime = DrainingPipelineRuntime(service)
+    client = TestClient(TestServer(create_app(_agent(), pipeline_runtime=runtime)))
+
+    await client.start_server()
+    await asyncio.wait_for(runtime.worker_started.wait(), timeout=1)
+    close_task = asyncio.create_task(client.close())
+    await asyncio.wait_for(runtime.stop_seen.wait(), timeout=1)
+
+    assert not close_task.done()
+    assert not runtime.worker_stopped.is_set()
+    runtime.allow_work_to_finish.set()
+    await asyncio.wait_for(close_task, timeout=1)
+    assert runtime.worker_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_environment_paid_runtime_requires_configured_http_auth(
+    aiohttp_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, _ = _service()
+    runtime = FakePipelineRuntime(service)
+    monkeypatch.setattr(
+        pipeline_server,
+        "compose_pipeline_runtime_from_environment",
+        lambda: runtime,
+    )
+    payload = {"profile": "test", "source_root": "/authorized/source"}
+    headers = {"Idempotency-Key": "paid-run-1"}
+
+    with pytest.raises(
+        ValueError,
+        match="requires configured HTTP API authentication",
+    ):
+        create_app(_agent())
+    assert runtime.startup_calls == 0
+
+    authenticated_client = await aiohttp_client(
+        create_app(_agent(), api_key="configured-http-secret")
+    )
+    missing = await authenticated_client.post(
+        "/v1/pipeline/run", headers=headers, json=payload
+    )
+    accepted = await authenticated_client.post(
+        "/v1/pipeline/run",
+        headers={**headers, "Authorization": "Bearer configured-http-secret"},
+        json=payload,
+    )
+
+    assert missing.status == 401
+    assert accepted.status == 202
+    assert "configured-http-secret" not in str(await missing.json())
+
+
+@pytest.mark.asyncio
+async def test_pipeline_worker_failure_marks_health_degraded_without_secret(
+    aiohttp_client,
+) -> None:
+    service, _, _ = _service()
+    runtime = FailingPipelineRuntime(service)
+    client = await aiohttp_client(
+        create_app(_agent(), pipeline_runtime=runtime)
+    )
+    await asyncio.wait_for(runtime.worker_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    health = await client.get("/health")
+    body = await health.json()
+
+    assert health.status == 503
+    assert body == {
+        "status": "degraded",
+        "component": "pipeline_runtime",
+        "reason": "pipeline worker failed",
+    }
+    assert "provider-secret" not in str(body)
 
 
 @pytest.mark.asyncio

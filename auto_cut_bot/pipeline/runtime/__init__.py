@@ -1,5 +1,13 @@
 """Typed HTTP control-plane seam for reconstructible pipeline runs."""
 
+from .composition import (
+    ConfiguredSourceCatalog,
+    PipelineRuntime,
+    PipelineRuntimeConfigurationError,
+    PipelineRuntimePort,
+    SourceCatalogEntry,
+    compose_pipeline_runtime_from_environment,
+)
 from .errors import (
     IdempotencyConflictError,
     PipelineRunError,
@@ -43,6 +51,7 @@ from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStag
 from .worker import DurablePipelineWorker
 
 __all__ = (
+    "ConfiguredSourceCatalog",
     "DurablePipelineRunService",
     "DurablePipelineWorker",
     "IdempotencyConflictError",
@@ -61,6 +70,9 @@ __all__ = (
     "PipelineRunStatus",
     "PipelineRunStore",
     "PipelineRunValidationError",
+    "PipelineRuntime",
+    "PipelineRuntimeConfigurationError",
+    "PipelineRuntimePort",
     "PipelineSchedulerPort",
     "PipelineStageOutcome",
     "PipelineStageContext",
@@ -76,10 +88,12 @@ __all__ = (
     "ResumeNotAllowedError",
     "RunClaim",
     "SourceAuthorizationPort",
+    "SourceCatalogEntry",
     "SourceDeniedError",
     "SourcePrepPipelineStage",
     "SourcePrepRootResolver",
     "StaleRunVersionError",
     "validate_idempotency_key",
     "validate_run_id",
+    "compose_pipeline_runtime_from_environment",
 )

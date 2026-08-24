@@ -191,8 +191,10 @@ class GenerateVlmEvidenceRequest:
     model_id: str
     provider_id: str
     parse_policy: VlmParsePolicy
+    episode_index: int = 0
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
     source_provenance_sha256: str | None = None
+    source_manifest_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:  # noqa: E721
@@ -237,10 +239,14 @@ class GenerateVlmEvidenceRequest:
                 self.source_provenance_sha256,
                 "source_provenance_sha256",
             )
+        if self.source_manifest_sha256 is not None:
+            sha256_prefixed(self.source_manifest_sha256, "source_manifest_sha256")
         _json_object(self.response_schema_json, "response_schema_json")
         _json_object(self.request_parameters_json, "request_parameters_json")
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
             raise ValueError("parse_policy must be a VlmParsePolicy")
+        if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
+            raise ValueError("episode_index must be non-negative")
 
     @property
     def request_payload(self) -> bytes:
@@ -291,6 +297,7 @@ class GenerateVlmEvidenceRequest:
         return canonical_sha256(
             {
                 "artifact_revision": self.artifact_revision,
+                "episode_index": self.episode_index,
                 "artifact_scope": {
                     "namespace": self.artifact_scope.namespace,
                     "kind": self.artifact_scope.kind,
@@ -301,6 +308,7 @@ class GenerateVlmEvidenceRequest:
                 "parser_strategy_version": self.parser_strategy_version,
                 "proxy_blob": _blob_mapping(self.proxy_blob),
                 "source_provenance_sha256": self.source_provenance_sha256,
+                "source_manifest_sha256": self.source_manifest_sha256,
             }
         )
 
@@ -641,10 +649,18 @@ def _artifacts(
     suffix = request.manifest.canonical_hash[7:31]
     request_record = {
         "attempt_id": str(attempt.attempt_id),
+        "episode_index": request.episode_index,
+        "idempotency_key": request.idempotency_key,
         "provider_idempotency_key": attempt.provider_idempotency_key,
         "proxy_blob": _blob_mapping(request.proxy_blob),
         "request_identity": request.request_identity.to_mapping(),
+        "request_identity_sha256": request.request_identity.canonical_hash,
+        "request_hash": request.request_hash,
         "request_payload_blob": _blob_mapping(attempt.request_payload),
+        "source_provenance_sha256": request.source_provenance_sha256,
+        "source_manifest_sha256": request.source_manifest_sha256,
+        "window_manifest_set_sha256": request.manifest_set.canonical_hash,
+        "window_manifest_sha256": request.manifest.canonical_hash,
     }
     response_record = {
         "attempt_id": str(attempt.attempt_id),

@@ -14,11 +14,19 @@ from auto_cut_bot.pipeline.source_prep import (
     PrepareWholeSeriesSourcesCommand,
     PrepareWholeSeriesSourcesRequest,
     SourcePrepStore,
-    read_persisted_prepared_sources,
 )
 
 from .errors import PipelineRunValidationError
-from .models import PipelineStageContext, PipelineStageResult
+from .models import PipelineStageContext, PipelineStageResult, validate_run_id
+
+_SOURCE_PREP_KERNEL_IDEMPOTENCY_VERSION = "source-prep-kernel-v1"
+
+
+def source_prep_kernel_idempotency_key(run_id: str) -> str:
+    """Return the stable Kernel command identity for one persisted HTTP run."""
+
+    validate_run_id(run_id)
+    return f"{_SOURCE_PREP_KERNEL_IDEMPOTENCY_VERSION}:{run_id}"
 
 
 class SourcePrepRootResolver(Protocol):
@@ -39,21 +47,25 @@ class SourcePrepPipelineStage:
     ) -> None:
         if not callable(getattr(root_resolver, "resolve", None)):
             raise PipelineRunValidationError("source prep root resolver is required")
-        self._store = store
         self._root_resolver = root_resolver
         self._command = command or PrepareWholeSeriesSourcesCommand(store)
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
+        if type(context) is not PipelineStageContext:  # noqa: E721
+            raise PipelineRunValidationError(
+                "source prep adapter requires an exact stage context"
+            )
         if context.command.stage != "source_prep":
             raise PipelineRunValidationError("source prep adapter received another stage")
+        validate_run_id(context.run_id)
         return Job(context.run_id, context.request.profile)
 
     def _request(self, context: PipelineStageContext) -> PrepareWholeSeriesSourcesRequest:
         job = self._job(context)
         return PrepareWholeSeriesSourcesRequest(
             job=job,
-            idempotency_key=context.command.command_id,
+            idempotency_key=source_prep_kernel_idempotency_key(context.run_id),
             artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
             artifact_revision=1,
             source_root=self._root_resolver.resolve(context),
@@ -65,26 +77,10 @@ class SourcePrepPipelineStage:
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
-        job = self._job(context)
-        outcome = await asyncio.to_thread(
-            self._store.read_outcome,
-            job,
-            context.command.command_id,
-        )
-        if outcome is None or outcome.state in ("pending", "running"):
-            # No safe source-prep takeover CAS exists in the current Store.
-            # Keep the HTTP command visibly indeterminate and never re-probe.
-            return None
-        if outcome.state == "succeeded":
-            await asyncio.to_thread(
-                read_persisted_prepared_sources,
-                self._store,
-                job=job,
-                outcome=outcome,
-                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
-                artifact_revision=1,
-            )
-        return self._project(context, outcome)
+        request = self._request(context)
+        result = await asyncio.to_thread(self._command.resume, request)
+        projected = self._project(context, result.outcome)
+        return None if projected.outcome == "indeterminate" else projected
 
     @staticmethod
     def _project(
@@ -104,4 +100,8 @@ class SourcePrepPipelineStage:
         )
 
 
-__all__ = ("SourcePrepPipelineStage", "SourcePrepRootResolver")
+__all__ = (
+    "SourcePrepPipelineStage",
+    "SourcePrepRootResolver",
+    "source_prep_kernel_idempotency_key",
+)

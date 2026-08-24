@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
-import sys
 import venv
 import zipfile
 from importlib import import_module
@@ -49,6 +49,9 @@ def test_repository_has_exactly_one_kernel_source_tree() -> None:
         if path.is_dir()
         and (path / "__init__.py").is_file()
         and "build" not in path.relative_to(REPOSITORY_ROOT).parts
+        and not any(
+            part.startswith(".") for part in path.relative_to(REPOSITORY_ROOT).parts
+        )
     )
 
     assert sources == [Path("packages/autocut-kernel/src/autocut_kernel")]
@@ -57,14 +60,14 @@ def test_repository_has_exactly_one_kernel_source_tree() -> None:
 def test_kernel_wheel_installs_without_checkout_or_legacy_distribution(tmp_path: Path) -> None:
     wheel_directory = tmp_path / "wheelhouse"
     wheel_directory.mkdir()
+    uv = shutil.which("uv")
+    assert uv is not None
     subprocess.run(
         [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            "--no-deps",
-            "--wheel-dir",
+            uv,
+            "build",
+            "--wheel",
+            "--out-dir",
             str(wheel_directory),
             str(KERNEL_ROOT),
         ],
@@ -77,14 +80,17 @@ def test_kernel_wheel_installs_without_checkout_or_legacy_distribution(tmp_path:
     with zipfile.ZipFile(wheel) as archive:
         metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
         metadata = archive.read(metadata_name).decode("utf-8")
-    assert "Requires-Dist:" not in metadata
+    requirements = {
+        line for line in metadata.splitlines() if line.startswith("Requires-Dist:")
+    }
+    assert requirements == {"Requires-Dist: psycopg>=3.0"}
     assert "autocut_core" not in metadata.lower()
 
     environment = tmp_path / "clean-environment"
-    venv.EnvBuilder(with_pip=True).create(environment)
+    venv.EnvBuilder(with_pip=False).create(environment)
     python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     subprocess.run(
-        [str(python), "-m", "pip", "install", "--no-deps", str(wheel)],
+        [uv, "pip", "install", "--python", str(python), "--no-deps", str(wheel)],
         check=True,
         cwd=tmp_path,
         capture_output=True,

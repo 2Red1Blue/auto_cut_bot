@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from .errors import StoreValidationError
@@ -203,6 +203,249 @@ class PersistedWholeSeriesSourceManifest:
                 "payload_json does not match source manifest content_hash"
             )
         object.__setattr__(self, "proxy_blobs", proxy_blobs)
+
+
+@dataclass(frozen=True, slots=True)
+class VlmRequestRecordReference:
+    """Exact immutable identity of one committed VLM request record."""
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["vlm_request_record"] = "vlm_request_record"
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "vlm_request_record":
+            raise StoreValidationError(
+                "VLM request record reference has an invalid artifact_type"
+            )
+
+
+_VLM_REQUEST_IDENTITY_FIELDS = frozenset(
+    {
+        "frame_pts_index_set_sha256",
+        "frame_samples_sha256",
+        "model_id",
+        "parse_policy_sha256",
+        "preprocess_policy_sha256",
+        "prompt_template_sha256",
+        "prompt_version",
+        "provider_id",
+        "proxy_blob_ref_sha256",
+        "request_parameters_sha256",
+        "request_payload_sha256",
+        "response_schema_sha256",
+        "source_clock_id",
+        "source_id",
+        "source_sha256",
+        "window_manifest_set_sha256",
+        "window_manifest_sha256",
+        "window_sampling_policy_sha256",
+    }
+)
+_VLM_REQUEST_RECORD_FIELDS = frozenset(
+    {
+        "attempt_id",
+        "episode_index",
+        "idempotency_key",
+        "provider_idempotency_key",
+        "proxy_blob",
+        "request_hash",
+        "request_identity",
+        "request_identity_sha256",
+        "request_payload_blob",
+        "source_manifest_sha256",
+        "source_provenance_sha256",
+        "window_manifest_set_sha256",
+        "window_manifest_sha256",
+    }
+)
+_BLOB_REF_FIELDS = frozenset(
+    {"object_id", "content_hash", "byte_length", "media_type"}
+)
+
+
+def _strict_json_mapping(value: str, field_name: str) -> dict[str, object]:
+    if type(value) is not str or not value:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must contain canonical JSON")
+
+    def closed_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, member in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = member
+        return result
+
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=closed_pairs,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError(f"{field_name} must contain strict JSON") from error
+    if type(parsed) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must contain a JSON object")
+    return cast(dict[str, object], parsed)
+
+
+def _mapping_blob_ref(value: object, field_name: str) -> BlobRef:
+    if type(value) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must be a BlobRef object")
+    mapping = cast(dict[str, object], value)
+    if frozenset(mapping) != _BLOB_REF_FIELDS:
+        raise StoreValidationError(f"{field_name} must match the closed BlobRef schema")
+    try:
+        object_id = UUID(str(mapping["object_id"]))
+        content_hash = mapping["content_hash"]
+        byte_length = mapping["byte_length"]
+        media_type = mapping["media_type"]
+        if type(content_hash) is not str or type(byte_length) is not int or type(media_type) is not str:  # noqa: E721
+            raise ValueError("BlobRef member type mismatch")
+        return BlobRef(object_id, content_hash, byte_length, media_type)
+    except (KeyError, TypeError, ValueError, StoreValidationError) as error:
+        raise StoreValidationError(f"{field_name} is invalid") from error
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedVlmGenerationChild:
+    """Independently verified committed VLM child and request provenance."""
+
+    reference: VlmRequestRecordReference
+    payload_json: str
+    source_job: Job
+    kernel_job_id: UUID
+    command_slot_id: UUID
+    idempotency_key: str
+    request_hash: str
+    attempt_id: UUID
+    provider_idempotency_key: str
+    request_payload: BlobRef
+    receipt_id: UUID
+    artifact_set_id: UUID
+    episode_index: int
+    window_manifest_sha256: str
+    window_manifest_set_sha256: str
+    source_manifest_sha256: str
+    source_provenance_sha256: str
+    request_identity_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not VlmRequestRecordReference:  # noqa: E721
+            raise StoreValidationError("VLM request reference is invalid")
+        if type(self.source_job) is not Job:  # noqa: E721
+            raise StoreValidationError("VLM request source Job is invalid")
+        for field_name in (
+            "kernel_job_id",
+            "command_slot_id",
+            "attempt_id",
+            "receipt_id",
+            "artifact_set_id",
+        ):
+            if not isinstance(getattr(self, field_name), UUID):
+                raise StoreValidationError(f"VLM request {field_name} must be a UUID")
+        _text(self.idempotency_key, "VLM request idempotency_key")
+        _text(self.provider_idempotency_key, "VLM request provider_idempotency_key")
+        for value, field_name in (
+            (self.request_hash, "request_hash"),
+            (self.window_manifest_sha256, "window_manifest_sha256"),
+            (self.window_manifest_set_sha256, "window_manifest_set_sha256"),
+            (self.source_manifest_sha256, "source_manifest_sha256"),
+            (self.source_provenance_sha256, "source_provenance_sha256"),
+            (self.request_identity_sha256, "request_identity_sha256"),
+        ):
+            _sha256(value, field_name)
+        if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
+            raise StoreValidationError("VLM request episode_index must be non-negative")
+        if type(self.request_payload) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("VLM request payload must be a BlobRef")
+        if self.reference.scope != canonical_recipe_scope(self.source_job):
+            raise StoreValidationError("VLM request record has a non-canonical Job scope")
+        if self.reference.logical_id != f"vlm_request_{self.window_manifest_sha256[7:31]}":
+            raise StoreValidationError("VLM request logical identity is invalid")
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError("VLM request payload does not match its artifact hash")
+        payload = _strict_json_mapping(self.payload_json, "VLM request record")
+        if frozenset(payload) != _VLM_REQUEST_RECORD_FIELDS:
+            raise StoreValidationError("VLM request record does not match its closed schema")
+        identity_value = payload["request_identity"]
+        if type(identity_value) is not dict:  # noqa: E721
+            raise StoreValidationError("VLM request identity does not match its closed schema")
+        identity = cast(dict[str, object], identity_value)
+        if frozenset(identity) != _VLM_REQUEST_IDENTITY_FIELDS:
+            raise StoreValidationError("VLM request identity does not match its closed schema")
+        identity_json = json.dumps(
+            identity,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        identity_hash = "sha256:" + hashlib.sha256(identity_json).hexdigest()
+        if identity_hash != self.request_identity_sha256:
+            raise StoreValidationError("VLM request identity hash is invalid")
+        for field_name, value in identity.items():
+            if field_name.endswith("_sha256"):
+                if type(value) is not str:  # noqa: E721
+                    raise StoreValidationError(
+                        f"VLM request identity {field_name} must be a SHA-256 string"
+                    )
+                _sha256(value, f"request_identity.{field_name}")
+            elif type(value) is not str or not value.strip():  # noqa: E721
+                raise StoreValidationError(
+                    f"VLM request identity {field_name} must be non-empty text"
+                )
+        _mapping_blob_ref(payload["proxy_blob"], "proxy_blob")
+        if (
+            payload["attempt_id"] != str(self.attempt_id)
+            or payload["episode_index"] != self.episode_index
+            or payload["idempotency_key"] != self.idempotency_key
+            or payload["provider_idempotency_key"] != self.provider_idempotency_key
+            or payload["request_hash"] != self.request_hash
+            or payload["request_identity_sha256"] != self.request_identity_sha256
+            or payload["source_manifest_sha256"] != self.source_manifest_sha256
+            or payload["source_provenance_sha256"] != self.source_provenance_sha256
+            or payload["window_manifest_sha256"] != self.window_manifest_sha256
+            or payload["window_manifest_set_sha256"] != self.window_manifest_set_sha256
+            or identity.get("window_manifest_sha256") != self.window_manifest_sha256
+            or identity.get("window_manifest_set_sha256")
+            != self.window_manifest_set_sha256
+            or identity.get("request_payload_sha256") != self.request_payload.content_hash
+            or _mapping_blob_ref(payload["request_payload_blob"], "request_payload_blob")
+            != self.request_payload
+        ):
+            raise StoreValidationError(
+                "VLM request record does not match its committed generation identity"
+            )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "artifact_set_id": str(self.artifact_set_id),
+            "episode_index": self.episode_index,
+            "generation_attempt_id": str(self.attempt_id),
+            "idempotency_key": self.idempotency_key,
+            "receipt_id": str(self.receipt_id),
+            "request_hash": self.request_hash,
+            "request_identity_sha256": self.request_identity_sha256,
+            "request_payload_blob": {
+                "byte_length": self.request_payload.byte_length,
+                "content_hash": self.request_payload.content_hash,
+                "media_type": self.request_payload.media_type,
+                "object_id": str(self.request_payload.object_id),
+            },
+            "source_manifest_sha256": self.source_manifest_sha256,
+            "source_provenance_sha256": self.source_provenance_sha256,
+            "state": "succeeded",
+            "window_manifest_set_sha256": self.window_manifest_set_sha256,
+            "window_manifest_sha256": self.window_manifest_sha256,
+        }
 
 
 @dataclass(frozen=True, slots=True)

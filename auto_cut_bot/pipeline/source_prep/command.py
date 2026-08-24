@@ -401,8 +401,21 @@ class PrepareWholeSeriesSourcesCommand:
     def execute(
         self, request: PrepareWholeSeriesSourcesRequest
     ) -> PrepareWholeSeriesSourcesResult:
+        """Execute or safely resume one exact local, immutable preparation claim."""
+        return self._execute_or_resume(request)
+
+    def resume(
+        self, request: PrepareWholeSeriesSourcesRequest
+    ) -> PrepareWholeSeriesSourcesResult:
+        """Rebuild a running claim only after its recomputed request hash matches."""
+        return self._execute_or_resume(request)
+
+    def _execute_or_resume(
+        self, request: PrepareWholeSeriesSourcesRequest
+    ) -> PrepareWholeSeriesSourcesResult:
         existing = self._store.read_outcome(request.job, request.idempotency_key)
-        if existing is not None:
+        if existing is not None and existing.state not in ("pending", "running"):
+            # A terminal Receipt is authoritative. Never census or probe again.
             return self._replay(request, existing)
         with snapshot_series_sources(request.source_root) as snapshot:
             request_hash = canonical_sha256(
@@ -425,8 +438,12 @@ class PrepareWholeSeriesSourcesCommand:
                     request_hash,
                 )
             )
-            if not claimed.is_fresh_claim:
+            if claimed.state not in ("pending", "running"):
                 return self._replay(request, claimed)
+            # A pre-existing running claim can only reach here after claim_command
+            # has compared the recomputed census-bound request hash. All remaining
+            # operations are local immutable writes, so rebuilding is safe and
+            # concurrent exact-hash replays converge through Store CAS.
             try:
                 episodes = tuple(
                     self._builder.build(

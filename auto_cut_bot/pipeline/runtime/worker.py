@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 from uuid import uuid4
 
+from autocut_kernel.store import RuntimeStoreError
+from psycopg import InterfaceError, OperationalError
+
 from .errors import PipelineRunValidationError, ResumeNotAllowedError, StaleRunVersionError
 from .models import OutboxLease, PipelineRunSnapshot
 from .ports import PipelineRunService, PipelineSchedulerPort, PipelineWorkerStore
@@ -48,7 +51,9 @@ class DurablePipelineWorker:
     async def startup_reconstruct(self) -> tuple[str, ...]:
         return await self._service.reconstruct()
 
-    async def run_once(self) -> int:
+    async def run_once(self, *, stop_event: asyncio.Event | None = None) -> int:
+        if stop_event is not None and type(stop_event) is not asyncio.Event:  # noqa: E721
+            raise PipelineRunValidationError("stop_event must be an asyncio.Event")
         claim_lock = asyncio.Lock()
         seen_run_ids: set[str] = set()
         claimed_count = 0
@@ -57,6 +62,8 @@ class DurablePipelineWorker:
             nonlocal claimed_count
             while True:
                 async with claim_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
                     if claimed_count >= self._max_batch_size:
                         return
                     lease = await self._scheduler.claim_next(
@@ -72,9 +79,30 @@ class DurablePipelineWorker:
                 # A lease is claimed only by a free execution slot. Its heartbeat
                 # starts before this slot can claim any additional durable work.
                 await self._process_lease(lease)
+                async with claim_lock:
+                    if stop_event is not None and stop_event.is_set():
+                        return
 
         slot_count = min(self._concurrency, self._max_batch_size)
-        await asyncio.gather(*(execute_slot() for _index in range(slot_count)))
+        results = await asyncio.gather(
+            *(execute_slot() for _index in range(slot_count)),
+            return_exceptions=True,
+        )
+        errors = tuple(result for result in results if isinstance(result, BaseException))
+        cancelled = next(
+            (error for error in errors if isinstance(error, asyncio.CancelledError)),
+            None,
+        )
+        if cancelled is not None:
+            raise cancelled
+        fatal = next(
+            (error for error in errors if not _is_recoverable_worker_error(error)),
+            None,
+        )
+        if fatal is not None:
+            raise fatal
+        if errors:
+            raise errors[0]
         return claimed_count
 
     async def _process_lease(self, lease: OutboxLease) -> None:
@@ -98,8 +126,12 @@ class DurablePipelineWorker:
                         return
 
         heartbeat_task = asyncio.create_task(heartbeat())
+        processing_error: Exception | None = None
+        terminal = False
         try:
             terminal = await self._process_run(lease.run_id)
+        except Exception as error:
+            processing_error = error
         finally:
             stop.set()
             await heartbeat_task
@@ -107,6 +139,17 @@ class DurablePipelineWorker:
             raise PipelineRunValidationError(
                 "pipeline outbox lease heartbeat was lost"
             ) from heartbeat_error[0]
+        if processing_error is not None:
+            if not _is_recoverable_worker_error(processing_error):
+                raise processing_error
+            try:
+                # requeue() is the scheduler's owned-lease CAS. If ownership or
+                # storage is unavailable, do not invent a replacement transition;
+                # leave the durable lease to expire and be reclaimed.
+                await self._scheduler.requeue(current[0])
+            except Exception:
+                pass
+            return
         if terminal:
             await self._scheduler.acknowledge(current[0])
         else:
@@ -122,6 +165,46 @@ class DurablePipelineWorker:
             if count == 0:
                 break
         return processed
+
+    async def run_forever(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        poll_interval_seconds: float = 1.0,
+    ) -> None:
+        """Poll bounded batches until the application-owned stop event is set."""
+        if type(stop_event) is not asyncio.Event:  # noqa: E721
+            raise PipelineRunValidationError("stop_event must be an asyncio.Event")
+        if (
+            isinstance(poll_interval_seconds, bool)
+            or type(poll_interval_seconds) not in (int, float)
+            or poll_interval_seconds <= 0
+        ):
+            raise PipelineRunValidationError("poll_interval_seconds must be positive")
+        backoff_seconds = float(poll_interval_seconds)
+        while not stop_event.is_set():
+            try:
+                await self.run_once(stop_event=stop_event)
+            except Exception as error:
+                if not _is_recoverable_worker_error(error):
+                    raise
+                await _wait_for_stop(
+                    stop_event,
+                    backoff_seconds,
+                )
+                backoff_seconds = min(
+                    backoff_seconds * 2,
+                    max(30.0, float(poll_interval_seconds)),
+                )
+                continue
+            backoff_seconds = float(poll_interval_seconds)
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=float(poll_interval_seconds),
+                )
+            except TimeoutError:
+                pass
 
     async def _process_run(self, run_id: str) -> bool:
         snapshot = await self._store.read_run(run_id)
@@ -155,6 +238,38 @@ class DurablePipelineWorker:
         if snapshot is None:
             raise PipelineRunValidationError("leased pipeline run vanished")
         return snapshot
+
+
+def _is_recoverable_worker_error(error: BaseException) -> bool:
+    transient_errors = (OperationalError, InterfaceError, ConnectionError, TimeoutError)
+    if isinstance(error, transient_errors):
+        return True
+    if not isinstance(error, (PipelineRunValidationError, RuntimeStoreError)):
+        return False
+
+    pending: list[tuple[BaseException, int]] = [(error, 0)]
+    seen: set[int] = set()
+    while pending:
+        current, depth = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if depth > 0 and isinstance(current, transient_errors):
+            return True
+        if depth >= 4:
+            continue
+        if current.__cause__ is not None:
+            pending.append((current.__cause__, depth + 1))
+        if current.__context__ is not None:
+            pending.append((current.__context__, depth + 1))
+    return False
+
+
+async def _wait_for_stop(stop_event: asyncio.Event, delay_seconds: float) -> None:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay_seconds)
+    except TimeoutError:
+        pass
 
 
 __all__ = ("DurablePipelineWorker",)

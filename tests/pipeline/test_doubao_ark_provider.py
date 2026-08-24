@@ -599,6 +599,34 @@ def test_doubao_ark_enforces_bounded_stream_bytes() -> None:
     assert result.failure_code == "PROVIDER_STREAM_LIMIT_EXCEEDED"
 
 
+def test_doubao_ark_does_not_double_count_repeated_terminal_text() -> None:
+    final_text = '{"ok":true}'
+    factory = FakeClientFactory(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="response-bounded", model=MODEL_ID),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta=final_text),
+            SimpleNamespace(type="response.output_text.done", text=final_text),
+            SimpleNamespace(
+                type="response.completed",
+                response=_response("response-bounded", final_text),
+            ),
+        ]
+    )
+    provider = DoubaoArkVlmProvider(
+        _config(max_stream_bytes=len(final_text.encode("utf-8"))),
+        file_cache=MemoryFileCache(),
+        client_factory=factory,
+    )
+
+    result = provider.dispatch(_dispatch(created_ids=[]))
+
+    assert isinstance(result, ProviderCompleted)
+    assert result.raw_response == final_text.encode("utf-8")
+
+
 def test_doubao_ark_unknown_upload_outcome_is_quarantined_without_blind_upload() -> None:
     cache = MemoryFileCache()
     first = FakeClientFactory(_completed_stream())

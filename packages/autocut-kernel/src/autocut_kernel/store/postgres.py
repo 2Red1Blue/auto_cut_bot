@@ -50,9 +50,11 @@ from .models import (
     PersistedMediaOutputs,
     PersistedRecipe,
     PersistedSemanticResolutionProof,
+    PersistedVlmGenerationChild,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    VlmRequestRecordReference,
     WholeSeriesSourceManifestReference,
     canonical_payload_hash,
     canonical_recipe_scope,
@@ -134,6 +136,48 @@ def _source_manifest_blob_refs(payload_json: str) -> tuple[BlobRef, ...]:
         raise StoreValidationError(
             "source manifest contains invalid proxy BlobRefs"
         ) from error
+
+
+def _vlm_request_record_projection(
+    payload_json: str,
+) -> tuple[int, str, str, str, str, str]:
+    """Extract typed fields; the persisted model performs full closed validation."""
+
+    try:
+        payload: object = json.loads(
+            payload_json,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {value}")
+            ),
+        )
+        if type(payload) is not dict:  # noqa: E721
+            raise ValueError("VLM request record must be an object")
+        mapping = cast(dict[str, object], payload)
+        episode_index = mapping["episode_index"]
+        window_manifest_sha256 = mapping["window_manifest_sha256"]
+        window_manifest_set_sha256 = mapping["window_manifest_set_sha256"]
+        source_manifest_sha256 = mapping["source_manifest_sha256"]
+        source_provenance_sha256 = mapping["source_provenance_sha256"]
+        request_identity_sha256 = mapping["request_identity_sha256"]
+        if (
+            type(episode_index) is not int  # noqa: E721
+            or type(window_manifest_sha256) is not str  # noqa: E721
+            or type(window_manifest_set_sha256) is not str  # noqa: E721
+            or type(source_manifest_sha256) is not str  # noqa: E721
+            or type(source_provenance_sha256) is not str  # noqa: E721
+            or type(request_identity_sha256) is not str  # noqa: E721
+        ):
+            raise ValueError("VLM request record projection types are invalid")
+        return (
+            episode_index,
+            window_manifest_sha256,
+            window_manifest_set_sha256,
+            source_manifest_sha256,
+            source_provenance_sha256,
+            request_identity_sha256,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StoreValidationError("VLM request record projection is invalid") from error
 
 
 class PostgresRuntimeStore:
@@ -890,6 +934,214 @@ class PostgresRuntimeStore:
                 None
                 if command is None
                 else self._read_outcome_by_slot(cursor, UUID(str(command[0])), job_id)
+            )
+
+        return self._transaction(operation)
+
+    def read_committed_vlm_generation_child(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> PersistedVlmGenerationChild:
+        """Reconstruct one committed VLM child from its immutable Store evidence."""
+
+        if type(idempotency_key) is not str or not idempotency_key.strip():  # noqa: E721
+            raise StoreValidationError("idempotency_key must be a non-empty string")
+
+        def operation(cursor: DbCursor) -> PersistedVlmGenerationChild:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise StoreValidationError("VLM generation Job is unavailable")
+            job_id, profile = job_row
+            durable_job_id = UUID(str(job_id))
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            cursor.execute(
+                """
+                SELECT slot.command_slot_id, slot.command_name, slot.request_hash,
+                       attempt.attempt_id, attempt.request_hash,
+                       attempt.provider_idempotency_key, attempt.state,
+                       request_blob.object_id, request_blob.content_hash,
+                       request_blob.byte_length, request_blob.media_type,
+                       attempt.receipt_id, attempt.artifact_set_id,
+                       receipt.receipt_id, receipt.outcome,
+                       receipt.result_artifact_set_id, artifact_set.set_hash,
+                       artifact_set.member_count
+                  FROM runtime.command_slots AS slot
+                  JOIN runtime.generation_attempts AS attempt
+                    ON attempt.command_slot_id = slot.command_slot_id
+                   AND attempt.job_id = slot.job_id
+                  JOIN storage.blob_objects AS request_blob
+                    ON request_blob.object_id = attempt.request_payload_object_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.receipt_id = attempt.receipt_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = attempt.artifact_set_id
+                   AND artifact_set.artifact_set_id = receipt.result_artifact_set_id
+                   AND artifact_set.command_slot_id = slot.command_slot_id
+                   AND artifact_set.job_id = slot.job_id
+                 WHERE slot.job_id = %s
+                   AND slot.idempotency_key = %s
+                   AND slot.command_name = 'GenerateVlmEvidenceCommand'
+                   AND slot.state = 'succeeded'
+                   AND attempt.state = 'committed'
+                   AND receipt.outcome = 'succeeded'
+                """,
+                (durable_job_id, idempotency_key),
+            )
+            row = cursor.fetchone()
+            if row is None or cursor.fetchone() is not None:
+                raise StoreValidationError(
+                    "exact committed VLM generation child is unavailable"
+                )
+            (
+                command_slot_id,
+                command_name,
+                slot_request_hash,
+                attempt_id,
+                attempt_request_hash,
+                provider_idempotency_key,
+                attempt_state,
+                request_object_id,
+                request_blob_hash,
+                request_byte_length,
+                request_media_type,
+                attempt_receipt_id,
+                attempt_artifact_set_id,
+                receipt_id,
+                receipt_outcome,
+                receipt_artifact_set_id,
+                set_hash,
+                member_count,
+            ) = row
+            slot_id = UUID(str(command_slot_id))
+            durable_attempt_id = UUID(str(attempt_id))
+            durable_receipt_id = UUID(str(receipt_id))
+            durable_artifact_set_id = UUID(str(attempt_artifact_set_id))
+            if (
+                _text(command_name) != "GenerateVlmEvidenceCommand"
+                or _text(slot_request_hash) != _text(attempt_request_hash)
+                or _text(attempt_state) != "committed"
+                or UUID(str(attempt_receipt_id)) != durable_receipt_id
+                or UUID(str(receipt_artifact_set_id)) != durable_artifact_set_id
+                or _text(receipt_outcome) != "succeeded"
+                or int(_text(member_count)) != 3
+            ):
+                raise StoreValidationError(
+                    "committed VLM generation identity is internally inconsistent"
+                )
+            request_payload = BlobRef(
+                UUID(str(request_object_id)),
+                _text(request_blob_hash),
+                int(_text(request_byte_length)),
+                _text(request_media_type),
+            )
+            self._claimed_blob_ref(
+                cursor,
+                durable_job_id,
+                request_payload,
+                field_name="VLM request payload",
+            )
+            cursor.execute(
+                """
+                SELECT artifact.artifact_type, artifact.logical_id,
+                       artifact.revision, artifact.namespace,
+                       artifact.scope_kind, artifact.scope_key,
+                       artifact.content_hash, artifact.payload_json::text
+                  FROM runtime.artifact_set_members AS member
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = member.artifact_set_id
+                 WHERE member.artifact_set_id = %s
+                 ORDER BY member.ordinal
+                """,
+                (durable_artifact_set_id,),
+            )
+            artifacts: list[ArtifactMember] = []
+            while (artifact_row := cursor.fetchone()) is not None:
+                (
+                    artifact_type,
+                    logical_id,
+                    revision,
+                    namespace,
+                    scope_kind,
+                    scope_key,
+                    content_hash,
+                    payload_json,
+                ) = artifact_row
+                serialized = _text(payload_json)
+                if canonical_payload_hash(serialized) != _text(content_hash):
+                    raise StoreValidationError(
+                        "VLM ArtifactSet member payload hash is invalid"
+                    )
+                artifacts.append(
+                    ArtifactMember(
+                        _text(artifact_type),
+                        _text(logical_id),
+                        int(_text(revision)),
+                        ArtifactScope(
+                            _text(namespace),
+                            _text(scope_kind),
+                            _text(scope_key),
+                        ),
+                        _text(content_hash),
+                        serialized,
+                    )
+                )
+            artifact_tuple = tuple(artifacts)
+            if len(artifact_tuple) != 3:
+                raise StoreValidationError("VLM ArtifactSet must contain exactly three members")
+            CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
+            request_records = tuple(
+                artifact
+                for artifact in artifact_tuple
+                if artifact.artifact_type == "vlm_request_record"
+            )
+            if len(request_records) != 1:
+                raise StoreValidationError(
+                    "VLM ArtifactSet requires one exact request record"
+                )
+            record = request_records[0]
+            if record.scope != canonical_recipe_scope(job):
+                raise StoreValidationError("VLM request record has a non-canonical scope")
+            (
+                episode_index,
+                window_manifest_sha256,
+                window_manifest_set_sha256,
+                source_manifest_sha256,
+                source_provenance_sha256,
+                request_identity_sha256,
+            ) = _vlm_request_record_projection(record.payload_json)
+            reference = VlmRequestRecordReference(
+                record.scope,
+                record.logical_id,
+                record.revision,
+                record.content_hash,
+            )
+            return PersistedVlmGenerationChild(
+                reference=reference,
+                payload_json=record.payload_json,
+                source_job=job,
+                kernel_job_id=durable_job_id,
+                command_slot_id=slot_id,
+                idempotency_key=idempotency_key,
+                request_hash=_text(slot_request_hash),
+                attempt_id=durable_attempt_id,
+                provider_idempotency_key=_text(provider_idempotency_key),
+                request_payload=request_payload,
+                receipt_id=durable_receipt_id,
+                artifact_set_id=durable_artifact_set_id,
+                episode_index=episode_index,
+                window_manifest_sha256=window_manifest_sha256,
+                window_manifest_set_sha256=window_manifest_set_sha256,
+                source_manifest_sha256=source_manifest_sha256,
+                source_provenance_sha256=source_provenance_sha256,
+                request_identity_sha256=request_identity_sha256,
             )
 
         return self._transaction(operation)

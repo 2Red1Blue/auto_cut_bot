@@ -541,17 +541,20 @@ def _consume_stream(
     on_provider_request_id: ProviderRequestIdCallback,
 ) -> ProviderResult:
     request_id: str | None = None
-    stream_bytes = 0
+    # Delta bytes are bounded as transient stream telemetry.  The terminal
+    # authoritative body is checked independently below: Ark may repeat the
+    # same text in ``output_text.done`` and ``response.completed``, so adding
+    # all three representations would make dispatch stricter than reconcile.
+    telemetry_bytes = 0
     try:
         for event in cast(Any, stream):
             event_type = str(getattr(event, "type", ""))
             response = getattr(event, "response", None)
-            if event_type in {"response.output_text.delta", "response.output_text.done"}:
-                field_name = "delta" if event_type.endswith("delta") else "text"
-                telemetry = getattr(event, field_name, "")
+            if event_type == "response.output_text.delta":
+                telemetry = getattr(event, "delta", "")
                 if isinstance(telemetry, str):
-                    stream_bytes += len(telemetry.encode("utf-8"))
-                    if stream_bytes > max_stream_bytes:
+                    telemetry_bytes += len(telemetry.encode("utf-8"))
+                    if telemetry_bytes > max_stream_bytes:
                         return _failure(
                             "PROVIDER_STREAM_LIMIT_EXCEEDED",
                             provider_request_id=request_id,
@@ -597,8 +600,7 @@ def _consume_stream(
                         "PROVIDER_RESPONSE_OUTPUT_INVALID",
                         provider_request_id=request_id,
                     )
-                stream_bytes += len(final_text.encode("utf-8"))
-                if stream_bytes > max_stream_bytes:
+                if len(final_text.encode("utf-8")) > max_stream_bytes:
                     return _failure(
                         "PROVIDER_STREAM_LIMIT_EXCEEDED",
                         provider_request_id=request_id,

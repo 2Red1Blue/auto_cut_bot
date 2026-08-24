@@ -12,6 +12,9 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineStageContext,
     SourcePrepPipelineStage,
 )
+from auto_cut_bot.pipeline.runtime.source_prep_stage import (
+    source_prep_kernel_idempotency_key,
+)
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     PrepareWholeSeriesSourcesResult,
@@ -49,9 +52,14 @@ class Command:
     def __init__(self, outcome: CommandOutcome) -> None:
         self.outcome = outcome
         self.requests = []
+        self.resume_requests = []
 
     def execute(self, request):
         self.requests.append(request)
+        return PrepareWholeSeriesSourcesResult(self.outcome)
+
+    def resume(self, request):
+        self.resume_requests.append(request)
         return PrepareWholeSeriesSourcesResult(self.outcome)
 
 
@@ -72,7 +80,7 @@ def context(tmp_path: Path, *, status: str = "running") -> PipelineStageContext:
 
 
 @pytest.mark.asyncio
-async def test_stage_uses_deterministic_kernel_job_and_http_command_id(tmp_path: Path) -> None:
+async def test_stage_uses_deterministic_kernel_job_and_run_bound_key(tmp_path: Path) -> None:
     receipt_id = uuid4()
     outcome = CommandOutcome(uuid4(), "succeeded", receipt_id=receipt_id)
     command = Command(outcome)
@@ -86,12 +94,14 @@ async def test_stage_uses_deterministic_kernel_job_and_http_command_id(tmp_path:
     assert len(command.requests) == 1
     request = command.requests[0]
     assert request.job == Job(stage_context.run_id, "test")
-    assert request.idempotency_key == stage_context.command.command_id
+    assert request.idempotency_key == source_prep_kernel_idempotency_key(
+        stage_context.run_id
+    )
     assert request.artifact_scope == ArtifactScope("pipeline", "job", stage_context.run_id)
 
 
 @pytest.mark.asyncio
-async def test_running_kernel_source_command_stays_observably_indeterminate(
+async def test_running_kernel_source_command_uses_safe_resume_and_projects_receipt(
     tmp_path: Path,
 ) -> None:
     running = CommandOutcome(uuid4(), "running")
@@ -102,9 +112,15 @@ async def test_running_kernel_source_command_stays_observably_indeterminate(
 
     result = await stage.reconcile(stage_context)
 
-    assert result is None
-    assert store.reads == [(Job(stage_context.run_id, "test"), stage_context.command.command_id)]
+    assert result is not None
+    assert result.outcome == "succeeded"
+    assert result.receipt_id == command.outcome.receipt_id
+    assert store.reads == []
     assert command.requests == []
+    assert len(command.resume_requests) == 1
+    assert command.resume_requests[0].idempotency_key == (
+        source_prep_kernel_idempotency_key(stage_context.run_id)
+    )
 
 
 @pytest.mark.asyncio
@@ -115,7 +131,7 @@ async def test_reconcile_projects_exact_terminal_kernel_receipt(tmp_path: Path) 
     stage = SourcePrepPipelineStage(
         store,
         RootResolver(),
-        command=Command(CommandOutcome(uuid4(), "running")),  # type: ignore[arg-type]
+        command=Command(denied),  # type: ignore[arg-type]
     )
     stage_context = context(tmp_path, status="indeterminate")
 
@@ -137,3 +153,16 @@ def test_persisted_reader_rejects_nonterminal_without_reading_or_probing() -> No
             artifact_revision=1,
         )
     assert store.reads == []
+
+
+def test_source_prep_kernel_key_is_stable_and_rejects_invalid_run_id() -> None:
+    run_id = "pipeline_run_" + "b" * 32
+
+    assert source_prep_kernel_idempotency_key(run_id) == (
+        "source-prep-kernel-v1:" + run_id
+    )
+    assert source_prep_kernel_idempotency_key(run_id) == (
+        source_prep_kernel_idempotency_key(run_id)
+    )
+    with pytest.raises(ValueError, match="run_id"):
+        source_prep_kernel_idempotency_key("not-a-pipeline-run")
