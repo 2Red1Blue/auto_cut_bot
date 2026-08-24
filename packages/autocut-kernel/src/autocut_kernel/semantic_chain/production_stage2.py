@@ -71,7 +71,10 @@ _PHYSICAL_REQUIREMENTS: Final = {
 
 @dataclass(frozen=True, slots=True, init=False)
 class CommittedVlmObservation(EvaluatorOwnedModel):
-    """Reader output binding one observation to the exact committed set/request."""
+    """Reserved output of the future Receipt/ArtifactSet-backed Store adapter.
+
+    Model-level hashes are intentionally insufficient to construct this value.
+    """
 
     observation_set_ref: ArtifactRef
     observation_ref: DomainRef
@@ -279,7 +282,7 @@ def candidate_semantic_evidence_hash(
     measurements: Sequence[SemanticMeasurement],
     measurement_policy_ref: ArtifactRef,
 ) -> str:
-    """Hash the exact pending/committed semantic evidence evaluator input."""
+    """Hash semantic evidence content; this is not a persistence/membership proof."""
 
     anchor_values = cast(
         tuple[SemanticAnchor, ...],
@@ -307,7 +310,7 @@ def candidate_semantic_evidence_hash(
 
 @dataclass(frozen=True, slots=True, init=False)
 class CommittedCandidateSemanticEvidence(EvaluatorOwnedModel):
-    """Exact reader output for the hash-bound anchors/measurements being evaluated."""
+    """Reserved audited-generation reader projection; model callers cannot mint it."""
 
     semantic_evidence_ref: ArtifactRef
     committed_observation: CommittedVlmObservation
