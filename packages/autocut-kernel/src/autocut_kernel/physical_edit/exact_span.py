@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from fractions import Fraction
 from typing import Iterable
 
 from ..media.root_evidence import (
     AudioSourceOutcome,
     CoverageOutcome,
     EvidenceCompleteness,
+    MediaKind,
     RootMediaEvidenceBundle,
     VisualClassification,
 )
@@ -142,33 +144,140 @@ class ClockMapOutcome(str, Enum):
     INDETERMINATE = "indeterminate"
 
 
-@dataclass(frozen=True, slots=True)
-class VideoToAudioMapSegment:
-    """One positive rational monotonic video-to-audio map segment."""
+class NonOverlapPosition(str, Enum):
+    LEADING = "leading"
+    TRAILING = "trailing"
 
-    video_range: TickRange
-    audio_range: TickRange
-    max_error_audio_tick: int
+
+@dataclass(frozen=True, slots=True)
+class PresentationTimeRange:
+    """A normalized half-open range on the source presentation timeline."""
+
+    start_numerator: int
+    start_denominator: int
+    end_numerator: int
+    end_denominator: int
 
     def __post_init__(self) -> None:
-        if type(self.video_range) is not TickRange:  # noqa: E721
-            raise ExactSpanValidationError("map segment video_range must be an exact TickRange")
-        if type(self.audio_range) is not TickRange:  # noqa: E721
-            raise ExactSpanValidationError("map segment audio_range must be an exact TickRange")
-        if require_pts(self.max_error_audio_tick, "max_error_audio_tick") < 0:
-            raise ExactSpanValidationError("map segment error must be non-negative")
+        for value, name in (
+            (self.start_numerator, "presentation_range.start_numerator"),
+            (self.end_numerator, "presentation_range.end_numerator"),
+        ):
+            require_pts(value, name)
+        for value, name in (
+            (self.start_denominator, "presentation_range.start_denominator"),
+            (self.end_denominator, "presentation_range.end_denominator"),
+        ):
+            if require_pts(value, name) <= 0:
+                raise ExactSpanValidationError(f"{name} must be positive")
+        start = Fraction(self.start_numerator, self.start_denominator)
+        end = Fraction(self.end_numerator, self.end_denominator)
+        if start >= end:
+            raise ExactSpanValidationError("presentation range must satisfy start < end")
+        object.__setattr__(self, "start_numerator", start.numerator)
+        object.__setattr__(self, "start_denominator", start.denominator)
+        object.__setattr__(self, "end_numerator", end.numerator)
+        object.__setattr__(self, "end_denominator", end.denominator)
+
+    @classmethod
+    def from_fractions(cls, start: Fraction, end: Fraction) -> PresentationTimeRange:
+        return cls(start.numerator, start.denominator, end.numerator, end.denominator)
+
+    @property
+    def start(self) -> Fraction:
+        return Fraction(self.start_numerator, self.start_denominator)
+
+    @property
+    def end(self) -> Fraction:
+        return Fraction(self.end_numerator, self.end_denominator)
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "video_range": _ticks(self.video_range),
-            "audio_range": _ticks(self.audio_range),
-            "max_error_audio_tick": self.max_error_audio_tick,
+            "start": {
+                "numerator": self.start_numerator,
+                "denominator": self.start_denominator,
+            },
+            "end": {
+                "numerator": self.end_numerator,
+                "denominator": self.end_denominator,
+            },
         }
 
 
 @dataclass(frozen=True, slots=True)
+class PresentationNonOverlap:
+    media_kind: MediaKind
+    position: NonOverlapPosition
+    presentation_range: PresentationTimeRange
+
+    def __post_init__(self) -> None:
+        if self.media_kind not in (MediaKind.VIDEO, MediaKind.AUDIO):
+            raise ExactSpanValidationError("non-overlap media kind must be video or audio")
+        if type(self.position) is not NonOverlapPosition:  # noqa: E721
+            raise ExactSpanValidationError("non-overlap position is invalid")
+        if type(self.presentation_range) is not PresentationTimeRange:  # noqa: E721
+            raise ExactSpanValidationError("non-overlap requires an exact presentation range")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "media_kind": self.media_kind.value,
+            "position": self.position.value,
+            "presentation_range": self.presentation_range.to_mapping(),
+        }
+
+
+def _presentation_tick(tick: int, time_base: TimeBase) -> Fraction:
+    return Fraction(tick * time_base.numerator, time_base.denominator)
+
+
+def _stream_presentation_range(context: object) -> tuple[Fraction, Fraction]:
+    origin_tick = require_pts(getattr(context, "origin_tick"), "context.origin_tick")
+    end_tick = require_pts(getattr(context, "end_tick"), "context.end_tick")
+    time_base = getattr(context, "time_base")
+    if type(time_base) is not TimeBase:  # noqa: E721
+        raise ExactSpanValidationError("context.time_base must be an exact TimeBase")
+    return _presentation_tick(origin_tick, time_base), _presentation_tick(end_tick, time_base)
+
+
+def _expected_presentation_partition(
+    evidence: RootMediaEvidenceBundle,
+) -> tuple[PresentationTimeRange, tuple[PresentationNonOverlap, ...]]:
+    video_start, video_end = _stream_presentation_range(evidence.frame_pts_index.context)
+    audio_start, audio_end = _stream_presentation_range(
+        evidence.audio_sample_boundaries.context
+    )
+    common_start = max(video_start, audio_start)
+    common_end = min(video_end, audio_end)
+    if common_start >= common_end:
+        raise ExactSpanValidationError("video and audio have no common presentation interval")
+    records: list[PresentationNonOverlap] = []
+    for media_kind, start, end in (
+        (MediaKind.VIDEO, video_start, video_end),
+        (MediaKind.AUDIO, audio_start, audio_end),
+    ):
+        if start < common_start:
+            records.append(
+                PresentationNonOverlap(
+                    media_kind,
+                    NonOverlapPosition.LEADING,
+                    PresentationTimeRange.from_fractions(start, common_start),
+                )
+            )
+        if common_end < end:
+            records.append(
+                PresentationNonOverlap(
+                    media_kind,
+                    NonOverlapPosition.TRAILING,
+                    PresentationTimeRange.from_fractions(common_end, end),
+                )
+            )
+    records.sort(key=lambda item: (item.media_kind.value, item.position.value))
+    return PresentationTimeRange.from_fractions(common_start, common_end), tuple(records)
+
+
+@dataclass(frozen=True, slots=True)
 class VideoToAudioClockMapCertificate:
-    """Source-bound, complete and gap-free piecewise rational clock map."""
+    """Equal-presentation-time A/V mapping over the proven common interval."""
 
     source_id: str
     source_sha256: str
@@ -177,7 +286,11 @@ class VideoToAudioClockMapCertificate:
     audio_clock_id: str
     audio_time_base: TimeBase
     outcome: ClockMapOutcome
-    segments: tuple[VideoToAudioMapSegment, ...]
+    common_presentation_range: PresentationTimeRange | None
+    non_overlaps: tuple[PresentationNonOverlap, ...]
+    max_error_audio_tick: int
+    source_media_probe_sha256: str
+    generation_policy_sha256: str
 
     def __post_init__(self) -> None:
         _require_text(self.source_id, "clock_map.source_id")
@@ -193,22 +306,60 @@ class VideoToAudioClockMapCertificate:
             raise ExactSpanValidationError("audio_time_base must be an exact TimeBase")
         if type(self.outcome) is not ClockMapOutcome:  # noqa: E721
             raise ExactSpanValidationError("clock map outcome must be a ClockMapOutcome")
-        segments = tuple(self.segments)
-        if not all(type(item) is VideoToAudioMapSegment for item in segments):
-            raise ExactSpanValidationError("clock map contains an invalid segment")
+        if require_pts(self.max_error_audio_tick, "clock_map.max_error_audio_tick") < 0:
+            raise ExactSpanValidationError("clock map error must be non-negative")
+        try:
+            sha256_prefixed(
+                self.source_media_probe_sha256, "clock_map.source_media_probe_sha256"
+            )
+            sha256_prefixed(
+                self.generation_policy_sha256, "clock_map.generation_policy_sha256"
+            )
+        except MediaValidationError as error:
+            raise ExactSpanValidationError(str(error)) from error
+        non_overlaps = tuple(self.non_overlaps)
+        if not all(type(item) is PresentationNonOverlap for item in non_overlaps):
+            raise ExactSpanValidationError("clock map contains an invalid non-overlap")
+        keys = tuple((item.media_kind.value, item.position.value) for item in non_overlaps)
+        if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
+            raise ExactSpanValidationError("clock map non-overlaps must be canonical and unique")
         if self.outcome is ClockMapOutcome.INDETERMINATE:
-            if segments:
-                raise ExactSpanValidationError("indeterminate clock map cannot assert segments")
-            object.__setattr__(self, "segments", segments)
+            if self.common_presentation_range is not None or non_overlaps:
+                raise ExactSpanValidationError(
+                    "indeterminate clock map cannot assert presentation coverage"
+                )
+            object.__setattr__(self, "non_overlaps", non_overlaps)
             return
-        if not segments:
-            raise ExactSpanValidationError("complete clock map requires segments")
-        for left, right in zip(segments, segments[1:], strict=False):
-            if left.video_range.end_pts != right.video_range.start_pts:
-                raise ExactSpanValidationError("clock map video segments must be contiguous")
-            if left.audio_range.end_pts != right.audio_range.start_pts:
-                raise ExactSpanValidationError("clock map audio segments must be contiguous")
-        object.__setattr__(self, "segments", segments)
+        if type(self.common_presentation_range) is not PresentationTimeRange:  # noqa: E721
+            raise ExactSpanValidationError("complete clock map requires presentation coverage")
+        object.__setattr__(self, "non_overlaps", non_overlaps)
+
+    @classmethod
+    def from_root_evidence(
+        cls,
+        evidence: RootMediaEvidenceBundle,
+        *,
+        max_error_audio_tick: int,
+        source_media_probe_sha256: str,
+        generation_policy_sha256: str,
+    ) -> VideoToAudioClockMapCertificate:
+        common, non_overlaps = _expected_presentation_partition(evidence)
+        video = evidence.frame_pts_index.context
+        audio = evidence.audio_sample_boundaries.context
+        return cls(
+            evidence.source_id,
+            evidence.source_sha256,
+            video.clock_id,
+            video.time_base,
+            audio.clock_id,
+            audio.time_base,
+            ClockMapOutcome.COMPLETE,
+            common,
+            non_overlaps,
+            max_error_audio_tick,
+            source_media_probe_sha256,
+            generation_policy_sha256,
+        )
 
     def assert_complete_for(self, evidence: RootMediaEvidenceBundle) -> None:
         if self.outcome is not ClockMapOutcome.COMPLETE:
@@ -231,41 +382,33 @@ class VideoToAudioClockMapCertificate:
             audio.time_base,
         ):
             raise ExactSpanValidationError("clock map source/hash/clock/time base mismatch")
-        first, last = self.segments[0], self.segments[-1]
-        if (
-            first.video_range.start_pts != video.origin_tick
-            or last.video_range.end_pts != video.end_tick
-            or first.audio_range.start_pts != audio.origin_tick
-            or last.audio_range.end_pts != audio.end_tick
-        ):
-            raise ExactSpanValidationError("clock map must cover both complete source clocks")
+        common, non_overlaps = _expected_presentation_partition(evidence)
+        if self.common_presentation_range != common or self.non_overlaps != non_overlaps:
+            raise ExactSpanValidationError(
+                "clock map must expose the exact common interval and all non-overlap"
+            )
 
     def map_video_tick_bounds(self, video_tick: int) -> tuple[int, int]:
         """Return conservative inclusive audio-tick bounds for a video tick."""
         tick = require_pts(video_tick, "video_tick")
         if self.outcome is not ClockMapOutcome.COMPLETE:
             raise ExactSpanValidationError("cannot use an indeterminate clock map")
-        segment = next(
-            (
-                item
-                for item in self.segments
-                if item.video_range.start_pts <= tick < item.video_range.end_pts
-            ),
-            None,
+        common = self.common_presentation_range
+        if common is None:
+            raise ExactSpanValidationError("clock map has no presentation coverage")
+        presentation = _presentation_tick(tick, self.video_time_base)
+        if not common.start <= presentation <= common.end:
+            raise ExactSpanValidationError(
+                "video tick is outside the common presentation interval"
+            )
+        exact_audio_tick = presentation / Fraction(
+            self.audio_time_base.numerator, self.audio_time_base.denominator
         )
-        if segment is None and tick == self.segments[-1].video_range.end_pts:
-            segment = self.segments[-1]
-        if segment is None:
-            raise ExactSpanValidationError("video tick is outside the clock map")
-        numerator = (
-            (tick - segment.video_range.start_pts) * segment.audio_range.duration_pts
-        )
-        denominator = segment.video_range.duration_pts
-        floor_value = segment.audio_range.start_pts + numerator // denominator
-        ceil_value = segment.audio_range.start_pts + (numerator + denominator - 1) // denominator
+        floor_value = exact_audio_tick.numerator // exact_audio_tick.denominator
+        ceil_value = -((-exact_audio_tick.numerator) // exact_audio_tick.denominator)
         return (
-            floor_value - segment.max_error_audio_tick,
-            ceil_value + segment.max_error_audio_tick,
+            floor_value - self.max_error_audio_tick,
+            ceil_value + self.max_error_audio_tick,
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -277,7 +420,13 @@ class VideoToAudioClockMapCertificate:
             "audio_clock_id": self.audio_clock_id,
             "audio_time_base": _tb(self.audio_time_base),
             "outcome": self.outcome.value,
-            "segments": [item.to_mapping() for item in self.segments],
+            "common_presentation_range": None
+            if self.common_presentation_range is None
+            else self.common_presentation_range.to_mapping(),
+            "non_overlaps": [item.to_mapping() for item in self.non_overlaps],
+            "max_error_audio_tick": self.max_error_audio_tick,
+            "source_media_probe_sha256": self.source_media_probe_sha256,
+            "generation_policy_sha256": self.generation_policy_sha256,
         }
 
     @property
@@ -510,10 +659,7 @@ def _validate_production_inputs(
     ):
         raise ExactSpanValidationError("word and sentence transcript evidence must be complete")
     clock_map.assert_complete_for(evidence)
-    if any(
-        segment.max_error_audio_tick > policy.maximum_mapping_error_audio_tick
-        for segment in clock_map.segments
-    ):
+    if clock_map.max_error_audio_tick > policy.maximum_mapping_error_audio_tick:
         raise ExactSpanValidationError("clock map uncertainty exceeds policy maximum")
 
 
