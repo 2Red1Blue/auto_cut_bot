@@ -152,6 +152,60 @@ class PersistedRecipe:
 
 
 @dataclass(frozen=True, slots=True)
+class WholeSeriesSourceManifestReference:
+    """Exact identity of one committed whole-series source manifest."""
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["whole_series_source_manifest"] = (
+        "whole_series_source_manifest"
+    )
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "whole_series_source_manifest":
+            raise StoreValidationError(
+                "source manifest reference has an invalid artifact_type"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedWholeSeriesSourceManifest:
+    """Verified source manifest payload, blobs, and success provenance."""
+
+    reference: WholeSeriesSourceManifestReference
+    payload_json: str
+    proxy_blobs: tuple[BlobRef, ...]
+    job_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        proxy_blobs = tuple(self.proxy_blobs)
+        if not proxy_blobs or any(type(item) is not BlobRef for item in proxy_blobs):  # noqa: E721
+            raise StoreValidationError("source manifest proxy_blobs must contain BlobRefs")
+        for field_name, value in (
+            ("job_id", self.job_id),
+            ("receipt_id", self.receipt_id),
+            ("artifact_set_id", self.artifact_set_id),
+            ("command_slot_id", self.command_slot_id),
+        ):
+            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise StoreValidationError(f"{field_name} must be a UUID")
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError(
+                "payload_json does not match source manifest content_hash"
+            )
+        object.__setattr__(self, "proxy_blobs", proxy_blobs)
+
+
+@dataclass(frozen=True, slots=True)
 class MediaEvidenceReference:
     """The complete immutable identity of one persisted ``media_evidence`` artifact.
 

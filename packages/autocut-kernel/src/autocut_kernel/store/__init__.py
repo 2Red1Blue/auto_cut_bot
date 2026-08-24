@@ -36,8 +36,10 @@ from .models import (
     PersistedMediaOutputs,
     PersistedRecipe,
     PersistedSemanticResolutionProof,
+    PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    WholeSeriesSourceManifestReference,
 )
 from .postgres import PostgresRuntimeStore
 
@@ -68,6 +70,7 @@ __all__ = [
     "PersistedMediaOutputs",
     "PersistedRecipe",
     "PersistedSemanticResolutionProof",
+    "PersistedWholeSeriesSourceManifest",
     "RecipeIntegrityError",
     "RecipeReference",
     "RecipeUnavailableError",
@@ -78,4 +81,5 @@ __all__ = [
     "StaleHeadError",
     "StoreConcurrencyError",
     "StoreValidationError",
+    "WholeSeriesSourceManifestReference",
 ]

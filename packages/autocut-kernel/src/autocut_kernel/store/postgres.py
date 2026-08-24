@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from typing import Protocol, TypeVar
+from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
@@ -37,6 +37,7 @@ from .errors import (
 )
 from .models import (
     ArtifactMember,
+    ArtifactScope,
     BlobRef,
     CommandClaim,
     CommandOutcome,
@@ -49,8 +50,10 @@ from .models import (
     PersistedMediaOutputs,
     PersistedRecipe,
     PersistedSemanticResolutionProof,
+    PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    WholeSeriesSourceManifestReference,
     canonical_payload_hash,
     canonical_recipe_scope,
 )
@@ -80,6 +83,55 @@ _Result = TypeVar("_Result")
 def _text(value: object) -> str:
     """Normalize PostgreSQL text values returned in either wire format."""
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _source_manifest_blob_refs(payload_json: str) -> tuple[BlobRef, ...]:
+    """Extract the closed proxy-BlobRef surface from a source manifest payload."""
+
+    try:
+        payload: object = json.loads(
+            payload_json,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {value}")
+            ),
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("source manifest must be an object")
+        root = cast(dict[str, object], payload)
+        episodes = root.get("episodes")
+        if not isinstance(episodes, list) or not episodes:
+            raise ValueError("source manifest episodes must be a non-empty array")
+        references: list[BlobRef] = []
+        for episode_value in cast(list[object], episodes):
+            if not isinstance(episode_value, dict):
+                raise ValueError("source manifest episode must be an object")
+            episode = cast(dict[str, object], episode_value)
+            proxy = episode.get("proxy_blob")
+            manifest = episode.get("window_manifest")
+            if not isinstance(proxy, dict) or not isinstance(manifest, dict):
+                raise ValueError("source manifest proxy BlobRef is malformed or unbound")
+            proxy_mapping = cast(dict[str, object], proxy)
+            manifest_mapping = cast(dict[str, object], manifest)
+            if set(proxy_mapping) != {
+                "object_id",
+                "content_hash",
+                "byte_length",
+                "media_type",
+            } or manifest_mapping.get("proxy_blob_ref") != proxy_mapping:
+                raise ValueError("source manifest proxy BlobRef is malformed or unbound")
+            references.append(
+                BlobRef(
+                    UUID(str(proxy_mapping["object_id"])),
+                    str(proxy_mapping["content_hash"]),
+                    cast(int, proxy_mapping["byte_length"]),
+                    str(proxy_mapping["media_type"]),
+                )
+            )
+        return tuple(references)
+    except (KeyError, TypeError, ValueError, StoreValidationError) as error:
+        raise StoreValidationError(
+            "source manifest contains invalid proxy BlobRefs"
+        ) from error
 
 
 class PostgresRuntimeStore:
@@ -785,6 +837,126 @@ class PostgresRuntimeStore:
                 None
                 if command is None
                 else self._read_outcome_by_slot(cursor, UUID(str(command[0])), job_id)
+            )
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # read_whole_series_source_manifest
+    # ------------------------------------------------------------------
+
+    def read_whole_series_source_manifest(
+        self,
+        job: Job,
+        artifact_set_id: UUID,
+    ) -> PersistedWholeSeriesSourceManifest:
+        """Read one exact succeeded source manifest and its claimed proxy blobs."""
+
+        self._validate_uuid(artifact_set_id, "artifact_set_id")
+
+        def operation(cursor: DbCursor) -> PersistedWholeSeriesSourceManifest:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise StoreValidationError("job has no whole-series source manifest")
+            job_id, profile = job_row
+            durable_job_id = UUID(str(job_id))
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            cursor.execute(
+                """
+                SELECT artifact.logical_id, artifact.revision, artifact.namespace,
+                       artifact.scope_kind, artifact.scope_key, artifact.content_hash,
+                       artifact.payload_json::text, artifact_set.set_hash,
+                       artifact_set.member_count, receipt.receipt_id, slot.command_slot_id
+                  FROM runtime.artifact_sets AS artifact_set
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = artifact_set.command_slot_id
+                   AND slot.job_id = artifact_set.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                  JOIN runtime.artifact_set_members AS member
+                    ON member.artifact_set_id = artifact_set.artifact_set_id
+                   AND member.ordinal = 0
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = artifact_set.artifact_set_id
+                   AND artifact.job_id = artifact_set.job_id
+                 WHERE artifact_set.artifact_set_id = %s
+                   AND artifact_set.job_id = %s
+                   AND slot.command_name = 'PrepareWholeSeriesSourcesCommand'
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                   AND artifact_set.member_count = 1
+                   AND artifact.artifact_type = 'whole_series_source_manifest'
+                   AND artifact.logical_id = 'whole_series_source_manifest'
+                """,
+                (artifact_set_id, durable_job_id),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if len(rows) != 1:
+                raise StoreValidationError(
+                    "exact succeeded whole-series source manifest is unavailable"
+                )
+            (
+                logical_id,
+                revision,
+                namespace,
+                scope_kind,
+                scope_key,
+                content_hash,
+                payload_json,
+                set_hash,
+                member_count,
+                receipt_id,
+                command_slot_id,
+            ) = rows[0]
+            if int(_text(member_count)) != 1:
+                raise StoreValidationError("source manifest ArtifactSet is not singleton")
+            scope = ArtifactScope(_text(namespace), _text(scope_kind), _text(scope_key))
+            if scope != canonical_recipe_scope(job):
+                raise StoreValidationError("source manifest has a non-canonical Job scope")
+            reference = WholeSeriesSourceManifestReference(
+                scope,
+                _text(logical_id),
+                int(_text(revision)),
+                _text(content_hash),
+            )
+            serialized = _text(payload_json)
+            artifact = ArtifactMember(
+                reference.artifact_type,
+                reference.logical_id,
+                reference.revision,
+                reference.scope,
+                reference.content_hash,
+                serialized,
+            )
+            slot_id = UUID(str(command_slot_id))
+            CommandSuccess(slot_id, _text(set_hash), (artifact,))
+            declared_blobs = _source_manifest_blob_refs(serialized)
+            durable_blobs = tuple(
+                self._claimed_blob_ref(
+                    cursor,
+                    durable_job_id,
+                    blob,
+                    field_name=f"source manifest proxy[{position}]",
+                )
+                for position, blob in enumerate(declared_blobs)
+            )
+            return PersistedWholeSeriesSourceManifest(
+                reference,
+                serialized,
+                durable_blobs,
+                durable_job_id,
+                UUID(str(receipt_id)),
+                artifact_set_id,
+                slot_id,
             )
 
         return self._transaction(operation)
