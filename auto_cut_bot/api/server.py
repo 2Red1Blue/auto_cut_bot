@@ -12,13 +12,24 @@ import hmac
 import json as _json
 import time
 import uuid
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 
 from aiohttp import web
 from loguru import logger
 
 from auto_cut_bot.config.paths import get_media_dir
+from auto_cut_bot.pipeline.runtime import (
+    IdempotencyConflictError,
+    PipelineRunNotFoundError,
+    PipelineRunRequest,
+    PipelineRunService,
+    PipelineRunValidationError,
+    ResumeNotAllowedError,
+    SourceDeniedError,
+    StaleRunVersionError,
+    validate_idempotency_key,
+    validate_run_id,
+)
 from auto_cut_bot.utils.helpers import safe_filename
 from auto_cut_bot.utils.media_decode import (
     MAX_FILE_SIZE,
@@ -53,6 +64,7 @@ _MODEL_NAME_KEY = web.AppKey[str]("model_name")
 _REQUEST_TIMEOUT_KEY = web.AppKey[float]("request_timeout")
 _SESSION_LOCKS_KEY = web.AppKey[dict[str, asyncio.Lock]]("session_locks")
 _PREPARE_AGENT_KEY = web.AppKey[Callable[[], Awaitable[None]] | None]("prepare_agent")
+_PIPELINE_RUN_SERVICE_KEY = web.AppKey[PipelineRunService | None]("pipeline_run_service")
 _MISSING = object()
 
 
@@ -467,6 +479,7 @@ def create_app(
     request_timeout: float = 120.0,
     api_key: str = "",
     prepare_agent: Callable[[], Awaitable[None]] | None = None,
+    pipeline_run_service: PipelineRunService | None = None,
 ) -> web.Application:
     """Create the aiohttp application.
 
@@ -476,6 +489,7 @@ def create_app(
         request_timeout: Per-request timeout in seconds.
         api_key: Optional API key for Bearer-token authentication on API routes.
         prepare_agent: Optional application-owned readiness callback run before each turn.
+        pipeline_run_service: Injected durable pipeline control-plane service.
     """
     app = web.Application(client_max_size=20 * 1024 * 1024)  # 20MB for base64 images
     app[_AGENT_LOOP_KEY] = agent_loop
@@ -483,6 +497,7 @@ def create_app(
     app[_REQUEST_TIMEOUT_KEY] = request_timeout
     app[_SESSION_LOCKS_KEY] = {}  # per-user locks, keyed by session_key
     app[_PREPARE_AGENT_KEY] = prepare_agent
+    app[_PIPELINE_RUN_SERVICE_KEY] = pipeline_run_service
 
     @web.middleware
     async def auth_middleware(
@@ -513,350 +528,110 @@ def create_app(
 
 
 async def handle_pipeline_run(request: web.Request) -> web.Response:
-    """POST /v1/pipeline/run — trigger the pipeline orchestrator directly.
-
-    Uses the PipelineOrchestratorTool to run all 21 stages in sequence,
-    bypassing the LLM agent loop for efficiency.
-
-    Request JSON:
-        {
-            "book_id": "test-001",
-            "mode": "auto",
-            "source_path": "/data/videos/test-001.mp4",
-            "stage_from": null,
-            "stage_to": null,
-            "backend": "qwen",
-            "dry_run": false,
-            "force": false
-        }
-
-    Returns:
-        {"job_root": "...", "status": "completed", "stages": {...}}
-    """
+    """Persist and enqueue one closed pipeline run intent."""
+    service = _pipeline_run_service(request)
+    if service is None:
+        return _error_json(503, "Pipeline run service is not configured", "server_error")
     try:
         body = await request.json()
     except Exception:
         return _error_json(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        return _error_json(400, "JSON body must be an object")
+    idempotency_key = request.headers.get("Idempotency-Key", "")
+    try:
+        run_request = PipelineRunRequest.from_mapping(cast(dict[str, object], body))
+        validate_idempotency_key(idempotency_key)
+    except PipelineRunValidationError as error:
+        return _error_json(400, str(error))
+    try:
+        claim = await service.submit(run_request, idempotency_key)
+    except SourceDeniedError as error:
+        return _error_json(403, str(error), "permission_error")
+    except IdempotencyConflictError as error:
+        return _error_json(409, str(error), "conflict_error")
+    except PipelineRunValidationError:
+        logger.exception("Pipeline run store returned an invalid projection")
+        return _error_json(500, "Pipeline run persistence invariant failed", "server_error")
 
-    book_id = body.get("book_id")
-    if not book_id:
-        return _error_json(400, "book_id is required")
-
-    mode = body.get("mode", "auto")
-    source_path = body.get("source_path", "")
-    stage_from = body.get("stage_from")
-    stage_to = body.get("stage_to")
-    backend = body.get("backend")
-    dry_run = body.get("dry_run", False)
-    force = body.get("force", False)
-
-    # Derive job_root from book_id — use a configured workspace or cwd
-    import os as _os
-    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
-    job_root = Path(workspace) / "jobs" / book_id
-
-    # Build orchestrator kwargs
-    orchestrator_kwargs: dict[str, Any] = {
-        "job_root": str(job_root),
-        "mode": mode,
-        "dry_run": dry_run,
-        "force": force,
-    }
-    if backend:
-        orchestrator_kwargs["backend"] = backend
-    if stage_from:
-        orchestrator_kwargs["from_stage"] = stage_from
-    if stage_to:
-        orchestrator_kwargs["to_stage"] = stage_to
-    if source_path:
-        source_p = Path(source_path)
-        if source_p.is_file():
-            orchestrator_kwargs["input_root"] = str(source_p.parent)
-        elif source_p.is_dir():
-            orchestrator_kwargs["input_root"] = str(source_p)
-        orchestrator_kwargs["source_kind"] = "local"
-
-    # Use PipelineOrchestratorTool directly — no LLM round-trips needed
-    from auto_cut_bot.agent.tools.pipeline.orchestrator import PipelineOrchestratorTool
-    from auto_cut_bot.agent.runtime.observability import MetricsCollector
-
-    tool = PipelineOrchestratorTool()
-    collector = MetricsCollector(session_id=f"pipeline:{book_id}", job_root=str(job_root))
-    result = await tool.execute(**orchestrator_kwargs)
-
-    # Read project.json for stage status
-    project_path = job_root / "project.json"
-    stages_summary: dict[str, Any] = {}
-    if project_path.is_file():
-        import json as _json
-        project = _json.loads(project_path.read_text(encoding="utf-8"))
-        stages_summary = project.get("stages", {})
-
-    response_status = "completed"
-    if "failed" in str(result):
-        response_status = "failed"
-        collector.record_error(str(result), stage="pipeline_run")
-
-    # Record stage-level metrics from project.json
-    for stage_name, stage_info in stages_summary.items():
-        if isinstance(stage_info, dict):
-            collector.record_stage(
-                stage_name,
-                duration_ms=float(stage_info.get("duration_ms", 0)),
-                tokens=int(stage_info.get("tokens", 0)),
-                status=stage_info.get("status", "completed"),
-            )
-
-    return web.json_response({
-        "job_root": str(job_root),
-        "book_id": book_id,
-        "status": response_status,
-        "message": str(result)[:1000],
-        "stages": stages_summary,
-        "observability": collector.get_session_summary(),
-    })
+    return web.json_response(
+        {
+            "run_id": claim.snapshot.run_id,
+            "status": claim.snapshot.status,
+            "replayed": claim.replayed,
+        },
+        status=202,
+    )
 
 
 async def handle_pipeline_resume(request: web.Request) -> web.Response:
-    """POST /v1/pipeline/resume — resume a HITL-interrupted session.
-
-    Request JSON:
-        {
-            "session_id": "pipeline:book-001:abc123",
-            "decision": {
-                "action": "approved",
-                "notes": "Looks good, proceed"
-            }
-        }
-
-    Returns:
-        {"session_id": "...", "status": "resumed", "current_milestone": "..."}
-    """
-    import os as _os
-
+    """CAS-resume a pending or indeterminate command on the same run."""
+    service = _pipeline_run_service(request)
+    if service is None:
+        return _error_json(503, "Pipeline run service is not configured", "server_error")
     try:
         body = await request.json()
     except Exception:
         return _error_json(400, "Invalid JSON body")
-
-    session_id = body.get("session_id")
-    if not session_id:
-        return _error_json(400, "session_id is required")
-
-    decision = body.get("decision")
-    if not isinstance(decision, dict):
-        return _error_json(400, "decision must be an object")
-    if "action" not in decision:
-        return _error_json(400, "decision.action is required")
-
-    # Derive project_root from session_id.
-    # Session IDs follow the format: "pipeline:{book_id}:{run_id}"
-    # Extract book_id from the session_id and construct the job root.
-    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
-    parts = session_id.split(":", 2)
-    if len(parts) >= 2:
-        book_id = parts[1]
-    else:
-        book_id = session_id
-
-    project_root = Path(workspace) / "jobs" / book_id
-
-    # Create CheckpointManager and load latest checkpoint.
-    from auto_cut_bot.agent.runtime.stategraph import (
-        AgentState,
-        CheckpointManager as FileCheckpointManager,
-        StateGraphEngine,
+    if not isinstance(body, dict):
+        return _error_json(400, "JSON body must contain only run_id")
+    resume_body = cast(dict[str, object], body)
+    if set(resume_body) != {"run_id", "expected_version"}:
+        return _error_json(400, "JSON body must contain only run_id and expected_version")
+    run_id = resume_body.get("run_id")
+    expected_version = resume_body.get("expected_version")
+    if not isinstance(run_id, str):
+        return _error_json(400, "run_id must be a string")
+    if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+        return _error_json(400, "expected_version must be a non-negative integer")
+    try:
+        validate_run_id(run_id)
+    except PipelineRunValidationError as error:
+        return _error_json(400, str(error))
+    try:
+        snapshot = await service.resume(run_id, expected_version=expected_version)
+    except PipelineRunNotFoundError as error:
+        return _error_json(404, f"Pipeline run not found: {error}")
+    except StaleRunVersionError as error:
+        return _error_json(409, f"Pipeline run version is stale: {error}", "conflict_error")
+    except ResumeNotAllowedError as error:
+        return _error_json(409, f"Pipeline run cannot be resumed: {error}", "conflict_error")
+    except PipelineRunValidationError:
+        logger.exception("Pipeline resume store returned an invalid projection")
+        return _error_json(500, "Pipeline run persistence invariant failed", "server_error")
+    return web.json_response(
+        {"run_id": snapshot.run_id, "status": snapshot.status, "version": snapshot.version},
+        status=202,
     )
-    from auto_cut_bot.agent.runtime.checkpoint import CheckpointManager
-
-    # Determine which checkpoint backend to use.
-    db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
-    if db_url:
-        ckpt = CheckpointManager(db_url=db_url)
-    else:
-        ckpt = FileCheckpointManager(project_root=project_root)
-
-    # Load latest checkpoint for this session.
-    state = await ckpt.load(session_id)
-    if state is None:
-        return web.json_response({
-            "session_id": session_id,
-            "status": "not_found",
-            "error": "No checkpoint found for this session",
-        }, status=404)
-
-    if not isinstance(state, AgentState):
-        return _error_json(500, "Checkpoint deserialization failed: unexpected type")
-
-    # Set the human decision on the state.
-    state.human_decision = decision
-
-    # Create engine with loaded state and resume.
-    engine = StateGraphEngine(state, checkpointer=ckpt)
-    result_state = await engine.resume(decision)
-
-    # Save a checkpoint after resume.
-    await ckpt.save(result_state, result_state.status, result_state.current_milestone)
-
-    # Suggest next action based on current state
-    from auto_cut_bot.agent.runtime.planner_memory import get_next_action
-
-    next_action = get_next_action(result_state)
-
-    return web.json_response({
-        "session_id": session_id,
-        "status": "resumed",
-        "current_milestone": result_state.current_milestone,
-        "milestone_history": result_state.milestone_history,
-        "state_status": result_state.status,
-        "next_action": next_action,
-    })
 
 
 async def handle_pipeline_status(request: web.Request) -> web.Response:
-    """GET /v1/pipeline/status?job_root=<path> — query pipeline progress.
-
-    Reads project.json from the job directory and returns:
-    - Overall status (pending / running / completed / failed)
-    - Per-stage status with timestamps
-    - Stage completion percentage
-
-    Query params:
-        job_root: Path to the pipeline job directory (required)
-
-    Returns:
-        {
-            "job_root": "...",
-            "overall_status": "completed",
-            "progress": "15/21",
-            "stages": {...}
-        }
-    """
-    import os as _os
-
-    workspace = _os.environ.get("AUTO_CUT_BOT_WORKSPACE", _os.getcwd())
-
-    # Support both job_root and book_id query params
-    job_root = request.query.get("job_root")
-    book_id = request.query.get("book_id")
-
-    if not job_root and not book_id:
-        return _error_json(400, "job_root or book_id query parameter is required")
-
-    if book_id and not job_root:
-        job_root = str(Path(workspace) / "jobs" / book_id)
-
-    project_path = Path(job_root) / "project.json"  # type: ignore[arg-type]
-    if not project_path.is_file():
-        return web.json_response({
-            "job_root": job_root,
-            "overall_status": "not_started",
-            "progress": "0/0",
-            "stages": {},
-            "message": "No project.json found — pipeline has not been started.",
-        })
-
+    """Read one persisted run and its command/Receipt projection."""
+    service = _pipeline_run_service(request)
+    if service is None:
+        return _error_json(503, "Pipeline run service is not configured", "server_error")
+    if set(request.query) != {"run_id"}:
+        return _error_json(400, "run_id is the only supported query parameter")
+    run_id = request.query.get("run_id", "")
     try:
-        import json as _json
-        project = _json.loads(project_path.read_text(encoding="utf-8"))
-    except Exception:
-        return _error_json(500, "Failed to read project.json")
-
-    stages = project.get("stages", {})
-    if not isinstance(stages, dict):
-        stages = {}
-
-    completed = sum(
-        1 for s in stages.values()
-        if isinstance(s, dict) and s.get("status") == "completed"
-    )
-    failed = sum(
-        1 for s in stages.values()
-        if isinstance(s, dict) and s.get("status") == "failed"
-    )
-    total = len(stages)
-
-    if failed > 0:
-        overall = "failed"
-    elif completed == total and total > 0:
-        overall = "completed"
-    elif completed > 0:
-        overall = "in_progress"
-    else:
-        overall = "not_started"
-
-    # Check for failure.json
-    failure_path = Path(job_root) / "failure.json"  # type: ignore[arg-type]
-    failure_info = None
-    if failure_path.is_file():
-        try:
-            failure_info = _json.loads(failure_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    # ── Agent-native V2: stategraph checkpoint status ──────────────────
-    v2_state: dict[str, Any] | None = None
+        validate_run_id(run_id)
+    except PipelineRunValidationError as error:
+        return _error_json(400, str(error))
     try:
-        # Derive session_id from book_id to match checkpoint scope.
-        session_id = f"pipeline:{book_id or ''}:latest"
+        snapshot = await service.status(run_id)
+    except PipelineRunNotFoundError as error:
+        return _error_json(404, f"Pipeline run not found: {error}")
+    except PipelineRunValidationError:
+        logger.exception("Pipeline status store returned an invalid projection")
+        return _error_json(500, "Pipeline run persistence invariant failed", "server_error")
+    return web.json_response(snapshot.to_mapping())
 
-        from auto_cut_bot.agent.runtime.stategraph import (
-            CheckpointManager as FileCheckpointManager,
-        )
-        from auto_cut_bot.agent.runtime.checkpoint import CheckpointManager
 
-        db_url = _os.environ.get("AUTO_CUT_BOT_DB_URL", "")
-        if db_url:
-            ckpt = CheckpointManager(db_url=db_url)
-        else:
-            ckpt = FileCheckpointManager(project_root=job_root)
-
-        state = await ckpt.load(session_id)
-        if state is not None:
-            v2_state = {
-                "current_milestone": getattr(state, "current_milestone", None),
-                "milestone_history": getattr(state, "milestone_history", []),
-                "status": getattr(state, "status", None),
-                "interrupt_reason": getattr(state, "interrupt_reason", None),
-                "human_decision": getattr(state, "human_decision", None),
-                "retry_count": getattr(state, "retry_count", 0),
-                "errors": getattr(state, "errors", []),
-            }
-    except Exception:
-        # V2 state is best-effort; never fail the status endpoint.
-        pass
-
-    response_payload: dict[str, Any] = {
-        "job_root": job_root,
-        "overall_status": overall,
-        "progress": f"{completed}/{total}",
-        "completed": completed,
-        "failed": failed,
-        "total": total,
-        "stages": stages,
-        "failure": failure_info,
-        "updated_at": project.get("updated_at"),
-    }
-
-    if v2_state is not None:
-        response_payload["v2_state"] = v2_state
-
-    # ── Data layer status ──────────────────────────────────────────────────
-    from auto_cut_bot.agent.runtime.conflict_queue import ConflictQueue
-    from auto_cut_bot.agent.runtime.artifact_cache import ArtifactCache
-
-    conflict_queue = ConflictQueue()
-    pending_conflicts = conflict_queue.count(status="pending")
-    response_payload["conflict_queue"] = {
-        "pending_conflicts": pending_conflicts,
-        "is_blocked": conflict_queue.is_blocked(),
-    }
-
-    artifact_cache = ArtifactCache(Path(job_root))  # type: ignore[arg-type]
-    cache_keys = artifact_cache.list_keys()
-    response_payload["cache"] = {
-        "hit_rate": f"{len(cache_keys)}/{max(1, len(cache_keys))}",
-        "cached_artifacts": len(cache_keys),
-    }
-
-    return web.json_response(response_payload)
+def _pipeline_run_service(request: web.Request) -> PipelineRunService | None:
+    """Return the injected typed service without reaching into runtime stages."""
+    return _app_value(
+        request.app,
+        _PIPELINE_RUN_SERVICE_KEY,
+        "pipeline_run_service",
+        None,
+    )
