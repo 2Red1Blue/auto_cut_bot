@@ -66,6 +66,21 @@ VLM 返回只形成 coarse semantic observations：
 
 VLM request identity 绑定完整 prompt/schema/model/provider preprocess/window proxy hashes。外部调用使用现有 Command/Receipt 框架：durable attempt reservation → 单次 invocation → raw immutable blob staging/hash verification → parse/evaluate → DB transaction/CAS commit。超时后的结果不明保持 `indeterminate` 并 reconcile，禁止盲重试。
 
+### 5.1 首个真实 Runtime Adapter
+
+首个注册适配器是 `qwen-video-json-object-schema-prompt-v2`：
+
+- 使用 Qwen OpenAI-compatible Chat Completions 的 `video_url` Base64 视频输入；SDK `max_retries=0`，每次 Kernel Attempt 最多提交一次外部请求；
+- 多模态路径采用官方支持的 `json_object`，完整封闭 JSON Schema、嵌套字段名、整数 PTS、frame ID 清单均注入版本化提示词；Provider 返回后仍必须通过 Kernel strict parser，不能把“合法 JSON”解释成“契约合法”；
+- 请求参数中的 adapter strategy version、fps、token budget、temperature 全部进入 `VlmRequestIdentity`，改变策略必须生成新的请求身份；
+- Base64 路径硬限制原始 MP4 不超过 20 MiB，超限在网络调用前失败关闭；
+- Chat Completions 当前没有可依赖的请求检索能力，因此 ambiguous timeout 只能保持 `indeterminate`，`reconcile` 不得再次提交；
+- API key 只由 Runtime composition 注入，不写入 request payload、Artifact、日志或仓库。
+
+`IdentityProxyWindowBuilder` 只用于“提交的 MP4 本身就是 Source”的首个真实测试切片。它用 ffprobe 枚举完整 decoded frame PTS、用 ffmpeg 抽取并哈希确定性样本、把原视频 bytes 写入 Blob Store，并生成真正的 identity translation certificate。任何转码、VFR 重写、裁窗或 PTS reset 都禁止使用该 Builder，必须由后续 `ProxyTimelineMap` producer 给出独立可验证映射。
+
+Ark Files API/file_id 缓存不属于此适配器。后续若接入 Ark，必须作为单独的 durable provider-media lifecycle 设计，按 provider/content hash/preprocess policy 绑定并支持 expiry；禁止读取旧 `.ark_files_cache` 后把 file_id 当作无期限有效事实。
+
 ## 6. 语义链落位
 
 受信 adapter 将 committed VlmObservationSet 投影成现有 `SemanticChainInput` 所需的 `RegisteredFact`、`EvidenceRef` 与 `CatalogCandidateRef`。`SemanticChainBuilder` 仍是纯确定性函数，不读取图片、Transcript raw content、provider client、PTS 或路径。
@@ -106,4 +121,4 @@ VLM coarse semantic interval
 6. SubtitleCue timing producer；
 7. VFR、非零 PTS、proxy PTS 重写、overlap 冲突、provider ambiguous timeout、A/V mismatch 和字幕切断阻断测试。
 
-完成后才能以一段真实授权视频执行：root evidence → 真实窗口代理 → 真实 VLM → SemanticChain → Exact A/V span → 本地 Render/QC。外部发布仍不在本任务范围内。
+当前已用一段真实授权测试窗口完成：identity Source window → Qwen VLM → committed ObservationSet → SemanticChain。生产 root evidence、转码代理映射、Exact A/V span 与本地 Render/QC 仍是后续 gate；外部发布仍不在本任务范围内。

@@ -93,3 +93,40 @@ The second read-only review confirmed both P1 findings are closed and found no n
 ### Decision
 
 **Go for the Layer 3 Kernel checkpoint.** The next gate is a typed adapter for the active non-legacy VLM implementation plus a real source-window/proxy/model run. Fake-provider success is not accepted as completion of the VLM stage.
+
+## Layer 4 review — Real Qwen video adapter and live smoke
+
+### Implementation boundary
+
+- Added the cut_bot-side `QwenVlmProvider`; the shared Kernel remains provider-neutral.
+- The adapter submits Base64 MP4 through Qwen Chat Completions with SDK retries disabled, a 20 MiB pre-network cap, closed request parameters, sanitized terminal errors, and no reconciliation redispatch.
+- Added a versioned prompt pack containing the complete response Schema and exact Kernel frame anchors.
+- Added `IdentityProxyWindowBuilder` for the narrow case where the submitted MP4 is itself the Source. It collects real decoded PTS and sampled-frame hashes; it cannot be used for a transcoded proxy.
+
+### Adversarial live sequence
+
+1. Live request v1 reached Qwen and returned meaningful semantic content, but used legacy-like flat fields. Kernel rejected it with `MISSING_RESPONSE_FIELD`; no observation Artifact was created.
+2. Live request v2 tried strict provider-side `json_schema`. Qwen's multimodal endpoint rejected the request with HTTP 400. Kernel recorded a terminal provider failure and created no ArtifactSet.
+3. The adapter was corrected to the officially supported multimodal `json_object` path, with the complete Schema included in the versioned prompt. Live request v3 succeeded and committed four coarse observations.
+
+The two failed Attempts remain durable audit records; neither was overwritten or converted into success.
+
+### Live acceptance evidence
+
+- Source: existing authorized `w001-480p.mp4` test window (4.65 MB).
+- Provider/model: `qwen-openai-chat` / `qwen3.7-plus`.
+- Durable result: Attempt `committed`, provider request ID retained, exactly one `vlm_request_record`, one `vlm_response_record`, and one `vlm_observation_set` in the committed ArtifactSet.
+- Parsed result: four observations, all `core_owned=true` and `semantic_precision=coarse_only`.
+- Replay used a Provider implementation that raises on both `dispatch` and `reconcile`; replay still succeeded from the immutable raw response and produced four candidates/four Narrative nodes. This proves no hidden second provider call.
+
+### Automated verification
+
+- Runtime adapter tests (including real ffmpeg/ffprobe identity-window construction): `6 passed`.
+- VLM/semantic targeted suite: `59 passed, 4 skipped` without a PostgreSQL DSN.
+- Disposable PostgreSQL Store/VLM suite: `45 passed`.
+- Ruff: passed.
+- BasedPyright: `0 errors, 0 warnings, 0 notes`.
+
+### Decision
+
+**Go for the real Qwen VLM test slice.** This is not production VLM completion: HTTP Pipeline composition, transcoded proxy timeline proof, production semantic Admission, local ASR/VAD conjunction, and Ark provider file-id lifecycle remain open.
