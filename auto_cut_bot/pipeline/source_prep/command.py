@@ -400,25 +400,13 @@ class PrepareWholeSeriesSourcesCommand:
     ) -> PrepareWholeSeriesSourcesResult:
         if outcome.state != "succeeded":
             return PrepareWholeSeriesSourcesResult(outcome)
-        if outcome.artifact_set_id is None:
-            raise SourceManifestDecodeError(
-                "succeeded source preparation lost its ArtifactSet binding"
-            )
-        persisted = self._store.read_whole_series_source_manifest(
-            request.job,
-            outcome.artifact_set_id,
+        prepared = read_persisted_prepared_sources(
+            self._store,
+            job=request.job,
+            outcome=outcome,
+            artifact_scope=request.artifact_scope,
+            artifact_revision=request.artifact_revision,
         )
-        if (
-            persisted.artifact_set_id != outcome.artifact_set_id
-            or persisted.command_slot_id != outcome.command_slot_id
-            or persisted.receipt_id != outcome.receipt_id
-            or persisted.reference.scope != request.artifact_scope
-            or persisted.reference.revision != request.artifact_revision
-        ):
-            raise SourceManifestDecodeError(
-                "replayed source manifest provenance does not match its Receipt"
-            )
-        prepared = _decode_prepared_sources(persisted)
         census = prepared.census
         if (
             census.authorization_id != request.source_root.authorization_id
@@ -428,15 +416,40 @@ class PrepareWholeSeriesSourcesCommand:
             raise SourceManifestDecodeError(
                 "replayed source manifest does not match the authorized series identity"
             )
-        artifact = ArtifactMember(
-            persisted.reference.artifact_type,
-            persisted.reference.logical_id,
-            persisted.reference.revision,
-            persisted.reference.scope,
-            persisted.reference.content_hash,
-            persisted.payload_json,
-        )
+        artifact = _artifact(request, prepared.to_mapping())
         return PrepareWholeSeriesSourcesResult(outcome, prepared, (artifact,))
+
+
+def read_persisted_prepared_sources(
+    store: SourcePrepStore,
+    *,
+    job: Job,
+    outcome: CommandOutcome,
+    artifact_scope: ArtifactScope,
+    artifact_revision: int,
+) -> PreparedSeriesSources:
+    """Strictly decode the exact K-terminal source projection without probing media."""
+
+    if outcome.state != "succeeded" or outcome.receipt_id is None:
+        raise SourceManifestDecodeError(
+            "prepared sources require an exact succeeded Kernel Receipt"
+        )
+    if outcome.artifact_set_id is None:
+        raise SourceManifestDecodeError(
+            "succeeded source preparation lost its ArtifactSet binding"
+        )
+    persisted = store.read_whole_series_source_manifest(job, outcome.artifact_set_id)
+    if (
+        persisted.artifact_set_id != outcome.artifact_set_id
+        or persisted.command_slot_id != outcome.command_slot_id
+        or persisted.receipt_id != outcome.receipt_id
+        or persisted.reference.scope != artifact_scope
+        or persisted.reference.revision != artifact_revision
+    ):
+        raise SourceManifestDecodeError(
+            "persisted source manifest provenance does not match its Receipt"
+        )
+    return _decode_prepared_sources(persisted)
 
 
 def _artifact(
@@ -1089,4 +1102,5 @@ __all__ = [
     "PreparedSeriesSources",
     "PreparedSourceEpisode",
     "SourcePrepStore",
+    "read_persisted_prepared_sources",
 ]

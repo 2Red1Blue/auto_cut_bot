@@ -18,6 +18,7 @@ from .errors import (
     StaleRunVersionError,
 )
 from .models import (
+    OutboxLease,
     PipelineCommand,
     PipelineRunRequest,
     PipelineRunSnapshot,
@@ -195,9 +196,11 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     """
                     INSERT INTO runtime.pipeline_commands
                         (command_id, run_id, ordinal, stage, state, version)
-                    VALUES (%s, %s, 0, 'source_prep', 'pending', 0)
+                    VALUES
+                        (%s, %s, 0, 'source_prep', 'pending', 0),
+                        (%s, %s, 1, 'vlm', 'pending', 0)
                     """,
-                    (uuid4(), run_id),
+                    (uuid4(), run_id, uuid4(), run_id),
                 )
                 self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)
@@ -312,11 +315,12 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                        command.lease_expires_at <= transaction_timestamp(), run.state
                   FROM runtime.pipeline_commands AS command
                   JOIN runtime.pipeline_runs AS run ON run.run_id = command.run_id
-                 WHERE command.run_id = %s
+                 WHERE command.run_id = %s AND command.state = 'running'
+                   AND command.version = %s AND command.lease_id = %s
                  ORDER BY command.ordinal LIMIT 1
                  FOR UPDATE OF command, run
                 """,
-                (run_id,),
+                (run_id, expected_version, lease_id),
             )
             row = cursor.fetchone()
             if row is None:
@@ -362,6 +366,58 @@ class PostgresPipelineRunStore(_PostgresTransactions):
 
         return self._transaction(operation)
 
+    async def renew_running_lease(
+        self,
+        run_id: str,
+        *,
+        command_id: str,
+        expected_version: int,
+        lease_id: str,
+    ) -> PipelineCommand:
+        return await asyncio.to_thread(
+            self._renew_running_lease_sync,
+            run_id,
+            command_id,
+            expected_version,
+            lease_id,
+        )
+
+    def _renew_running_lease_sync(
+        self,
+        run_id: str,
+        command_id: str,
+        expected_version: int,
+        lease_id: str,
+    ) -> PipelineCommand:
+        def operation(cursor: DbCursor) -> PipelineCommand:
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET version = version + 1,
+                       lease_expires_at = transaction_timestamp()
+                           + (%s * interval '1 second'),
+                       updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND command_id = %s AND state = 'running'
+                   AND version = %s AND lease_id = %s
+                   AND lease_expires_at > transaction_timestamp()
+                RETURNING command_id, stage, version, lease_id
+                """,
+                (self._lease_seconds, run_id, command_id, expected_version, lease_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise StaleRunVersionError(run_id)
+            return PipelineCommand(
+                _text(row[0]),
+                _text(row[1]),
+                "running",
+                None,
+                int(_text(row[2])),
+                _text(row[3]),
+            )
+
+        return self._transaction(operation)
+
     async def claim_next_pending(
         self,
         run_id: str,
@@ -395,8 +451,15 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             cursor.execute(
                 """
                 SELECT command_id, stage, version
-                  FROM runtime.pipeline_commands
-                 WHERE run_id = %s AND state = 'pending' AND version = %s
+                  FROM runtime.pipeline_commands AS candidate
+                 WHERE candidate.run_id = %s AND candidate.state = 'pending'
+                   AND candidate.version = %s
+                   AND NOT EXISTS (
+                       SELECT 1 FROM runtime.pipeline_commands AS predecessor
+                        WHERE predecessor.run_id = candidate.run_id
+                          AND predecessor.ordinal < candidate.ordinal
+                          AND predecessor.state <> 'succeeded'
+                   )
                  ORDER BY ordinal
                  LIMIT 1 FOR UPDATE SKIP LOCKED
                 """,
@@ -495,6 +558,22 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     """,
                     (result.receipt_id, result.command_id, result.outcome),
                 )
+            if result.outcome in ("denied", "failed"):
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'blocked', version = version + 1,
+                           blocking_command_id = %s,
+                           completed_at = transaction_timestamp(),
+                           updated_at = transaction_timestamp()
+                     WHERE run_id = %s AND state = 'pending'
+                       AND ordinal > (
+                           SELECT ordinal FROM runtime.pipeline_commands
+                            WHERE command_id = %s
+                       )
+                    """,
+                    (result.command_id, run_id, result.command_id),
+                )
             cursor.execute(
                 """
                 UPDATE runtime.pipeline_commands
@@ -524,7 +603,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             command_states: list[str] = []
             while (command_row := cursor.fetchone()) is not None:
                 command_states.append(_text(command_row[0]))
-            terminal = {"succeeded", "denied", "failed"}
+            terminal = {"succeeded", "denied", "failed", "blocked"}
             if command_states and all(state in terminal for state in command_states):
                 next_run_state = (
                     "failed"
@@ -648,6 +727,22 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 """,
                 (result.outcome, result.command_id, expected_version),
             )
+            if result.outcome in ("denied", "failed"):
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'blocked', version = version + 1,
+                           blocking_command_id = %s,
+                           completed_at = transaction_timestamp(),
+                           updated_at = transaction_timestamp()
+                     WHERE run_id = %s AND state = 'pending'
+                       AND ordinal > (
+                           SELECT ordinal FROM runtime.pipeline_commands
+                            WHERE command_id = %s
+                       )
+                    """,
+                    (result.command_id, run_id, result.command_id),
+                )
             cursor.execute(
                 "SELECT state FROM runtime.pipeline_commands WHERE run_id = %s",
                 (run_id,),
@@ -655,7 +750,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             command_states: list[str] = []
             while (command_row := cursor.fetchone()) is not None:
                 command_states.append(_text(command_row[0]))
-            terminal = {"succeeded", "denied", "failed"}
+            terminal = {"succeeded", "denied", "failed", "blocked"}
             if command_states and all(state in terminal for state in command_states):
                 next_run_state = (
                     "failed"
@@ -710,7 +805,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         cursor.execute(
             """
             SELECT command.command_id, command.stage, command.state, receipt.receipt_id,
-                   command.version, command.lease_id
+                   command.version, command.lease_id, command.blocking_command_id
               FROM runtime.pipeline_commands AS command
               LEFT JOIN runtime.pipeline_run_receipts AS receipt
                 ON receipt.command_id = command.command_id
@@ -728,6 +823,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     None if row[3] is None else UUID(str(row[3])),
                     int(_text(row[4])),
                     None if row[5] is None else _text(row[5]),
+                    None if row[6] is None else _text(row[6]),
                 )
             )
         return PipelineRunSnapshot(
@@ -743,11 +839,139 @@ class PostgresPipelineRunStore(_PostgresTransactions):
 class PostgresPipelineScheduler(_PostgresTransactions):
     """Idempotent durable scheduler backed by the transactional run outbox."""
 
+    def __init__(self, connection_factory: ConnectionFactory, *, lease_seconds: int = 60) -> None:
+        super().__init__(connection_factory)
+        if type(lease_seconds) is not int or lease_seconds < 1:  # noqa: E721
+            raise PipelineRunValidationError("outbox lease_seconds must be positive")
+        self._lease_seconds = lease_seconds
+
     async def enqueue(self, run_id: str) -> None:
         await asyncio.to_thread(self._enqueue_sync, run_id)
 
     def _enqueue_sync(self, run_id: str) -> None:
         self._transaction(lambda cursor: _ensure_pending_outbox(cursor, run_id))
+
+    async def claim_next(self, *, lease_id: str) -> OutboxLease | None:
+        return await asyncio.to_thread(self._claim_next_sync, lease_id)
+
+    def _claim_next_sync(self, lease_id: str) -> OutboxLease | None:
+        if type(lease_id) is not str or not lease_id.strip():  # noqa: E721
+            raise PipelineRunValidationError("outbox lease_id must be non-empty")
+
+        def operation(cursor: DbCursor) -> OutboxLease | None:
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_run_outbox
+                   SET state = 'pending', version = version + 1,
+                       lease_id = NULL, lease_expires_at = NULL,
+                       updated_at = transaction_timestamp()
+                 WHERE state = 'leased'
+                   AND lease_expires_at <= transaction_timestamp()
+                """
+            )
+            cursor.execute(
+                """
+                SELECT outbox_id FROM runtime.pipeline_run_outbox
+                 WHERE state = 'pending'
+                 ORDER BY updated_at, run_id
+                 LIMIT 1 FOR UPDATE SKIP LOCKED
+                """
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_run_outbox
+                   SET state = 'leased', version = version + 1, lease_id = %s,
+                       lease_expires_at = transaction_timestamp()
+                           + (%s * interval '1 second'),
+                       updated_at = transaction_timestamp()
+                 WHERE outbox_id = %s AND state = 'pending'
+                RETURNING outbox_id, run_id, version, lease_id
+                """,
+                (lease_id, self._lease_seconds, row[0]),
+            )
+            claimed = cursor.fetchone()
+            if claimed is None:
+                return None
+            return OutboxLease(
+                UUID(str(claimed[0])),
+                _text(claimed[1]),
+                int(_text(claimed[2])),
+                _text(claimed[3]),
+            )
+
+        return self._transaction(operation)
+
+    async def acknowledge(self, lease: OutboxLease) -> None:
+        await asyncio.to_thread(self._finish_lease_sync, lease, "consumed")
+
+    async def requeue(self, lease: OutboxLease) -> None:
+        await asyncio.to_thread(self._finish_lease_sync, lease, "pending")
+
+    async def renew(self, lease: OutboxLease) -> OutboxLease:
+        return await asyncio.to_thread(self._renew_lease_sync, lease)
+
+    def _renew_lease_sync(self, lease: OutboxLease) -> OutboxLease:
+        if type(lease) is not OutboxLease:  # noqa: E721
+            raise PipelineRunValidationError("outbox renewal requires an exact lease")
+
+        def operation(cursor: DbCursor) -> OutboxLease:
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_run_outbox
+                   SET version = version + 1,
+                       lease_expires_at = transaction_timestamp()
+                           + (%s * interval '1 second'),
+                       updated_at = transaction_timestamp()
+                 WHERE outbox_id = %s AND run_id = %s AND state = 'leased'
+                   AND version = %s AND lease_id = %s
+                   AND lease_expires_at > transaction_timestamp()
+                RETURNING outbox_id, run_id, version, lease_id
+                """,
+                (
+                    self._lease_seconds,
+                    lease.outbox_id,
+                    lease.run_id,
+                    lease.version,
+                    lease.lease_id,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise StaleRunVersionError(lease.run_id)
+            return OutboxLease(
+                UUID(str(row[0])),
+                _text(row[1]),
+                int(_text(row[2])),
+                _text(row[3]),
+            )
+
+        return self._transaction(operation)
+
+    def _finish_lease_sync(self, lease: OutboxLease, state: str) -> None:
+        if type(lease) is not OutboxLease:  # noqa: E721
+            raise PipelineRunValidationError("outbox transition requires an exact lease")
+
+        def operation(cursor: DbCursor) -> None:
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_run_outbox
+                   SET state = %s, version = version + 1,
+                       lease_id = NULL, lease_expires_at = NULL,
+                       updated_at = transaction_timestamp()
+                 WHERE outbox_id = %s AND run_id = %s AND state = 'leased'
+                   AND version = %s AND lease_id = %s
+                   AND lease_expires_at > transaction_timestamp()
+                RETURNING outbox_id
+                """,
+                (state, lease.outbox_id, lease.run_id, lease.version, lease.lease_id),
+            )
+            if cursor.fetchone() is None:
+                raise StaleRunVersionError(lease.run_id)
+
+        self._transaction(operation)
 
     async def pending_run_ids(self) -> tuple[str, ...]:
         return await asyncio.to_thread(self._pending_run_ids_sync)

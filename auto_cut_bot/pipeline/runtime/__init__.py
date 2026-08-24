@@ -10,12 +10,14 @@ from .errors import (
     StaleRunVersionError,
 )
 from .models import (
+    OutboxLease,
     PipelineCommand,
     PipelineCommandStatus,
     PipelineProfile,
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineRunStatus,
+    PipelineStageContext,
     PipelineStageOutcome,
     PipelineStageResult,
     RunClaim,
@@ -29,18 +31,23 @@ from .ports import (
     PipelineSchedulerPort,
     PipelineStagePort,
     PipelineStageReconcilePort,
+    PipelineWorkerStore,
     SourceAuthorizationPort,
 )
 from .postgres import PostgresPipelineRunStore, PostgresPipelineScheduler
 from .service import DurablePipelineRunService
+from .source_prep_stage import SourcePrepPipelineStage, SourcePrepRootResolver
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
+from .worker import DurablePipelineWorker
 
 __all__ = (
     "DurablePipelineRunService",
+    "DurablePipelineWorker",
     "IdempotencyConflictError",
     "PipelineCommand",
     "PipelineCommandClaimStore",
     "PipelineCommandStatus",
+    "OutboxLease",
     "PipelineProfile",
     "PipelineRunError",
     "PipelineRunNotFoundError",
@@ -52,18 +59,22 @@ __all__ = (
     "PipelineRunValidationError",
     "PipelineSchedulerPort",
     "PipelineStageOutcome",
+    "PipelineStageContext",
     "PipelineStagePort",
     "PipelineStageReconcilePort",
     "PipelineStageReconciler",
     "PipelineStageRegistry",
     "PipelineStageResult",
     "PipelineStageRunner",
+    "PipelineWorkerStore",
     "PostgresPipelineRunStore",
     "PostgresPipelineScheduler",
     "ResumeNotAllowedError",
     "RunClaim",
     "SourceAuthorizationPort",
     "SourceDeniedError",
+    "SourcePrepPipelineStage",
+    "SourcePrepRootResolver",
     "StaleRunVersionError",
     "validate_idempotency_key",
     "validate_run_id",

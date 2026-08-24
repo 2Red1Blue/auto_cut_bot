@@ -20,6 +20,7 @@ PipelineCommandStatus = Literal[
     "denied",
     "failed",
     "indeterminate",
+    "blocked",
 ]
 PipelineStageOutcome = Literal["succeeded", "denied", "failed", "indeterminate"]
 
@@ -127,6 +128,7 @@ class PipelineCommand:
     receipt_id: UUID | None = None
     version: int = 0
     lease_id: str | None = None
+    blocking_command_id: str | None = None
 
     def __post_init__(self) -> None:
         _required_text(self.command_id, "command_id")
@@ -138,6 +140,7 @@ class PipelineCommand:
             "denied",
             "failed",
             "indeterminate",
+            "blocked",
         ):
             raise PipelineRunValidationError("command status is unsupported")
         if self.receipt_id is not None and not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
@@ -150,12 +153,18 @@ class PipelineCommand:
             _required_text(self.lease_id, "lease_id")
         if self.status in ("succeeded", "denied", "failed") and self.receipt_id is None:
             raise PipelineRunValidationError("terminal command requires a Receipt")
-        if self.status in ("pending", "running", "indeterminate") and self.receipt_id is not None:
+        if self.status in ("pending", "running", "indeterminate", "blocked") and self.receipt_id is not None:
             raise PipelineRunValidationError("nonterminal command cannot claim a Receipt")
         if self.status == "running" and self.lease_id is None:
             raise PipelineRunValidationError("running command requires a lease")
         if self.status != "running" and self.lease_id is not None:
             raise PipelineRunValidationError("only a running command may hold a lease")
+        if self.status == "blocked":
+            _required_text(self.blocking_command_id, "blocking_command_id")
+            if self.blocking_command_id == self.command_id:
+                raise PipelineRunValidationError("command cannot block itself")
+        elif self.blocking_command_id is not None:
+            raise PipelineRunValidationError("only a blocked command names its blocker")
 
     def to_mapping(self) -> dict[str, str | int | None]:
         return {
@@ -165,6 +174,7 @@ class PipelineCommand:
             "receipt_id": str(self.receipt_id) if self.receipt_id is not None else None,
             "version": self.version,
             "lease_id": self.lease_id,
+            "blocking_command_id": self.blocking_command_id,
         }
 
 
@@ -195,7 +205,7 @@ class PipelineRunSnapshot:
             raise PipelineRunValidationError("commands must not be empty")
         if type(self.version) is not int or self.version < 0:  # noqa: E721
             raise PipelineRunValidationError("version must be a non-negative integer")
-        terminal_statuses = {"succeeded", "denied", "failed"}
+        terminal_statuses = {"succeeded", "denied", "failed", "blocked"}
         if self.status in terminal_statuses:
             if any(command.status not in terminal_statuses for command in self.commands):
                 raise PipelineRunValidationError("terminal run requires every command terminal")
@@ -262,3 +272,37 @@ class PipelineStageResult:
             raise PipelineRunValidationError("terminal stage result requires a Receipt")
         if self.outcome == "indeterminate" and self.receipt_id is not None:
             raise PipelineRunValidationError("indeterminate stage cannot claim a Receipt")
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStageContext:
+    """Exact persisted run/request/command identity passed to a stage port."""
+
+    run_id: str
+    request: PipelineRunRequest
+    command: PipelineCommand
+
+    def __post_init__(self) -> None:
+        validate_run_id(self.run_id)
+        if type(self.request) is not PipelineRunRequest:  # noqa: E721
+            raise PipelineRunValidationError("stage context request must be canonical")
+        if type(self.command) is not PipelineCommand:  # noqa: E721
+            raise PipelineRunValidationError("stage context command must be persisted")
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxLease:
+    """One exact durable outbox ownership token."""
+
+    outbox_id: UUID
+    run_id: str
+    version: int
+    lease_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outbox_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise PipelineRunValidationError("outbox_id must be a UUID")
+        validate_run_id(self.run_id)
+        if type(self.version) is not int or self.version < 1:  # noqa: E721
+            raise PipelineRunValidationError("leased outbox version must be positive")
+        _required_text(self.lease_id, "lease_id")

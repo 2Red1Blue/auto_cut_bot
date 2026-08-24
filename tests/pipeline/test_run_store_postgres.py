@@ -14,6 +14,7 @@ from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
     IdempotencyConflictError,
     PipelineRunRequest,
+    PipelineStageContext,
     PipelineStageReconciler,
     PipelineStageResult,
     PostgresPipelineRunStore,
@@ -61,6 +62,40 @@ def _composition(source_root: Path):
     return DurablePipelineRunService(store, scheduler, authority), store, scheduler
 
 
+def _force_terminal_command(cursor, command_id: str, outcome: str) -> str:
+    lease_id = f"fixture-{command_id}"
+    cursor.execute(
+        """
+        UPDATE runtime.pipeline_commands
+           SET state = 'running', version = version + 1, lease_id = %s,
+               lease_expires_at = transaction_timestamp() + interval '1 hour',
+               updated_at = transaction_timestamp()
+         WHERE command_id = %s AND state = 'pending'
+        """,
+        (lease_id, command_id),
+    )
+    receipt_id = str(uuid4())
+    cursor.execute(
+        """
+        INSERT INTO runtime.pipeline_run_receipts (receipt_id, command_id, outcome)
+        VALUES (%s, %s, %s)
+        """,
+        (receipt_id, command_id, outcome),
+    )
+    cursor.execute(
+        """
+        UPDATE runtime.pipeline_commands
+           SET state = %s, version = version + 1,
+               lease_id = NULL, lease_expires_at = NULL,
+               completed_at = transaction_timestamp(),
+               updated_at = transaction_timestamp()
+         WHERE command_id = %s AND state = 'running' AND lease_id = %s
+        """,
+        (outcome, command_id, lease_id),
+    )
+    return receipt_id
+
+
 @pytest.mark.asyncio
 async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_path: Path) -> None:
     service, store, scheduler = _composition(tmp_path)
@@ -76,6 +111,10 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
     assert replay.snapshot.commands[0].stage == "source_prep"
     assert replay.snapshot.commands[0].status == "pending"
     assert replay.snapshot.commands[0].receipt_id is None
+    assert tuple(command.stage for command in replay.snapshot.commands) == (
+        "source_prep",
+        "vlm",
+    )
     assert await scheduler.pending_run_ids() == (first.snapshot.run_id,)
 
     restarted = DurablePipelineRunService(
@@ -155,9 +194,25 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
     restarted = PostgresPipelineRunStore(store.connection_factory)
     projected = await restarted.read_run(run_id)
     assert projected is not None
-    assert projected.status == "succeeded"
+    assert projected.status == "running"
     assert projected.commands[0].status == "succeeded"
     assert projected.commands[0].receipt_id == receipt_id
+    assert projected.commands[1].status == "pending"
+    vlm = await restarted.claim_next_pending(
+        run_id,
+        expected_version=0,
+        lease_id="worker-lease-2",
+    )
+    assert vlm is not None and vlm.stage == "vlm"
+    vlm_receipt_id = uuid4()
+    await restarted.record_result(
+        run_id,
+        result=PipelineStageResult(vlm.command_id, "succeeded", vlm_receipt_id),
+        expected_version=vlm.version,
+        lease_id="worker-lease-2",
+    )
+    completed = await restarted.read_run(run_id)
+    assert completed is not None and completed.status == "succeeded"
     with pytest.raises(StaleRunVersionError):
         await restarted.record_result(
             run_id,
@@ -167,14 +222,214 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
         )
 
 
+@pytest.mark.asyncio
+async def test_predecessor_denial_atomically_blocks_vlm_and_terminates_run(
+    tmp_path: Path,
+) -> None:
+    service, store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        "postgres-denied-1",
+    )
+    source = await store.claim_next_pending(
+        submitted.snapshot.run_id,
+        expected_version=0,
+        lease_id="source-lease",
+    )
+    assert source is not None
+    receipt_id = uuid4()
+    await store.record_result(
+        submitted.snapshot.run_id,
+        result=PipelineStageResult(source.command_id, "denied", receipt_id),
+        expected_version=source.version,
+        lease_id="source-lease",
+    )
+
+    snapshot = await store.read_run(submitted.snapshot.run_id)
+    assert snapshot is not None and snapshot.status == "denied"
+    assert snapshot.commands[0].status == "denied"
+    assert snapshot.commands[1].status == "blocked"
+    assert snapshot.commands[1].receipt_id is None
+    assert snapshot.commands[1].blocking_command_id == source.command_id
+    assert (
+        await store.claim_next_pending(
+            snapshot.run_id,
+            expected_version=snapshot.commands[1].version,
+            lease_id="forbidden-vlm-lease",
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocked_command_rejects_cross_run_blocker(tmp_path: Path) -> None:
+    assert DSN is not None
+    service, store, _scheduler = _composition(tmp_path)
+    denied_run = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "denied")),
+        "postgres-blocker-cross-a",
+    )
+    source = await store.claim_next_pending(
+        denied_run.snapshot.run_id,
+        expected_version=0,
+        lease_id="cross-source",
+    )
+    assert source is not None
+    await store.record_result(
+        denied_run.snapshot.run_id,
+        result=PipelineStageResult(source.command_id, "denied", uuid4()),
+        expected_version=source.version,
+        lease_id="cross-source",
+    )
+    target_run = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "target")),
+        "postgres-blocker-cross-b",
+    )
+    target_vlm = target_run.snapshot.commands[1]
+
+    with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
+        with psycopg.connect(DSN) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'blocked', version = version + 1,
+                           blocking_command_id = %s,
+                           completed_at = transaction_timestamp(),
+                           updated_at = transaction_timestamp()
+                     WHERE command_id = %s
+                    """,
+                    (source.command_id, target_vlm.command_id),
+                )
+
+
+@pytest.mark.asyncio
+async def test_blocked_command_rejects_later_failed_blocker(tmp_path: Path) -> None:
+    assert DSN is not None
+    service, _store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "later")),
+        "postgres-blocker-later",
+    )
+    source, vlm = submitted.snapshot.commands
+
+    with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
+        with psycopg.connect(DSN) as connection:
+            with connection.cursor() as cursor:
+                _force_terminal_command(cursor, vlm.command_id, "failed")
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'blocked', version = version + 1,
+                           blocking_command_id = %s,
+                           completed_at = transaction_timestamp(),
+                           updated_at = transaction_timestamp()
+                     WHERE command_id = %s
+                    """,
+                    (vlm.command_id, source.command_id),
+                )
+
+
+@pytest.mark.asyncio
+async def test_blocked_command_rejects_non_failure_predecessor(tmp_path: Path) -> None:
+    assert DSN is not None
+    service, _store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "success")),
+        "postgres-blocker-success",
+    )
+    source, vlm = submitted.snapshot.commands
+
+    with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
+        with psycopg.connect(DSN) as connection:
+            with connection.cursor() as cursor:
+                _force_terminal_command(cursor, source.command_id, "succeeded")
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'blocked', version = version + 1,
+                           blocking_command_id = %s,
+                           completed_at = transaction_timestamp(),
+                           updated_at = transaction_timestamp()
+                     WHERE command_id = %s
+                    """,
+                    (source.command_id, vlm.command_id),
+                )
+
+
+@pytest.mark.asyncio
+async def test_outbox_lease_ack_requeue_and_command_heartbeat(tmp_path: Path) -> None:
+    service, store, scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        "postgres-worker-1",
+    )
+    outbox = await scheduler.claim_next(lease_id="outbox-1")
+    assert outbox is not None and outbox.run_id == submitted.snapshot.run_id
+    assert await scheduler.claim_next(lease_id="outbox-2") is None
+    await scheduler.requeue(outbox)
+    replay = await scheduler.claim_next(lease_id="outbox-3")
+    assert replay is not None and replay.version > outbox.version
+    renewed_outbox = await scheduler.renew(replay)
+    assert renewed_outbox.version == replay.version + 1
+
+    command = await store.claim_next_pending(
+        submitted.snapshot.run_id,
+        expected_version=0,
+        lease_id="command-1",
+    )
+    assert command is not None
+    renewed = await store.renew_running_lease(
+        submitted.snapshot.run_id,
+        command_id=command.command_id,
+        expected_version=command.version,
+        lease_id="command-1",
+    )
+    assert renewed.version == command.version + 1
+    await scheduler.acknowledge(renewed_outbox)
+    assert await scheduler.pending_run_ids() == ()
+
+
+@pytest.mark.asyncio
+async def test_expired_outbox_lease_is_reclaimed_with_a_new_cas_version(
+    tmp_path: Path,
+) -> None:
+    assert DSN is not None
+
+    def factory():
+        return psycopg.connect(DSN)
+
+    store = PostgresPipelineRunStore(factory)
+    scheduler = PostgresPipelineScheduler(factory, lease_seconds=1)
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        ConfiguredSourceAuthority((tmp_path,), frozenset()),
+    )
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        "postgres-expired-outbox-1",
+    )
+    expired = await scheduler.claim_next(lease_id="expired-owner")
+    assert expired is not None and expired.run_id == submitted.snapshot.run_id
+    await asyncio.sleep(1.05)
+
+    reclaimed = await scheduler.claim_next(lease_id="replacement-owner")
+
+    assert reclaimed is not None
+    assert reclaimed.outbox_id == expired.outbox_id
+    assert reclaimed.version == expired.version + 2
+    await scheduler.requeue(reclaimed)
+
+
 class _RecoveredStage:
     def __init__(self) -> None:
         self.calls = 0
         self.receipt_id = uuid4()
 
-    async def reconcile(self, command) -> PipelineStageResult:
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
         self.calls += 1
-        return PipelineStageResult(command.command_id, "succeeded", self.receipt_id)
+        return PipelineStageResult(context.command.command_id, "succeeded", self.receipt_id)
 
 
 @pytest.mark.asyncio
@@ -238,13 +493,144 @@ async def test_expired_lease_resumes_only_through_reconciler(tmp_path: Path) -> 
         PostgresPipelineRunStore(factory),
         ("source_prep", recovered_stage),
     )
-    result = await reconciler.reconcile(run_id, expected_version=2)
+    snapshot = await store.read_run(run_id)
+    assert snapshot is not None
+    result = await reconciler.reconcile(snapshot)
     assert result is not None
     assert recovered_stage.calls == 1
     projected = await store.read_run(run_id)
     assert projected is not None
-    assert projected.status == "succeeded"
+    assert projected.status == "running"
     assert projected.commands[0].receipt_id == recovered_stage.receipt_id
+    assert projected.commands[1].status == "pending"
+
+
+def test_0007_upgrades_active_0005_single_stage_runs_with_causal_vlm_state() -> None:
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+    cases = (
+        ("pending", "accepted", "pending", "accepted"),
+        ("running", "running", "pending", "running"),
+        ("succeeded", "running", "pending", "running"),
+        ("denied", "running", "blocked", "denied"),
+        ("failed", "accepted", "blocked", "failed"),
+        ("succeeded", "succeeded", None, "succeeded"),
+    )
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+            cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+            for migration in sorted(migration_root.glob("000[1-5]_*.sql")):
+                cursor.execute(migration.read_text(encoding="utf-8"))
+
+            identities: list[tuple[str, str, str, str | None, str]] = []
+            for index, (
+                source_state,
+                initial_run_state,
+                expected_vlm_state,
+                expected_run_state,
+            ) in enumerate(cases, start=1):
+                run_id = f"pipeline_run_{index:032x}"
+                command_id = str(uuid4())
+                with connection.transaction():
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_runs
+                            (run_id, idempotency_key, request_hash, profile,
+                             source_kind, source_value, state, version)
+                        VALUES (%s, %s, %s, 'test', 'root', %s, 'accepted', 0)
+                        """,
+                        (
+                            run_id,
+                            f"upgrade-{index}",
+                            "sha256:" + f"{index:x}" * 64,
+                            f"/upgrade/{index}",
+                        ),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES (%s, %s, 0, 'source_prep', 'pending', 0)
+                        """,
+                        (command_id, run_id),
+                    )
+                    if source_state == "running":
+                        cursor.execute(
+                            """
+                            UPDATE runtime.pipeline_commands
+                               SET state = 'running', version = 1,
+                                   lease_id = 'upgrade-running',
+                                   lease_expires_at = transaction_timestamp()
+                                       + interval '1 hour',
+                                   updated_at = transaction_timestamp()
+                             WHERE command_id = %s
+                            """,
+                            (command_id,),
+                        )
+                    elif source_state in ("succeeded", "denied", "failed"):
+                        _force_terminal_command(cursor, command_id, source_state)
+                    if initial_run_state != "accepted":
+                        cursor.execute(
+                            """
+                            UPDATE runtime.pipeline_runs
+                               SET state = %s, version = version + 1,
+                                   updated_at = transaction_timestamp()
+                             WHERE run_id = %s
+                            """,
+                            (initial_run_state, run_id),
+                        )
+                identities.append(
+                    (
+                        run_id,
+                        command_id,
+                        source_state,
+                        expected_vlm_state,
+                        expected_run_state,
+                    )
+                )
+
+            cursor.execute(
+                (migration_root / "0007_pipeline_stage_worker.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for (
+                run_id,
+                source_command_id,
+                source_state,
+                expected_vlm_state,
+                expected_run_state,
+            ) in identities:
+                cursor.execute(
+                    """
+                    SELECT state FROM runtime.pipeline_runs WHERE run_id = %s
+                    """,
+                    (run_id,),
+                )
+                assert cursor.fetchone() == (expected_run_state,)
+                cursor.execute(
+                    """
+                    SELECT state, blocking_command_id
+                      FROM runtime.pipeline_commands
+                     WHERE run_id = %s AND ordinal = 1
+                    """,
+                    (run_id,),
+                )
+                vlm = cursor.fetchone()
+                if expected_vlm_state is None:
+                    assert vlm is None
+                else:
+                    assert vlm is not None
+                    assert vlm[0] == expected_vlm_state
+                    assert (
+                        str(vlm[1]) if vlm[1] is not None else None
+                    ) == (
+                        source_command_id
+                        if source_state in ("denied", "failed")
+                        else None
+                    )
 
 
 def _agent() -> MagicMock:
@@ -294,6 +680,16 @@ async def test_real_http_run_status_resume_survive_app_restart(
                 "receipt_id": None,
                 "version": 0,
                 "lease_id": None,
+                "blocking_command_id": None,
+            },
+            {
+                "command_id": status_body["commands"][1]["command_id"],
+                "stage": "vlm",
+                "status": "pending",
+                "receipt_id": None,
+                "version": 0,
+                "lease_id": None,
+                "blocking_command_id": None,
             }
         ]
         assert resumed.status == 202

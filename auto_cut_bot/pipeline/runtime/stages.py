@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from .errors import PipelineRunValidationError
-from .models import PipelineCommand, PipelineStageResult, validate_run_id
+from .models import (
+    PipelineCommand,
+    PipelineRunSnapshot,
+    PipelineStageContext,
+    PipelineStageResult,
+)
 from .ports import PipelineCommandClaimStore, PipelineStagePort, PipelineStageReconcilePort
 
 
@@ -45,35 +52,37 @@ class PipelineStageRegistry:
 
 
 class PipelineStageRunner:
-    """Atomically lease one pending command before invoking a stage port.
-
-    Running commands are not reclaimed here, and indeterminate commands are
-    deliberately left for a separately injected reconciler in a later slice.
-    """
+    """Lease one ordered command and keep ownership alive during execution."""
 
     def __init__(
         self,
         registry: PipelineStageRegistry,
         command_store: PipelineCommandClaimStore,
+        *,
+        heartbeat_seconds: float = 30.0,
     ) -> None:
+        if heartbeat_seconds <= 0:
+            raise PipelineRunValidationError("heartbeat_seconds must be positive")
         self._registry = registry
         self._command_store = command_store
+        self._heartbeat_seconds = heartbeat_seconds
 
     async def claim_and_execute(
         self,
-        run_id: str,
+        snapshot: PipelineRunSnapshot,
         *,
-        expected_version: int,
         lease_id: str,
     ) -> PipelineStageResult | None:
-        validate_run_id(run_id)
-        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
-            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if type(snapshot) is not PipelineRunSnapshot:  # noqa: E721
+            raise PipelineRunValidationError("runner requires a persisted run snapshot")
         if type(lease_id) is not str or not lease_id.strip():  # noqa: E721
             raise PipelineRunValidationError("lease_id must be a non-empty string")
+        pending = next((item for item in snapshot.commands if item.status == "pending"), None)
+        if pending is None:
+            return None
         command = await self._command_store.claim_next_pending(
-            run_id,
-            expected_version=expected_version,
+            snapshot.run_id,
+            expected_version=pending.version,
             lease_id=lease_id,
         )
         if command is None:
@@ -82,18 +91,50 @@ class PipelineStageRunner:
             type(command) is not PipelineCommand  # noqa: E721
             or command.status != "running"
             or command.lease_id != lease_id
-            or command.version != expected_version + 1
+            or command.version != pending.version + 1
         ):
             raise PipelineRunValidationError(
                 "claimed command must bind the expected version and lease"
             )
-        result = await self._registry.require(command.stage).execute(command)
+        context = PipelineStageContext(snapshot.run_id, snapshot.request, command)
+        stop = asyncio.Event()
+        version = [command.version]
+        heartbeat_error: list[BaseException] = []
+
+        async def heartbeat() -> None:
+            while True:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=self._heartbeat_seconds)
+                    return
+                except TimeoutError:
+                    try:
+                        renewed = await self._command_store.renew_running_lease(
+                            snapshot.run_id,
+                            command_id=command.command_id,
+                            expected_version=version[0],
+                            lease_id=lease_id,
+                        )
+                        version[0] = renewed.version
+                    except BaseException as error:  # ownership loss is authoritative
+                        heartbeat_error.append(error)
+                        return
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        try:
+            result = await self._registry.require(command.stage).execute(context)
+        except Exception:
+            result = PipelineStageResult(command.command_id, "indeterminate")
+        finally:
+            stop.set()
+            await heartbeat_task
+        if heartbeat_error:
+            raise PipelineRunValidationError("stage command lease heartbeat was lost") from heartbeat_error[0]
         if type(result) is not PipelineStageResult or result.command_id != command.command_id:  # noqa: E721
             raise PipelineRunValidationError("stage result does not bind the dispatched command")
         await self._command_store.record_result(
-            run_id,
+            snapshot.run_id,
             result=result,
-            expected_version=command.version,
+            expected_version=version[0],
             lease_id=lease_id,
         )
         return result
@@ -139,24 +180,29 @@ class PipelineStageReconciler:
 
     async def reconcile(
         self,
-        run_id: str,
-        *,
-        expected_version: int,
+        snapshot: PipelineRunSnapshot,
     ) -> PipelineStageResult | None:
-        validate_run_id(run_id)
-        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
-            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if type(snapshot) is not PipelineRunSnapshot:  # noqa: E721
+            raise PipelineRunValidationError("reconciler requires a persisted run snapshot")
+        uncertain = next(
+            (item for item in snapshot.commands if item.status == "indeterminate"),
+            None,
+        )
+        if uncertain is None:
+            return None
         command = await self._command_store.read_indeterminate(
-            run_id,
-            expected_version=expected_version,
+            snapshot.run_id,
+            expected_version=uncertain.version,
         )
         if command is None:
             return None
-        if command.status != "indeterminate" or command.version != expected_version:
+        if command.status != "indeterminate" or command.version != uncertain.version:
             raise PipelineRunValidationError(
                 "reconcile command must bind the indeterminate version"
             )
-        result = await self._require(command.stage).reconcile(command)
+        result = await self._require(command.stage).reconcile(
+            PipelineStageContext(snapshot.run_id, snapshot.request, command)
+        )
         if result is None:
             return None
         if (
@@ -168,8 +214,8 @@ class PipelineStageReconciler:
                 "reconcile result must be a terminal Receipt for the exact command"
             )
         await self._command_store.record_reconciled_result(
-            run_id,
+            snapshot.run_id,
             result=result,
-            expected_version=expected_version,
+            expected_version=command.version,
         )
         return result

@@ -8,12 +8,15 @@ import pytest
 
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
+    DurablePipelineWorker,
     IdempotencyConflictError,
+    OutboxLease,
     PipelineCommand,
     PipelineRunNotFoundError,
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineRunValidationError,
+    PipelineStageContext,
     PipelineStageReconciler,
     PipelineStageRegistry,
     PipelineStageResult,
@@ -49,7 +52,10 @@ class FakeRunStore:
             request=request,
             request_hash=request_hash,
             status="accepted",
-            commands=(PipelineCommand("command-1", "source_prep", "pending"),),
+            commands=(
+                PipelineCommand("command-1", "source_prep", "pending"),
+                PipelineCommand("command-2", "vlm", "pending"),
+            ),
             version=0,
         )
         self.by_key[idempotency_key] = run_id
@@ -111,6 +117,17 @@ class FakeAuthorizer:
 
 def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
     return PipelineRunRequest.from_mapping({"profile": "test", "source_root": source_root})
+
+
+def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
+    return PipelineRunSnapshot(
+        "pipeline_run_" + "a" * 32,
+        request(),
+        request().request_hash,
+        "running" if command.status != "pending" else "accepted",
+        (command,),
+        0,
+    )
 
 
 @pytest.mark.asyncio
@@ -240,9 +257,9 @@ class FakeStage:
     def __init__(self) -> None:
         self.commands: list[PipelineCommand] = []
 
-    async def execute(self, command: PipelineCommand) -> PipelineStageResult:
-        self.commands.append(command)
-        return PipelineStageResult(command.command_id, "indeterminate")
+    async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
+        self.commands.append(context.command)
+        return PipelineStageResult(context.command.command_id, "indeterminate")
 
 
 class FakeCommandClaimStore:
@@ -294,6 +311,25 @@ class FakeCommandClaimStore:
             lease_id=None,
         )
 
+    async def renew_running_lease(
+        self,
+        run_id: str,
+        *,
+        command_id: str,
+        expected_version: int,
+        lease_id: str,
+    ) -> PipelineCommand:
+        del run_id
+        if (
+            self.command.command_id != command_id
+            or self.command.status != "running"
+            or self.command.version != expected_version
+            or self.command.lease_id != lease_id
+        ):
+            raise StaleRunVersionError("pipeline_run_" + "a" * 32)
+        self.command = replace(self.command, version=expected_version + 1)
+        return self.command
+
     async def read_indeterminate(
         self,
         run_id: str,
@@ -331,11 +367,7 @@ async def test_fake_stage_uses_closed_registry_port_without_inventing_success() 
     command_store = FakeCommandClaimStore()
     runner = PipelineStageRunner(registry, command_store)
 
-    result = await runner.claim_and_execute(
-        "pipeline_run_" + "a" * 32,
-        expected_version=0,
-        lease_id="lease-1",
-    )
+    result = await runner.claim_and_execute(_snapshot(command_store.command), lease_id="lease-1")
 
     assert result == PipelineStageResult("command-1", "indeterminate")
     assert stage.commands == [
@@ -352,10 +384,8 @@ async def test_repeated_enqueue_claims_once_and_does_not_repeat_external_call() 
         PipelineStageRegistry.from_ports(("source_prep", stage)),
         command_store,
     )
-    run_id = "pipeline_run_" + "a" * 32
-
-    first = await runner.claim_and_execute(run_id, expected_version=0, lease_id="lease-1")
-    replay = await runner.claim_and_execute(run_id, expected_version=0, lease_id="lease-2")
+    first = await runner.claim_and_execute(_snapshot(command_store.command), lease_id="lease-1")
+    replay = await runner.claim_and_execute(_snapshot(command_store.command), lease_id="lease-2")
 
     assert first == PipelineStageResult("command-1", "indeterminate")
     assert replay is None
@@ -378,7 +408,7 @@ async def test_claim_then_worker_crash_is_not_blindly_executed_by_reenqueue() ->
         command_store,
     )
 
-    result = await runner.claim_and_execute(run_id, expected_version=0, lease_id="new-lease")
+    result = await runner.claim_and_execute(_snapshot(command_store.command), lease_id="new-lease")
 
     assert result is None
     assert stage.commands == []
@@ -395,11 +425,7 @@ async def test_indeterminate_command_requires_reconciler_and_is_not_executed() -
         command_store,
     )
 
-    result = await runner.claim_and_execute(
-        "pipeline_run_" + "a" * 32,
-        expected_version=1,
-        lease_id="lease-2",
-    )
+    result = await runner.claim_and_execute(_snapshot(command_store.command), lease_id="lease-2")
 
     assert result is None
     assert stage.commands == []
@@ -410,9 +436,9 @@ class FakeReconcileStage:
         self.commands: list[PipelineCommand] = []
         self.receipt_id = uuid4()
 
-    async def reconcile(self, command: PipelineCommand) -> PipelineStageResult:
-        self.commands.append(command)
-        return PipelineStageResult(command.command_id, "succeeded", self.receipt_id)
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        self.commands.append(context.command)
+        return PipelineStageResult(context.command.command_id, "succeeded", self.receipt_id)
 
 
 @pytest.mark.asyncio
@@ -426,16 +452,206 @@ async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> N
         ("source_prep", stage),
     )
 
-    result = await reconciler.reconcile(
-        "pipeline_run_" + "a" * 32,
-        expected_version=2,
-    )
+    result = await reconciler.reconcile(_snapshot(command_store.command))
 
     assert result == PipelineStageResult("command-1", "succeeded", stage.receipt_id)
     assert stage.commands == [
         PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)
     ]
     assert command_store.command.status == "succeeded"
+
+
+class SuccessStage:
+    def __init__(self) -> None:
+        self.contexts: list[PipelineStageContext] = []
+        self.receipt_id = uuid4()
+
+    async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
+        self.contexts.append(context)
+        return PipelineStageResult(
+            context.command.command_id,
+            "succeeded",
+            self.receipt_id,
+        )
+
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        raise AssertionError(f"unexpected reconcile for {context.command.command_id}")
+
+
+class WorkerStore(FakeCommandClaimStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.snapshot = _snapshot(self.command)
+
+    async def read_run(self, run_id: str) -> PipelineRunSnapshot | None:
+        return self.snapshot if run_id == self.snapshot.run_id else None
+
+    async def claim_next_pending(self, *args, **kwargs):
+        command = await super().claim_next_pending(*args, **kwargs)
+        self.snapshot = replace(self.snapshot, status="running", commands=(self.command,))
+        return command
+
+    async def renew_running_lease(self, *args, **kwargs):
+        command = await super().renew_running_lease(*args, **kwargs)
+        self.snapshot = replace(self.snapshot, commands=(self.command,))
+        return command
+
+    async def record_result(self, *args, **kwargs) -> None:
+        await super().record_result(*args, **kwargs)
+        status = self.command.status
+        self.snapshot = replace(
+            self.snapshot,
+            status=status if status in ("succeeded", "denied", "failed") else "running",
+            commands=(self.command,),
+            version=self.snapshot.version + 1,
+        )
+
+    async def expire_running_lease(self, *args, **kwargs):
+        raise ResumeNotAllowedError("lease is active")
+
+
+class WorkerScheduler:
+    def __init__(self, run_id: str) -> None:
+        self.lease = OutboxLease(uuid4(), run_id, 1, "outbox-lease")
+        self.claimed = False
+        self.acknowledged: list[OutboxLease] = []
+        self.requeued: list[OutboxLease] = []
+
+    async def enqueue(self, run_id: str) -> None:
+        del run_id
+
+    async def claim_next(self, *, lease_id: str) -> OutboxLease | None:
+        del lease_id
+        if self.claimed:
+            return None
+        self.claimed = True
+        return self.lease
+
+    async def acknowledge(self, lease: OutboxLease) -> None:
+        self.acknowledged.append(lease)
+
+    async def requeue(self, lease: OutboxLease) -> None:
+        self.requeued.append(lease)
+
+    async def renew(self, lease: OutboxLease) -> OutboxLease:
+        return lease
+
+
+class ShortLeaseScheduler:
+    def __init__(self, run_ids: tuple[str, ...], *, lease_seconds: float) -> None:
+        self._pending = list(run_ids)
+        self._lease_seconds = lease_seconds
+        self._active: dict[object, tuple[OutboxLease, float]] = {}
+        self.acknowledged: list[OutboxLease] = []
+        self.renewals = 0
+        self.max_active = 0
+
+    async def enqueue(self, run_id: str) -> None:
+        self._pending.append(run_id)
+
+    async def claim_next(self, *, lease_id: str) -> OutboxLease | None:
+        if not self._pending:
+            return None
+        lease = OutboxLease(uuid4(), self._pending.pop(0), 1, lease_id)
+        self._active[lease.outbox_id] = (
+            lease,
+            asyncio.get_running_loop().time() + self._lease_seconds,
+        )
+        self.max_active = max(self.max_active, len(self._active))
+        return lease
+
+    async def renew(self, lease: OutboxLease) -> OutboxLease:
+        current, expires_at = self._active[lease.outbox_id]
+        assert current == lease
+        assert asyncio.get_running_loop().time() < expires_at
+        renewed = replace(lease, version=lease.version + 1)
+        self._active[lease.outbox_id] = (
+            renewed,
+            asyncio.get_running_loop().time() + self._lease_seconds,
+        )
+        self.renewals += 1
+        return renewed
+
+    async def acknowledge(self, lease: OutboxLease) -> None:
+        current, expires_at = self._active.pop(lease.outbox_id)
+        assert current == lease
+        assert asyncio.get_running_loop().time() < expires_at
+        self.acknowledged.append(lease)
+
+    async def requeue(self, lease: OutboxLease) -> None:
+        current, _expires_at = self._active.pop(lease.outbox_id)
+        assert current == lease
+        self._pending.append(lease.run_id)
+
+
+class SlowWorker(DurablePipelineWorker):
+    def __init__(self, *args, delay_seconds: float, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._delay_seconds = delay_seconds
+        self.processed: list[str] = []
+
+    async def _process_run(self, run_id: str) -> bool:
+        await asyncio.sleep(self._delay_seconds)
+        self.processed.append(run_id)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_bounded_worker_passes_strict_context_and_acks_terminal_run() -> None:
+    store = WorkerStore()
+    scheduler = WorkerScheduler(store.snapshot.run_id)
+    stage = SuccessStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    runner = PipelineStageRunner(registry, store, heartbeat_seconds=60)
+    reconciler = PipelineStageReconciler.from_ports(store, ("source_prep", stage))
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = DurablePipelineWorker(
+        worker_id="worker-1",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=1,
+        max_batch_size=1,
+    )
+
+    assert await worker.run_once() == 1
+    assert len(stage.contexts) == 1
+    assert stage.contexts[0].run_id == store.snapshot.run_id
+    assert stage.contexts[0].request == store.snapshot.request
+    assert scheduler.acknowledged == [scheduler.lease]
+    assert scheduler.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_worker_claims_only_from_free_slots_and_heartbeats_short_leases() -> None:
+    run_ids = tuple(f"pipeline_run_{index:032x}" for index in range(1, 4))
+    scheduler = ShortLeaseScheduler(run_ids, lease_seconds=0.03)
+    store = WorkerStore()
+    stage = SuccessStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    runner = PipelineStageRunner(registry, store, heartbeat_seconds=60)
+    reconciler = PipelineStageReconciler.from_ports(store, ("source_prep", stage))
+    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())  # type: ignore[arg-type]
+    worker = SlowWorker(
+        worker_id="slow-worker",
+        service=service,
+        scheduler=scheduler,
+        store=store,
+        runner=runner,
+        reconciler=reconciler,
+        concurrency=1,
+        max_batch_size=3,
+        outbox_heartbeat_seconds=0.005,
+        delay_seconds=0.06,
+    )
+
+    assert await worker.run_once() == 3
+    assert worker.processed == list(run_ids)
+    assert scheduler.max_active == 1
+    assert scheduler.renewals >= 3
+    assert len(scheduler.acknowledged) == 3
 
 
 def test_request_decoder_is_closed_and_rejects_production() -> None:
