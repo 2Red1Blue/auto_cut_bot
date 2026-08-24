@@ -145,9 +145,22 @@ class _CountingAutoModel(_AutoModel):
         super().__init__(**kwargs)
 
 
+class _FailingOnceAutoModel(_AutoModel):
+    constructions = 0
+
+    def __init__(self, **kwargs: object) -> None:
+        type(self).constructions += 1
+        if type(self).constructions == 1:
+            raise RuntimeError("test startup failure")
+        super().__init__(**kwargs)
+
+
 def _service_profile(
     ns: dict[str, object], asr_path: Path, vad_path: Path, *, device: str = "cpu"
 ) -> dict[str, object]:
+    lock_path = asr_path.parents[2] / "funasr-service.lock"
+    ns["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
+    ns["Service"].__init__.__globals__["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
     tree_hash = ns["tree_hash"]
     service_hash = ns["service_hash"]
     detector_hash = ns["detector_hash"]
@@ -416,6 +429,86 @@ async def test_startup_swap_pressure_fails_before_model_construction(
         await ns["Service"](resource_reader=lambda: snapshot).load()
 
     assert _CountingAutoModel.constructions == 0
+
+    monkeypatch.setenv("FUNASR_MAX_SWAP_USED_BYTES", "0")
+    safe = ns["ResourceSnapshot"](10_000, 1_000, 0)
+    service = ns["Service"](resource_reader=lambda: safe)
+    await service.load()
+    assert _CountingAutoModel.constructions == 1
+    await service.close()
+
+
+def test_singleton_alternate_path_cannot_bypass_canonical_host_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _CountingAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_SINGLETON_LOCK_PATH", str(tmp_path / "alternate.lock"))
+
+    with pytest.raises(RuntimeError, match="canonical singleton lock path"):
+        ns["Service"]()
+
+    assert _CountingAutoModel.constructions == 0
+
+
+@pytest.mark.asyncio
+async def test_singleton_symlink_file_fails_before_model_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _CountingAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    target = tmp_path / "attacker-controlled.lock"
+    target.touch()
+    lock_path = ns["CANONICAL_SINGLETON_LOCK_PATH"]
+    lock_path.symlink_to(target)
+
+    with pytest.raises(RuntimeError, match="symbolic link"):
+        await ns["Service"]().load()
+
+    assert _CountingAutoModel.constructions == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_exception_releases_singleton_for_next_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FailingOnceAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _FailingOnceAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+
+    with pytest.raises(RuntimeError, match="test startup failure"):
+        await ns["Service"]().load()
+    second = ns["Service"]()
+    await second.load()
+
+    assert _FailingOnceAutoModel.constructions == 2
+    await second.close()
 
 
 @pytest.mark.asyncio

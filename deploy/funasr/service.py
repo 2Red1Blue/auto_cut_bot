@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import errno
 import fcntl
 import hashlib
 import hmac
@@ -34,6 +35,7 @@ VAD_MODEL_ID = "fsmn-vad"
 ASR_INFERENCE_KIND = "sensevoice-word-timestamp"
 VAD_INFERENCE_KIND = "fsmn-vad-direct"
 RESOURCE_PRESSURE_TEXT = "resource-pressure"
+CANONICAL_SINGLETON_LOCK_PATH = Path("/tmp").resolve(strict=True) / "autocut-funasr-service.lock"
 
 
 @dataclass(frozen=True)
@@ -127,8 +129,20 @@ _PROCESS_LOCK_PATHS: set[Path] = set()
 _PROCESS_LOCK_GUARD = threading.Lock()
 
 
+def canonical_singleton_lock_path(raw_path: str) -> Path:
+    path = Path(raw_path)
+    if not path.is_absolute():
+        raise RuntimeError("FUNASR_SINGLETON_LOCK_PATH must be absolute")
+    resolved = path.parent.resolve(strict=True) / path.name
+    if resolved != CANONICAL_SINGLETON_LOCK_PATH:
+        raise RuntimeError(
+            "FUNASR_SINGLETON_LOCK_PATH must resolve to the canonical singleton lock path"
+        )
+    return CANONICAL_SINGLETON_LOCK_PATH
+
+
 class HostSingletonLock:
-    def __init__(self, raw_path: str) -> None:
+    def __init__(self, raw_path: str | Path) -> None:
         path = Path(raw_path)
         if not path.is_absolute():
             raise RuntimeError("FUNASR_SINGLETON_LOCK_PATH must be absolute")
@@ -141,7 +155,16 @@ class HostSingletonLock:
         with _PROCESS_LOCK_GUARD:
             if self.path in _PROCESS_LOCK_PATHS:
                 raise RuntimeError("FunASR singleton lock is already held")
-            fd = os.open(self.path, flags, 0o600)
+            if self.path.is_symlink():
+                raise RuntimeError("FunASR singleton lock must not be a symbolic link")
+            try:
+                fd = os.open(self.path, flags, 0o600)
+            except OSError as error:
+                if error.errno == errno.ELOOP:
+                    raise RuntimeError(
+                        "FunASR singleton lock must not be a symbolic link"
+                    ) from error
+                raise
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
                     raise RuntimeError("FunASR singleton lock must be a regular file")
@@ -210,6 +233,13 @@ def positive_environment(name: str) -> int:
     raw = os.environ[name]
     if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
         raise RuntimeError(f"{name} must be a positive decimal integer")
+    return int(raw)
+
+
+def nonnegative_environment(name: str) -> int:
+    raw = os.environ[name]
+    if not raw.isascii() or not raw.isdecimal():
+        raise RuntimeError(f"{name} must be a non-negative decimal integer")
     return int(raw)
 
 
@@ -456,9 +486,10 @@ class Service:
             raise RuntimeError("FUNASR_REQUIRED_PYTHON_VERSION does not match the runtime")
         self.startup_min_available = positive_environment("FUNASR_STARTUP_MIN_AVAILABLE_BYTES")
         self.inference_min_available = positive_environment("FUNASR_INFERENCE_MIN_AVAILABLE_BYTES")
-        self.max_swap_used = positive_environment("FUNASR_MAX_SWAP_USED_BYTES")
+        self.max_swap_used = nonnegative_environment("FUNASR_MAX_SWAP_USED_BYTES")
         self.resource_reader = resource_reader
-        self.singleton = HostSingletonLock(os.environ["FUNASR_SINGLETON_LOCK_PATH"])
+        lock_path = canonical_singleton_lock_path(os.environ["FUNASR_SINGLETON_LOCK_PATH"])
+        self.singleton = HostSingletonLock(lock_path)
         token = os.environ["FUNASR_SHARED_TOKEN"]
         if not token:
             raise RuntimeError("FUNASR_SHARED_TOKEN must be non-empty")

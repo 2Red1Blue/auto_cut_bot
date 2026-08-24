@@ -14,13 +14,15 @@ weights, and an `asyncio.Lock` serializes the complete ASR plus direct-VAD call.
 A fourth request receives 503 before its body is read or its spool directory is
 created.
 
-Every production process must use the same absolute local-host
-`FUNASR_SINGLETON_LOCK_PATH`, recommended as
-`/tmp/autocut-funasr-service.lock`. The service takes a non-blocking OS file lock
-before constructing `AutoModel` and holds it for the model lifetime. Thus a
-second process is rejected even when it uses another port. Normal cleanup,
-startup exceptions, and process exit release the lock; a stale file without a
-live file lock is harmless.
+The production lock is fixed in code to the canonical host path represented by
+`/tmp/autocut-funasr-service.lock` (`/private/tmp/...` after resolution on
+macOS). `FUNASR_SINGLETON_LOCK_PATH` is retained only as a fail-closed
+configuration assertion: its resolved parent and filename must equal that fixed
+path, so another port cannot select another lock file. The service takes a
+non-blocking OS file lock before constructing `AutoModel` and holds it for the
+model lifetime. Normal cleanup, startup exceptions, and process exit release
+the lock; a stale regular file without a live file lock is harmless, while a
+symlink lock file is rejected.
 
 ## Resource gate
 
@@ -32,6 +34,9 @@ for every request before admission and body spooling. Configure byte counts:
 - `FUNASR_STARTUP_MIN_AVAILABLE_BYTES`
 - `FUNASR_INFERENCE_MIN_AVAILABLE_BYTES`
 - `FUNASR_MAX_SWAP_USED_BYTES`
+
+The available-byte thresholds must be positive. The maximum swap-used threshold
+is non-negative; set it to `0` to reject any observed swap use.
 
 The observed single-process CPU smoke peaked near 3.2 GB RSS, while the macOS
 host already had about 30 GB in use and 9 GB of swap, producing much higher
@@ -63,7 +68,7 @@ The complete runtime environment is:
 - `FUNASR_INFERENCE_TIMEOUT_SECONDS`
 - `FUNASR_QUEUE_CAPACITY=3`
 - the three resource limits above
-- `FUNASR_SINGLETON_LOCK_PATH` (one shared absolute path for the host)
+- `FUNASR_SINGLETON_LOCK_PATH=/tmp/autocut-funasr-service.lock` (canonical path only)
 - `FUNASR_SHARED_TOKEN` (non-empty and sent only in loopback Authorization)
 - `FUNASR_PROFILE_JSON`
 
