@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 from uuid import UUID
 
-from ..media.types import canonical_sha256
+from ..media.types import canonical_sha256, sha256_prefixed
 from ..store import (
     ArtifactMember,
     ArtifactScope,
@@ -45,7 +45,7 @@ from ..vlm import (
 )
 
 _COMMAND_NAME = "GenerateVlmEvidenceCommand"
-_PARSER_STRATEGY_VERSION = "strict-v1"
+VLM_PARSER_STRATEGY_VERSION = "strict-v1"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -191,6 +191,8 @@ class GenerateVlmEvidenceRequest:
     model_id: str
     provider_id: str
     parse_policy: VlmParsePolicy
+    parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
+    source_provenance_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:  # noqa: E721
@@ -224,9 +226,17 @@ class GenerateVlmEvidenceRequest:
             (self.prompt_version, "prompt_version"),
             (self.model_id, "model_id"),
             (self.provider_id, "provider_id"),
+            (self.parser_strategy_version, "parser_strategy_version"),
         ):
             if type(value) is not str or not value.strip():  # noqa: E721
                 raise ValueError(f"{name} must be non-empty")
+        if self.parser_strategy_version != VLM_PARSER_STRATEGY_VERSION:
+            raise ValueError("parser_strategy_version is not registered")
+        if self.source_provenance_sha256 is not None:
+            sha256_prefixed(
+                self.source_provenance_sha256,
+                "source_provenance_sha256",
+            )
         _json_object(self.response_schema_json, "response_schema_json")
         _json_object(self.request_parameters_json, "request_parameters_json")
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
@@ -237,7 +247,7 @@ class GenerateVlmEvidenceRequest:
         return _json_bytes(
             {
                 "model_id": self.model_id,
-                "parser_strategy_version": _PARSER_STRATEGY_VERSION,
+                "parser_strategy_version": self.parser_strategy_version,
                 "prompt": self.prompt_template,
                 "prompt_version": self.prompt_version,
                 "provider_id": self.provider_id,
@@ -288,8 +298,9 @@ class GenerateVlmEvidenceRequest:
                 },
                 "identity_sha256": self.request_identity.canonical_hash,
                 "job": {"job_key": self.job.job_key, "profile": self.job.profile},
-                "parser_strategy_version": _PARSER_STRATEGY_VERSION,
+                "parser_strategy_version": self.parser_strategy_version,
                 "proxy_blob": _blob_mapping(self.proxy_blob),
+                "source_provenance_sha256": self.source_provenance_sha256,
             }
         )
 
@@ -693,4 +704,5 @@ __all__ = [
     "GenerateVlmEvidenceRequest",
     "GenerateVlmEvidenceResult",
     "GenerationStore",
+    "VLM_PARSER_STRATEGY_VERSION",
 ]

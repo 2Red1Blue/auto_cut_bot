@@ -41,6 +41,7 @@ from autocut_kernel.store import (
     Job,
     PersistedWholeSeriesSourceManifest,
     RuntimeStoreError,
+    WholeSeriesSourceManifestReference,
 )
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import (
@@ -134,6 +135,79 @@ class PreparedSeriesSources:
             "completion_policy": "all_or_nothing",
             "episodes": [episode.to_mapping() for episode in self.episodes],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedPreparedSources:
+    """Strict source-prep value plus its exact committed Kernel provenance."""
+
+    prepared: PreparedSeriesSources
+    source_job: Job
+    kernel_job_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+    artifact_reference: WholeSeriesSourceManifestReference
+
+    def __post_init__(self) -> None:
+        if type(self.prepared) is not PreparedSeriesSources:  # noqa: E721
+            raise SourceManifestDecodeError("persisted prepared source value is invalid")
+        if type(self.source_job) is not Job:  # noqa: E721
+            raise SourceManifestDecodeError("persisted source Job is invalid")
+        for field_name in (
+            "kernel_job_id",
+            "receipt_id",
+            "artifact_set_id",
+            "command_slot_id",
+        ):
+            if not isinstance(getattr(self, field_name), UUID):
+                raise SourceManifestDecodeError(
+                    f"persisted source {field_name} must be a UUID"
+                )
+        if type(self.artifact_reference) is not WholeSeriesSourceManifestReference:  # noqa: E721
+            raise SourceManifestDecodeError("persisted source artifact reference is invalid")
+        if self.artifact_reference.logical_id != "whole_series_source_manifest":
+            raise SourceManifestDecodeError("persisted source artifact logical_id is invalid")
+        if self.artifact_reference.scope != ArtifactScope(
+            "pipeline", "job", self.source_job.job_key
+        ):
+            raise SourceManifestDecodeError(
+                "persisted source artifact scope does not match its source Job"
+            )
+        payload_json = json.dumps(
+            self.prepared.to_mapping(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if canonical_payload_hash(payload_json) != self.artifact_reference.content_hash:
+            raise SourceManifestDecodeError(
+                "persisted prepared sources do not match the artifact content hash"
+            )
+
+    def provenance_mapping(self) -> dict[str, object]:
+        reference = self.artifact_reference
+        return {
+            "artifact_reference": {
+                "artifact_type": reference.artifact_type,
+                "content_hash": reference.content_hash,
+                "logical_id": reference.logical_id,
+                "revision": reference.revision,
+                "scope": _scope_mapping(reference.scope),
+            },
+            "artifact_set_id": str(self.artifact_set_id),
+            "command_slot_id": str(self.command_slot_id),
+            "kernel_job_id": str(self.kernel_job_id),
+            "receipt_id": str(self.receipt_id),
+            "source_job": {
+                "job_key": self.source_job.job_key,
+                "profile": self.source_job.profile,
+            },
+        }
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_sha256(self.provenance_mapping())
 
 
 class IdentitySourceWindowBuilder:
@@ -428,7 +502,26 @@ def read_persisted_prepared_sources(
     artifact_scope: ArtifactScope,
     artifact_revision: int,
 ) -> PreparedSeriesSources:
-    """Strictly decode the exact K-terminal source projection without probing media."""
+    """Compatibility reader returning only the strictly decoded prepared value."""
+
+    return read_persisted_prepared_sources_bundle(
+        store,
+        job=job,
+        outcome=outcome,
+        artifact_scope=artifact_scope,
+        artifact_revision=artifact_revision,
+    ).prepared
+
+
+def read_persisted_prepared_sources_bundle(
+    store: SourcePrepStore,
+    *,
+    job: Job,
+    outcome: CommandOutcome,
+    artifact_scope: ArtifactScope,
+    artifact_revision: int,
+) -> PersistedPreparedSources:
+    """Decode one committed source projection while retaining exact provenance."""
 
     if outcome.state != "succeeded" or outcome.receipt_id is None:
         raise SourceManifestDecodeError(
@@ -449,7 +542,16 @@ def read_persisted_prepared_sources(
         raise SourceManifestDecodeError(
             "persisted source manifest provenance does not match its Receipt"
         )
-    return _decode_prepared_sources(persisted)
+    prepared = _decode_prepared_sources(persisted)
+    return PersistedPreparedSources(
+        prepared=prepared,
+        source_job=job,
+        kernel_job_id=persisted.job_id,
+        receipt_id=persisted.receipt_id,
+        artifact_set_id=persisted.artifact_set_id,
+        command_slot_id=persisted.command_slot_id,
+        artifact_reference=persisted.reference,
+    )
 
 
 def _artifact(
@@ -1101,6 +1203,8 @@ __all__ = [
     "PrepareWholeSeriesSourcesResult",
     "PreparedSeriesSources",
     "PreparedSourceEpisode",
+    "PersistedPreparedSources",
     "SourcePrepStore",
     "read_persisted_prepared_sources",
+    "read_persisted_prepared_sources_bundle",
 ]

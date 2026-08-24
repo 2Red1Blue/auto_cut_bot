@@ -1,6 +1,7 @@
 """Durable local pipeline command adapters."""
 
 from .generate_vlm_evidence_command import (
+    VLM_PARSER_STRATEGY_VERSION,
     GenerateVlmEvidenceCommand,
     GenerateVlmEvidenceRequest,
     GenerateVlmEvidenceResult,
@@ -40,6 +41,7 @@ __all__ = [
     "GenerateVlmEvidenceRequest",
     "GenerateVlmEvidenceResult",
     "GenerationStore",
+    "VLM_PARSER_STRATEGY_VERSION",
     "LocalMediaCommand",
     "LocalMediaCommandRequest",
     "FixtureBeatResolver",

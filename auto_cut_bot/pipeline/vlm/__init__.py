@@ -24,6 +24,13 @@ from .qwen_provider import (
     QwenVlmProvider,
     QwenVlmProviderConfig,
 )
+from .request_factory import (
+    DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION,
+    DOUBAO_VLM_STAGE_STRATEGY_VERSION,
+    DoubaoVlmRequestFactory,
+    DoubaoVlmRequestPolicy,
+    build_doubao_vlm_request,
+)
 
 __all__ = [
     "ArkFileCacheError",
@@ -31,8 +38,12 @@ __all__ = [
     "ArkFileCacheRecord",
     "DOUBAO_ARK_ADAPTER_STRATEGY_VERSION",
     "DOUBAO_ARK_PROVIDER_ID",
+    "DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION",
+    "DOUBAO_VLM_STAGE_STRATEGY_VERSION",
     "DoubaoArkVlmProvider",
     "DoubaoArkVlmProviderConfig",
+    "DoubaoVlmRequestFactory",
+    "DoubaoVlmRequestPolicy",
     "IdentityProxyWindow",
     "IdentityProxyWindowBuilder",
     "PostgresArkFileCache",
@@ -42,5 +53,6 @@ __all__ = [
     "VLM_PROMPT_VERSION",
     "VLM_RESPONSE_SCHEMA",
     "build_vlm_prompt",
+    "build_doubao_vlm_request",
     "vlm_response_schema_json",
 ]

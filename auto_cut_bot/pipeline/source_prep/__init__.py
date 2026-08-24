@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from .census import SeriesSourceSnapshot, census_series_sources, snapshot_series_sources
 from .command import (
     IdentitySourceWindowBuilder,
+    PersistedPreparedSources,
     PreparedSeriesSources,
     PreparedSourceEpisode,
     PrepareWholeSeriesSourcesCommand,
@@ -15,6 +16,7 @@ from .command import (
     SourceManifestDecodeError,
     SourcePrepStore,
     read_persisted_prepared_sources,
+    read_persisted_prepared_sources_bundle,
 )
 from .models import (
     AuthorizedSeriesSourceRoot,
@@ -48,6 +50,7 @@ __all__ = [
     "PreparedWholeSeries",
     "PreparedSeriesSources",
     "PreparedSourceEpisode",
+    "PersistedPreparedSources",
     "SeriesCensusError",
     "SeriesSource",
     "SeriesSourceCensus",
@@ -59,4 +62,5 @@ __all__ = [
     "census_series_sources",
     "snapshot_series_sources",
     "read_persisted_prepared_sources",
+    "read_persisted_prepared_sources_bundle",
 ]
