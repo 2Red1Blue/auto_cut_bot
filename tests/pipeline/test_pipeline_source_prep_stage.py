@@ -10,6 +10,7 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineCommand,
     PipelineRunRequest,
     PipelineStageContext,
+    PipelineStageResult,
     SourcePrepPipelineStage,
 )
 from auto_cut_bot.pipeline.runtime.source_prep_stage import (
@@ -32,6 +33,12 @@ class RootResolver:
             "series-1",
             1,
         )
+
+
+class RejectingRootResolver:
+    def resolve(self, context: PipelineStageContext) -> AuthorizedSeriesSourceRoot:
+        del context
+        raise AssertionError("terminal Receipt projection must not resolve source media")
 
 
 class Store:
@@ -115,7 +122,12 @@ async def test_running_kernel_source_command_uses_safe_resume_and_projects_recei
     assert result is not None
     assert result.outcome == "succeeded"
     assert result.receipt_id == command.outcome.receipt_id
-    assert store.reads == []
+    assert store.reads == [
+        (
+            Job(stage_context.run_id, "test"),
+            source_prep_kernel_idempotency_key(stage_context.run_id),
+        )
+    ]
     assert command.requests == []
     assert len(command.resume_requests) == 1
     assert command.resume_requests[0].idempotency_key == (
@@ -140,6 +152,75 @@ async def test_reconcile_projects_exact_terminal_kernel_receipt(tmp_path: Path) 
     assert result is not None
     assert result.outcome == "denied"
     assert result.receipt_id == receipt_id
+
+
+@pytest.mark.asyncio
+async def test_reconcile_projects_terminal_kernel_failure_without_source_replay(
+    tmp_path: Path,
+) -> None:
+    receipt_id = uuid4()
+    failed = CommandOutcome(
+        uuid4(),
+        "failed",
+        receipt_id=receipt_id,
+        failure_code="FRAME_SAMPLE_TOOL_FAILED",
+        failure_detail_json=(
+            '{"classification":"failed","diagnostic_code":'
+            '"FRAME_SAMPLE_TOOL_FAILED","stage":"PrepareWholeSeriesSourcesCommand"}'
+        ),
+    )
+    store = Store(failed)
+    command = Command(CommandOutcome(uuid4(), "running"))
+    stage = SourcePrepPipelineStage(
+        store,
+        RejectingRootResolver(),
+        command=command,  # type: ignore[arg-type]
+    )
+    stage_context = context(tmp_path, status="indeterminate")
+
+    result = await stage.reconcile(stage_context)
+
+    assert result == PipelineStageResult(
+        stage_context.command.command_id,
+        "failed",
+        receipt_id,
+    )
+    assert store.reads == [
+        (
+            Job(stage_context.run_id, "test"),
+            source_prep_kernel_idempotency_key(stage_context.run_id),
+        )
+    ]
+    assert command.requests == []
+    assert command.resume_requests == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_rejects_succeeded_receipt_without_artifact_provenance(
+    tmp_path: Path,
+) -> None:
+    succeeded_without_artifact = CommandOutcome(
+        uuid4(),
+        "succeeded",
+        receipt_id=uuid4(),
+    )
+    store = Store(succeeded_without_artifact)
+    stage = SourcePrepPipelineStage(store, RootResolver())  # type: ignore[arg-type]
+    stage_context = context(tmp_path, status="indeterminate")
+
+    with pytest.raises(SourceManifestDecodeError, match="ArtifactSet"):
+        await stage.reconcile(stage_context)
+
+    assert store.reads == [
+        (
+            Job(stage_context.run_id, "test"),
+            source_prep_kernel_idempotency_key(stage_context.run_id),
+        ),
+        (
+            Job(stage_context.run_id, "test"),
+            source_prep_kernel_idempotency_key(stage_context.run_id),
+        ),
+    ]
 
 
 def test_persisted_reader_rejects_nonterminal_without_reading_or_probing() -> None:

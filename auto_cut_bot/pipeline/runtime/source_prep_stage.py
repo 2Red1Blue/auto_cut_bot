@@ -47,6 +47,7 @@ class SourcePrepPipelineStage:
     ) -> None:
         if not callable(getattr(root_resolver, "resolve", None)):
             raise PipelineRunValidationError("source prep root resolver is required")
+        self._store = store
         self._root_resolver = root_resolver
         self._command = command or PrepareWholeSeriesSourcesCommand(store)
 
@@ -77,6 +78,20 @@ class SourcePrepPipelineStage:
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
+        job = self._job(context)
+        idempotency_key = source_prep_kernel_idempotency_key(context.run_id)
+        existing = await asyncio.to_thread(
+            self._store.read_outcome,
+            job,
+            idempotency_key,
+        )
+        if existing is not None and existing.state in ("denied", "failed"):
+            # A terminal rejection Receipt is sufficient recovery authority. In
+            # particular, do not make an already-terminal failure depend on the
+            # source catalog or repeat media work after an HTTP worker restart.
+            # Success must continue through command.resume(), whose strict replay
+            # validates the ArtifactSet, manifest, and authorization provenance.
+            return self._project(context, existing)
         request = self._request(context)
         result = await asyncio.to_thread(self._command.resume, request)
         projected = self._project(context, result.outcome)

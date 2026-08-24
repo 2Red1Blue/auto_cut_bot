@@ -694,6 +694,81 @@ class WorkerStore(FakeCommandClaimStore):
         raise ResumeNotAllowedError("lease is active")
 
 
+class RestartFailureStore(WorkerStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.command = PipelineCommand(
+            "command-1",
+            "source_prep",
+            "running",
+            None,
+            5,
+            "dead-worker-lease",
+        )
+        self.snapshot = replace(
+            _snapshot(self.command),
+            status="running",
+            commands=(self.command,),
+        )
+        self.expirations = 0
+
+    async def expire_running_lease(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        lease_id: str,
+    ) -> PipelineCommand:
+        assert run_id == self.snapshot.run_id
+        assert expected_version == 5
+        assert lease_id == "dead-worker-lease"
+        self.expirations += 1
+        self.command = replace(
+            self.command,
+            status="indeterminate",
+            version=6,
+            lease_id=None,
+        )
+        self.snapshot = replace(
+            self.snapshot,
+            commands=(self.command,),
+            version=self.snapshot.version + 1,
+        )
+        return self.command
+
+    async def record_reconciled_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+    ) -> None:
+        await super().record_reconciled_result(
+            run_id,
+            result=result,
+            expected_version=expected_version,
+        )
+        self.snapshot = replace(
+            self.snapshot,
+            status=result.outcome,
+            commands=(self.command,),
+            version=self.snapshot.version + 1,
+        )
+
+
+class FailedReceiptStage:
+    def __init__(self) -> None:
+        self.receipt_id = uuid4()
+        self.reconciled: list[PipelineStageContext] = []
+
+    async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
+        raise AssertionError(f"stale command was re-executed: {context.command.command_id}")
+
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        self.reconciled.append(context)
+        return PipelineStageResult(context.command.command_id, "failed", self.receipt_id)
+
+
 class WorkerScheduler:
     def __init__(self, run_id: str) -> None:
         self.lease = OutboxLease(uuid4(), run_id, 1, "outbox-lease")
@@ -927,6 +1002,41 @@ async def test_bounded_worker_passes_strict_context_and_acks_terminal_run() -> N
     assert stage.contexts[0].request == store.snapshot.request
     assert stage.contexts[0].execution_profile == store.snapshot.execution_profile
     assert stage.contexts[0].execution_profile_hash == store.snapshot.execution_profile_hash
+    assert scheduler.acknowledged == [scheduler.lease]
+    assert scheduler.requeued == []
+
+
+@pytest.mark.asyncio
+async def test_restarted_worker_projects_failed_receipt_after_stale_running_lease() -> None:
+    store = RestartFailureStore()
+    scheduler = WorkerScheduler(store.snapshot.run_id)
+    stage = FailedReceiptStage()
+    registry = PipelineStageRegistry.from_ports(("source_prep", stage))
+    worker = DurablePipelineWorker(
+        worker_id="replacement-worker",
+        service=DurablePipelineRunService(  # type: ignore[arg-type]
+            store,
+            scheduler,
+            FakeAuthorizer(),
+        ),
+        scheduler=scheduler,
+        store=store,
+        runner=PipelineStageRunner(registry, store, heartbeat_seconds=60),
+        reconciler=PipelineStageReconciler.from_ports(
+            store,
+            ("source_prep", stage),
+        ),
+        concurrency=1,
+        max_batch_size=1,
+    )
+
+    assert await worker.run_once() == 1
+    assert store.expirations == 1
+    assert len(stage.reconciled) == 1
+    assert stage.reconciled[0].command.status == "indeterminate"
+    assert store.snapshot.status == "failed"
+    assert store.snapshot.commands[0].status == "failed"
+    assert store.snapshot.commands[0].receipt_id == stage.receipt_id
     assert scheduler.acknowledged == [scheduler.lease]
     assert scheduler.requeued == []
 
