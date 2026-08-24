@@ -1417,6 +1417,24 @@ class LocalMediaPreflightPort:
         evidence: TimedSpeechEvidence, request: LocalMediaPreflightRequest
     ) -> None:
         context = request.audio_sample_boundaries.context
+        expected_word = (
+            EvidenceCompleteness.COMPLETE
+            if request.policy.word_timing_capability == "required"
+            else EvidenceCompleteness.NOT_APPLICABLE
+        )
+        if (
+            evidence.transcript.completeness
+            != TranscriptCompleteness(
+                EvidenceCompleteness.COMPLETE,
+                expected_word,
+                EvidenceCompleteness.NOT_APPLICABLE,
+            )
+            or evidence.transcript.sentences
+            or any(segment.sentence_ids for segment in evidence.transcript.segments)
+        ):
+            raise LocalMediaEvidenceError(
+                "SenseVoice word-gap output cannot claim sentence evidence"
+            )
         for actual in (evidence.transcript.context, evidence.speech_activity.context):
             if (
                 actual.source_id,

@@ -143,9 +143,10 @@ class TimedSpeechEvidenceRequest:
                 "vad_merge_gap_milliseconds": self.vad_merge_gap_milliseconds,
             },
             "transcript_capability": {
-                "profile": "sensevoice_timed_transcript_v1",
+                "profile": "sensevoice_word_utterance_v1",
                 "segment": "complete",
-                "sentence": "complete",
+                "segment_semantics": "utterance_gap_protected_range",
+                "sentence": "not_applicable",
                 "word": word,
                 "word_timing": self.word_timing_capability,
             },

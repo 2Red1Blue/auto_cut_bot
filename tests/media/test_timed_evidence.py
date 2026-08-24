@@ -224,18 +224,20 @@ def test_complete_feedback_closes_without_another_window() -> None:
     assert len(complete.assessments) == 1
 
 
-def test_unknown_without_direction_is_indeterminate_not_blindly_expanded() -> None:
+def test_unknown_sentence_without_edge_touch_closes_physical_evidence() -> None:
     plan, manifest, policy = _initial_plan()
 
-    indeterminate = advance_candidate_evidence_window(
+    complete = advance_candidate_evidence_window(
         plan,
         _assessment(plan.final_window, sentence=SentenceCompleteness.UNKNOWN),
         manifest.frame_pts_index_set,
         policy,
     )
 
-    assert indeterminate.outcome is CandidateWindowOutcome.INDETERMINATE
-    assert len(indeterminate.windows) == 1
+    assert complete.outcome is CandidateWindowOutcome.COMPLETE
+    assert len(complete.windows) == 1
+    assert complete.final_assessment is not None
+    assert complete.final_assessment.sentence_completeness is SentenceCompleteness.UNKNOWN
 
 
 def test_open_boundary_at_policy_limit_is_exhausted() -> None:

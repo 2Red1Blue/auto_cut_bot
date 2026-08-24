@@ -455,6 +455,37 @@ def test_audio_exists_no_speech_requires_complete_transcript_proof_and_vad_agree
         )
 
 
+def test_vad_only_nonlexical_evidence_cannot_claim_sentence_completeness() -> None:
+    template = _bundle()
+    transcript = TranscriptSet(
+        transcript_set_id="transcript-nonlexical",
+        context=template.transcript.context,
+        coverage=_coverage(template.transcript.context),
+        source_outcome=TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
+        completeness=TranscriptCompleteness(
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.NOT_APPLICABLE,
+        ),
+        segments=(),
+        words=(),
+        sentences=(),
+    )
+
+    consistent = replace(template, transcript=transcript)
+
+    assert consistent.speech_activity.source_outcome is SpeechSourceOutcome.SPEECH_DETECTED
+    with pytest.raises(MediaValidationError, match="capability-complete proof"):
+        replace(
+            transcript,
+            completeness=TranscriptCompleteness(
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+            ),
+        )
+
+
 def test_audio_presence_and_not_applicable_evidence_must_agree() -> None:
     template = _bundle()
     audio_context = template.audio_sample_boundaries.context

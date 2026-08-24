@@ -29,7 +29,6 @@ from autocut_kernel.media import (
     TimeBase,
     TranscriptCompleteness,
     TranscriptSegment,
-    TranscriptSentence,
     TranscriptSet,
     TranscriptSourceOutcome,
     TranscriptWord,
@@ -229,11 +228,8 @@ class _SpeechPort:
         w = TranscriptWord(
             "w", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, "你好。"
         )
-        s = TranscriptSentence(
-            "s", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, ("w",), "你好。"
-        )
         g = TranscriptSegment(
-            "g", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, ("s",), "你好。"
+            "g", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, (), "你好。"
         )
         tr = TranscriptSet(
             "t",
@@ -243,11 +239,11 @@ class _SpeechPort:
             TranscriptCompleteness(
                 EvidenceCompleteness.COMPLETE,
                 EvidenceCompleteness.COMPLETE,
-                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.NOT_APPLICABLE,
             ),
             (g,),
             (w,),
-            (s,),
+            (),
         )
         sp = SpeechActivitySet(
             "v",

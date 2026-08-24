@@ -8,7 +8,11 @@ from uuid import UUID, uuid4
 from autocut_kernel.media import (
     AdaptiveEvidenceWindowPolicy,
     CalibrationBinding,
+    EvidenceCompleteness,
     RootMediaEvidenceBundle,
+    TranscriptCompleteness,
+    TranscriptSet,
+    TranscriptSourceOutcome,
 )
 from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import (
@@ -258,6 +262,39 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     assert replay.outcome.state == "succeeded"
     assert producer.calls == 1
     assert len(store.successes) == 1
+
+
+def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
+    store = _Store()
+    request = _request(store)
+    template = _bundle()
+    transcript = TranscriptSet(
+        "nonlexical",
+        template.transcript.context,
+        template.transcript.coverage,
+        TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
+        TranscriptCompleteness(
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.NOT_APPLICABLE,
+        ),
+        (),
+        (),
+        (),
+    )
+    command = PrepareTimedMediaEvidenceCommand(
+        store, _Producer(replace(template, transcript=transcript))
+    )
+
+    result = command.execute(request)
+
+    assert result.outcome.state == "succeeded"
+    candidate_payloads = [
+        json.loads(content)
+        for content in store.blobs.values()
+        if b'"window_assessment"' in content
+    ]
+    assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "unknown"
     assert {item.artifact_type for item in store.successes[0].artifacts} == {
         "candidate_timed_evidence_index",
         "root_media_evidence_bundle",

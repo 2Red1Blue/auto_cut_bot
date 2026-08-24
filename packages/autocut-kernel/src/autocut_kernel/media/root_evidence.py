@@ -832,21 +832,29 @@ class TranscriptSet(CanonicalEvidence):
                     raise MediaValidationError(
                         f"not_applicable transcript {component} must be empty"
                     )
-        elif self.source_outcome in {
-            TranscriptSourceOutcome.NO_SPEECH,
-            TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
-        }:
+        elif self.source_outcome is TranscriptSourceOutcome.NO_LEXICAL_CONTENT:
             if (
                 self.coverage.outcome is not CoverageOutcome.COMPLETE
                 or records_present
                 or self.completeness.segment is not EvidenceCompleteness.COMPLETE
-                or self.completeness.sentence is not EvidenceCompleteness.COMPLETE
+                or self.completeness.sentence is not EvidenceCompleteness.NOT_APPLICABLE
                 or self.completeness.word
                 not in {EvidenceCompleteness.COMPLETE, EvidenceCompleteness.NOT_APPLICABLE}
             ):
                 raise MediaValidationError(
                     "empty lexical transcript requires capability-complete proof"
                 )
+        elif self.source_outcome is TranscriptSourceOutcome.NO_SPEECH:
+            if (
+                self.coverage.outcome is not CoverageOutcome.COMPLETE
+                or records_present
+                or self.completeness.segment is not EvidenceCompleteness.COMPLETE
+                or self.completeness.sentence
+                not in {EvidenceCompleteness.COMPLETE, EvidenceCompleteness.NOT_APPLICABLE}
+                or self.completeness.word
+                not in {EvidenceCompleteness.COMPLETE, EvidenceCompleteness.NOT_APPLICABLE}
+            ):
+                raise MediaValidationError("no_speech transcript requires complete proof for emptiness")
         elif self.source_outcome is TranscriptSourceOutcome.NOT_APPLICABLE:
             if (
                 self.coverage.outcome is not CoverageOutcome.COMPLETE

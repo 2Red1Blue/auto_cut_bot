@@ -200,7 +200,9 @@ def test_real_words_are_not_interpolated_and_group_by_gap(
         (300, 400),
         (1101, 1200),
     ]
-    assert len(tr["sentences"]) == 2
+    assert len(tr["segments"]) == 2
+    assert tr["sentences"] == []
+    assert tr["completeness"]["sentence"] == "not_applicable"
 
 
 def test_misaligned_or_nonmonotonic_words_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -235,6 +237,7 @@ def test_explicit_empty_asr_distinguishes_silence_from_vad_only(
         700,
     )
     assert tr["outcome"] == "no_lexical_content"
+    assert tr["completeness"]["sentence"] == "not_applicable"
     assert ns["vad"](
         [{"value": []}],
         {"numerator": 1, "denominator": 1000},

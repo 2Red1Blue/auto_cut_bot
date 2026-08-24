@@ -734,6 +734,8 @@ def _assess_window(
     right_truncated = any(item[0] < end < item[1] for item in transcript_intervals)
     if root.transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH:
         sentence = SentenceCompleteness.NOT_APPLICABLE
+    elif root.transcript.source_outcome is TranscriptSourceOutcome.NO_LEXICAL_CONTENT:
+        sentence = SentenceCompleteness.UNKNOWN
     elif root.transcript.completeness.sentence.value == "complete":
         sentence = SentenceCompleteness.COMPLETE
     elif root.transcript.completeness.sentence.value == "partial":

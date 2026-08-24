@@ -242,10 +242,7 @@ class CandidateWindowAssessment(CanonicalEvidence):
 
     @property
     def closed(self) -> bool:
-        return not self.needs_expansion and self.sentence_completeness in {
-            SentenceCompleteness.COMPLETE,
-            SentenceCompleteness.NOT_APPLICABLE,
-        }
+        return not self.needs_expansion
 
 
 def _can_expand(window: CandidateEvidenceWindow, assessment: CandidateWindowAssessment) -> bool:

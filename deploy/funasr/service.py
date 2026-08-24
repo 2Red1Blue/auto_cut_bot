@@ -142,7 +142,7 @@ def empty_transcript(required: bool, indeterminate: bool = False) -> dict[str, o
             else "complete"
             if required
             else "not_applicable",
-            "sentence": "partial" if indeterminate else "complete",
+            "sentence": "partial" if indeterminate else "not_applicable",
         },
         "segments": [],
         "words": [],
@@ -211,37 +211,30 @@ def transcript(
                 ranges.append((start, n))
                 start = n
         ranges.append((start, len(out)))
-        sent = []
         seg = []
         for n, (a, b) in enumerate(ranges):
             selected = out[a:b]
-            sid = f"sentence-{n:08d}"
             txt = "".join(z["text"] for z in selected)
-            sent.append(
-                {
-                    "sentence_id": sid,
-                    "in_tick": selected[0]["in_tick"],
-                    "out_tick": selected[-1]["out_tick"],
-                    "word_ids": [z["word_id"] for z in selected],
-                    "text": txt,
-                }
-            )
             seg.append(
                 {
                     "segment_id": f"segment-{n:08d}",
                     "in_tick": selected[0]["in_tick"],
                     "out_tick": selected[-1]["out_tick"],
-                    "sentence_ids": [sid],
+                    "sentence_ids": [],
                     "text": txt,
                 }
             )
         return {
             "coverage_outcome": "complete",
             "outcome": "transcript_available",
-            "completeness": {"segment": "complete", "word": "complete", "sentence": "complete"},
+            "completeness": {
+                "segment": "complete",
+                "word": "complete",
+                "sentence": "not_applicable",
+            },
             "segments": seg,
             "words": out,
-            "sentences": sent,
+            "sentences": [],
             "boundary_touch": {
                 "left": out[0]["in_tick"] <= rr["in_tick"],
                 "right": out[-1]["out_tick"] >= rr["out_tick"],

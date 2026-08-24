@@ -325,7 +325,11 @@ class FunASRHttpTimedSpeechEvidencePort:
         touch_right = _boolean(touch["right"], "boundary_touch.right")
         comp = _obj(i["completeness"], {"segment", "word", "sentence"}, "completeness")
         expected_word = "complete" if r.word_timing_capability == "required" else "not_applicable"
-        if comp != {"segment": "complete", "word": expected_word, "sentence": "complete"}:
+        if comp != {
+            "segment": "complete",
+            "word": expected_word,
+            "sentence": "not_applicable",
+        }:
             raise LocalMediaEvidenceError("completeness capability drift")
         words = tuple(
             TranscriptWord(
@@ -410,7 +414,7 @@ class FunASRHttpTimedSpeechEvidencePort:
             TranscriptCompleteness(
                 EvidenceCompleteness.COMPLETE,
                 EvidenceCompleteness(expected_word),
-                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.NOT_APPLICABLE,
             ),
             segments,
             words,
