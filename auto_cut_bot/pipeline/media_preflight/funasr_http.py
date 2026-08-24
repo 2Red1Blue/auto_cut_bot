@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, cast
@@ -30,12 +31,19 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256
 
-from .models import LocalMediaEvidenceError, LocalMediaSourceError, LocalMediaToolError
+from .models import (
+    LocalMediaEvidenceError,
+    LocalMediaPolicyError,
+    LocalMediaPreflightError,
+    LocalMediaSourceError,
+    LocalMediaToolError,
+)
 from .speech_port import (
     TimedSpeechEvidence,
     TimedSpeechEvidenceRequest,
     TimedSpeechInvocationTrace,
     TimedSpeechProducerIdentity,
+    TimedSpeechTimingErrorBound,
 )
 
 
@@ -99,13 +107,46 @@ def _arr(v: object, name: str) -> list[dict[str, object]]:
     return cast(list[dict[str, object]], v)
 
 
+def _text(v: object, name: str) -> str:
+    if type(v) is not str or not v.strip():  # noqa: E721
+        raise LocalMediaEvidenceError(f"{name} must be non-empty text")
+    return v
+
+
+def _integer(v: object, name: str) -> int:
+    if type(v) is not int:  # noqa: E721
+        raise LocalMediaEvidenceError(f"{name} must be an integer")
+    return v
+
+
+def _boolean(v: object, name: str) -> bool:
+    if type(v) is not bool:  # noqa: E721
+        raise LocalMediaEvidenceError(f"{name} must be a boolean")
+    return v
+
+
+def _text_array(v: object, name: str) -> tuple[str, ...]:
+    if type(v) is not list:  # noqa: E721
+        raise LocalMediaEvidenceError(f"{name} must be a text array")
+    result = tuple(_text(item, name) for item in cast(list[object], v))
+    if len(result) != len(set(result)):
+        raise LocalMediaEvidenceError(f"{name} must be deduplicated")
+    return result
+
+
 def _sha(v: bytes) -> str:
     return "sha256:" + hashlib.sha256(v).hexdigest()
 
 
 class FunASRHttpTimedSpeechEvidencePort:
-    def __init__(self, *, transport: _Transport | None = None) -> None:
+    def __init__(
+        self, *, transport: _Transport | None = None, shared_token: str | None = None
+    ) -> None:
         self._transport = transport or _HttpxTransport()
+        token = shared_token if shared_token is not None else os.environ.get("FUNASR_SHARED_TOKEN")
+        if type(token) is not str or not token:  # noqa: E721
+            raise LocalMediaPolicyError("FUNASR_SHARED_TOKEN must be non-empty")
+        self._shared_token = token
 
     def produce(self, r: TimedSpeechEvidenceRequest) -> TimedSpeechEvidence:
         manifest = json.dumps(r.to_mapping(), sort_keys=True, separators=(",", ":")).encode()
@@ -113,6 +154,7 @@ class FunASRHttpTimedSpeechEvidencePort:
             "Content-Type": "application/octet-stream",
             "X-Timed-Speech-Manifest": base64.b64encode(manifest).decode(),
             "X-Timed-Speech-Request-SHA256": r.identity_sha256,
+            "Authorization": f"Bearer {self._shared_token}",
         }
         status, raw = self._transport.post(
             r.endpoint_url,
@@ -129,28 +171,33 @@ class FunASRHttpTimedSpeechEvidencePort:
             p = json.loads(raw.decode())
         except Exception as e:
             raise LocalMediaEvidenceError("response is not UTF-8 JSON") from e
-        return self._parse(
-            _obj(
-                p,
-                {
-                    "schema_version",
-                    "request_identity_sha256",
-                    "source",
-                    "container",
-                    "audio_clock",
-                    "requested_range",
-                    "timed_speech_policy_sha256",
-                    "transcript_capability",
-                    "producer_identities",
-                    "timing_error_bounds",
-                    "transcript",
-                    "speech_activity",
-                },
-                "response",
-            ),
-            r,
-            raw,
-        )
+        try:
+            return self._parse(
+                _obj(
+                    p,
+                    {
+                        "schema_version",
+                        "request_identity_sha256",
+                        "source",
+                        "container",
+                        "audio_clock",
+                        "requested_range",
+                        "timed_speech_policy_sha256",
+                        "transcript_capability",
+                        "producer_identities",
+                        "timing_error_bounds",
+                        "transcript",
+                        "speech_activity",
+                    },
+                    "response",
+                ),
+                r,
+                raw,
+            )
+        except LocalMediaPreflightError:
+            raise
+        except (KeyError, TypeError, ValueError) as e:
+            raise LocalMediaEvidenceError("timed speech response is malformed") from e
 
     @classmethod
     def _parse(
@@ -218,11 +265,13 @@ class FunASRHttpTimedSpeechEvidencePort:
         }:
             raise LocalMediaEvidenceError("ASR/VAD outcome disagreement")
         ids = cls._identities(p["producer_identities"], r)
-        cls._bounds(p["timing_error_bounds"], r)
+        bounds = cls._bounds(p["timing_error_bounds"], r)
+        service_sha256 = ids[0].service_sha256
         return TimedSpeechEvidence(
             transcript,
             speech,
             ids,
+            bounds,
             TimedSpeechInvocationTrace(
                 r.endpoint_url,
                 r.identity_sha256,
@@ -235,6 +284,7 @@ class FunASRHttpTimedSpeechEvidencePort:
                         for x in ids
                     ]
                 ),
+                service_sha256,
             ),
         )
 
@@ -268,54 +318,74 @@ class FunASRHttpTimedSpeechEvidencePort:
     def _transcript(
         cls, i: dict[str, object], r: TimedSpeechEvidenceRequest, c: EvidenceContext
     ) -> TranscriptSet:
-        if i["truncated"] is not False:
+        if _boolean(i["truncated"], "transcript.truncated"):
             raise LocalMediaEvidenceError("truncated transcript")
+        touch = _obj(i["boundary_touch"], {"left", "right"}, "boundary_touch")
+        touch_left = _boolean(touch["left"], "boundary_touch.left")
+        touch_right = _boolean(touch["right"], "boundary_touch.right")
         comp = _obj(i["completeness"], {"segment", "word", "sentence"}, "completeness")
         expected_word = "complete" if r.word_timing_capability == "required" else "not_applicable"
         if comp != {"segment": "complete", "word": expected_word, "sentence": "complete"}:
             raise LocalMediaEvidenceError("completeness capability drift")
         words = tuple(
             TranscriptWord(
-                str(x["word_id"]),
+                _text(x["word_id"], "word.word_id"),
                 r.source_id,
                 r.source_sha256,
                 r.clock_id,
                 r.time_base,
-                int(x["in_tick"]),
-                int(x["out_tick"]),
-                str(x["text"]),
+                _integer(x["in_tick"], "word.in_tick"),
+                _integer(x["out_tick"], "word.out_tick"),
+                _text(x["text"], "word.text"),
             )
-            for x in _arr(i["words"], "words")
+            for x in (
+                _obj(item, {"word_id", "in_tick", "out_tick", "text"}, "word")
+                for item in _arr(i["words"], "words")
+            )
         )
         sentences = tuple(
             TranscriptSentence(
-                str(x["sentence_id"]),
+                _text(x["sentence_id"], "sentence.sentence_id"),
                 r.source_id,
                 r.source_sha256,
                 r.clock_id,
                 r.time_base,
-                int(x["in_tick"]),
-                int(x["out_tick"]),
-                tuple(cast(list[str], x["word_ids"])),
-                str(x["text"]),
+                _integer(x["in_tick"], "sentence.in_tick"),
+                _integer(x["out_tick"], "sentence.out_tick"),
+                _text_array(x["word_ids"], "sentence.word_ids"),
+                _text(x["text"], "sentence.text"),
             )
-            for x in _arr(i["sentences"], "sentences")
+            for x in (
+                _obj(
+                    item,
+                    {"sentence_id", "in_tick", "out_tick", "word_ids", "text"},
+                    "sentence",
+                )
+                for item in _arr(i["sentences"], "sentences")
+            )
         )
         segments = tuple(
             TranscriptSegment(
-                str(x["segment_id"]),
+                _text(x["segment_id"], "segment.segment_id"),
                 r.source_id,
                 r.source_sha256,
                 r.clock_id,
                 r.time_base,
-                int(x["in_tick"]),
-                int(x["out_tick"]),
-                tuple(cast(list[str], x["sentence_ids"])),
-                str(x["text"]),
+                _integer(x["in_tick"], "segment.in_tick"),
+                _integer(x["out_tick"], "segment.out_tick"),
+                _text_array(x["sentence_ids"], "segment.sentence_ids"),
+                _text(x["text"], "segment.text"),
             )
-            for x in _arr(i["segments"], "segments")
+            for x in (
+                _obj(
+                    item,
+                    {"segment_id", "in_tick", "out_tick", "sentence_ids", "text"},
+                    "segment",
+                )
+                for item in _arr(i["segments"], "segments")
+            )
         )
-        outcome = TranscriptSourceOutcome(str(i["outcome"]))
+        outcome = TranscriptSourceOutcome(_text(i["outcome"], "transcript.outcome"))
         if outcome not in {
             TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE,
             TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
@@ -345,6 +415,9 @@ class FunASRHttpTimedSpeechEvidencePort:
             segments,
             words,
             sentences,
+            touch_left,
+            touch_right,
+            False,
         )
 
     @classmethod
@@ -352,22 +425,27 @@ class FunASRHttpTimedSpeechEvidencePort:
         cls, i: dict[str, object], r: TimedSpeechEvidenceRequest, c: EvidenceContext
     ) -> SpeechActivitySet:
         seg = []
-        for x in _arr(i["segments"], "vad segments"):
-            if x.get("confidence_ppm") is not None:
+        for item in _arr(i["segments"], "vad segments"):
+            x = _obj(
+                item,
+                {"speech_segment_id", "in_tick", "out_tick", "confidence_ppm"},
+                "vad segment",
+            )
+            if x["confidence_ppm"] is not None:
                 raise LocalMediaEvidenceError("FSMN confidence must be null")
             seg.append(
                 SpeechActivitySegment(
-                    str(x["speech_segment_id"]),
+                    _text(x["speech_segment_id"], "vad.speech_segment_id"),
                     r.source_id,
                     r.source_sha256,
                     r.clock_id,
                     r.time_base,
-                    int(x["in_tick"]),
-                    int(x["out_tick"]),
+                    _integer(x["in_tick"], "vad.in_tick"),
+                    _integer(x["out_tick"], "vad.out_tick"),
                     None,
                 )
             )
-        outcome = SpeechSourceOutcome(str(i["outcome"]))
+        outcome = SpeechSourceOutcome(_text(i["outcome"], "speech.outcome"))
         if outcome not in {SpeechSourceOutcome.SPEECH_DETECTED, SpeechSourceOutcome.NONE_DETECTED}:
             raise LocalMediaEvidenceError("indeterminate VAD")
         return SpeechActivitySet(
@@ -383,7 +461,28 @@ class FunASRHttpTimedSpeechEvidencePort:
             raise LocalMediaEvidenceError("two identities required")
         result = []
         for x, e in zip(items, r.expected_producers, strict=True):
-            identity = TimedSpeechProducerIdentity(**x)  # type: ignore[arg-type]
+            fields = {
+                "producer_kind",
+                "provider_id",
+                "provider_version",
+                "funasr_version",
+                "torch_version",
+                "device",
+                "model_id",
+                "model_revision",
+                "model_sha256",
+                "producer_id",
+                "producer_version",
+                "generation_policy_sha256",
+                "detector_sha256",
+                "calibration_policy_sha256",
+                "calibration_record_sha256",
+                "service_sha256",
+                "inference_kind",
+            }
+            closed = _obj(x, fields, "producer identity")
+            values = {name: _text(closed[name], f"identity.{name}") for name in fields}
+            identity = TimedSpeechProducerIdentity(**values)  # type: ignore[arg-type]
             for n in e.__dataclass_fields__:
                 if n != "timing_error_bound_tick" and getattr(identity, n) != getattr(e, n):
                     raise LocalMediaSourceError("producer identity drift")
@@ -399,12 +498,23 @@ class FunASRHttpTimedSpeechEvidencePort:
         return cast(tuple[TimedSpeechProducerIdentity, TimedSpeechProducerIdentity], tuple(result))
 
     @staticmethod
-    def _bounds(v: object, r: TimedSpeechEvidenceRequest) -> None:
+    def _bounds(
+        v: object, r: TimedSpeechEvidenceRequest
+    ) -> tuple[TimedSpeechTimingErrorBound, TimedSpeechTimingErrorBound]:
         bounds = _obj(v, {"asr", "vad"}, "bounds")
+        result = []
         for e in r.expected_producers:
             x = _obj(bounds[e.producer_kind], {"early_tick", "late_tick", "time_base"}, "bound")
+            early = _integer(x["early_tick"], "bound.early_tick")
+            late = _integer(x["late_tick"], "bound.late_tick")
             if (
-                not 0 < int(x["early_tick"]) <= e.timing_error_bound_tick
-                or not 0 < int(x["late_tick"]) <= e.timing_error_bound_tick
+                not 0 < early <= e.timing_error_bound_tick
+                or not 0 < late <= e.timing_error_bound_tick
+                or x["time_base"]
+                != {"numerator": r.time_base.numerator, "denominator": r.time_base.denominator}
             ):
                 raise LocalMediaEvidenceError("invalid timing error bound")
+            result.append(TimedSpeechTimingErrorBound(e.producer_kind, early, late, r.time_base))
+        return cast(
+            tuple[TimedSpeechTimingErrorBound, TimedSpeechTimingErrorBound], tuple(result)
+        )

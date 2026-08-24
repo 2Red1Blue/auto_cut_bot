@@ -727,6 +727,9 @@ class TranscriptSet(CanonicalEvidence):
     segments: tuple[TranscriptSegment, ...]
     words: tuple[TranscriptWord, ...]
     sentences: tuple[TranscriptSentence, ...]
+    boundary_touch_left: bool = False
+    boundary_touch_right: bool = False
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         _require_text(self.transcript_set_id, "transcript_set_id")
@@ -734,6 +737,15 @@ class TranscriptSet(CanonicalEvidence):
             raise MediaValidationError("transcript evidence requires an audio clock")
         _validate_coverage(self.context, self.coverage)
         _require_enum(self.source_outcome, TranscriptSourceOutcome, "transcript.source_outcome")
+        for value, name in (
+            (self.boundary_touch_left, "transcript.boundary_touch_left"),
+            (self.boundary_touch_right, "transcript.boundary_touch_right"),
+            (self.truncated, "transcript.truncated"),
+        ):
+            if type(value) is not bool:  # noqa: E721
+                raise MediaValidationError(f"{name} must be a boolean")
+        if self.truncated and self.coverage.outcome is CoverageOutcome.COMPLETE:
+            raise MediaValidationError("truncated transcript cannot have complete coverage")
         segments = _tuple(self.segments, "transcript.segments")
         words = _tuple(self.words, "transcript.words")
         sentences = _tuple(self.sentences, "transcript.sentences")

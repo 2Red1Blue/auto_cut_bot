@@ -873,10 +873,10 @@ def _validate_producer_provenance_json(value: object) -> None:
     }
     canonical_invocations: list[dict[str, object]] = []
     allowed_invocations = {
-        ("asr", "whisper"),
+        ("asr", "funasr-http"),
         ("probe", "ffprobe"),
         ("subtitle", "ffprobe"),
-        ("vad", "ffmpeg"),
+        ("vad", "funasr-http"),
         ("visual", "ffmpeg"),
     }
     for invocation_raw in invocations:

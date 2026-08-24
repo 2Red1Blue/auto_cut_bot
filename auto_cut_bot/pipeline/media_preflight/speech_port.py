@@ -25,6 +25,8 @@ class TimedSpeechExpectedProducer:
     model_id: str
     model_revision: str
     model_sha256: str
+    service_sha256: str
+    inference_kind: Literal["sensevoice-word-timestamp", "fsmn-vad-direct"]
 
     def __post_init__(self) -> None:
         if self.producer_kind not in {"asr", "vad"}:
@@ -35,10 +37,16 @@ class TimedSpeechExpectedProducer:
             "calibration_policy_sha256",
             "calibration_record_sha256",
             "model_sha256",
+            "service_sha256",
         ):
             sha256_prefixed(getattr(self, name), name)
         if self.timing_error_bound_tick <= 0:
             raise LocalMediaPolicyError("timing error bound must be positive")
+        expected_inference = (
+            "sensevoice-word-timestamp" if self.producer_kind == "asr" else "fsmn-vad-direct"
+        )
+        if self.inference_kind != expected_inference:
+            raise LocalMediaPolicyError("speech producer inference kind is invalid")
 
     def to_mapping(self) -> dict[str, object]:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
@@ -165,6 +173,38 @@ class TimedSpeechProducerIdentity:
     detector_sha256: str
     calibration_policy_sha256: str
     calibration_record_sha256: str
+    service_sha256: str
+    inference_kind: Literal["sensevoice-word-timestamp", "fsmn-vad-direct"]
+
+    def __post_init__(self) -> None:
+        expected = "sensevoice-word-timestamp" if self.producer_kind == "asr" else "fsmn-vad-direct"
+        if self.producer_kind not in {"asr", "vad"} or self.inference_kind != expected:
+            raise LocalMediaEvidenceError("measured speech producer kind is invalid")
+        for name in (
+            "model_sha256",
+            "generation_policy_sha256",
+            "detector_sha256",
+            "calibration_policy_sha256",
+            "calibration_record_sha256",
+            "service_sha256",
+        ):
+            sha256_prefixed(getattr(self, name), name)
+
+
+@dataclass(frozen=True, slots=True)
+class TimedSpeechTimingErrorBound:
+    producer_kind: Literal["asr", "vad"]
+    early_tick: int
+    late_tick: int
+    time_base: TimeBase
+
+    def __post_init__(self) -> None:
+        if self.producer_kind not in {"asr", "vad"}:
+            raise LocalMediaEvidenceError("invalid timing-bound producer")
+        if type(self.early_tick) is not int or type(self.late_tick) is not int:
+            raise LocalMediaEvidenceError("timing bounds must be integers")
+        if self.early_tick <= 0 or self.late_tick <= 0:
+            raise LocalMediaEvidenceError("timing bounds must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +213,7 @@ class TimedSpeechInvocationTrace:
     request_sha256: str
     response_sha256: str
     producer_identity_sha256: str
+    service_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,11 +221,14 @@ class TimedSpeechEvidence:
     transcript: TranscriptSet
     speech_activity: SpeechActivitySet
     producer_identities: tuple[TimedSpeechProducerIdentity, TimedSpeechProducerIdentity]
+    timing_error_bounds: tuple[TimedSpeechTimingErrorBound, TimedSpeechTimingErrorBound]
     invocation_trace: TimedSpeechInvocationTrace
 
     def __post_init__(self) -> None:
         if tuple(x.producer_kind for x in self.producer_identities) != ("asr", "vad"):
             raise LocalMediaEvidenceError("identities must be asr then vad")
+        if tuple(x.producer_kind for x in self.timing_error_bounds) != ("asr", "vad"):
+            raise LocalMediaEvidenceError("timing bounds must be asr then vad")
 
 
 class TimedSpeechEvidencePort(Protocol):

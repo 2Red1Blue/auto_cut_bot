@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import hashlib
+import hmac
 import importlib.metadata
 import json
 import os
@@ -17,6 +18,13 @@ from typing import Any, cast
 import torch
 from aiohttp import web
 from funasr import AutoModel
+
+PROVIDER_ID = "funasr-http-v1"
+PROVIDER_VERSION = "1.0.0"
+ASR_MODEL_ID = "SenseVoiceSmall"
+VAD_MODEL_ID = "fsmn-vad"
+ASR_INFERENCE_KIND = "sensevoice-word-timestamp"
+VAD_INFERENCE_KIND = "fsmn-vad-direct"
 
 
 def canon(v: object) -> bytes:
@@ -52,6 +60,60 @@ def tree_hash(path: Path) -> str:
                 }
             )
     return sha(canon(records))
+
+
+def positive_environment(name: str) -> int:
+    raw = os.environ[name]
+    if not raw.isascii() or not raw.isdecimal() or int(raw) <= 0:
+        raise RuntimeError(f"{name} must be a positive decimal integer")
+    return int(raw)
+
+
+def service_hash() -> str:
+    with Path(__file__).open("rb") as source:
+        digest = hashlib.sha256()
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def module_device(module: object) -> str:
+    devices: set[str] = set()
+    for method_name in ("parameters", "buffers"):
+        method = getattr(module, method_name, None)
+        if callable(method):
+            for value in method():
+                device = getattr(value, "device", None)
+                if device is not None:
+                    devices.add(str(getattr(device, "type", device)))
+    if not devices:
+        device = getattr(module, "device", None)
+        if device is not None:
+            devices.add(str(getattr(device, "type", device)))
+    if len(devices) != 1:
+        raise RuntimeError("model parameters do not have one measurable device")
+    return devices.pop()
+
+
+def detector_hash(identity: dict[str, object], profile: dict[str, object]) -> str:
+    return sha(
+        canon(
+            {
+                "device": profile["device"],
+                "funasr_version": profile["funasr_version"],
+                "model_id": identity["model_id"],
+                "model_revision": identity["model_revision"],
+                "model_sha256": identity["model_sha256"],
+                "producer_kind": identity["producer_kind"],
+                "provider_id": profile["provider_id"],
+                "provider_version": profile["provider_version"],
+                "service_sha256": profile["service_sha256"],
+                "timed_speech_policy_sha256": profile["timed_speech_policy_sha256"],
+                "torch_version": profile["torch_version"],
+                "word_timing_capability": profile["word_timing_capability"],
+            }
+        )
+    )
 
 
 def coverage(m: dict[str, object], outcome: str) -> dict[str, object]:
@@ -238,29 +300,103 @@ def vad(
 
 class Service:
     def __init__(self) -> None:
-        self.profile = json.loads(os.environ["FUNASR_PROFILE_JSON"])
+        profile = json.loads(os.environ["FUNASR_PROFILE_JSON"])
+        if type(profile) is not dict:
+            raise RuntimeError("FUNASR_PROFILE_JSON must be an object")
+        self.profile = cast(dict[str, object], profile)
         self.lock = asyncio.Lock()
+        self.admission_lock = asyncio.Lock()
+        self.admitted = 0
         self.ready = False
-        self.max_request = int(os.environ["FUNASR_MAX_REQUEST_BYTES"])
-        self.max_response = int(os.environ["FUNASR_MAX_RESPONSE_BYTES"])
-        self.timeout = int(os.environ["FUNASR_INFERENCE_TIMEOUT_SECONDS"])
+        self.max_request = positive_environment("FUNASR_MAX_REQUEST_BYTES")
+        self.max_response = positive_environment("FUNASR_MAX_RESPONSE_BYTES")
+        self.timeout = positive_environment("FUNASR_INFERENCE_TIMEOUT_SECONDS")
+        self.queue_capacity = positive_environment("FUNASR_QUEUE_CAPACITY")
+        token = os.environ["FUNASR_SHARED_TOKEN"]
+        if not token:
+            raise RuntimeError("FUNASR_SHARED_TOKEN must be non-empty")
+        self.shared_token = token
         self.model: Any = None
-        self.measured = None
+        self.measured: str | None = None
+        self.measured_profile: dict[str, object] | None = None
+        self.identities: list[dict[str, object]] = []
+        self._fatal_exit = os._exit
 
     async def load(self) -> None:
-        a = Path(os.environ["FUNASR_ASR_MODEL_PATH"]).resolve()
-        v = Path(os.environ["FUNASR_VAD_MODEL_PATH"]).resolve()
-        measured = dict(self.profile)
-        measured.update(
-            funasr_version=importlib.metadata.version("funasr"),
-            torch_version=torch.__version__,
-            asr_model_sha256=await asyncio.to_thread(tree_hash, a),
-            vad_model_sha256=await asyncio.to_thread(tree_hash, v),
+        a = Path(os.environ["FUNASR_ASR_MODEL_PATH"]).resolve(strict=True)
+        v = Path(os.environ["FUNASR_VAD_MODEL_PATH"]).resolve(strict=True)
+        if not a.is_dir() or not v.is_dir():
+            raise RuntimeError("model paths must be directories")
+        expected_fields = {
+            "schema_version",
+            "provider_id",
+            "provider_version",
+            "service_sha256",
+            "funasr_version",
+            "torch_version",
+            "device",
+            "word_timing_capability",
+            "profile_calibration_sha256",
+            "timed_speech_policy_sha256",
+            "utterance_gap_milliseconds",
+            "vad_merge_gap_milliseconds",
+            "producers",
+        }
+        if set(self.profile) != expected_fields:
+            raise RuntimeError("profile schema is not closed")
+        measured = {
+            **{k: self.profile[k] for k in expected_fields - {"producers"}},
+            "provider_id": PROVIDER_ID,
+            "provider_version": PROVIDER_VERSION,
+            "service_sha256": service_hash(),
+            "funasr_version": importlib.metadata.version("funasr"),
+            "torch_version": torch.__version__,
+        }
+        producers = self.profile["producers"]
+        if type(producers) is not list or len(producers) != 2:
+            raise RuntimeError("profile must contain ASR and VAD producers")
+        declared = cast(list[dict[str, object]], producers)
+        measured_models = (
+            ("asr", ASR_MODEL_ID, a.name, await asyncio.to_thread(tree_hash, a), ASR_INFERENCE_KIND),
+            ("vad", VAD_MODEL_ID, v.name, await asyncio.to_thread(tree_hash, v), VAD_INFERENCE_KIND),
         )
-        for k in ("funasr_version", "torch_version", "asr_model_sha256", "vad_model_sha256"):
-            if measured[k] != self.profile[k]:
-                raise RuntimeError(f"identity mismatch {k}")
-        self.measured = sha(canon(measured))
+        identity_fields = {
+            "producer_kind",
+            "producer_id",
+            "producer_version",
+            "generation_policy_sha256",
+            "detector_sha256",
+            "calibration_policy_sha256",
+            "calibration_record_sha256",
+            "timing_error_bound_tick",
+            "model_id",
+            "model_revision",
+            "model_sha256",
+            "service_sha256",
+            "inference_kind",
+        }
+        identities = []
+        for raw, (kind, model_id, revision, model_sha256, inference_kind) in zip(
+            declared, measured_models, strict=True
+        ):
+            if type(raw) is not dict or set(raw) != identity_fields:
+                raise RuntimeError("producer profile schema is not closed")
+            actual = {
+                **raw,
+                "producer_kind": kind,
+                "model_id": model_id,
+                "model_revision": revision,
+                "model_sha256": model_sha256,
+                "service_sha256": measured["service_sha256"],
+                "inference_kind": inference_kind,
+            }
+            actual["detector_sha256"] = detector_hash(actual, measured)
+            if actual != raw:
+                raise RuntimeError(f"measured {kind} identity mismatch")
+            identities.append(actual)
+        for key, actual in measured.items():
+            if key != "producers" and actual != self.profile[key]:
+                raise RuntimeError(f"measured profile identity mismatch {key}")
         self.model = await asyncio.to_thread(
             AutoModel,
             model=str(a),
@@ -269,6 +405,13 @@ class Service:
             disable_update=True,
             disable_pbar=True,
         )
+        devices = (module_device(self.model.model), module_device(self.model.vad_model))
+        if devices != (self.profile["device"], self.profile["device"]):
+            raise RuntimeError("model parameter device mismatch")
+        measured["producers"] = identities
+        self.measured_profile = measured
+        self.identities = identities
+        self.measured = sha(canon(measured))
         self.ready = True
 
     def infer(self, p: Path) -> tuple[object, object]:
@@ -276,15 +419,55 @@ class Service:
             str(p), model=self.model.vad_model, kwargs=copy.deepcopy(self.model.vad_kwargs)
         )
 
+    def validate_manifest_identity(self, manifest: dict[str, object]) -> None:
+        if self.measured_profile is None:
+            raise web.HTTPServiceUnavailable()
+        profile = cast(dict[str, object], manifest.get("profile"))
+        expected_profile = {
+            key: self.measured_profile[key]
+            for key in (
+                "provider_id",
+                "provider_version",
+                "funasr_version",
+                "torch_version",
+                "device",
+                "word_timing_capability",
+                "profile_calibration_sha256",
+            )
+        }
+        if profile != expected_profile:
+            raise web.HTTPConflict(text="measured profile identity drift")
+        if manifest.get("timed_speech_policy_sha256") != self.measured_profile.get(
+            "timed_speech_policy_sha256"
+        ) or manifest.get("timing_policy") != {
+            "utterance_gap_milliseconds": self.measured_profile.get(
+                "utterance_gap_milliseconds"
+            ),
+            "vad_merge_gap_milliseconds": self.measured_profile.get(
+                "vad_merge_gap_milliseconds"
+            ),
+        }:
+            raise web.HTTPConflict(text="measured timing policy drift")
+        expected = manifest.get("expected_producers")
+        if expected != [
+            {**identity, "timing_error_bound_tick": identity["timing_error_bound_tick"]}
+            for identity in self.identities
+        ]:
+            raise web.HTTPConflict(text="measured producer identity drift")
+
     async def evidence(self, req: web.Request) -> web.Response:
         if not self.ready:
             raise web.HTTPServiceUnavailable()
+        supplied = req.headers.get("Authorization", "")
+        if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
+            raise web.HTTPUnauthorized(text="unauthorized")
         try:
             m = json.loads(base64.b64decode(req.headers["X-Timed-Speech-Manifest"], validate=True))
         except Exception as e:
             raise web.HTTPBadRequest(text="bad manifest") from e
         if sha(canon(m)) != req.headers.get("X-Timed-Speech-Request-SHA256"):
             raise web.HTTPBadRequest(text="identity")
+        self.validate_manifest_identity(m)
         rr = m["requested_range"]
         c = m["audio_clock"]
         if rr != {"in_tick": c["origin_tick"], "out_tick": c["origin_tick"] + c["duration_tick"]}:
@@ -333,30 +516,29 @@ class Service:
                 }[state],
                 "segments": vsegs,
             }
-            identities = []
-            for e in m["expected_producers"]:
-                identities.append(
-                    {
-                        **{k: e[k] for k in e if k != "timing_error_bound_tick"},
-                        **{
-                            k: self.profile[k]
-                            for k in (
-                                "provider_id",
-                                "provider_version",
-                                "funasr_version",
-                                "torch_version",
-                                "device",
-                            )
-                        },
-                    }
-                )
+            identities = [
+                {
+                    **{k: value for k, value in identity.items() if k != "timing_error_bound_tick"},
+                    **{
+                        k: self.measured_profile[k]
+                        for k in (
+                            "provider_id",
+                            "provider_version",
+                            "funasr_version",
+                            "torch_version",
+                            "device",
+                        )
+                    },
+                }
+                for identity in self.identities
+            ]
             bounds = {
-                e["producer_kind"]: {
-                    "early_tick": e["timing_error_bound_tick"],
-                    "late_tick": e["timing_error_bound_tick"],
+                identity["producer_kind"]: {
+                    "early_tick": identity["timing_error_bound_tick"],
+                    "late_tick": identity["timing_error_bound_tick"],
                     "time_base": c["time_base"],
                 }
-                for e in m["expected_producers"]
+                for identity in self.identities
             }
             response = {
                 "schema_version": "timed-speech-evidence-response-v1",

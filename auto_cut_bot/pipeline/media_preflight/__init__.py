@@ -25,6 +25,7 @@ from .speech_port import (
     TimedSpeechExpectedProducer,
     TimedSpeechInvocationTrace,
     TimedSpeechProducerIdentity,
+    TimedSpeechTimingErrorBound,
 )
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "TimedSpeechExpectedProducer",
     "TimedSpeechInvocationTrace",
     "TimedSpeechProducerIdentity",
+    "TimedSpeechTimingErrorBound",
     "LocalMediaPreflightRequest",
     "LocalMediaPreflightResult",
     "LocalMediaSourceError",

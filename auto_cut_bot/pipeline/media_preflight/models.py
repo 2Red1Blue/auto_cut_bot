@@ -159,6 +159,7 @@ class LocalMediaPreflightPolicy:
     timed_speech_endpoint_url: str
     timed_speech_provider_id: str
     timed_speech_provider_version: str
+    timed_speech_service_sha256: str
     funasr_version: str
     torch_version: str
     speech_device: str
@@ -225,6 +226,7 @@ class LocalMediaPreflightPolicy:
             "vad_model_sha256",
             "timed_speech_policy_sha256",
             "timed_speech_calibration_sha256",
+            "timed_speech_service_sha256",
         ):
             try:
                 sha256_prefixed(getattr(self, name), name)
@@ -305,6 +307,7 @@ class LocalMediaPreflightPolicy:
             "timed_speech_endpoint_url",
             "timed_speech_provider_id",
             "timed_speech_provider_version",
+            "timed_speech_service_sha256",
             "funasr_version",
             "torch_version",
             "speech_device",
@@ -407,6 +410,7 @@ class LocalMediaPreflightPolicy:
                 "producer_kind": kind,
                 "provider_id": self.timed_speech_provider_id,
                 "provider_version": self.timed_speech_provider_version,
+                "service_sha256": self.timed_speech_service_sha256,
                 "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
                 "torch_version": self.torch_version,
                 "word_timing_capability": self.word_timing_capability,
@@ -472,6 +476,7 @@ class LocalMediaPreflightPolicy:
             "timed_speech_endpoint_url": self.timed_speech_endpoint_url,
             "timed_speech_provider_id": self.timed_speech_provider_id,
             "timed_speech_provider_version": self.timed_speech_provider_version,
+            "timed_speech_service_sha256": self.timed_speech_service_sha256,
             "funasr_version": self.funasr_version,
             "torch_version": self.torch_version,
             "speech_device": self.speech_device,

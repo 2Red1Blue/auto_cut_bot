@@ -51,6 +51,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     TimedSpeechEvidenceRequest,
     TimedSpeechInvocationTrace,
     TimedSpeechProducerIdentity,
+    TimedSpeechTimingErrorBound,
 )
 
 
@@ -96,6 +97,7 @@ def _policy(_model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPre
         timed_speech_endpoint_url="http://127.0.0.1:8765/v1/timed-speech-evidence",
         timed_speech_provider_id="funasr-http-v1",
         timed_speech_provider_version="1.0.0",
+        timed_speech_service_sha256="sha256:" + "a" * 64,
         funasr_version="1.4.3",
         torch_version="2.7.1",
         speech_device="cpu",
@@ -275,6 +277,8 @@ class _SpeechPort:
                 x.detector_sha256,
                 x.calibration_policy_sha256,
                 x.calibration_record_sha256,
+                x.service_sha256,
+                x.inference_kind,
             )
             for x in r.expected_producers
         )
@@ -282,8 +286,16 @@ class _SpeechPort:
             tr,
             sp,
             ids,
+            tuple(
+                TimedSpeechTimingErrorBound(x.producer_kind, 1000, 1000, r.time_base)
+                for x in r.expected_producers
+            ),
             TimedSpeechInvocationTrace(
-                r.endpoint_url, r.identity_sha256, "sha256:" + "a" * 64, "sha256:" + "b" * 64
+                r.endpoint_url,
+                r.identity_sha256,
+                "sha256:" + "a" * 64,
+                "sha256:" + "b" * 64,
+                r.expected_producers[0].service_sha256,
             ),
         )  # type: ignore[arg-type]
 
@@ -373,6 +385,8 @@ def _request(
     )
     policy = _policy(model.resolve(), frame_policy, audio_policy)
     measured = port.measure_detector_identity_sha256s(policy)
+    measured["asr"] = policy.timed_speech_detector_sha256("asr")
+    measured["vad"] = policy.timed_speech_detector_sha256("vad")
     policy = replace(
         policy,
         calibrations=tuple(
@@ -418,7 +432,15 @@ def test_prepare_builds_conjunctive_real_tool_evidence(tmp_path: Path) -> None:
     assert {item.executable for item in result.tool_trace.invocations} <= {
         "ffmpeg",
         "ffprobe",
+        "funasr-http",
     }
+    speech_traces = [
+        item for item in result.tool_trace.invocations if item.executable == "funasr-http"
+    ]
+    assert [item.producer_kind for item in speech_traces] == ["asr", "vad"]
+    assert all(item.executable_sha256 == request.policy.timed_speech_service_sha256 for item in speech_traces)
+    assert result.producer_identities[2].detector_sha256 == speech.requests[0].expected_producers[0].detector_sha256
+    assert result.producer_identities[3].detector_sha256 == speech.requests[0].expected_producers[1].detector_sha256
     assert speech.requests[0].word_timing_capability == "required"
     assert all("-nostdin" in argv for argv in runner.argvs if "ffmpeg" in Path(argv[0]).name)
     rawvideo_argv = next(argv for argv in runner.argvs if "rawvideo" in argv)

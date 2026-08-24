@@ -3,7 +3,7 @@ from __future__ import annotations
 import runpy
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from autocut_kernel.media import TimeBase
@@ -30,6 +30,8 @@ def producer(kind: str) -> TimedSpeechExpectedProducer:
         "SenseVoiceSmall" if kind == "asr" else "fsmn",
         "v1",
         H,
+        H,
+        "sensevoice-word-timestamp" if kind == "asr" else "fsmn-vad-direct",
     )  # type: ignore[arg-type]
 
 
@@ -63,14 +65,99 @@ def request(tmp_path: Path) -> TimedSpeechEvidenceRequest:
     )
 
 
-def namespace(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+def namespace(
+    monkeypatch: pytest.MonkeyPatch, auto_model: type[object] = object
+) -> dict[str, object]:
     f = ModuleType("funasr")
-    f.AutoModel = object  # type: ignore[attr-defined]
+    f.AutoModel = auto_model  # type: ignore[attr-defined]
     t = ModuleType("torch")
     t.__version__ = "test"  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "funasr", f)
     monkeypatch.setitem(sys.modules, "torch", t)
     return runpy.run_path("deploy/funasr/service.py")
+
+
+class _Module:
+    def __init__(self, device: str) -> None:
+        self.device = device
+
+    def parameters(self) -> tuple[object, ...]:
+        return (SimpleNamespace(device=SimpleNamespace(type=self.device)),)
+
+    def buffers(self) -> tuple[object, ...]:
+        return ()
+
+
+class _AutoModel:
+    actual_device = "cpu"
+
+    def __init__(self, **_kwargs: object) -> None:
+        self.model = _Module(self.actual_device)
+        self.vad_model = _Module(self.actual_device)
+        self.vad_kwargs: dict[str, object] = {}
+
+
+def _service_profile(
+    ns: dict[str, object], asr_path: Path, vad_path: Path, *, device: str = "cpu"
+) -> dict[str, object]:
+    tree_hash = ns["tree_hash"]
+    service_hash = ns["service_hash"]
+    detector_hash = ns["detector_hash"]
+    profile: dict[str, object] = {
+        "schema_version": "funasr-measured-profile-v1",
+        "provider_id": "funasr-http-v1",
+        "provider_version": "1.0.0",
+        "service_sha256": service_hash(),
+        "funasr_version": "test",
+        "torch_version": "test",
+        "device": device,
+        "word_timing_capability": "required",
+        "profile_calibration_sha256": H,
+        "timed_speech_policy_sha256": H,
+        "utterance_gap_milliseconds": 700,
+        "vad_merge_gap_milliseconds": 350,
+    }
+    producers = []
+    for kind, model_id, path, inference_kind in (
+        ("asr", "SenseVoiceSmall", asr_path, "sensevoice-word-timestamp"),
+        ("vad", "fsmn-vad", vad_path, "fsmn-vad-direct"),
+    ):
+        identity = {
+            "producer_kind": kind,
+            "producer_id": kind,
+            "producer_version": "1",
+            "generation_policy_sha256": H,
+            "detector_sha256": H,
+            "calibration_policy_sha256": H,
+            "calibration_record_sha256": H,
+            "timing_error_bound_tick": 50,
+            "model_id": model_id,
+            "model_revision": path.name,
+            "model_sha256": tree_hash(path),
+            "service_sha256": profile["service_sha256"],
+            "inference_kind": inference_kind,
+        }
+        identity["detector_sha256"] = detector_hash(identity, profile)
+        producers.append(identity)
+    profile["producers"] = producers
+    return profile
+
+
+def _service_environment(
+    monkeypatch: pytest.MonkeyPatch, profile: dict[str, object], asr: Path, vad: Path
+) -> None:
+    values = {
+        "FUNASR_PROFILE_JSON": __import__("json").dumps(profile),
+        "FUNASR_ASR_MODEL_PATH": str(asr),
+        "FUNASR_VAD_MODEL_PATH": str(vad),
+        "FUNASR_MAX_REQUEST_BYTES": "1000000",
+        "FUNASR_MAX_RESPONSE_BYTES": "1000000",
+        "FUNASR_INFERENCE_TIMEOUT_SECONDS": "30",
+        "FUNASR_QUEUE_CAPACITY": "1",
+        "FUNASR_SHARED_TOKEN": "secret",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
 
 
 def test_closed_request_binds_required_capability_and_policy(tmp_path: Path) -> None:
@@ -161,3 +248,55 @@ def test_explicit_empty_asr_distinguishes_silence_from_vad_only(
         350,
     )
     assert state == "speech" and len(segs) == 1 and segs[0]["confidence_ppm"] is None
+
+
+@pytest.mark.asyncio
+async def test_service_load_binds_model_bytes_service_and_actual_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+
+    service = ns["Service"]()
+    await service.load()
+
+    assert service.ready is True
+    assert service.measured_profile["service_sha256"] == ns["service_hash"]()
+    assert [item["inference_kind"] for item in service.identities] == [
+        "sensevoice-word-timestamp",
+        "fsmn-vad-direct",
+    ]
+    assert service.identities == profile["producers"]
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_device_fallback_and_model_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad, device="mps")
+    _service_environment(monkeypatch, profile, asr, vad)
+
+    with pytest.raises(RuntimeError, match="parameter device mismatch"):
+        await ns["Service"]().load()
+
+    profile = _service_profile(ns, asr, vad)
+    profile["producers"][0]["model_sha256"] = H  # type: ignore[index]
+    _service_environment(monkeypatch, profile, asr, vad)
+    with pytest.raises(RuntimeError, match="measured asr identity mismatch"):
+        await ns["Service"]().load()

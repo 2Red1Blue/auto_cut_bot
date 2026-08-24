@@ -347,11 +347,13 @@ class LocalMediaPreflightPort:
         subtitle_cues = self._subtitle_set(samples, embedded_cues, bool(subtitle_streams), request)
 
         if request.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
+            timed: TimedSpeechEvidence | None = None
             transcript = self._not_applicable_transcript(request)
             speech_activity = self._not_applicable_speech(request)
         else:
             timed = self._speech_port.produce(self._speech_request(path, request))
             self._validate_timed_speech_evidence(timed, request)
+            traces.extend(self._timed_speech_traces(timed))
             transcript, speech_activity = timed.transcript, timed.speech_activity
 
         final_hash, _ = _sha_file(path)
@@ -373,7 +375,7 @@ class LocalMediaPreflightPort:
             subtitle_cues=subtitle_cues,
         )
         identities = tuple(
-            self._producer_identity(kind, request)
+            self._producer_identity(kind, request, timed)
             for kind in (
                 "frame",
                 "audio",
@@ -431,8 +433,6 @@ class LocalMediaPreflightPort:
             "subtitle": ("ffmpeg", "ffprobe"),
         }
         result: dict[ProducerKind, str] = {}
-        result["asr"] = policy.timed_speech_detector_sha256("asr")
-        result["vad"] = policy.timed_speech_detector_sha256("vad")
         for kind, names in tool_kinds.items():
             result[kind] = local_detector_identity_sha256(
                 producer_kind=kind,
@@ -454,17 +454,8 @@ class LocalMediaPreflightPort:
         policy: LocalMediaPreflightPolicy,
         measured: dict[ProducerKind, str],
     ) -> None:
-        for kind in (
-            "frame",
-            "audio",
-            "asr",
-            "vad",
-            "shot",
-            "scene",
-            "visual",
-            "subtitle",
-        ):
-            if measured[kind] != policy.calibration(kind).detector_sha256:
+        for kind, detector_sha256 in measured.items():
+            if detector_sha256 != policy.calibration(kind).detector_sha256:
                 raise LocalMediaEvidenceError(
                     f"{kind} detector bytes/version/model do not match calibration"
                 )
@@ -1391,6 +1382,8 @@ class LocalMediaPreflightPort:
                     policy.asr_model_id if kind == "asr" else policy.vad_model_id,
                     policy.asr_model_revision if kind == "asr" else policy.vad_model_revision,
                     policy.asr_model_sha256 if kind == "asr" else policy.vad_model_sha256,
+                    policy.timed_speech_service_sha256,
+                    "sensevoice-word-timestamp" if kind == "asr" else "fsmn-vad-direct",
                 )
             )
         return TimedSpeechEvidenceRequest(
@@ -1441,10 +1434,83 @@ class LocalMediaPreflightPort:
                 context.duration_tick,
             ):
                 raise LocalMediaSourceError("timed speech evidence source clock drift")
+        for actual, expected, bound in zip(
+            evidence.producer_identities,
+            request.policy.calibrations[2:4],
+            evidence.timing_error_bounds,
+            strict=True,
+        ):
+            model_id = (
+                request.policy.asr_model_id
+                if actual.producer_kind == "asr"
+                else request.policy.vad_model_id
+            )
+            model_revision = (
+                request.policy.asr_model_revision
+                if actual.producer_kind == "asr"
+                else request.policy.vad_model_revision
+            )
+            model_sha256 = (
+                request.policy.asr_model_sha256
+                if actual.producer_kind == "asr"
+                else request.policy.vad_model_sha256
+            )
+            if (
+                actual.producer_id,
+                actual.producer_version,
+                actual.generation_policy_sha256,
+                actual.detector_sha256,
+                actual.calibration_policy_sha256,
+                actual.calibration_record_sha256,
+                actual.model_id,
+                actual.model_revision,
+                actual.model_sha256,
+                actual.service_sha256,
+                actual.device,
+            ) != (
+                expected.producer_id,
+                expected.producer_version,
+                expected.generation_policy_sha256,
+                expected.detector_sha256,
+                expected.calibration_policy_sha256,
+                expected.calibration_record_sha256,
+                model_id,
+                model_revision,
+                model_sha256,
+                request.policy.timed_speech_service_sha256,
+                request.policy.speech_device,
+            ):
+                raise LocalMediaSourceError("measured timed speech producer identity drift")
+            expected_bound = _microseconds_tick(
+                expected.timing_error_bound_microseconds, bound.time_base
+            )
+            if max(bound.early_tick, bound.late_tick) > expected_bound:
+                raise LocalMediaEvidenceError("measured timing error exceeds calibration")
+
+    @staticmethod
+    def _timed_speech_traces(evidence: TimedSpeechEvidence) -> tuple[ToolInvocationTrace, ...]:
+        trace = evidence.invocation_trace
+        empty_sha256 = _sha_bytes(b"")
+        return tuple(
+            ToolInvocationTrace(
+                identity.producer_kind,
+                "funasr-http",
+                trace.service_sha256,
+                canonical_sha256(
+                    {name: getattr(identity, name) for name in identity.__dataclass_fields__}
+                ),
+                trace.request_sha256,
+                trace.response_sha256,
+                empty_sha256,
+            )
+            for identity in evidence.producer_identities
+        )
 
     @staticmethod
     def _producer_identity(
-        kind: ProducerKind, request: LocalMediaPreflightRequest
+        kind: ProducerKind,
+        request: LocalMediaPreflightRequest,
+        timed: TimedSpeechEvidence | None,
     ) -> ProducerIdentity:
         calibration = request.policy.calibration(kind)
         time_base = (
@@ -1452,6 +1518,20 @@ class LocalMediaPreflightPort:
             if kind in {"audio", "asr", "vad"}
             else request.frame_pts_index.context.time_base
         )
+        if kind in {"asr", "vad"} and timed is not None:
+            position = 0 if kind == "asr" else 1
+            measured = timed.producer_identities[position]
+            bound = timed.timing_error_bounds[position]
+            return ProducerIdentity(
+                kind,
+                measured.producer_id,
+                measured.producer_version,
+                measured.generation_policy_sha256,
+                measured.detector_sha256,
+                measured.calibration_policy_sha256,
+                measured.calibration_record_sha256,
+                max(bound.early_tick, bound.late_tick),
+            )
         return ProducerIdentity(
             kind,
             calibration.producer_id,
