@@ -216,7 +216,15 @@ Stage1Values = tuple[
 ]
 
 
-def _stage1_values(*, conflicted: bool = False, unrelated_universe: bool = False) -> Stage1Values:
+def _stage1_values(
+    *,
+    conflicted: bool = False,
+    unrelated_universe: bool = False,
+    unresolved_observation: bool = False,
+    observation_has_canonical_roots: bool = False,
+) -> Stage1Values:
+    if conflicted and unresolved_observation:
+        raise AssertionError("test fixture modes are mutually exclusive")
     window_ref = _domain(_artifact("art_windows"), "vlm_window", "window_001")
     observation_ref = _domain(_artifact("art_vlm"), "vlm_observation", "observation_001")
     digests = EpisodeDigestSet(
@@ -283,7 +291,21 @@ def _stage1_values(*, conflicted: bool = False, unrelated_universe: bool = False
     graph_ref = _artifact("art_narrative_graph", graph.canonical_hash)
     event_node_ref = _domain(graph_ref, "narrative_node", "event_001")
     obligation_ref = _domain(graph_ref, "narrative_node", "obligation_001")
-    evidence = EvidenceDiagnostics("evidence_diagnostics_001", ())
+    if unresolved_observation:
+        evidence_item = DiagnosticItem(
+            "evidence_001",
+            "insufficient_evidence",
+            "error",
+            observation_ref,
+            "KC-COV-003",
+            "Observation evidence is insufficient.",
+            (observation_ref,),
+            (observation_ref,),
+        )
+        evidence = EvidenceDiagnostics("evidence_diagnostics_001", (evidence_item,))
+    else:
+        evidence = EvidenceDiagnostics("evidence_diagnostics_001", ())
+    evidence_ref = _artifact("art_evidence_diagnostics", evidence.canonical_hash)
     if conflicted:
         conflict_item = DiagnosticItem(
             "conflict_001",
@@ -328,20 +350,36 @@ def _stage1_values(*, conflicted: bool = False, unrelated_universe: bool = False
             (),
             (),
         )
-    rows = (
-        event_row,
+    observation_row = (
         CoverageRow(
+            "coverage_observation",
+            CoverageUnitType.VLM_OBSERVATION,
+            observation_ref,
+            CoverageResolution.UNRESOLVED,
+            CoverageDisposition.UNASSIGNED,
+            (event_node_ref,) if observation_has_canonical_roots else (),
+            (observation_ref,),
+            None,
+            (_domain(evidence_ref, "diagnostic", "evidence_001"),),
+            (_domain(_artifact("art_dependency_proof"), "taint_seed", "seed_observation"),),
+        )
+        if unresolved_observation
+        else CoverageRow(
             "coverage_observation",
             CoverageUnitType.VLM_OBSERVATION,
             observation_ref,
             CoverageResolution.RESOLVED,
             CoverageDisposition.SUPPORTING,
-            (),
+            (event_node_ref,),
             (observation_ref,),
             None,
             (),
             (),
-        ),
+        )
+    )
+    rows = (
+        event_row,
+        observation_row,
         CoverageRow(
             "coverage_obligation",
             CoverageUnitType.OBLIGATION,
@@ -360,7 +398,7 @@ def _stage1_values(*, conflicted: bool = False, unrelated_universe: bool = False
             window_ref,
             CoverageResolution.RESOLVED,
             CoverageDisposition.SUPPORTING,
-            (),
+            (event_node_ref,),
             (window_ref,),
             None,
             (),
@@ -379,10 +417,13 @@ def _stage1_values(*, conflicted: bool = False, unrelated_universe: bool = False
     policy_ref = _artifact("art_dependency_policy", policy.canonical_hash)
     proof = DependencyClosureEvaluator.evaluate(
         proof_id="dependency_proof_001",
+        episode_digests=digests,
+        event_cards_ref=event_set_ref,
+        event_cards=events,
         graph_ref=graph_ref,
         graph=graph,
         ledger=ledger,
-        evidence_diagnostics_ref=_artifact("art_evidence_diagnostics", evidence.canonical_hash),
+        evidence_diagnostics_ref=evidence_ref,
         evidence_diagnostics=evidence,
         conflict_diagnostics_ref=conflict_ref,
         conflict_diagnostics=conflicts,
@@ -430,6 +471,24 @@ def test_stage1_recomputes_universe_graph_scc_and_bounded_conflict_closure() -> 
     assert bounded.taint_seed_ids == ("seed_001",)  # type: ignore[attr-defined]
     strict = _coverage_admission(_stage1_values(conflicted=True), "strict_global")
     assert strict.next_action == "quarantine"  # type: ignore[attr-defined]
+
+
+def test_unresolved_observation_cannot_omit_event_and_obligation_taint_roots() -> None:
+    with pytest.raises(ProductionModelError, match="canonical graph roots"):
+        _coverage_admission(
+            _stage1_values(unresolved_observation=True),
+            "dependency_scoped",
+        )
+
+    bounded_values = _stage1_values(
+        unresolved_observation=True,
+        observation_has_canonical_roots=True,
+    )
+    bounded = _coverage_admission(bounded_values, "dependency_scoped")
+    assert bounded.next_action == "continue"  # type: ignore[attr-defined]
+    proof = bounded_values[6]
+    affected_ids = {item.object_id for item in proof.seed_proofs[0].affected_refs}
+    assert affected_ids == {"observation_001", "event_001", "obligation_001"}
 
 
 def test_unrelated_coverage_universe_and_self_attested_bounded_proof_are_rejected() -> None:

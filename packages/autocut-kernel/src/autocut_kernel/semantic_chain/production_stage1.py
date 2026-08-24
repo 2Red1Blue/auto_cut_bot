@@ -1069,6 +1069,9 @@ class DependencyClosureEvaluator:
     def evaluate(
         *,
         proof_id: str,
+        episode_digests: EpisodeDigestSet,
+        event_cards_ref: ArtifactRef,
+        event_cards: EventCardSet,
         graph_ref: ArtifactRef,
         graph: NarrativeGraph,
         ledger: CoverageLedger,
@@ -1084,12 +1087,69 @@ class DependencyClosureEvaluator:
             raise ProductionModelError("dependency evaluator graph ref does not bind graph payload")
         if policy_ref.content_hash != policy.canonical_hash:
             raise ProductionModelError("dependency policy ref does not bind policy payload")
+        if event_cards_ref.content_hash != event_cards.canonical_hash:
+            raise ProductionModelError("EventCardSet ref does not bind EventCard content")
         evidence_ids = {item.diagnostic_id for item in evidence_diagnostics.items}
         conflict_ids = {item.diagnostic_id for item in conflict_diagnostics.items}
         evidence_by_id = {item.diagnostic_id: item for item in evidence_diagnostics.items}
         conflict_by_id = {item.diagnostic_id: item for item in conflict_diagnostics.items}
         node_ids = tuple(item.node_id for item in graph.nodes)
         graph_refs = {item: _graph_node_ref(graph_ref, item) for item in node_ids}
+        graph_event_ref_by_event_id: dict[str, DomainRef] = {}
+        for node in graph.nodes:
+            if node.node_type is not NarrativeNodeType.EVENT:
+                continue
+            event_ref = domain_ref(
+                node.attributes.to_mapping()["event_card_ref"],
+                "event_card_ref",
+            )
+            if event_ref.artifact_ref != event_cards_ref:
+                raise ProductionModelError("Graph Event has the wrong EventCardSet owner")
+            graph_event_ref_by_event_id[event_ref.object_id] = graph_refs[node.node_id]
+        event_graph_refs_by_evidence: dict[bytes, dict[bytes, DomainRef]] = {}
+        for event in event_cards.events:
+            graph_event_ref = graph_event_ref_by_event_id.get(event.event_id)
+            if graph_event_ref is None:
+                continue
+            for evidence_ref in event.evidence_refs:
+                event_graph_refs_by_evidence.setdefault(jcs_key(evidence_ref), {})[
+                    jcs_key(graph_event_ref)
+                ] = graph_event_ref
+        digest_evidence_by_window: dict[bytes, dict[bytes, DomainRef]] = {}
+        for digest in episode_digests.digests:
+            for window_ref in digest.source_window_refs:
+                evidence = digest_evidence_by_window.setdefault(jcs_key(window_ref), {})
+                for evidence_ref in digest.evidence_refs:
+                    evidence[jcs_key(evidence_ref)] = evidence_ref
+
+        def authoritative_graph_roots(row: CoverageRow) -> tuple[DomainRef, ...]:
+            roots: dict[bytes, DomainRef] = {}
+            if row.unit_type is CoverageUnitType.EVENT:
+                graph_event_ref = graph_event_ref_by_event_id.get(row.unit_ref.object_id)
+                if graph_event_ref is not None:
+                    roots[jcs_key(graph_event_ref)] = graph_event_ref
+            elif row.unit_type is CoverageUnitType.VLM_OBSERVATION:
+                roots.update(event_graph_refs_by_evidence.get(jcs_key(row.unit_ref), {}))
+            elif row.unit_type is CoverageUnitType.VLM_WINDOW:
+                for evidence_ref in digest_evidence_by_window.get(
+                    jcs_key(row.unit_ref), {}
+                ).values():
+                    roots.update(event_graph_refs_by_evidence.get(jcs_key(evidence_ref), {}))
+            else:
+                node = next(
+                    (
+                        item
+                        for item in graph.nodes
+                        if item.node_id == row.unit_ref.object_id
+                        and item.node_type is NarrativeNodeType.OBLIGATION
+                    ),
+                    None,
+                )
+                if node is not None:
+                    graph_ref_value = graph_refs[node.node_id]
+                    roots[jcs_key(graph_ref_value)] = graph_ref_value
+            return tuple(roots[key] for key in sorted(roots))
+
         arcs = tuple(
             sorted(
                 (
@@ -1115,6 +1175,11 @@ class DependencyClosureEvaluator:
         sccs = _strongly_connected_components(graph_ref, node_ids, adjacency)
         seeds: list[TaintSeedProof] = []
         for row in ledger.rows:
+            derived_graph_roots = authoritative_graph_roots(row)
+            if row.graph_node_refs != derived_graph_roots:
+                raise ProductionModelError(
+                    "coverage row graph_node_refs differ from canonical graph roots"
+                )
             if row.resolution_status is CoverageResolution.RESOLVED:
                 continue
             diagnostic_ids = {item.object_id for item in row.diagnostic_refs}
@@ -1148,12 +1213,11 @@ class DependencyClosureEvaluator:
                     "coverage diagnostic does not identify its exact affected unit"
                 )
             seed_id = row.taint_seed_refs[0].object_id
-            roots = row.graph_node_refs or (row.unit_ref,)
-            for root in row.graph_node_refs:
-                if root.artifact_ref != graph_ref or root.object_id not in graph_refs:
-                    raise ProductionModelError("taint root points outside exact NarrativeGraph")
+            roots_by_key = {jcs_key(row.unit_ref): row.unit_ref}
+            roots_by_key.update({jcs_key(item): item for item in derived_graph_roots})
+            roots = tuple(roots_by_key[key] for key in sorted(roots_by_key))
             affected_by_key = {jcs_key(item): item for item in roots}
-            pending_nodes = [item.object_id for item in row.graph_node_refs]
+            pending_nodes = [item.object_id for item in derived_graph_roots]
             visited: set[str] = set()
             while pending_nodes:
                 node_id = pending_nodes.pop()
@@ -1323,6 +1387,9 @@ class CoverageAdmissionEvaluator:
             raise ProductionModelError("Coverage unit type does not match authoritative unit")
         recomputed = DependencyClosureEvaluator.evaluate(
             proof_id=dependency_proof.dependency_closure_proof_id,
+            episode_digests=episode_digests,
+            event_cards_ref=event_ref,
+            event_cards=event_cards,
             graph_ref=graph_ref,
             graph=graph,
             ledger=ledger,
