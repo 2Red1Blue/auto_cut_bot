@@ -6,9 +6,12 @@ from uuid import UUID, uuid4
 
 from autocut_kernel.media import AdaptiveEvidenceWindowPolicy, RootMediaEvidenceBundle
 from autocut_kernel.pipeline import (
+    FinalizeTimedMediaEvidenceBatchCommand,
+    FinalizeTimedMediaEvidenceBatchRequest,
     PrepareTimedMediaEvidenceCommand,
     PrepareTimedMediaEvidenceRequest,
     ProducedTimedMediaEvidence,
+    TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
 )
 from autocut_kernel.store import (
@@ -27,16 +30,21 @@ from test_timed_evidence import _bindings, _manifest_and_observation
 
 class _Store:
     def __init__(self) -> None:
-        self.outcome: CommandOutcome | None = None
+        self.outcomes: dict[str, CommandOutcome] = {}
         self.successes: list[CommandSuccess] = []
         self.rejections: list[CommandRejection] = []
         self.blobs: dict[UUID, bytes] = {}
 
-    def claim_command(self, _: CommandClaim) -> CommandOutcome:
-        if self.outcome is not None:
-            return self.outcome
-        self.outcome = CommandOutcome(uuid4(), "running", is_fresh_claim=True)
-        return self.outcome
+    def claim_command(self, claim: CommandClaim) -> CommandOutcome:
+        existing = self.outcomes.get(claim.idempotency_key)
+        if existing is not None:
+            return existing
+        outcome = CommandOutcome(uuid4(), "running", is_fresh_claim=True)
+        self.outcomes[claim.idempotency_key] = outcome
+        return outcome
+
+    def read_outcome(self, _: Job, idempotency_key: str) -> CommandOutcome | None:
+        return self.outcomes.get(idempotency_key)
 
     def read_immutable_blob(self, _: Job, reference: BlobRef) -> bytes:
         return self.blobs[reference.object_id]
@@ -56,24 +64,33 @@ class _Store:
 
     def commit_command_success(self, success: CommandSuccess) -> CommandOutcome:
         self.successes.append(success)
-        self.outcome = CommandOutcome(
+        outcome = CommandOutcome(
             success.command_slot_id,
             "succeeded",
             receipt_id=uuid4(),
             artifact_set_id=uuid4(),
         )
-        return self.outcome
+        self._replace_slot(outcome)
+        return outcome
 
     def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome:
         self.rejections.append(rejection)
-        self.outcome = CommandOutcome(
+        outcome = CommandOutcome(
             rejection.command_slot_id,
             rejection.outcome,
             receipt_id=uuid4(),
             failure_code=rejection.failure_code,
             failure_detail_json=rejection.failure_detail_json,
         )
-        return self.outcome
+        self._replace_slot(outcome)
+        return outcome
+
+    def _replace_slot(self, outcome: CommandOutcome) -> None:
+        for key, current in self.outcomes.items():
+            if current.command_slot_id == outcome.command_slot_id:
+                self.outcomes[key] = outcome
+                return
+        raise AssertionError("unknown command slot")
 
 
 class _Producer:
@@ -184,3 +201,33 @@ def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -
     assert result.outcome.failure_code == "SUBTITLE_EVIDENCE_INDETERMINATE"
     assert producer.calls == 1
     assert store.successes == []
+
+
+def test_batch_receipt_is_committed_only_after_rereading_exact_child() -> None:
+    store = _Store()
+    request = _request(store)
+    child = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
+    assert child.outcome.receipt_id is not None
+    assert child.outcome.artifact_set_id is not None
+    batch_request = FinalizeTimedMediaEvidenceBatchRequest(
+        request.job,
+        "media-preflight:batch",
+        request.artifact_scope,
+        1,
+        request.source_manifest_sha256,
+        request.source_provenance_sha256,
+        (
+            TimedMediaEvidenceBatchChild(
+                0,
+                request.idempotency_key,
+                child.outcome.receipt_id,
+                child.outcome.artifact_set_id,
+            ),
+        ),
+    )
+
+    result = FinalizeTimedMediaEvidenceBatchCommand(store).execute(batch_request)
+
+    assert result.outcome.state == "succeeded"
+    assert result.artifact is not None
+    assert result.artifact.artifact_type == "timed_media_evidence_batch"

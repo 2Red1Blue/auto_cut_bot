@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from .census import SeriesSourceSnapshot, census_series_sources, snapshot_series_sources
 from .command import (
+    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     IdentitySourceWindowBuilder,
     PersistedPreparedSources,
     PreparedSeriesSources,
@@ -24,7 +25,11 @@ from .models import (
     SeriesSource,
     SeriesSourceCensus,
 )
-from .probe import FFprobeSourceMediaPort, SourceMediaProbe
+from .probe import (
+    DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
+    FFprobeSourceMediaPort,
+    SourceMediaProbe,
+)
 
 if TYPE_CHECKING:
     from .identity import PreparedWholeSeries, WholeSeriesIdentityPreparer
@@ -43,6 +48,8 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "AuthorizedSeriesSourceRoot",
     "FFprobeSourceMediaPort",
+    "DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256",
+    "IDENTITY_FRAME_GENERATION_POLICY_SHA256",
     "IdentitySourceWindowBuilder",
     "PrepareWholeSeriesSourcesCommand",
     "PrepareWholeSeriesSourcesRequest",

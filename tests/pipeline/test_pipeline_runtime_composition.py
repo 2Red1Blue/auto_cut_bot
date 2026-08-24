@@ -15,6 +15,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
@@ -47,6 +48,68 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_ARK_PROJECT_ID_ENV: "project-1",
         PIPELINE_ARK_MODEL_ID_ENV: "doubao-seed-2-1-pro-260628",
         PIPELINE_ARK_BASE_URL_ENV: "https://ark.example.invalid/api/v3",
+        PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV: json.dumps(_media_policy(path)),
+    }
+
+
+def _media_policy(path: Path) -> dict[str, object]:
+    digest = "sha256:" + "1" * 64
+    producer_ids = {
+        "frame": "frame-decoder-v1",
+        "audio": "audio-decoder-v1",
+        "asr": "whisper-asr-v1",
+        "vad": "silencedetect-vad-v1",
+        "shot": "pixel-shot-v1",
+        "scene": "pixel-scene-v1",
+        "visual": "pixel-visual-v1",
+        "subtitle": "subtitle-presence-v1",
+    }
+    return {
+        "analysis_fps_denominator": 1,
+        "analysis_fps_numerator": 1,
+        "analysis_height": 2,
+        "analysis_timeout_seconds": 20,
+        "analysis_width": 2,
+        "black_luma_max": 10,
+        "boundary_touch_margin_milliseconds": 100,
+        "calibrations": [
+            {
+                "calibration_policy_sha256": digest,
+                "calibration_record_sha256": digest,
+                "detector_sha256": digest,
+                "generation_policy_sha256": digest,
+                "producer_id": producer_id,
+                "producer_kind": producer_kind,
+                "producer_version": "1.0.0",
+                "timing_error_bound_microseconds": 1_000_000,
+            }
+            for producer_kind, producer_id in producer_ids.items()
+        ],
+        "expansion_step_milliseconds": 250,
+        "frozen_change_ppm_max": 1_000,
+        "initial_left_expansion_milliseconds": 500,
+        "initial_right_expansion_milliseconds": 500,
+        "max_analysis_frames": 10,
+        "max_expansion_count": 4,
+        "max_stderr_bytes": 65_536,
+        "max_stdout_bytes": 1_048_576,
+        "policy_id": "composition-policy",
+        "policy_version": "1.0.0",
+        "probe_timeout_seconds": 10,
+        "scene_change_ppm_min": 200_000,
+        "shot_change_ppm_min": 100_000,
+        "subtitle_edge_delta_min": 100,
+        "subtitle_edge_fraction_ppm_min": 500_000,
+        "subtitle_min_consecutive_samples": 2,
+        "transition_change_ppm_min": 300_000,
+        "vad_min_silence_milliseconds": 200,
+        "vad_noise_db": -35,
+        "whisper_language": "zh",
+        "whisper_model_name": "tiny",
+        "whisper_model_path": str((path / "tiny.pt").resolve()),
+        "whisper_model_sha256": digest,
+        "whisper_timeout_seconds": 30,
+        "white_luma_min": 245,
     }
 
 
@@ -131,7 +194,10 @@ def test_environment_rejects_qwen_as_a_doubao_fallback(tmp_path: Path) -> None:
     environment = _environment(tmp_path)
     environment[PIPELINE_ARK_MODEL_ID_ENV] = "qwen-vl-max"
 
-    with pytest.raises(PipelineRuntimeConfigurationError, match="Doubao policy"):
+    with pytest.raises(
+        PipelineRuntimeConfigurationError,
+        match="Doubao/provider/media-preflight configuration",
+    ):
         compose_pipeline_runtime_from_environment(environment)
 
 

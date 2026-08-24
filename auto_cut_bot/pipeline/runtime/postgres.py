@@ -237,9 +237,10 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                         (command_id, run_id, ordinal, stage, state, version)
                     VALUES
                         (%s, %s, 0, 'source_prep', 'pending', 0),
-                        (%s, %s, 1, 'vlm', 'pending', 0)
+                        (%s, %s, 1, 'vlm', 'pending', 0),
+                        (%s, %s, 2, 'media_preflight', 'pending', 0)
                     """,
-                    (uuid4(), run_id, uuid4(), run_id),
+                    (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
                 )
                 self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)

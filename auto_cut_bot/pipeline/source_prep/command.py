@@ -58,6 +58,13 @@ from .probe import FFprobeSourceMediaPort, SourceMediaProbe
 
 _COMMAND_NAME = "PrepareWholeSeriesSourcesCommand"
 _SHOWINFO_PTS = re.compile(rb"\bpts:\s*(-?(?:0|[1-9][0-9]*))\b")
+IDENTITY_FRAME_GENERATION_POLICY_SHA256 = canonical_sha256(
+    {
+        "endpoint_rule": "complete-decoded-frame-pts-membership-v1",
+        "operation": "identity",
+        "producer": "identity-source-window-v2",
+    }
+)
 
 
 class FrameSampleEvidenceError(SeriesCensusError):
@@ -249,7 +256,7 @@ class IdentitySourceWindowBuilder:
         probe = self._probe_port.probe(source_path, source)
         video = probe.video_probe
         stream = video.video_stream
-        policy = _identity_policy(probe)
+        policy = _identity_policy()
         clock_id = f"video-stream-{stream.stream_index}"
         frame_index = _identity_frame_index(probe, policy)
         selected = _sample_indices(len(video.pts_index.ticks), self._sample_count)
@@ -629,14 +636,10 @@ def _sha256_bytes(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
-def _identity_policy(probe: SourceMediaProbe) -> str:
-    return canonical_sha256(
-        {
-            "operation": "identity",
-            "probe_sha256": probe.canonical_hash,
-            "source_sha256": probe.source.content_sha256,
-        }
-    )
+def _identity_policy() -> str:
+    """Return the stable frame-generation strategy, never per-source input identity."""
+
+    return IDENTITY_FRAME_GENERATION_POLICY_SHA256
 
 
 def _identity_frame_index(
@@ -1019,7 +1022,7 @@ def _decode_manifest(
         },
         "window manifest",
     )
-    frame_index = _identity_frame_index(probe, _identity_policy(probe))
+    frame_index = _identity_frame_index(probe, _identity_policy())
     proxy = WindowProxyBlobRef(
         str(blob.object_id), blob.content_hash, blob.byte_length, blob.media_type
     )

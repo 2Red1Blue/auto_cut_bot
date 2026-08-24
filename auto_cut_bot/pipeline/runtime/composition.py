@@ -20,6 +20,10 @@ from autocut_kernel.vlm import (
     GenerationRetryPolicy,
 )
 
+from auto_cut_bot.pipeline.media_preflight import (
+    LocalMediaPreflightPolicy,
+    LocalMediaPreflightPort,
+)
 from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
 from auto_cut_bot.pipeline.vlm import (
     DoubaoArkVlmProvider,
@@ -29,6 +33,7 @@ from auto_cut_bot.pipeline.vlm import (
 )
 from auto_cut_bot.pipeline.vlm.ark_file_cache import DbConnection as ArkDbConnection
 
+from .media_preflight_stage import MediaPreflightPipelineStage
 from .models import PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
@@ -46,6 +51,7 @@ PIPELINE_ARK_TENANT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_TENANT_ID"
 PIPELINE_ARK_PROJECT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID"
 PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
+PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -58,6 +64,7 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_ARK_TENANT_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_MODEL_ID_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
 )
 _CATALOG_FIELDS = frozenset(
     {"authorization_id", "authorized_path", "expected_source_count", "series_id"}
@@ -249,6 +256,18 @@ def compose_pipeline_runtime_from_environment(
     catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
     try:
         policy = DoubaoVlmRequestPolicy(model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip())
+        decoded_media_policy = cast(
+            object,
+            json.loads(
+                values[PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV].strip(),
+                object_pairs_hook=_closed_json_object,
+            ),
+        )
+        if type(decoded_media_policy) is not dict:  # noqa: E721
+            raise ValueError("media preflight policy must be an object")
+        media_policy = LocalMediaPreflightPolicy.from_mapping(
+            cast(dict[str, object], decoded_media_policy)
+        )
         execution_profile = PipelineExecutionProfile.from_doubao_policy(
             policy,
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
@@ -271,9 +290,9 @@ def compose_pipeline_runtime_from_environment(
                 project_id=project_id,
             )
         )
-    except (TypeError, ValueError) as error:
+    except (json.JSONDecodeError, TypeError, ValueError) as error:
         raise PipelineRuntimeConfigurationError(
-            "pipeline Doubao policy or provider configuration is invalid"
+            "pipeline Doubao/provider/media-preflight configuration is invalid"
         ) from error
 
     control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
@@ -283,24 +302,27 @@ def compose_pipeline_runtime_from_environment(
 
     control_store = PostgresPipelineRunStore(control_factory)
     scheduler = PostgresPipelineScheduler(control_factory)
-    kernel_store = PostgresRuntimeStore(
-        cast(Callable[[], KernelDbConnection], kernel_factory)
-    )
-    file_cache = PostgresArkFileCache(
-        cast(Callable[[], ArkDbConnection], kernel_factory)
-    )
+    kernel_store = PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory))
+    file_cache = PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory))
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     vlm_stage = VlmPipelineStage(kernel_store, provider)
+    media_preflight_stage = MediaPreflightPipelineStage(
+        kernel_store,
+        LocalMediaPreflightPort(),
+        media_policy,
+    )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
+        ("media_preflight", media_preflight_stage),
     )
     runner = PipelineStageRunner(registry, control_store)
     reconciler = PipelineStageReconciler.from_ports(
         control_store,
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
+        ("media_preflight", media_preflight_stage),
     )
     service = DurablePipelineRunService(
         control_store,
@@ -333,6 +355,15 @@ def _catalog_text(value: object, index: int, field_name: str) -> str:
     return value
 
 
+def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON field: {key}")
+        result[key] = value
+    return result
+
+
 __all__ = (
     "ConfiguredSourceCatalog",
     "PIPELINE_ARK_API_KEY_ENV",
@@ -341,6 +372,7 @@ __all__ = (
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",
     "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
+    "PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV",
     "PIPELINE_POSTGRES_DSN_ENV",
     "PIPELINE_SOURCE_CATALOG_ENV",
     "PIPELINE_SOURCE_REFERENCES_ENV",

@@ -161,6 +161,7 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
     assert tuple(command.stage for command in replay.snapshot.commands) == (
         "source_prep",
         "vlm",
+        "media_preflight",
     )
     assert await scheduler.pending_run_ids() == (first.snapshot.run_id,)
 
@@ -978,7 +979,16 @@ async def test_real_http_run_status_resume_survive_app_restart(
                 "version": 0,
                 "lease_id": None,
                 "blocking_command_id": None,
-            }
+            },
+            {
+                "command_id": status_body["commands"][2]["command_id"],
+                "stage": "media_preflight",
+                "status": "pending",
+                "receipt_id": None,
+                "version": 0,
+                "lease_id": None,
+                "blocking_command_id": None,
+            },
         ]
         assert resumed.status == 202
         assert (await resumed.json())["version"] == 1

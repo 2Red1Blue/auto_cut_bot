@@ -35,6 +35,13 @@ from autocut_kernel.media.types import canonical_sha256
 from .models import SeriesCensusError, SeriesSource
 
 _INTEGER = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
+DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256 = canonical_sha256(
+    {
+        "coverage_policy": "strict-contiguous-decoded-frames-no-gap-v1",
+        "endpoint_rule": "decoded-first-start-and-last-end-equal-stream-v1",
+        "producer": "ffprobe-decoded-audio-boundaries-v2",
+    }
+)
 
 
 class SourceMediaEvidenceError(SeriesCensusError):
@@ -213,14 +220,7 @@ class FFprobeSourceMediaPort:
                 "last decoded audio frame does not prove the stream end boundary"
             )
         ordered = tuple(sorted(ticks))
-        policy = canonical_sha256(
-            {
-                "coverage_policy": "strict-contiguous-decoded-frames-no-gap-v1",
-                "endpoint_rule": "decoded-first-start-and-last-end-equal-stream-v1",
-                "producer": "ffprobe-decoded-audio-boundaries-v2",
-                "stream_index": stream_index,
-            }
-        )
+        policy = DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256
         clock_id = f"audio-stream-{stream_index}"
         context = EvidenceContext(
             source.source_id,

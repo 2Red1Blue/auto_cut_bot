@@ -35,6 +35,8 @@ from autocut_kernel.vlm import (
 )
 
 from auto_cut_bot.pipeline.source_prep import (
+    DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
+    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     AuthorizedSeriesSourceRoot,
     FFprobeSourceMediaPort,
     IdentitySourceWindowBuilder,
@@ -270,6 +272,14 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
     assert episode.manifest.source_range == episode.media_probe.video_range
     assert episode.manifest.timeline_map.certificate_kind == "translation_certificate"
     assert episode.manifest_set.manifests == (episode.manifest,)
+    assert (
+        episode.manifest.frame_pts_index_set.context.generation_policy_sha256
+        == IDENTITY_FRAME_GENERATION_POLICY_SHA256
+    )
+    assert (
+        episode.media_probe.audio_sample_boundaries.context.generation_policy_sha256
+        == DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256
+    )
     assert episode.media_probe.audio_sample_boundaries.points[0].tick == (
         episode.media_probe.audio_sample_boundaries.context.origin_tick
     )
@@ -759,7 +769,7 @@ def test_terminal_replay_rejects_rehashed_video_pts_equal_to_stream_end(
         episode.media_probe,
         video_probe=tampered_video_probe,
     )
-    policy = _identity_policy(tampered_probe)
+    policy = _identity_policy()
     tampered_manifest = replace(
         episode.manifest,
         frame_pts_index_set=_identity_frame_index(tampered_probe, policy),
