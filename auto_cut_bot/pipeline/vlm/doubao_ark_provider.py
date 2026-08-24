@@ -1,0 +1,520 @@
+"""Streaming Doubao Ark VLM adapter with durable provider-file reuse.
+
+The adapter submits at most one Files API upload and one Responses API request
+for a Kernel attempt.  It never turns a truncated stream into success and it
+never retries an outcome whose remote state is unknown.
+"""
+
+# pyright: reportMissingTypeStubs=false
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import json
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Protocol, cast
+
+from autocut_kernel.vlm import (
+    ProviderCompleted,
+    ProviderDispatchRequest,
+    ProviderFailed,
+    ProviderIndeterminate,
+    ProviderPending,
+    ProviderReconcileQuery,
+    ProviderResult,
+)
+
+from .ark_file_cache import ArkFileCachePort
+
+DOUBAO_ARK_PROVIDER_ID = "doubao-ark-responses-stream"
+DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v1"
+_READY_FILE_STATUSES = frozenset({"active", "processed"})
+_ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
+_EXPECTED_PAYLOAD_FIELDS = frozenset(
+    {
+        "model_id",
+        "parser_strategy_version",
+        "prompt",
+        "prompt_version",
+        "provider_id",
+        "proxy_blob",
+        "request_parameters",
+        "response_schema",
+        "window_manifest_set_sha256",
+        "window_manifest_sha256",
+    }
+)
+_EXPECTED_PARAMETER_FIELDS = frozenset(
+    {"adapter_strategy_version", "max_output_tokens", "temperature", "video_fps"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class DoubaoArkVlmProviderConfig:
+    api_key: str
+    base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    timeout_seconds: float = 300.0
+    upload_timeout_seconds: float = 300.0
+    upload_poll_interval_seconds: float = 2.0
+    provider_file_ttl_seconds: int = 5 * 24 * 60 * 60
+    max_video_bytes: int = 512 * 1024 * 1024
+
+    def __post_init__(self) -> None:
+        if type(self.api_key) is not str or not self.api_key.strip():  # noqa: E721
+            raise ValueError("Ark API key must be non-empty")
+        if type(self.base_url) is not str or not self.base_url.startswith("https://"):  # noqa: E721
+            raise ValueError("Ark base_url must use HTTPS")
+        for name, value in (
+            ("timeout_seconds", self.timeout_seconds),
+            ("upload_timeout_seconds", self.upload_timeout_seconds),
+            ("upload_poll_interval_seconds", self.upload_poll_interval_seconds),
+        ):
+            if isinstance(value, bool) or type(value) not in (int, float) or value <= 0:
+                raise ValueError(f"Ark {name} must be positive")
+        if type(self.provider_file_ttl_seconds) is not int or self.provider_file_ttl_seconds < 60:  # noqa: E721
+            raise ValueError("Ark provider_file_ttl_seconds must be at least 60")
+        if type(self.max_video_bytes) is not int or self.max_video_bytes < 1:  # noqa: E721
+            raise ValueError("Ark max_video_bytes must be a positive integer")
+
+
+class ClientFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        timeout: float,
+        max_retries: int,
+    ) -> object: ...
+
+
+class DoubaoArkVlmProvider:
+    """Official Ark SDK adapter using Files API plus Responses SSE streaming."""
+
+    provider_id = DOUBAO_ARK_PROVIDER_ID
+
+    def __init__(
+        self,
+        config: DoubaoArkVlmProviderConfig,
+        *,
+        file_cache: ArkFileCachePort,
+        client_factory: ClientFactory | None = None,
+    ) -> None:
+        if type(config) is not DoubaoArkVlmProviderConfig:  # noqa: E721
+            raise TypeError("config must be a DoubaoArkVlmProviderConfig")
+        self._config = config
+        self._file_cache = file_cache
+        self._client_factory = client_factory or _ark_client
+
+    def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
+        if type(request) is not ProviderDispatchRequest:  # noqa: E721
+            raise TypeError("request must be an exact ProviderDispatchRequest")
+        if request.provider_id != self.provider_id:
+            return _failure("PROVIDER_ID_MISMATCH")
+        if len(request.proxy_content) > self._config.max_video_bytes:
+            return _failure(
+                "PROVIDER_MEDIA_LIMIT_EXCEEDED",
+                byte_length=len(request.proxy_content),
+                limit=self._config.max_video_bytes,
+            )
+        try:
+            payload = _request_payload(request.request_payload)
+            parameters = _request_parameters(payload["request_parameters"])
+            if payload["model_id"] != request.model_id:
+                raise ValueError("request model_id does not match dispatch identity")
+            if payload["proxy_blob"] != request.proxy_blob_ref.to_mapping():
+                raise ValueError("request proxy_blob does not match dispatch identity")
+        except ValueError:
+            return _failure("INVALID_PROVIDER_REQUEST")
+        try:
+            client = cast(
+                Any,
+                self._client_factory(
+                    api_key=self._config.api_key,
+                    base_url=self._config.base_url,
+                    timeout=self._config.timeout_seconds,
+                    max_retries=0,
+                ),
+            )
+            file_result = self._get_file_id(
+                client=client,
+                request=request,
+                video_fps=cast(float, parameters["video_fps"]),
+            )
+            if not isinstance(file_result, str):
+                return file_result
+            stream = client.responses.create(
+                model=request.model_id,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_video", "file_id": file_result},
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "只依据随附视频和下述清单约束判断；禁止臆造，禁止输出物理剪辑点。"
+                                    "只输出严格 JSON。\n" + cast(str, payload["prompt"])
+                                ),
+                            },
+                        ],
+                    }
+                ],
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "vlm_observation_set",
+                        "strict": True,
+                        "schema": payload["response_schema"],
+                    }
+                },
+                max_output_tokens=parameters["max_output_tokens"],
+                temperature=parameters["temperature"],
+                stream=True,
+            )
+            return _consume_stream(stream)
+        except Exception as error:
+            return _map_provider_error(error)
+
+    def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
+        if type(query) is not ProviderReconcileQuery:  # noqa: E721
+            raise TypeError("query must be an exact ProviderReconcileQuery")
+        if query.provider_id != self.provider_id:
+            return _failure("PROVIDER_ID_MISMATCH")
+        if query.provider_request_id is None:
+            return ProviderIndeterminate("PROVIDER_REQUEST_ID_UNKNOWN")
+        try:
+            client = cast(
+                Any,
+                self._client_factory(
+                    api_key=self._config.api_key,
+                    base_url=self._config.base_url,
+                    timeout=self._config.timeout_seconds,
+                    max_retries=0,
+                ),
+            )
+            response = client.responses.retrieve(query.provider_request_id)
+            status = str(getattr(response, "status", "")).lower()
+            response_id = _response_id(response) or query.provider_request_id
+            if status == "completed":
+                text = _response_text(response)
+                if not text:
+                    return _failure("PROVIDER_EMPTY_RESPONSE", provider_request_id=response_id)
+                return ProviderCompleted(text.encode("utf-8"), response_id)
+            if status in {"queued", "in_progress", "processing"}:
+                return ProviderPending(response_id)
+            if status in {"failed", "cancelled", "incomplete"}:
+                return _failure(
+                    "PROVIDER_RESPONSE_" + status.upper(),
+                    provider_request_id=response_id,
+                )
+            return ProviderIndeterminate("PROVIDER_RESPONSE_STATUS_UNKNOWN", response_id)
+        except Exception as error:
+            return _map_provider_error(error, fallback_request_id=query.provider_request_id)
+
+    def _get_file_id(
+        self,
+        *,
+        client: Any,
+        request: ProviderDispatchRequest,
+        video_fps: float,
+    ) -> str | ProviderResult:
+        policy_hash = _preprocess_policy_hash(video_fps)
+        record, created = self._file_cache.claim(
+            provider_id=self.provider_id,
+            content_hash=request.proxy_blob_ref.content_hash,
+            byte_length=request.proxy_blob_ref.byte_length,
+            media_type=request.proxy_blob_ref.media_type,
+            preprocess_policy_hash=policy_hash,
+        )
+        if record.state == "available":
+            if record.expires_at is None or record.expires_at <= datetime.now(timezone.utc):
+                self._file_cache.mark_expired(
+                    record.media_object_id,
+                    expected_version=record.version,
+                    provider_status="local_ttl_expired",
+                )
+                return _failure("PROVIDER_MEDIA_EXPIRED")
+            try:
+                info = client.files.retrieve(cast(str, record.provider_file_id))
+            except Exception as error:
+                mapped = _map_provider_error(error)
+                if (
+                    isinstance(mapped, ProviderFailed)
+                    and mapped.failure_code == "PROVIDER_HTTP_404"
+                ):
+                    self._file_cache.mark_expired(
+                        record.media_object_id,
+                        expected_version=record.version,
+                        provider_status="provider_not_found",
+                    )
+                    return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status="not_found")
+                return mapped
+            status = str(getattr(info, "status", "")).lower()
+            if status in _READY_FILE_STATUSES:
+                return cast(str, record.provider_file_id)
+            self._file_cache.mark_expired(
+                record.media_object_id,
+                expected_version=record.version,
+                provider_status=status or "provider_status_unknown",
+            )
+            return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status=status)
+        if not created:
+            if record.state in {"reserved", "processing"}:
+                return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_IN_PROGRESS")
+            return _failure(
+                "PROVIDER_MEDIA_TERMINAL",
+                state=record.state,
+                failure_code=record.failure_code,
+            )
+
+        try:
+            uploaded = client.files.create(
+                file=("window.mp4", request.proxy_content),
+                purpose="user_data",
+                preprocess_configs={"video": {"fps": video_fps}},
+            )
+            file_id = _required_text(getattr(uploaded, "id", None), "Ark file id")
+            processing = self._file_cache.record_processing(
+                record.media_object_id,
+                expected_version=record.version,
+                provider_file_id=file_id,
+                provider_status=str(getattr(uploaded, "status", "processing")),
+            )
+        except Exception as error:
+            mapped = _map_provider_error(error)
+            if isinstance(mapped, ProviderFailed):
+                self._file_cache.record_failed(
+                    record.media_object_id,
+                    expected_version=record.version,
+                    provider_status="upload_failed",
+                    failure_code=mapped.failure_code,
+                )
+            else:
+                self._file_cache.record_indeterminate(
+                    record.media_object_id,
+                    expected_version=record.version,
+                    provider_status="upload_outcome_unknown",
+                )
+            return mapped
+        try:
+            client.files.wait_for_processing(
+                file_id,
+                poll_interval=self._config.upload_poll_interval_seconds,
+                max_wait_seconds=self._config.upload_timeout_seconds,
+            )
+            info = client.files.retrieve(file_id)
+            status = str(getattr(info, "status", "")).lower()
+            if status not in _READY_FILE_STATUSES:
+                if status in _ERROR_FILE_STATUSES:
+                    self._file_cache.record_failed(
+                        processing.media_object_id,
+                        expected_version=processing.version,
+                        provider_status=status,
+                        failure_code="PROVIDER_MEDIA_PROCESSING_FAILED",
+                    )
+                    return _failure("PROVIDER_MEDIA_PROCESSING_FAILED", provider_status=status)
+                self._file_cache.record_indeterminate(
+                    processing.media_object_id,
+                    expected_version=processing.version,
+                    provider_status=status or "provider_status_unknown",
+                )
+                return ProviderIndeterminate("PROVIDER_MEDIA_STATUS_UNKNOWN")
+            self._file_cache.record_available(
+                processing.media_object_id,
+                expected_version=processing.version,
+                provider_status=status,
+                expires_at=datetime.now(timezone.utc)
+                + timedelta(seconds=self._config.provider_file_ttl_seconds),
+            )
+            return file_id
+        except Exception as error:
+            mapped = _map_provider_error(error)
+            if isinstance(mapped, ProviderFailed):
+                self._file_cache.record_failed(
+                    processing.media_object_id,
+                    expected_version=processing.version,
+                    provider_status="processing_failed",
+                    failure_code=mapped.failure_code,
+                )
+                return mapped
+            self._file_cache.record_indeterminate(
+                processing.media_object_id,
+                expected_version=processing.version,
+                provider_status="processing_outcome_unknown",
+            )
+            return ProviderIndeterminate(
+                "PROVIDER_MEDIA_PROCESSING_UNKNOWN",
+                mapped.provider_request_id,
+            )
+
+
+def _ark_client(*, api_key: str, base_url: str, timeout: float, max_retries: int) -> object:
+    ark_constructor = getattr(importlib.import_module("volcenginesdkarkruntime"), "Ark")
+    return cast(
+        object,
+        ark_constructor(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            max_retries=max_retries,
+        ),
+    )
+
+
+def _request_payload(raw: bytes) -> dict[str, object]:
+    try:
+        value = cast(object, json.loads(raw.decode("utf-8")))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("request payload must be strict UTF-8 JSON") from error
+    if not isinstance(value, dict):
+        raise ValueError("request payload must be an object")
+    payload = cast(dict[str, object], value)
+    if frozenset(payload) != _EXPECTED_PAYLOAD_FIELDS:
+        raise ValueError("request payload does not match the closed Ark adapter contract")
+    for field in ("model_id", "prompt", "prompt_version", "provider_id"):
+        _required_text(payload[field], field)
+    if payload["provider_id"] != DOUBAO_ARK_PROVIDER_ID:
+        raise ValueError("request payload provider_id mismatch")
+    if not isinstance(payload["response_schema"], dict):
+        raise ValueError("response_schema must be an object")
+    return payload
+
+
+def _request_parameters(value: object) -> dict[str, int | float]:
+    if not isinstance(value, dict):
+        raise ValueError("Ark request_parameters must be an object")
+    parameters = cast(dict[str, object], value)
+    if frozenset(parameters) != _EXPECTED_PARAMETER_FIELDS:
+        raise ValueError("Ark request_parameters are not closed")
+    if parameters["adapter_strategy_version"] != DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+        raise ValueError("Ark adapter strategy version is not registered")
+    fps = parameters["video_fps"]
+    tokens = parameters["max_output_tokens"]
+    temperature = parameters["temperature"]
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or not 0.1 <= fps <= 10:
+        raise ValueError("video_fps must be between 0.1 and 10")
+    if type(tokens) is not int or not 1 <= tokens <= 32_768:  # noqa: E721
+        raise ValueError("max_output_tokens must be between 1 and 32768")
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)):
+        raise ValueError("temperature must be numeric")
+    if not 0 <= temperature <= 2:
+        raise ValueError("temperature must be between 0 and 2")
+    return {
+        "video_fps": float(fps),
+        "max_output_tokens": tokens,
+        "temperature": float(temperature),
+    }
+
+
+def _preprocess_policy_hash(video_fps: float) -> str:
+    encoded = json.dumps(
+        {
+            "adapter_strategy_version": DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+            "purpose": "user_data",
+            "video_fps": video_fps,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _consume_stream(stream: object) -> ProviderResult:
+    text = ""
+    request_id: str | None = None
+    try:
+        for event in cast(Any, stream):
+            event_type = str(getattr(event, "type", ""))
+            response = getattr(event, "response", None)
+            request_id = _response_id(response) or request_id
+            if event_type == "response.output_text.delta":
+                delta = getattr(event, "delta", "")
+                if isinstance(delta, str):
+                    text += delta
+            elif event_type == "response.output_text.done":
+                done_text = getattr(event, "text", "")
+                if isinstance(done_text, str) and done_text:
+                    text = done_text
+            elif event_type == "response.created":
+                request_id = _response_id(response) or request_id
+            elif event_type == "response.completed":
+                final_text = _response_text(response)
+                if final_text:
+                    text = final_text
+                if not text:
+                    return _failure("PROVIDER_EMPTY_RESPONSE", provider_request_id=request_id)
+                return ProviderCompleted(text.encode("utf-8"), request_id)
+            elif event_type == "response.incomplete":
+                return _failure("PROVIDER_RESPONSE_INCOMPLETE", provider_request_id=request_id)
+            elif event_type in {"response.failed", "error"}:
+                return _failure("PROVIDER_RESPONSE_FAILED", provider_request_id=request_id)
+    except Exception:
+        return ProviderIndeterminate("PROVIDER_STREAM_INTERRUPTED", request_id)
+    return ProviderIndeterminate("PROVIDER_STREAM_TERMINAL_EVENT_MISSING", request_id)
+
+
+def _response_id(response: object) -> str | None:
+    value = getattr(response, "id", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _response_text(response: object) -> str:
+    parts: list[str] = []
+    for item in cast(Any, getattr(response, "output", ()) or ()):
+        if getattr(item, "type", None) != "message":
+            continue
+        for content in cast(Any, getattr(item, "content", ()) or ()):
+            if getattr(content, "type", None) in {"output_text", "text"}:
+                value = getattr(content, "text", "")
+                if isinstance(value, str) and value:
+                    parts.append(value)
+    return "".join(parts)
+
+
+def _required_text(value: object, field_name: str) -> str:
+    if type(value) is not str or not value.strip():  # noqa: E721
+        raise ValueError(f"{field_name} must be non-empty text")
+    return value
+
+
+def _failure(
+    code: str,
+    *,
+    provider_request_id: str | None = None,
+    **details: object,
+) -> ProviderFailed:
+    return ProviderFailed(
+        code,
+        json.dumps({"retryable": False, **details}, separators=(",", ":"), sort_keys=True),
+        provider_request_id,
+    )
+
+
+def _map_provider_error(
+    error: Exception,
+    *,
+    fallback_request_id: str | None = None,
+) -> ProviderResult:
+    status = getattr(error, "status_code", None)
+    status_code = status if isinstance(status, int) and not isinstance(status, bool) else None
+    value = getattr(error, "request_id", None)
+    request_id = value if isinstance(value, str) and value else fallback_request_id
+    if status_code in {400, 401, 403, 404, 409, 422}:
+        return _failure(
+            f"PROVIDER_HTTP_{status_code}",
+            provider_request_id=request_id,
+            http_status=status_code,
+        )
+    reason = f"PROVIDER_HTTP_{status_code}" if status_code else "PROVIDER_TRANSPORT_UNKNOWN"
+    return ProviderIndeterminate(reason, request_id)
+
+
+__all__ = [
+    "DOUBAO_ARK_ADAPTER_STRATEGY_VERSION",
+    "DOUBAO_ARK_PROVIDER_ID",
+    "DoubaoArkVlmProvider",
+    "DoubaoArkVlmProviderConfig",
+]

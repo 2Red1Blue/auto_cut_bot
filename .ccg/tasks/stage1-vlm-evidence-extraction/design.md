@@ -66,20 +66,22 @@ VLM 返回只形成 coarse semantic observations：
 
 VLM request identity 绑定完整 prompt/schema/model/provider preprocess/window proxy hashes。外部调用使用现有 Command/Receipt 框架：durable attempt reservation → 单次 invocation → raw immutable blob staging/hash verification → parse/evaluate → DB transaction/CAS commit。超时后的结果不明保持 `indeterminate` 并 reconcile，禁止盲重试。
 
-### 5.1 首个真实 Runtime Adapter
+### 5.1 主 Runtime Adapter：Doubao Ark
 
-首个注册适配器是 `qwen-video-json-object-schema-prompt-v2`：
+生产主适配器是 `doubao-ark-files-responses-stream-v1`：
 
-- 使用 Qwen OpenAI-compatible Chat Completions 的 `video_url` Base64 视频输入；SDK `max_retries=0`，每次 Kernel Attempt 最多提交一次外部请求；
-- 多模态路径采用官方支持的 `json_object`，完整封闭 JSON Schema、嵌套字段名、整数 PTS、frame ID 清单均注入版本化提示词；Provider 返回后仍必须通过 Kernel strict parser，不能把“合法 JSON”解释成“契约合法”；
+- 使用火山方舟官方 `volcenginesdkarkruntime` SDK；代理视频通过 Files API 上传，模型通过 Responses API 的 SSE 流式事件消费；SDK `max_retries=0`，每次 Kernel Attempt 最多上传一次并最多提交一次模型请求；
+- Files API 的 `file_id` 不是模型请求 ID。它按 `provider_id + proxy content hash + preprocess policy hash` 进入 PostgreSQL lifecycle，并在复用前通过 Files API 重新验证状态与本地保守 TTL；禁止把旧 JSON cache 或未知有效期的 ID 当成权威；
+- Responses API 使用 strict `json_schema`。只接受 `response.completed` 的完整输出；`response.incomplete` 即使已有部分 JSON 也失败关闭，流结束但无 terminal event 则进入 `indeterminate`，不得自动补 token 或重提；
 - 请求参数中的 adapter strategy version、fps、token budget、temperature 全部进入 `VlmRequestIdentity`，改变策略必须生成新的请求身份；
-- Base64 路径硬限制原始 MP4 不超过 20 MiB，超限在网络调用前失败关闭；
-- Chat Completions 当前没有可依赖的请求检索能力，因此 ambiguous timeout 只能保持 `indeterminate`，`reconcile` 不得再次提交；
+- Responses 请求一旦取得 provider response ID，可以用 retrieve 做只读 reconcile；没有 response ID 的模糊超时保持 `indeterminate`，绝不以另一次 create 猜测恢复；
 - API key 只由 Runtime composition 注入，不写入 request payload、Artifact、日志或仓库。
+
+已实现的 Qwen `qwen-video-json-object-schema-prompt-v2` 保留为备用与跨 Provider 契约验证，不是生产默认，也不拥有另一套语义或持久化路径。
 
 `IdentityProxyWindowBuilder` 只用于“提交的 MP4 本身就是 Source”的首个真实测试切片。它用 ffprobe 枚举完整 decoded frame PTS、用 ffmpeg 抽取并哈希确定性样本、把原视频 bytes 写入 Blob Store，并生成真正的 identity translation certificate。任何转码、VFR 重写、裁窗或 PTS reset 都禁止使用该 Builder，必须由后续 `ProxyTimelineMap` producer 给出独立可验证映射。
 
-Ark Files API/file_id 缓存不属于此适配器。后续若接入 Ark，必须作为单独的 durable provider-media lifecycle 设计，按 provider/content hash/preprocess policy 绑定并支持 expiry；禁止读取旧 `.ark_files_cache` 后把 file_id 当作无期限有效事实。
+`IdentityProxyWindowBuilder` 与 Provider 无关；Doubao 和 Qwen 都必须消费同一个 Kernel `WindowManifest` 与不可变代理 Blob。
 
 ## 6. 语义链落位
 

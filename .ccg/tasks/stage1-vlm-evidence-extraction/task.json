@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "将已验真的 Qwen VLM use case 接入 Pipeline HTTP，并实现转码代理时间映射与下游 ASR/VAD 证据合取",
+  "nextAction": "提交已验真的 Doubao Ark streaming 主适配器，再接入 Pipeline HTTP、全剧窗口化时间映射与下游 ASR/VAD 证据合取",
   "createdAt": "2026-08-23T18:16:03Z",
   "branch": "feat/v213-contract-codegen"
 }

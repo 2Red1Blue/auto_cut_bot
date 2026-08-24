@@ -69,3 +69,13 @@ def test_vlm_generation_migration_closes_blob_attempt_and_finalizer_relations() 
     assert "terminal Job requires exactly one matching FinalizeRunOutcome receipt" in sql
     assert "successful FinalizeRunOutcome requires exactly one run_outcome member" in sql
     assert "terminal Job cannot accept a fresh command slot" in sql
+
+
+def test_provider_media_migration_binds_file_id_to_content_and_policy() -> None:
+    sql = (MIGRATIONS / "0004_provider_media_objects.sql").read_text()
+
+    assert "runtime.provider_media_objects" in sql
+    assert "UNIQUE (provider_id, content_hash, preprocess_policy_hash, generation)" in sql
+    assert "runtime_one_live_provider_media_identity" in sql
+    assert "provider file identity is immutable once known" in sql
+    assert "provider media objects must begin as a clean reservation" in sql

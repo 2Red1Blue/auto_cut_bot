@@ -130,3 +130,42 @@ The two failed Attempts remain durable audit records; neither was overwritten or
 ### Decision
 
 **Go for the real Qwen VLM test slice.** This is not production VLM completion: HTTP Pipeline composition, transcoded proxy timeline proof, production semantic Admission, local ASR/VAD conjunction, and Ark provider file-id lifecycle remain open.
+
+## Layer 5 review — Doubao Ark 主适配器与真实流式验真
+
+### 实现边界
+
+- 新增生产主适配器 `doubao-ark-files-responses-stream-v1`，使用官方 `volcenginesdkarkruntime`；Qwen 仅保留为备用与跨 Provider 验证。
+- 视频通过 Files API 上传，Responses API 固定 `stream=True`、strict `json_schema`、SDK `max_retries=0`。一个 Kernel Attempt 最多一次上传、最多一次模型 create；只有已有 response ID 时才允许 retrieve reconcile。
+- `file_id` 以 `provider + proxy content hash + preprocess policy hash + generation` 持久化。可用 ID 每次复用前重新验证；过期 generation 永久保留并允许新 generation，其他状态阻止并发重复上传。
+- `response.incomplete` 即使含部分 JSON 也失败；缺 terminal event 保持 `indeterminate`。API key、旧 JSON cache、文件路径均不进入 Artifact。
+
+### 真实测试序列
+
+1. `vlm-live-w001-doubao-ark-v1`：8192 token 预算得到 `response.incomplete`，以 `PROVIDER_RESPONSE_INCOMPLETE` 失败；0 observation，未伪装成功。
+2. `vlm-live-w001-doubao-ark-v2`：复用同一个已验证 `file_id`，32768 token 得到完整 strict JSON；本地 256 总摘要字符上限以 `SUMMARY_BUDGET_EXCEEDED` 拒绝。持久化响应为 4 条，摘要长度 71/66/79/75，总计 291。
+3. `vlm-live-w001-doubao-ark-v3`：保持 32768 token，将显式 ParsePolicy 总摘要预算校准为 512；Attempt=`committed`、Command=`succeeded`，恰好提交 request/response/observation 三个 Artifact，得到 4 条 observation。
+4. 使用会在 `dispatch/reconcile` 立即抛错的 Provider 重放 v3；结果仍为 succeeded，4 条全部 `core_owned`，确定性投影为 4 个 Candidate 与 4 个 Narrative node，证明没有隐藏远端调用。
+
+### 可复算持久化证据（开发库 `autocut`，脱敏）
+
+- v3 Attempt `292f9201-d90b-4c03-bf91-59d0381f319b`，request hash `sha256:df35178115bc69b47648860b9445bdc0162d4757eb757ee23ca234d79be99651`，state=`committed`。
+- 原始流式响应 Blob hash `sha256:d41929a3305a7977564c9273495039736785597ecfa3ac8270d959e1922d07bf`；Receipt `7e1aa4e4-b307-400d-95a6-5b2e92bf195d`；ArtifactSet `8f3bd3c2-5495-43f9-aa50-108c9ea1f88a`。
+- 三个成员 hash：request `sha256:7c02862b51ed0e2acd6e3fa11a346339226fe693b80eb87ee4a811fe29963aad`；response `sha256:01168853a4947f90c123d01706cb70b91c1c2606131cdc8c9913ca0cf726996f`；observation set `sha256:98245002d2f1862e3bf48ea8fece869c26e5fc0d033d1d45ec9e4476108de3cd`。
+- provider media generation 1 为 `available`，绑定 proxy content hash `sha256:a584d2258b6e72cf9c582fdc6c0c76cdd4a7ed213042422cc2188eabeffc9b7a` 与 preprocess policy hash `sha256:55af868c27ec0cc999637c245690136664049f6230508400b2db387838c56ee7`。
+
+### 自动验证
+
+- Doubao/Qwen/迁移单元测试：18 passed。
+- 独立 PostgreSQL Store/VLM/provider-media 集成：47 passed。
+- provider-media generation/expiry CAS：2 passed。
+- 全新临时 venv 仅安装 `volcengine-python-sdk[ark]>=5.0.45,<6` 后，官方 `Ark` import 与 client 构造成功。
+- Ruff 与 BasedPyright：通过。
+- 开发库 `autocut` 已升级 provider-media lifecycle；原 Qwen 与三次 Doubao 审计记录均保留。
+- 已知基线问题：全量 `tests/pipeline` 收集仍会命中旧 `artifact_cache -> autocut_core` import；architecture 套件另有一个既存 wheel 元数据断言与 `autocut-kernel` 当前 `psycopg` 依赖冲突。两者不由本 diff 引入，已留给后续 package/runtime 收敛任务，不能用于声称全仓测试已通过。
+
+### 决定
+
+**Go for Doubao Ark streaming VLM evidence slice.** 尚未批准整剧生产 pipeline：下一阶段仍需 HTTP Pipeline composition、全剧窗口化代理及可验证 timeline map、ASR/VAD/视觉/字幕证据合取、Story 1–3、Recipe/Render/QC 与高光前端读取链路。
+
+独立对抗审查首轮发现 `[ark]` extra 未声明、SSE 迭代异常丢 response ID 两项 P1；修复并新增 clean-env/default-factory 与 interrupted-stream reconcile 回归后，第二轮结论为 **Go，无残留 P0/P1**。
