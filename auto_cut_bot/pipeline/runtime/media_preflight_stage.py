@@ -129,6 +129,12 @@ class _ClaimOwnedLocalProducer:
             local.evidence,
             local.calibration_bindings,
             json.dumps(
+                self._policy.to_mapping(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            json.dumps(
                 local.provenance_mapping(),
                 ensure_ascii=False,
                 separators=(",", ":"),

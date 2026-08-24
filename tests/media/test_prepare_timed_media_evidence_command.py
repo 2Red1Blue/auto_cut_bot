@@ -33,6 +33,13 @@ from autocut_kernel.vlm import VlmObservationSet
 from test_root_evidence import HASH_A, HASH_B, SOURCE_HASH, _bundle
 from test_timed_evidence import _bindings, _manifest_and_observation
 
+TEST_POLICY_JSON = json.dumps(
+    {"policy_id": "fixture-policy"},
+    separators=(",", ":"),
+    sort_keys=True,
+)
+TEST_POLICY_SHA256 = canonical_sha256(json.loads(TEST_POLICY_JSON))
+
 
 class _Store:
     def __init__(self) -> None:
@@ -134,9 +141,10 @@ class _Producer:
         )
         bindings = _bindings(values)
         return ProducedTimedMediaEvidence(
-            HASH_A,
+            TEST_POLICY_SHA256,
             bundle,
             bindings,
+            TEST_POLICY_JSON,
             _provenance(request.source_provenance_sha256, bindings),
         )
 
@@ -176,7 +184,7 @@ def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
             2,
             2,
         ),
-        producer_policy_sha256=HASH_A,
+        producer_policy_sha256=TEST_POLICY_SHA256,
     )
 
 

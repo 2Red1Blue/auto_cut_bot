@@ -79,6 +79,7 @@ class ProducedTimedMediaEvidence:
     producer_policy_sha256: str
     root_bundle: RootMediaEvidenceBundle
     calibration_bindings: tuple[CalibrationBinding, ...]
+    producer_policy_json: str
     producer_provenance_json: str
 
     def __post_init__(self) -> None:
@@ -94,6 +95,11 @@ class ProducedTimedMediaEvidence:
                 "calibration_bindings must contain exact CalibrationBinding values"
             )
         object.__setattr__(self, "calibration_bindings", bindings)
+        _validate_canonical_mapping_json(
+            self.producer_policy_json,
+            self.producer_policy_sha256,
+            "producer policy",
+        )
         _validate_producer_provenance_json(self.producer_provenance_json)
 
     @property
@@ -603,11 +609,18 @@ class PrepareTimedMediaEvidenceCommand:
             json.loads(produced.producer_provenance_json),
             "application/vnd.autocut.local-media-producer-provenance+json",
         )
+        policy_blob = self._put_mapping_blob(
+            request.job,
+            json.loads(produced.producer_policy_json),
+            "application/vnd.autocut.local-media-preflight-policy+json",
+        )
         root_payload = {
             "blob": _blob_mapping(root_blob),
             "episode_index": request.episode_index,
             "producer_provenance_blob": _blob_mapping(provenance_blob),
             "producer_provenance_sha256": produced.producer_provenance_sha256,
+            "producer_policy_blob": _blob_mapping(policy_blob),
+            "producer_policy_sha256": produced.producer_policy_sha256,
             "root_bundle_sha256": produced.root_bundle.canonical_hash,
             "source_manifest_sha256": request.source_manifest_sha256,
             "source_provenance_sha256": request.source_provenance_sha256,
@@ -920,6 +933,26 @@ def _validate_producer_provenance_json(value: object) -> None:
         ):
             if not _is_sha256(identity[field]):
                 raise TimedMediaEvidenceCommandError("producer identity hash is invalid")
+
+
+def _validate_canonical_mapping_json(
+    value: object,
+    expected_sha256: str,
+    label: str,
+) -> None:
+    if type(value) is not str:  # noqa: E721
+        raise TimedMediaEvidenceCommandError(f"{label} must be canonical JSON")
+    try:
+        decoded: object = json.loads(value)
+    except (json.JSONDecodeError, UnicodeError) as error:
+        raise TimedMediaEvidenceCommandError(f"{label} must be canonical JSON") from error
+    if type(decoded) is not dict:  # noqa: E721
+        raise TimedMediaEvidenceCommandError(f"{label} must be a JSON object")
+    payload = cast(dict[str, object], decoded)
+    if _json(payload) != value or canonical_sha256(payload) != expected_sha256:
+        raise TimedMediaEvidenceCommandError(
+            f"{label} does not match its canonical hash"
+        )
 
 
 __all__ = (
