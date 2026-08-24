@@ -145,6 +145,7 @@ class HostSingletonLock:
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
                     raise RuntimeError("FunASR singleton lock must be a regular file")
+                os.fchmod(fd, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 os.ftruncate(fd, 0)
                 os.write(fd, f"{os.getpid()}\n".encode("ascii"))

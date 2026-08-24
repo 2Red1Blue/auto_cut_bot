@@ -1,45 +1,104 @@
 # Standalone FunASR timed-speech service
 
-Run this separate process on the host CPU; the pipeline never imports FunASR,
-ModelScope, or Torch. `FUNASR_PROFILE_JSON` binds measured FunASR/Torch versions,
-actual parameter device, this service file's SHA-256, SenseVoiceSmall/FSMN model
-tree hashes and revisions, the two inference kinds, producer identities, policy,
-and calibration. Startup hashes and compares all of these values before ready.
-Required paths and limits are `FUNASR_ASR_MODEL_PATH`,
-`FUNASR_VAD_MODEL_PATH`, `FUNASR_MAX_REQUEST_BYTES`,
-`FUNASR_MAX_RESPONSE_BYTES`, `FUNASR_INFERENCE_TIMEOUT_SECONDS`, and
-`FUNASR_QUEUE_CAPACITY`. `FUNASR_SHARED_TOKEN` is required by both service and
-pipeline and is sent only in the loopback Authorization header; never put it in
-profile JSON, artifacts, command arguments, or logs.
+Run FunASR as one CPU process directly on the host. Podman is used only for the
+database in this deployment; it is not the production FunASR topology. The
+Dockerfile remains a lock-aligned reference artifact and has not passed the
+locked-model smoke described below.
 
-The production profile declares `word_timing_capability=required`, invokes
-`output_timestamp=True`, rejects missing/misaligned/non-monotonic/out-of-clock
-timestamps, groups words at gaps greater than the manifest's calibrated 700ms,
-as non-linguistic utterance protected ranges, and merges direct FSMN ranges at
-gaps up to 350ms. Gap groups never claim sentence completeness. Empty lexical output plus VAD
-speech is explicit `no_lexical_content` with VAD-only protected ranges. Pure
-silence requires both explicit empty ASR and empty VAD. No tick is interpolated.
+## Runtime topology and admission
 
-One AutoModel owns one FSMN weight instance; ASR and direct VAD inference run
-separately under a single lock. Queue capacity is acquired atomically before a
-request body is read or a temporary file is created; excess requests receive
-503. Cancellation cannot release the inference lock while its worker thread is
-still running. Native timeout/model failure exits 70/71 so a supervisor replaces
-the unsafe process. The command retries one admission-busy result and never
-retries an unknown inference result. Podman is a CPU fallback; MPS is a separate
-calibrated identity and silent device fallback prevents readiness. Endpoints:
-`/health/live`, `/health/ready`, and `/v1/timed-speech-evidence`.
+`FUNASR_QUEUE_CAPACITY` is required to equal `3`, matching the pipeline/HTTP
+in-flight budget. Three admitted requests do **not** create three models or run
+three inferences: one service owns one `AutoModel`, including its FSMN VAD
+weights, and an `asyncio.Lock` serializes the complete ASR plus direct-VAD call.
+A fourth request receives 503 before its body is read or its spool directory is
+created.
 
-For a host launch, activate the pinned environment from `requirements.lock`,
-export the model paths, bounded limits, token, and a closed measured profile,
-then run `python deploy/funasr/service.py`. Compute the profile's
-`service_sha256` from that exact `service.py`; compute each `model_sha256` with
-the service's canonical `tree_hash`, and use each resolved snapshot directory
-name as `model_revision`.
+Every production process must use the same absolute local-host
+`FUNASR_SINGLETON_LOCK_PATH`, recommended as
+`/tmp/autocut-funasr-service.lock`. The service takes a non-blocking OS file lock
+before constructing `AutoModel` and holds it for the model lifetime. Thus a
+second process is rejected even when it uses another port. Normal cleanup,
+startup exceptions, and process exit release the lock; a stale file without a
+live file lock is harmless.
 
-The bounded live smoke uses one short stream-copy MP4, one request, and no
-parallel inference. Probe and bind its real audio clock rather than assuming a
-zero origin:
+## Resource gate
+
+The service reads Linux `MemAvailable`/swap counters or macOS `vm_stat` and
+`vm.swapusage`. It fails startup before model construction unless both the
+available-memory and swap limits pass. It repeats the inference-headroom check
+for every request before admission and body spooling. Configure byte counts:
+
+- `FUNASR_STARTUP_MIN_AVAILABLE_BYTES`
+- `FUNASR_INFERENCE_MIN_AVAILABLE_BYTES`
+- `FUNASR_MAX_SWAP_USED_BYTES`
+
+The observed single-process CPU smoke peaked near 3.2 GB RSS, while the macOS
+host already had about 30 GB in use and 9 GB of swap, producing much higher
+system pressure. A conservative initial host policy is 8 GiB available at
+startup (`8589934592`), 4 GiB available before each inference (`4294967296`),
+and at most 2 GiB swap used (`2147483648`). Calibrate upward from recorded host
+measurements; do not lower these merely to make readiness green.
+
+Snapshot failure or insufficient headroom returns the stable 503 body
+`resource-pressure` with `Retry-After: 1`. The HTTP client records this as a
+`TIMED_SPEECH_BUSY` rejection Receipt and the command permits only one retry.
+This is an infrastructure-pressure result, never a content/no-speech result.
+The queue-full response is also retry-limited, so three occupied slots can make
+the single retry fail before a slot is released.
+
+## Identity and required environment
+
+`FUNASR_PROFILE_JSON` binds measured FunASR/Torch versions, actual parameter
+device, this service file's SHA-256, SenseVoiceSmall/FSMN model tree hashes and
+revisions, inference kinds, producer identities, timing policy, and
+calibration. Startup hashes and compares all values before readiness. Silent
+MPS-to-CPU fallback therefore fails the measured-device check.
+
+The complete runtime environment is:
+
+- `FUNASR_REQUIRED_PYTHON_VERSION=3.13.13`
+- `FUNASR_ASR_MODEL_PATH` and `FUNASR_VAD_MODEL_PATH`
+- `FUNASR_MAX_REQUEST_BYTES` and `FUNASR_MAX_RESPONSE_BYTES`
+- `FUNASR_INFERENCE_TIMEOUT_SECONDS`
+- `FUNASR_QUEUE_CAPACITY=3`
+- the three resource limits above
+- `FUNASR_SINGLETON_LOCK_PATH` (one shared absolute path for the host)
+- `FUNASR_SHARED_TOKEN` (non-empty and sent only in loopback Authorization)
+- `FUNASR_PROFILE_JSON`
+
+The production profile uses required real word timestamps. Missing,
+misaligned, non-monotonic, or out-of-clock timestamps fail closed. Words are
+grouped at gaps greater than the calibrated 700 ms as non-linguistic utterance
+protected ranges; direct FSMN ranges merge at gaps up to 350 ms. These groups
+never claim sentence completeness. Empty ASR plus detected VAD is
+`no_lexical_content`; pure silence requires explicit empty ASR and empty VAD.
+
+Timeout or model failure exits 70/71 so a supervisor replaces the unsafe
+process. Cancellation does not release the inference lock while its worker
+thread is running. Endpoints are `/health/live`, `/health/ready`, and
+`/v1/timed-speech-evidence`.
+
+## Host lock and pending locked-model smoke
+
+`requirements.lock` records the versions present for the successful bounded
+host smoke: CPython 3.13.13, FunASR 1.4.1, Torch 2.13.0, and exact direct
+dependencies. `python -m pip check` passed in that existing host environment.
+This does not prove that a new environment installed from the lock behaves the
+same, and it does not turn the current deployment verdict into GO.
+
+Before deployment, create a clean CPython 3.13.13 host environment, install
+`requirements.lock`, record `python -m pip freeze`, `python -m pip check`, model
+directory hashes, and the service hash, then run the real locked-model smoke.
+The retained smoke record must cover authenticated success, invalid token,
+strict-decode rejection, measured CPU identity and MPS-fallback rejection,
+exactly one model load, three admitted/serialized requests, fourth-request
+rejection before spool, cancellation/exception release, and resource readings
+showing the configured budget was respected. Until that record exists, status
+remains **NO-GO**.
+
+For the bounded media probe, stream-copy one short MP4 and bind its real audio
+clock rather than assuming a zero origin:
 
 ```sh
 ffmpeg -hide_banner -loglevel error -ss 0 -i "$EPISODE" -t 30 \

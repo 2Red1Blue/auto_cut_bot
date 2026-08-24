@@ -1,4 +1,4 @@
-FROM python:3.11.13-slim-bookworm
+FROM python:3.13.13-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN useradd --create-home --uid 10001 funasr
 WORKDIR /service

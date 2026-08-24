@@ -1,8 +1,11 @@
-aiohttp==3.12.15
-funasr==1.4.3
-modelscope==1.29.2
-numpy==1.26.4
-scipy==1.15.3
-soundfile==0.13.1
-torch==2.7.1
-torchaudio==2.7.1
+# Exact direct-package host lock observed during the successful bounded CPU smoke on 2026-08-25.
+# External interpreter precondition: CPython==3.13.13; installer used: pip==26.0.1.
+# This is not deployment approval until the clean locked-model smoke in README.md is recorded.
+aiohttp==3.14.3
+funasr==1.4.1
+modelscope==1.39.1
+numpy==2.4.6
+scipy==1.18.0
+soundfile==0.14.0
+torch==2.13.0
+torchaudio==2.11.0
