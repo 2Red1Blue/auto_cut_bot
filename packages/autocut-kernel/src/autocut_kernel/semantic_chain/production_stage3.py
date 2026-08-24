@@ -1179,6 +1179,7 @@ class SemanticFeasibilityEvaluator:
                     != material.physical_requirements_hash
                 ):
                     raise ProductionModelError("Stage 3 changed deferred physical requirements")
+                alternative_statuses: list[bool] = []
                 for alternative in requirement.alternative_sets:
                     resolved = tuple(candidates.get(ref.object_id) for ref in alternative.candidate_refs)
                     if any(item is None for item in resolved):
@@ -1189,18 +1190,51 @@ class SemanticFeasibilityEvaluator:
                         for candidate in typed
                         for event in candidate.event_refs
                     }
-                    if not {jcs_key(event) for event in alternative.event_refs} <= covered:
-                        raise ProductionModelError("alternative Candidates do not cover every Event")
-                    if any(
-                        beat.narrative_function not in candidate.supported_narrative_functions
-                        for candidate in typed
+                    alternative_statuses.append(
+                        {jcs_key(event) for event in alternative.event_refs} <= covered
+                        and all(
+                            beat.narrative_function
+                            in candidate.supported_narrative_functions
+                            for candidate in typed
+                        )
+                        and any(
+                            candidate.duration_proof.supports_seconds(
+                                beat.duration_seconds.minimum
+                            )
+                            for candidate in typed
+                        )
+                    )
+                satisfied = (
+                    any(alternative_statuses)
+                    if requirement.satisfaction == "one_of"
+                    else all(alternative_statuses)
+                )
+                if not satisfied:
+                    raise ProductionModelError(
+                        "evidence requirement has no complete capability/duration witness"
+                    )
+                alternative_candidate_ids = {
+                    ref.object_id
+                    for alternative in requirement.alternative_sets
+                    for ref in alternative.candidate_refs
+                }
+                for required in requirement.required_candidates:
+                    candidate = candidates.get(required.candidate_ref.object_id)
+                    if (
+                        candidate is None
+                        or candidate.candidate_id not in alternative_candidate_ids
+                        or candidate.authorization_ref != required.authorization_ref
                     ):
-                        raise ProductionModelError("Candidate capability does not support Beat function")
-                    if not any(
-                        candidate.duration_proof.supports_seconds(beat.duration_seconds.minimum)
-                        for candidate in typed
-                    ):
-                        raise ProductionModelError("Beat duration has no Candidate tick-duration support")
+                        raise ProductionModelError(
+                            "required Candidate is not an authorized alternative"
+                        )
+        beat_minimum = sum(item.duration_seconds.minimum for item in blueprint.beats)
+        beat_maximum = sum(item.duration_seconds.maximum for item in blueprint.beats)
+        if (
+            beat_minimum > blueprint.story_duration_seconds.maximum
+            or beat_maximum < blueprint.story_duration_seconds.minimum
+        ):
+            raise ProductionModelError("Story duration cannot be satisfied by Beat ranges")
         writer_obligations = tuple(
             value for part in partition_plan.partitions for value in part.writer_obligation_ids
         )

@@ -51,6 +51,7 @@ from .production_stage2 import (
     CandidateMeasurementPolicy,
     CapabilityPredicate,
     CapabilityRule,
+    CommittedCandidateSemanticEvidence,
     CommittedVlmObservation,
     DeclaredSpan,
     DependencyProjection,
@@ -77,6 +78,7 @@ from .production_stage2 import (
     SourceUsageLedger,
     SourceUsageRow,
     TickDurationProof,
+    candidate_semantic_evidence_hash,
 )
 from .production_stage3 import (
     BlueprintBeat,
@@ -120,6 +122,7 @@ __all__ = [
     "CandidateMeasurementPolicy",
     "CapabilityPredicate",
     "CapabilityRule",
+    "CommittedCandidateSemanticEvidence",
     "CommittedVlmObservation",
     "ConflictDiagnostics",
     "ContextBudget",
@@ -200,5 +203,6 @@ __all__ = [
     "TickDurationProof",
     "TickGap",
     "TimeBaseValue",
+    "candidate_semantic_evidence_hash",
     "stable_beat_id",
 ]

@@ -260,6 +260,103 @@ class SemanticMeasurement(CanonicalModel):
         }
 
 
+def candidate_semantic_evidence_hash(
+    *,
+    committed: CommittedVlmObservation,
+    anchors: Sequence[SemanticAnchor],
+    measurements: Sequence[SemanticMeasurement],
+    measurement_policy_ref: ArtifactRef,
+) -> str:
+    """Hash the exact pending/committed semantic evidence evaluator input."""
+
+    anchor_values = cast(
+        tuple[SemanticAnchor, ...],
+        canonical_values(anchors, SemanticAnchor, "semantic evidence anchors", nonempty=True),
+    )
+    measurement_values = cast(
+        tuple[SemanticMeasurement, ...],
+        canonical_values(
+            measurements,
+            SemanticMeasurement,
+            "semantic evidence measurements",
+            nonempty=True,
+        ),
+    )
+    return canonical_json_hash(
+        {
+            "anchors": [item.to_mapping() for item in anchor_values],
+            "measurement_policy_ref": measurement_policy_ref.to_mapping(),
+            "measurements": [item.to_mapping() for item in measurement_values],
+            "observation_ref": committed.observation_ref.to_mapping(),
+            "vlm_observation_sha256": committed.vlm_observation_sha256,
+        }
+    )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CommittedCandidateSemanticEvidence(EvaluatorOwnedModel):
+    """Exact reader output for the hash-bound anchors/measurements being evaluated."""
+
+    semantic_evidence_ref: ArtifactRef
+    committed_observation: CommittedVlmObservation
+    anchors: tuple[SemanticAnchor, ...]
+    measurements: tuple[SemanticMeasurement, ...]
+    measurement_policy_ref: ArtifactRef
+
+    @classmethod
+    def from_reader(
+        cls,
+        *,
+        semantic_evidence_ref: ArtifactRef,
+        committed_observation: CommittedVlmObservation,
+        anchors: Sequence[SemanticAnchor],
+        measurements: Sequence[SemanticMeasurement],
+        measurement_policy_ref: ArtifactRef,
+    ) -> CommittedCandidateSemanticEvidence:
+        if type(committed_observation) is not CommittedVlmObservation:  # noqa: E721
+            raise ProductionModelError("semantic evidence requires committed VLM reader output")
+        if type(semantic_evidence_ref) is not ArtifactRef or type(measurement_policy_ref) is not ArtifactRef:  # noqa: E721
+            raise ProductionModelError("semantic evidence refs must be ArtifactRefs")
+        anchor_values = cast(
+            tuple[SemanticAnchor, ...],
+            canonical_values(anchors, SemanticAnchor, "semantic evidence anchors", nonempty=True),
+        )
+        measurement_values = cast(
+            tuple[SemanticMeasurement, ...],
+            canonical_values(
+                measurements,
+                SemanticMeasurement,
+                "semantic evidence measurements",
+                nonempty=True,
+            ),
+        )
+        expected_hash = candidate_semantic_evidence_hash(
+            committed=committed_observation,
+            anchors=anchor_values,
+            measurements=measurement_values,
+            measurement_policy_ref=measurement_policy_ref,
+        )
+        if semantic_evidence_ref.content_hash != expected_hash:
+            raise ProductionModelError("semantic evidence ref does not bind exact evaluator inputs")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "semantic_evidence_ref", semantic_evidence_ref)
+        object.__setattr__(instance, "committed_observation", committed_observation)
+        object.__setattr__(instance, "anchors", anchor_values)
+        object.__setattr__(instance, "measurements", measurement_values)
+        object.__setattr__(instance, "measurement_policy_ref", measurement_policy_ref)
+        return instance
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "anchors": [item.to_mapping() for item in self.anchors],
+            "measurement_policy_ref": self.measurement_policy_ref.to_mapping(),
+            "measurements": [item.to_mapping() for item in self.measurements],
+            "observation_ref": self.committed_observation.observation_ref.to_mapping(),
+            "semantic_evidence_ref": self.semantic_evidence_ref.to_mapping(),
+            "vlm_observation_sha256": self.committed_observation.vlm_observation_sha256,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityPredicate(CanonicalModel):
     predicate: str
@@ -415,14 +512,15 @@ class CandidateCapabilityEvaluator:
     def evaluate(
         cls,
         *,
-        committed: CommittedVlmObservation,
-        anchors: Sequence[SemanticAnchor],
-        measurements: Sequence[SemanticMeasurement],
-        measurement_policy_ref: ArtifactRef,
+        semantic_evidence: CommittedCandidateSemanticEvidence,
         measurement_policy: CandidateMeasurementPolicy,
         capability_policy_ref: ArtifactRef,
         capability_policy: CandidateCapabilityPolicy,
     ) -> OwnerBoundVlmObservationRef:
+        if type(semantic_evidence) is not CommittedCandidateSemanticEvidence:  # noqa: E721
+            raise ProductionModelError("capability evaluator requires committed semantic evidence")
+        committed = semantic_evidence.committed_observation
+        measurement_policy_ref = semantic_evidence.measurement_policy_ref
         if type(committed) is not CommittedVlmObservation:  # noqa: E721
             raise ProductionModelError("capability evaluator requires committed reader output")
         if measurement_policy_ref.content_hash != measurement_policy.canonical_hash:
@@ -431,12 +529,17 @@ class CandidateCapabilityEvaluator:
             raise ProductionModelError("capability policy ref does not bind the exact policy")
         anchor_values = cast(
             tuple[SemanticAnchor, ...],
-            canonical_values(anchors, SemanticAnchor, "anchors", nonempty=True),
+            canonical_values(
+                semantic_evidence.anchors, SemanticAnchor, "anchors", nonempty=True
+            ),
         )
         measurement_values = cast(
             tuple[SemanticMeasurement, ...],
             canonical_values(
-                measurements, SemanticMeasurement, "semantic measurements", nonempty=True
+                semantic_evidence.measurements,
+                SemanticMeasurement,
+                "semantic measurements",
+                nonempty=True,
             ),
         )
         observation_key = jcs_key(committed.observation_ref)
@@ -617,6 +720,7 @@ class Candidate(EvaluatorOwnedModel):
     declared_spans: tuple[DeclaredSpan, ...]
     anchor_refs: tuple[SemanticAnchor, ...]
     semantic_measurements: tuple[SemanticMeasurement, ...]
+    semantic_evidence_ref: ArtifactRef
     capability_assessment: CandidateCapabilityAssessment
     vlm_observation_ref: DomainRef
     vlm_observation_sha256: str
@@ -629,16 +733,15 @@ class Candidate(EvaluatorOwnedModel):
         *,
         candidate_id: str,
         event_refs: Sequence[DomainRef],
-        committed: CommittedVlmObservation,
+        semantic_evidence: CommittedCandidateSemanticEvidence,
         authority: OwnerBoundVlmObservationRef,
         declared_spans: Sequence[DeclaredSpan],
-        anchors: Sequence[SemanticAnchor],
-        measurements: Sequence[SemanticMeasurement],
         authorization_ref: SourceAuthorizationRef,
     ) -> Candidate:
         identifier(candidate_id, "candidate_id")
-        if type(committed) is not CommittedVlmObservation or type(authority) is not OwnerBoundVlmObservationRef:  # noqa: E721
+        if type(semantic_evidence) is not CommittedCandidateSemanticEvidence or type(authority) is not OwnerBoundVlmObservationRef:  # noqa: E721
             raise ProductionModelError("Candidate requires committed evaluator authority")
+        committed = semantic_evidence.committed_observation
         if (
             authority.observation_ref != committed.observation_ref
             or authority.vlm_observation_sha256 != committed.vlm_observation_sha256
@@ -655,12 +758,17 @@ class Candidate(EvaluatorOwnedModel):
         )
         anchors_values = cast(
             tuple[SemanticAnchor, ...],
-            canonical_values(anchors, SemanticAnchor, "anchor_refs", nonempty=True),
+            canonical_values(
+                semantic_evidence.anchors, SemanticAnchor, "anchor_refs", nonempty=True
+            ),
         )
         measurement_values = cast(
             tuple[SemanticMeasurement, ...],
             canonical_values(
-                measurements, SemanticMeasurement, "semantic_measurements", nonempty=True
+                semantic_evidence.measurements,
+                SemanticMeasurement,
+                "semantic_measurements",
+                nonempty=True,
             ),
         )
         if authority.capability_assessment.anchor_refs_hash != canonical_json_hash(
@@ -694,6 +802,9 @@ class Candidate(EvaluatorOwnedModel):
         object.__setattr__(instance, "declared_spans", span_values)
         object.__setattr__(instance, "anchor_refs", anchors_values)
         object.__setattr__(instance, "semantic_measurements", measurement_values)
+        object.__setattr__(
+            instance, "semantic_evidence_ref", semantic_evidence.semantic_evidence_ref
+        )
         object.__setattr__(instance, "capability_assessment", authority.capability_assessment)
         object.__setattr__(instance, "vlm_observation_ref", committed.observation_ref)
         object.__setattr__(instance, "vlm_observation_sha256", committed.vlm_observation_sha256)
@@ -719,6 +830,7 @@ class Candidate(EvaluatorOwnedModel):
             "duration_proof": self.duration_proof.to_mapping(),
             "event_refs": [item.to_mapping() for item in self.event_refs],
             "semantic_measurements": [item.to_mapping() for item in self.semantic_measurements],
+            "semantic_evidence_ref": self.semantic_evidence_ref.to_mapping(),
             "source_ref": self.source_ref.to_mapping(),
             "source_sha256": self.source_sha256,
             "vlm_observation_ref": self.vlm_observation_ref.to_mapping(),
@@ -1121,6 +1233,8 @@ class ProposalSet(CanonicalModel):
             raise ProductionModelError("proposals must be a non-empty Proposal sequence")
         if len({item.proposal_id for item in proposals}) != len(proposals):
             raise ProductionModelError("proposals must have unique IDs")
+        if len({item.story_id for item in proposals}) != len(proposals):
+            raise ProductionModelError("proposals must have unique Story IDs")
         dispositions = cast(
             tuple[ProposalDisposition, ...],
             canonical_values(
@@ -1152,18 +1266,47 @@ class PortfolioPolicy(CanonicalModel):
     policy_id: str
     selected_story_count: int
     completion_policy: str
+    allowed_genre_tags: tuple[str, ...]
+    editing_profiles: tuple[str, ...]
+    teaser_strategies: tuple[str, ...]
+    duration_seconds: DurationRangeSeconds
+    source_reuse_policy: str
 
     def __post_init__(self) -> None:
         identifier(self.policy_id, "portfolio policy_id")
         integer(self.selected_story_count, "selected_story_count", minimum=1)
         if self.completion_policy not in {"independent_outputs", "all_or_nothing"}:
             raise ProductionModelError("completion_policy is unknown")
+        object.__setattr__(
+            self,
+            "allowed_genre_tags",
+            canonical_ids(self.allowed_genre_tags, "allowed_genre_tags", nonempty=True),
+        )
+        object.__setattr__(
+            self,
+            "editing_profiles",
+            canonical_ids(self.editing_profiles, "editing_profiles", nonempty=True),
+        )
+        object.__setattr__(
+            self,
+            "teaser_strategies",
+            canonical_ids(self.teaser_strategies, "teaser_strategies", nonempty=True),
+        )
+        if type(self.duration_seconds) is not DurationRangeSeconds:  # noqa: E721
+            raise ProductionModelError("Portfolio policy duration range is invalid")
+        if self.source_reuse_policy not in {"allow", "forbid"}:
+            raise ProductionModelError("source_reuse_policy is unknown")
 
     def to_mapping(self) -> dict[str, object]:
         return {
             "completion_policy": self.completion_policy,
+            "allowed_genre_tags": list(self.allowed_genre_tags),
+            "duration_seconds": self.duration_seconds.to_mapping(),
+            "editing_profiles": list(self.editing_profiles),
             "policy_id": self.policy_id,
             "selected_story_count": self.selected_story_count,
+            "source_reuse_policy": self.source_reuse_policy,
+            "teaser_strategies": list(self.teaser_strategies),
         }
 
 
@@ -1238,33 +1381,51 @@ class PortfolioCompiler:
         proposal_set: ProposalSet,
         job_policy_ref: ArtifactRef,
         job_policy: PortfolioPolicy,
-        hard_constraint_results: Sequence[tuple[str, Sequence[RuleResult]]],
     ) -> Portfolio:
         identifier(portfolio_id, "portfolio_id")
         if proposal_set_ref.content_hash != proposal_set.canonical_hash:
             raise ProductionModelError("proposal_set_ref does not bind the exact ProposalSet")
         if job_policy_ref.content_hash != job_policy.canonical_hash:
             raise ProductionModelError("job_policy_ref does not bind the exact Portfolio policy")
-        result_by_id = {proposal_id: tuple(values) for proposal_id, values in hard_constraint_results}
-        if set(result_by_id) != {item.proposal_id for item in proposal_set.proposals}:
-            raise ProductionModelError("hard constraint results do not cover exact ProposalSet")
-        feasible: list[int] = []
+        individually_feasible: set[int] = set()
         for index, proposal in enumerate(proposal_set.proposals):
-            results = result_by_id[proposal.proposal_id]
-            if not results or any(type(item) is not RuleResult for item in results):  # noqa: E721
-                raise ProductionModelError("hard constraint results are incomplete")
             disposition = proposal_set.disposition_for(proposal.proposal_id)
             if (
                 disposition.disposition == "accepted"
                 and proposal.material_support.status == "supported"
                 and not proposal.tainted_by
-                and all(item.status == "pass" for item in results)
+                and set(proposal.genre_tags) <= set(job_policy.allowed_genre_tags)
+                and proposal.editing_profile in job_policy.editing_profiles
+                and proposal.teaser_strategy in job_policy.teaser_strategies
+                and proposal.target_duration_seconds.minimum
+                >= job_policy.duration_seconds.minimum
+                and proposal.target_duration_seconds.maximum
+                <= job_policy.duration_seconds.maximum
             ):
-                feasible.append(index)
-        chosen = next(
-            combinations(feasible, job_policy.selected_story_count),
-            None,
-        )
+                individually_feasible.add(index)
+        chosen: tuple[int, ...] | None = None
+        for candidate_tuple in combinations(
+            range(len(proposal_set.proposals)), job_policy.selected_story_count
+        ):
+            if any(index not in individually_feasible for index in candidate_tuple):
+                continue
+            if job_policy.source_reuse_policy == "forbid":
+                seen_candidates: set[bytes] = set()
+                conflict = False
+                for index in candidate_tuple:
+                    proposal_candidates = {
+                        jcs_key(ref)
+                        for proof in proposal_set.proposals[index].material_support.requirement_proofs
+                        for ref in proof.safe_candidate_refs
+                    }
+                    if seen_candidates & proposal_candidates:
+                        conflict = True
+                        break
+                    seen_candidates.update(proposal_candidates)
+                if conflict:
+                    continue
+            chosen = candidate_tuple
+            break
         if chosen is None:
             raise ProductionModelError("no fully feasible Portfolio of the frozen size exists")
         records = tuple(
@@ -1272,7 +1433,15 @@ class PortfolioCompiler:
                 proposal_set.proposals[index].story_id,
                 proposal_set.proposals[index].proposal_id,
                 index,
-                tuple(sorted(result_by_id[proposal_set.proposals[index].proposal_id], key=jcs_key)),
+                computed_rule_results(
+                    {
+                        "SD-ENUM-001",
+                        "SD-DUR-001",
+                        "SD-MAT-002",
+                        "SD-TAINT-001",
+                    },
+                    proposal_set.proposals[index].canonical_hash,
+                ),
             )
             for index in chosen
         )
@@ -1463,6 +1632,7 @@ __all__ = [
     "CapabilityPredicate",
     "CapabilityRule",
     "CommittedVlmObservation",
+    "CommittedCandidateSemanticEvidence",
     "DeclaredSpan",
     "DependencyProjection",
     "EditingMode",
@@ -1488,5 +1658,6 @@ __all__ = [
     "SourceUsageLedger",
     "SourceUsageRow",
     "TickDurationProof",
+    "candidate_semantic_evidence_hash",
     "physical_tuple",
 ]

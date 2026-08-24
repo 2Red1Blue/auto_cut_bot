@@ -20,6 +20,7 @@ from autocut_kernel.semantic_chain.production_models import (
     CandidateMeasurementPolicy,
     CapabilityPredicate,
     CapabilityRule,
+    CommittedCandidateSemanticEvidence,
     CommittedVlmObservation,
     ConflictDiagnostics,
     ContextBudget,
@@ -74,7 +75,6 @@ from autocut_kernel.semantic_chain.production_models import (
     ProposalDisposition,
     ProposalSet,
     RequiredClosure,
-    RuleResult,
     SemanticAnchor,
     SemanticBatchEvaluator,
     SemanticFeasibilityAdmission,
@@ -87,6 +87,7 @@ from autocut_kernel.semantic_chain.production_models import (
     SpanPolicy,
     TaintSeedProof,
     TimeBaseValue,
+    candidate_semantic_evidence_hash,
     stable_beat_id,
 )
 from autocut_kernel.vlm.models import (
@@ -229,8 +230,7 @@ def _capability_policy() -> tuple[ArtifactRef, CandidateCapabilityPolicy]:
 
 def _authority_parts() -> tuple[
     CommittedVlmObservation,
-    tuple[SemanticAnchor, ...],
-    tuple[SemanticMeasurement, ...],
+    CommittedCandidateSemanticEvidence,
     OwnerBoundVlmObservationRef,
 ]:
     committed = _committed_observation()
@@ -251,25 +251,37 @@ def _authority_parts() -> tuple[
         (committed.observation_ref,),
     )
     measurements = (measurement,)
-    capability_policy_ref, capability_policy = _capability_policy()
-    authority = CandidateCapabilityEvaluator.evaluate(
-        committed=committed,
+    semantic_evidence = CommittedCandidateSemanticEvidence.from_reader(
+        semantic_evidence_ref=_artifact(
+            "art_candidate_semantic_evidence",
+            candidate_semantic_evidence_hash(
+                committed=committed,
+                anchors=anchors,
+                measurements=measurements,
+                measurement_policy_ref=measurement_policy_ref,
+            ),
+        ),
+        committed_observation=committed,
         anchors=anchors,
         measurements=measurements,
         measurement_policy_ref=measurement_policy_ref,
+    )
+    capability_policy_ref, capability_policy = _capability_policy()
+    authority = CandidateCapabilityEvaluator.evaluate(
+        semantic_evidence=semantic_evidence,
         measurement_policy=measurement_policy,
         capability_policy_ref=capability_policy_ref,
         capability_policy=capability_policy,
     )
-    return committed, anchors, measurements, authority
+    return committed, semantic_evidence, authority
 
 
 def _candidate() -> Candidate:
-    committed, anchors, measurements, authority = _authority_parts()
+    committed, semantic_evidence, authority = _authority_parts()
     return Candidate.from_evaluation(
         candidate_id="cand_001",
         event_refs=(_domain("art_events", "event", "event_001"),),
-        committed=committed,
+        semantic_evidence=semantic_evidence,
         authority=authority,
         declared_spans=(
             DeclaredSpan(
@@ -279,8 +291,6 @@ def _candidate() -> Candidate:
                 2_700_000,
             ),
         ),
-        anchors=anchors,
-        measurements=measurements,
         authorization_ref=SourceAuthorizationRef(
             _artifact("art_sources"), "source_001", "render"
         ),
@@ -355,16 +365,23 @@ def _stage2() -> tuple[
         (ProposalDisposition("proposal_001", "accepted", ()),),
     )
     proposal_ref = _artifact("art_proposal_set", proposal_set.canonical_hash)
-    policy = PortfolioPolicy("portfolio-policy-001", 1, "all_or_nothing")
+    policy = PortfolioPolicy(
+        "portfolio-policy-001",
+        1,
+        "all_or_nothing",
+        ("suspense",),
+        ("dramatic_short",),
+        ("cold_open",),
+        DurationRangeSeconds(1, 60, 120),
+        "allow",
+    )
     policy_ref = _artifact("art_job_policy", policy.canonical_hash)
-    hard_rules = _rules({"SD-HARD-001"}, proposal.canonical_hash)
     portfolio = PortfolioCompiler.compile(
         portfolio_id="portfolio_001",
         proposal_set_ref=proposal_ref,
         proposal_set=proposal_set,
         job_policy_ref=policy_ref,
         job_policy=policy,
-        hard_constraint_results=((proposal.proposal_id, hard_rules),),
     )
     usage = SourceUsageLedger.for_portfolio("usage_001", portfolio)
     pending = _pending(
@@ -383,10 +400,6 @@ def _stage2() -> tuple[
         source_usage_ledger=usage,
     )
     return catalog, proposal_set, portfolio, usage, admission
-
-
-def _rules(rule_ids: set[str], subject_hash: str) -> tuple[RuleResult, ...]:
-    return _canon(*(RuleResult(rule_id, "pass", subject_hash) for rule_id in rule_ids))
 
 
 def _pending(
@@ -612,7 +625,7 @@ def _semantic_fixture() -> tuple[
 
 
 def test_vlm_authority_is_reader_and_evaluator_derived_with_mixed_modes() -> None:
-    committed, _, _, authority = _authority_parts()
+    committed, semantic_evidence, authority = _authority_parts()
 
     assert authority.vlm_observation_sha256 == canonical_json_hash(
         committed.observation.to_mapping()
@@ -638,22 +651,43 @@ def test_vlm_authority_is_reader_and_evaluator_derived_with_mixed_modes() -> Non
             observation_set=committed.observation_set,
             observation=committed.observation,
         )
+    with pytest.raises(ProductionModelError, match="exact evaluator inputs"):
+        CommittedCandidateSemanticEvidence.from_reader(
+            semantic_evidence_ref=_artifact("art_candidate_semantic_evidence", HASH_D),
+            committed_observation=committed,
+            anchors=semantic_evidence.anchors,
+            measurements=semantic_evidence.measurements,
+            measurement_policy_ref=semantic_evidence.measurement_policy_ref,
+        )
 
 
 def test_capability_evaluator_rejects_unrelated_measurement_provenance() -> None:
-    committed, anchors, measurements, _ = _authority_parts()
+    committed, semantic_evidence, _ = _authority_parts()
     measurement_ref, measurement_policy = _measurement_policy()
     capability_ref, capability_policy = _capability_policy()
     forged = replace(
-        measurements[0], evidence_refs=(_domain("art_vlm", "vlm_observation", "other"),)
+        semantic_evidence.measurements[0],
+        evidence_refs=(_domain("art_vlm", "vlm_observation", "other"),),
+    )
+    forged_evidence = CommittedCandidateSemanticEvidence.from_reader(
+        semantic_evidence_ref=_artifact(
+            "art_candidate_semantic_evidence",
+            candidate_semantic_evidence_hash(
+                committed=committed,
+                anchors=semantic_evidence.anchors,
+                measurements=(forged,),
+                measurement_policy_ref=measurement_ref,
+            ),
+        ),
+        committed_observation=committed,
+        anchors=semantic_evidence.anchors,
+        measurements=(forged,),
+        measurement_policy_ref=measurement_ref,
     )
 
     with pytest.raises(ProductionModelError, match="exact committed observation"):
         CandidateCapabilityEvaluator.evaluate(
-            committed=committed,
-            anchors=anchors,
-            measurements=(forged,),
-            measurement_policy_ref=measurement_ref,
+            semantic_evidence=forged_evidence,
             measurement_policy=measurement_policy,
             capability_policy_ref=capability_ref,
             capability_policy=capability_policy,
@@ -781,6 +815,47 @@ def test_portfolio_compiler_and_admission_reject_unrelated_sets_and_incomplete_j
 
     assert portfolio.selection_records[0].proposal_index == 0
     assert admission.target_story_ids == ("story_001",)
+    first = proposal_set.proposals[0]
+    second = replace(first, proposal_id="proposal_002", story_id="story_002")
+    third = replace(first, proposal_id="proposal_003", story_id="story_003")
+    multi_set = ProposalSet(
+        "proposals_multi",
+        proposal_set.job_policy_version,
+        (first, second, third),
+        _canon(
+            ProposalDisposition("proposal_001", "accepted", ()),
+            ProposalDisposition("proposal_002", "accepted", ()),
+            ProposalDisposition("proposal_003", "accepted", ()),
+        ),
+    )
+    multi_ref = _artifact("art_proposal_set", multi_set.canonical_hash)
+    multi_policy = PortfolioPolicy(
+        "portfolio-policy-multi",
+        2,
+        "all_or_nothing",
+        ("suspense",),
+        ("dramatic_short",),
+        ("cold_open",),
+        DurationRangeSeconds(1, 60, 120),
+        "allow",
+    )
+    selected = PortfolioCompiler.compile(
+        portfolio_id="portfolio_multi",
+        proposal_set_ref=multi_ref,
+        proposal_set=multi_set,
+        job_policy_ref=_artifact("art_job_policy", multi_policy.canonical_hash),
+        job_policy=multi_policy,
+    )
+    assert tuple(item.proposal_index for item in selected.selection_records) == (0, 1)
+    forbid_policy = replace(multi_policy, source_reuse_policy="forbid")
+    with pytest.raises(ProductionModelError, match="no fully feasible"):
+        PortfolioCompiler.compile(
+            portfolio_id="portfolio_forbid_reuse",
+            proposal_set_ref=multi_ref,
+            proposal_set=multi_set,
+            job_policy_ref=_artifact("art_job_policy", forbid_policy.canonical_hash),
+            job_policy=forbid_policy,
+        )
     unrelated_proposals = replace(proposal_set, proposal_set_id="proposals_unrelated")
     unrelated = _pending(
         "portfolio",
