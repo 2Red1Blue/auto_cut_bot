@@ -5,8 +5,8 @@
   "complexity": "L+",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "analysis",
-  "nextAction": "审计现有 Media 内核并形成最小安全实施计划",
+  "currentPhase": "review",
+  "nextAction": "在干净的 CPython 3.13.13 锁定主机环境中执行真实模型 smoke 并复审部署门禁",
   "createdAt": "2026-08-24T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
