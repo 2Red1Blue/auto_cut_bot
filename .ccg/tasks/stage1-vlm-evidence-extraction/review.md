@@ -94,6 +94,13 @@ The second read-only review confirmed both P1 findings are closed and found no n
 
 **Go for the Layer 3 Kernel checkpoint.** The next gate is a typed adapter for the active non-legacy VLM implementation plus a real source-window/proxy/model run. Fake-provider success is not accepted as completion of the VLM stage.
 
+## Layer 5 live whole-series finding — provider frame-ID truncation
+
+- A real 45-episode HTTP run committed SourcePrep and the first Doubao episode. The second provider response was complete JSON but shortened one allowlisted SHA-256 frame ID from 64 to 40 hex digits; the existing parser correctly denied it as `UNKNOWN_FRAME_ID` and blocked Media Preflight.
+- This is repairable without semantic inference only when the prefix has at least 160 bits and uniquely matches one frame in the exact request manifest. Kernel strategy `strict-unique-frame-prefix-v2` performs only that normalization, retains the immutable raw response hash, and still rejects short, ambiguous, malformed, and full unknown IDs.
+- Prompt `coarse-semantic-evidence-v2` now requires copying all 71 characters. The policy/profile hash changes, so the denied run remains immutable and a new real run is required.
+- Targeted verification: `144 passed, 16 skipped`; Ruff passed; BasedPyright reported zero issues. Real whole-series acceptance remains open until a new run produces terminal Receipts.
+
 ## Layer 4 review — Real Qwen video adapter and live smoke
 
 ### Implementation boundary

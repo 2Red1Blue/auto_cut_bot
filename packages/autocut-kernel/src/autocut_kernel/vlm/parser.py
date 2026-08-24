@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from typing import NoReturn, cast
 
@@ -101,6 +103,29 @@ def _summary(value: object, policy: VlmParsePolicy, position: int) -> str:
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         _reject("INVALID_SUMMARY", f"observations[{position}].summary contains control characters")
     return value
+
+
+_SHA256_PREFIX = re.compile(r"^sha256:[0-9a-f]{40,63}$")
+
+
+def _canonical_frame_id(frame_id: str, frame_index: Mapping[str, object]) -> str:
+    """Expand only an unambiguous, cryptographically strong allowed-ID prefix.
+
+    Some structured-output providers preserve the SHA-256 prefix but truncate
+    the digest.  Treating a unique 160-bit-or-longer prefix as the exact
+    allowlisted frame is an identity normalization, not a semantic choice.
+    Full unknown IDs, short prefixes, malformed IDs, and ambiguous prefixes
+    remain hard failures.
+    """
+
+    if frame_id in frame_index:
+        return frame_id
+    if _SHA256_PREFIX.fullmatch(frame_id) is None:
+        _reject("UNKNOWN_FRAME_ID", f"response references unknown frame: {frame_id}")
+    matches = tuple(candidate for candidate in frame_index if candidate.startswith(frame_id))
+    if len(matches) != 1:
+        _reject("UNKNOWN_FRAME_ID", f"response frame prefix is not uniquely allowlisted: {frame_id}")
+    return matches[0]
 
 
 def parse_vlm_response(
@@ -213,12 +238,12 @@ def parse_vlm_response(
         raw_frame_ids = cast(list[object], raw_frame_ids_value)
         if any(type(frame_id) is not str for frame_id in raw_frame_ids):  # noqa: E721
             _reject("INVALID_FRAME_REFS", "supporting frame ids must be strings")
-        frame_ids = tuple(cast(str, frame_id) for frame_id in raw_frame_ids)
+        frame_ids = tuple(
+            _canonical_frame_id(cast(str, frame_id), frame_index)
+            for frame_id in raw_frame_ids
+        )
         if len(frame_ids) != len(set(frame_ids)):
             _reject("INVALID_FRAME_REFS", "supporting frame ids must be unique")
-        unknown = sorted(set(frame_ids) - set(frame_index))
-        if unknown:
-            _reject("UNKNOWN_FRAME_ID", f"response references unknown frames: {unknown}")
         if not any(
             mapped.coarse_range.start_pts <= frame_index[frame_id].source_pts < mapped.coarse_range.end_pts
             for frame_id in frame_ids

@@ -47,7 +47,7 @@ from ..vlm import (
 )
 
 _COMMAND_NAME = "GenerateVlmEvidenceCommand"
-VLM_PARSER_STRATEGY_VERSION = "strict-v1"
+VLM_PARSER_STRATEGY_VERSION = "strict-unique-frame-prefix-v2"
 
 
 def _sha256_bytes(value: bytes) -> str:

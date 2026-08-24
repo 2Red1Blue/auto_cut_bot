@@ -73,6 +73,7 @@ VLM request identity 绑定完整 prompt/schema/model/provider preprocess/window
 - 使用火山方舟官方 `volcenginesdkarkruntime` SDK；代理视频通过 Files API 上传，模型通过 Responses API 的 SSE 流式事件消费；SDK `max_retries=0`，每次 Kernel Attempt 最多上传一次并最多提交一次模型请求；
 - Files API 的 `file_id` 不是模型请求 ID。它按 `provider_id + proxy content hash + preprocess policy hash` 进入 PostgreSQL lifecycle，并在复用前通过 Files API 重新验证状态与本地保守 TTL；禁止把旧 JSON cache 或未知有效期的 ID 当成权威；
 - Responses API 使用 strict `json_schema`。只接受 `response.completed` 的完整输出；`response.incomplete` 即使已有部分 JSON 也失败关闭，流结束但无 terminal event 则进入 `indeterminate`，不得自动补 token 或重提；
+- Provider 输出的 frame ID 必须引用当前窗口白名单。Kernel parser 仅可把 `sha256:` 后至少 40 位且唯一匹配的截断前缀规范化为完整白名单 ID；这是版本化、可复算的身份规范化，不是素材选择。短前缀、歧义前缀、完整未知 ID 继续 fail-closed，原始响应 Blob 永不改写；
 - 请求参数中的 adapter strategy version、fps、token budget、temperature 全部进入 `VlmRequestIdentity`，改变策略必须生成新的请求身份；
 - Responses 请求一旦取得 provider response ID，可以用 retrieve 做只读 reconcile；没有 response ID 的模糊超时保持 `indeterminate`，绝不以另一次 create 猜测恢复；
 - API key 只由 Runtime composition 注入，不写入 request payload、Artifact、日志或仓库。
@@ -112,6 +113,8 @@ VLM coarse semantic interval
 原版 prompt 业务内容、strict schema、`canonicalize_vlm_analysis`、scene/VAD/ASR anchor 候选生成和回归样本先登记为 `algorithm_candidate|fixture_only`，再在 `autocut_kernel` 中用整数 tick、封闭 DTO 和无 I/O 纯函数重实现。Kernel 永不 import 原版 package。
 
 ## 9. 准入条件
+
+这里的真实运行是生产同构的本地流程：真实 HTTP → 真实 PostgreSQL → 完整授权素材 → 真实 Ark/ffmpeg/ffprobe/ASR/VAD → Artifact/Receipt。`shadow` 只关闭外部发布副作用，不得切换为 fake、fixture 或录制响应；单元测试结果不能替代本链路的 Receipt。
 
 进入真实 VLM smoke 前必须完成：
 

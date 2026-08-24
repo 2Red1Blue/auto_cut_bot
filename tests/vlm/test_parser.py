@@ -234,6 +234,52 @@ def test_parser_rejects_unknown_frame_and_frame_interval_mismatch() -> None:
     assert raised.value.code == "FRAME_INTERVAL_MISMATCH"
 
 
+def test_parser_expands_only_a_unique_allowlisted_sha256_prefix() -> None:
+    manifest, manifest_set, policy, identity = _context()
+    canonical_id = manifest.frame_samples[1].frame_id
+    unique_160_bit_prefix = canonical_id[: len("sha256:") + 40]
+
+    parsed = parse_vlm_response(
+        _raw(
+            {
+                "schema_version": 1,
+                "observations": [
+                    _observation(manifest, supporting_frame_ids=[unique_160_bit_prefix])
+                ],
+            }
+        ),
+        manifest=manifest,
+        manifest_set=manifest_set,
+        request_identity=identity,
+        policy=policy,
+    )
+
+    assert parsed.observations[0].supporting_frame_ids == (canonical_id,)
+
+
+def test_parser_rejects_a_frame_prefix_shorter_than_160_bits() -> None:
+    manifest, manifest_set, policy, identity = _context()
+    short_prefix = manifest.frame_samples[1].frame_id[: len("sha256:") + 39]
+
+    with pytest.raises(VlmResponseRejected) as raised:
+        parse_vlm_response(
+            _raw(
+                {
+                    "schema_version": 1,
+                    "observations": [
+                        _observation(manifest, supporting_frame_ids=[short_prefix])
+                    ],
+                }
+            ),
+            manifest=manifest,
+            manifest_set=manifest_set,
+            request_identity=identity,
+            policy=policy,
+        )
+
+    assert raised.value.code == "UNKNOWN_FRAME_ID"
+
+
 def test_parser_rechecks_directly_constructed_request_identity_fields() -> None:
     manifest, manifest_set, policy, identity = _context()
     forged_identities = (

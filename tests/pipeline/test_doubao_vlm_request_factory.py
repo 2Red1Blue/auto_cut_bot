@@ -264,6 +264,7 @@ def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:
     assert request.retry_policy == _retry_policy()
     assert request.parser_strategy_version == VLM_PARSER_STRATEGY_VERSION
     assert request.source_provenance_sha256 == source_bundle.canonical_hash
+    assert "共 71 字符" in request.prompt_template
     assert json.loads(request.request_payload)["parser_strategy_version"] == (
         VLM_PARSER_STRATEGY_VERSION
     )

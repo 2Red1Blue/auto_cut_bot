@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from autocut_kernel.vlm import WindowManifest
 
-VLM_PROMPT_VERSION = "coarse-semantic-evidence-v1"
+VLM_PROMPT_VERSION = "coarse-semantic-evidence-v2"
 
 VLM_RESPONSE_SCHEMA: dict[str, object] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -115,6 +115,7 @@ def build_vlm_prompt(manifest: WindowManifest) -> str:
         "时间必须使用 proxy 时钟的整数 PTS；区间为 [start_pts,end_pts)，必须位于给定范围内。"
         "confidence 必须是 0 到 1 的十进制字符串，禁止 JSON 浮点数。"
         "每条观察必须引用至少一个给定 frame_id，且该帧的 proxy_pts 必须落在该观察区间内。"
+        "frame_id 必须逐字复制完整的 sha256: 加 64 位十六进制字符（共 71 字符），禁止截断或改写。"
         "uncertainty_pts 表示你对时间定位的保守误差，不得为负数。"
         "summary 使用简洁中文，只陈述视频中可见事实。"
         "只输出符合所给 JSON Schema 的单个 JSON 对象，不要 Markdown、解释或代码围栏。\n"
