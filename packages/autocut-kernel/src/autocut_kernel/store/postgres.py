@@ -7,6 +7,8 @@ hatch to callers.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from typing import Protocol, TypeVar
 from uuid import UUID, uuid4
@@ -14,7 +16,9 @@ from uuid import UUID, uuid4
 from psycopg import DatabaseError, InterfaceError
 
 from .errors import (
+    BlobIntegrityError,
     CommandStateError,
+    GenerationAttemptStateError,
     IdempotencyConflictError,
     JobProfileMismatchError,
     MediaEvidenceIntegrityError,
@@ -33,10 +37,12 @@ from .errors import (
 )
 from .models import (
     ArtifactMember,
+    BlobRef,
     CommandClaim,
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    GenerationAttempt,
     Job,
     MediaEvidenceReference,
     PersistedMediaEvidence,
@@ -157,93 +163,20 @@ class PostgresRuntimeStore:
         """Atomically persist one non-empty immutable result set and success Receipt."""
 
         def operation(cursor: DbCursor) -> CommandOutcome:
-            job_id, state = self._locked_job_then_slot(cursor, success.command_slot_id)
+            job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
             if state != "running":
                 return self._replay_or_raise(
                     cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
                 )
-
-            artifact_set_id = uuid4()
-            cursor.execute(
-                """
-                INSERT INTO runtime.artifact_sets (artifact_set_id, command_slot_id, job_id, set_hash, member_count)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    artifact_set_id,
-                    success.command_slot_id,
-                    job_id,
-                    success.set_hash,
-                    len(success.artifacts),
-                ),
-            )
-            inserted: list[tuple[UUID, ArtifactMember]] = []
-            for ordinal, artifact in enumerate(success.artifacts):
-                self._assert_next_revision(cursor, job_id, artifact)
-                artifact_id = uuid4()
-                cursor.execute(
-                    """
-                    INSERT INTO runtime.artifacts
-                        (artifact_id, artifact_set_id, job_id, artifact_type, logical_id, revision,
-                         namespace, scope_kind, scope_key, content_hash, payload_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-                    """,
-                    (
-                        artifact_id,
-                        artifact_set_id,
-                        job_id,
-                        artifact.artifact_type,
-                        artifact.logical_id,
-                        artifact.revision,
-                        artifact.scope.namespace,
-                        artifact.scope.kind,
-                        artifact.scope.key,
-                        artifact.content_hash,
-                        artifact.payload_json,
-                    ),
+            if command_name == "FinalizeRunOutcome":
+                raise CommandStateError("FinalizeRunOutcome requires the explicit run finalizer API")
+            if command_name == "GenerateVlmEvidenceCommand":
+                raise CommandStateError(
+                    "GenerateVlmEvidenceCommand success requires a committed generation attempt"
                 )
-                cursor.execute(
-                    "INSERT INTO runtime.artifact_set_members (artifact_set_id, ordinal, artifact_id) VALUES (%s, %s, %s)",
-                    (artifact_set_id, ordinal, artifact_id),
-                )
-                inserted.append((artifact_id, artifact))
-            for artifact_id, artifact in inserted:
-                cursor.execute(
-                    """
-                    INSERT INTO runtime.logical_heads
-                        (job_id, namespace, scope_kind, scope_key, artifact_type, logical_id, artifact_id, revision)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (job_id, namespace, scope_kind, scope_key, artifact_type, logical_id)
-                    DO UPDATE SET artifact_id = EXCLUDED.artifact_id, revision = EXCLUDED.revision
-                    """,
-                    (
-                        job_id,
-                        artifact.scope.namespace,
-                        artifact.scope.kind,
-                        artifact.scope.key,
-                        artifact.artifact_type,
-                        artifact.logical_id,
-                        artifact_id,
-                        artifact.revision,
-                    ),
-                )
-            receipt_id = uuid4()
-            cursor.execute(
-                """
-                INSERT INTO runtime.command_receipts
-                    (receipt_id, command_slot_id, outcome, result_artifact_set_id)
-                VALUES (%s, %s, 'succeeded', %s)
-                """,
-                (receipt_id, success.command_slot_id, artifact_set_id),
-            )
-            self._complete(cursor, success.command_slot_id, job_id, "succeeded")
-            return CommandOutcome(
-                command_slot_id=success.command_slot_id,
-                state="succeeded",
-                receipt_id=receipt_id,
-                artifact_set_id=artifact_set_id,
-                job_id=job_id,
-            )
+            return self._write_success(cursor, success, job_id)
 
         return self._transaction(operation)
 
@@ -255,37 +188,478 @@ class PostgresRuntimeStore:
         """Atomically persist a terminal deny/fail Receipt without inventing an ArtifactSet."""
 
         def operation(cursor: DbCursor) -> CommandOutcome:
-            job_id, state = self._locked_job_then_slot(cursor, rejection.command_slot_id)
+            job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor, rejection.command_slot_id
+            )
             if state != "running":
                 return self._replay_or_raise(
                     cursor, rejection.command_slot_id, job_id, rejection.outcome, None
                 )
-            receipt_id = uuid4()
+            if command_name == "FinalizeRunOutcome":
+                raise CommandStateError("FinalizeRunOutcome requires the explicit run finalizer API")
+            return self._write_rejection(cursor, rejection, job_id)
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # explicit Job finalization
+    # ------------------------------------------------------------------
+
+    def finalize_run_success(self, success: CommandSuccess) -> CommandOutcome:
+        """Commit the sole run_outcome artifact and terminalize its Job atomically."""
+
+        if len(success.artifacts) != 1 or success.artifacts[0].artifact_type != "run_outcome":
+            raise StoreValidationError(
+                "successful run finalization requires exactly one run_outcome member"
+            )
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
+            if command_name != "FinalizeRunOutcome":
+                raise CommandStateError("only FinalizeRunOutcome may terminalize a Job")
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
+                )
+            self._assert_no_other_open_slots(cursor, job_id, success.command_slot_id)
+            outcome = self._write_success(cursor, success, job_id)
+            cursor.execute(
+                "UPDATE runtime.jobs SET state = 'succeeded' WHERE job_id = %s AND state = 'running'",
+                (job_id,),
+            )
+            return outcome
+
+        return self._transaction(operation)
+
+    def finalize_run_rejection(self, rejection: CommandRejection) -> CommandOutcome:
+        """Commit a failed/denied finalizer receipt and terminalize its Job atomically."""
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor, rejection.command_slot_id
+            )
+            if command_name != "FinalizeRunOutcome":
+                raise CommandStateError("only FinalizeRunOutcome may terminalize a Job")
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor, rejection.command_slot_id, job_id, rejection.outcome, None
+                )
+            self._assert_no_other_open_slots(cursor, job_id, rejection.command_slot_id)
+            outcome = self._write_rejection(cursor, rejection, job_id)
+            cursor.execute(
+                "UPDATE runtime.jobs SET state = %s WHERE job_id = %s AND state = 'running'",
+                (rejection.outcome, job_id),
+            )
+            return outcome
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # immutable provider blobs
+    # ------------------------------------------------------------------
+
+    def put_immutable_blob(
+        self,
+        job: Job,
+        *,
+        content: bytes,
+        content_hash: str,
+        media_type: str,
+    ) -> BlobRef:
+        """Verify immutable bytes, deduplicate the object, and claim it for ``job``."""
+
+        if type(content) is not bytes:  # noqa: E721
+            raise StoreValidationError("blob content must be immutable bytes")
+        self._validate_sha256(content_hash, "blob.content_hash")
+        if type(media_type) is not str or not media_type.strip():  # noqa: E721
+            raise StoreValidationError("blob.media_type must be a non-empty string")
+        actual_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+        if actual_hash != content_hash:
+            raise BlobIntegrityError("blob bytes do not match the declared SHA-256")
+
+        def operation(cursor: DbCursor) -> BlobRef:
+            job_id = self._ensure_job(cursor, job)
+            if self._locked_job_state(cursor, job_id) not in ("pending", "running"):
+                raise CommandStateError("terminal jobs cannot claim new blob objects")
+            object_id = uuid4()
             cursor.execute(
                 """
-                INSERT INTO runtime.command_receipts
-                    (receipt_id, command_slot_id, outcome, failure_code, failure_detail)
-                VALUES (%s, %s, %s, %s, %s::jsonb)
+                INSERT INTO storage.blob_objects
+                    (object_id, content_hash, byte_length, media_type, content_bytes)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (content_hash) DO NOTHING
+                RETURNING object_id, content_hash, byte_length, media_type
+                """,
+                (object_id, content_hash, len(content), media_type, content),
+            )
+            inserted = cursor.fetchone()
+            if inserted is None:
+                cursor.execute(
+                    """
+                    SELECT object_id, content_hash, byte_length, media_type, content_bytes
+                      FROM storage.blob_objects WHERE content_hash = %s FOR UPDATE
+                    """,
+                    (content_hash,),
+                )
+                existing = cursor.fetchone()
+                if existing is None:
+                    raise RuntimeStoreError("blob object vanished after deduplication conflict")
+                existing_id, existing_hash, byte_length, existing_type, existing_bytes = existing
+                if not isinstance(existing_bytes, (bytes, bytearray, memoryview)):
+                    raise BlobIntegrityError("existing blob object returned invalid bytes")
+                durable_bytes = (
+                    existing_bytes.tobytes()
+                    if isinstance(existing_bytes, memoryview)
+                    else bytes(existing_bytes)
+                )
+                if (
+                    _text(existing_hash) != content_hash
+                    or int(_text(byte_length)) != len(content)
+                    or _text(existing_type) != media_type
+                    or durable_bytes != content
+                ):
+                    raise BlobIntegrityError("existing blob object does not match the exact bytes")
+                reference = BlobRef(
+                    UUID(str(existing_id)), content_hash, len(content), media_type
+                )
+            else:
+                reference = BlobRef(
+                    UUID(str(inserted[0])),
+                    _text(inserted[1]),
+                    int(_text(inserted[2])),
+                    _text(inserted[3]),
+                )
+            cursor.execute(
+                """
+                INSERT INTO storage.blob_claims (blob_claim_id, object_id, job_id)
+                VALUES (%s, %s, %s) ON CONFLICT (job_id, object_id) DO NOTHING
+                """,
+                (uuid4(), reference.object_id, job_id),
+            )
+            return reference
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # durable provider generation attempts
+    # ------------------------------------------------------------------
+
+    def reserve_generation_attempt(
+        self,
+        command_slot_id: UUID,
+        request_hash: str,
+        *,
+        provider_id: str,
+        provider_idempotency_key: str,
+        request_payload: BlobRef,
+    ) -> GenerationAttempt:
+        """Reserve exactly one provider invocation identity for a generation slot."""
+
+        self._validate_uuid(command_slot_id, "command_slot_id")
+        self._validate_sha256(request_hash, "generation.request_hash")
+        if type(provider_id) is not str or not provider_id.strip():  # noqa: E721
+            raise StoreValidationError("generation.provider_id must be non-empty")
+        if (
+            type(provider_idempotency_key) is not str  # noqa: E721
+            or not provider_idempotency_key.strip()
+        ):
+            raise StoreValidationError(
+                "generation.provider_idempotency_key must be non-empty"
+            )
+        if type(request_payload) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "generation.request_payload must be an exact BlobRef"
+            )
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            job_id, state, command_name, slot_request_hash = self._locked_job_then_slot(
+                cursor, command_slot_id
+            )
+            if command_name != "GenerateVlmEvidenceCommand":
+                raise CommandStateError(
+                    "generation attempts require a GenerateVlmEvidenceCommand slot"
+                )
+            if state != "running":
+                raise GenerationAttemptStateError("generation command slot is already terminal")
+            if slot_request_hash != request_hash:
+                raise IdempotencyConflictError(
+                    "generation request hash must match its exact command claim"
+                )
+            verified_request_payload = self._claimed_blob_ref(
+                cursor,
+                job_id,
+                request_payload,
+                field_name="request-payload",
+            )
+            cursor.execute(
+                """
+                SELECT attempt_id FROM runtime.generation_attempts
+                 WHERE command_slot_id = %s FOR UPDATE
+                """,
+                (command_slot_id,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                attempt = self._read_generation_attempt_by_id(
+                    cursor, UUID(str(existing[0])), for_update=False
+                )
+                if attempt.request_hash != request_hash:
+                    raise IdempotencyConflictError(
+                        "generation slot was reserved for another request"
+                    )
+                if (
+                    attempt.provider_id != provider_id
+                    or attempt.provider_idempotency_key != provider_idempotency_key
+                    or attempt.request_payload != verified_request_payload
+                ):
+                    raise IdempotencyConflictError(
+                        "generation slot was reserved with different provider request identity"
+                    )
+                return attempt
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.generation_attempts
+                    (attempt_id, job_id, command_slot_id, request_hash,
+                     provider_id, provider_idempotency_key, request_payload_object_id,
+                     state, version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'reserved', 0)
                 """,
                 (
-                    receipt_id,
-                    rejection.command_slot_id,
-                    rejection.outcome,
-                    rejection.failure_code,
-                    rejection.failure_detail_json,
+                    attempt_id,
+                    job_id,
+                    command_slot_id,
+                    request_hash,
+                    provider_id,
+                    provider_idempotency_key,
+                    verified_request_payload.object_id,
                 ),
             )
-            self._complete(cursor, rejection.command_slot_id, job_id, rejection.outcome)
-            return CommandOutcome(
-                command_slot_id=rejection.command_slot_id,
-                state=rejection.outcome,
-                receipt_id=receipt_id,
-                failure_code=rejection.failure_code,
-                failure_detail_json=rejection.failure_detail_json,
-                job_id=job_id,
+            return GenerationAttempt(
+                attempt_id,
+                job_id,
+                command_slot_id,
+                request_hash,
+                provider_id,
+                provider_idempotency_key,
+                verified_request_payload,
+                "reserved",
+                0,
+                is_fresh_reservation=True,
             )
 
         return self._transaction(operation)
+
+    def dispatch_generation_attempt(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_request_id: str | None = None,
+    ) -> GenerationAttempt:
+        """Move one fresh reservation to dispatched exactly once."""
+
+        if provider_request_id is not None and (
+            type(provider_request_id) is not str or not provider_request_id.strip()  # noqa: E721
+        ):
+            raise StoreValidationError("provider_request_id must be non-empty when present")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(cursor, attempt_id)
+            self._require_attempt_transition(
+                attempt, expected_version, ("reserved",), "dispatch"
+            )
+            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError("generation slot cannot be dispatched")
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET state = 'dispatched', provider_request_id = %s, version = version + 1,
+                       dispatched_at = transaction_timestamp()
+                 WHERE attempt_id = %s AND version = %s
+                """,
+                (provider_request_id, attempt_id, expected_version),
+            )
+            return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def record_generation_response(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        raw_response: BlobRef,
+        provider_request_id: str | None = None,
+    ) -> GenerationAttempt:
+        """Bind the exact immutable provider response to a dispatched attempt."""
+
+        return self._record_generation_blob_transition(
+            attempt_id,
+            expected_version=expected_version,
+            raw_response=raw_response,
+            provider_request_id=provider_request_id,
+            source_state="dispatched",
+            target_state="responded",
+        )
+
+    def mark_generation_indeterminate(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_request_id: str | None = None,
+    ) -> GenerationAttempt:
+        """Record ambiguous timeout without a receipt or permission to blind retry."""
+
+        if provider_request_id is not None and (
+            type(provider_request_id) is not str or not provider_request_id.strip()  # noqa: E721
+        ):
+            raise StoreValidationError("provider_request_id must be non-empty when present")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, _, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
+            self._require_attempt_transition(
+                attempt, expected_version, ("dispatched",), "mark indeterminate"
+            )
+            effective_request_id = self._exact_provider_request_id(
+                attempt.provider_request_id, provider_request_id
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET state = 'indeterminate', provider_request_id = %s, version = version + 1
+                 WHERE attempt_id = %s AND version = %s
+                """,
+                (effective_request_id, attempt_id, expected_version),
+            )
+            return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def reconcile_generation_response(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        raw_response: BlobRef,
+        provider_request_id: str | None = None,
+    ) -> GenerationAttempt:
+        """Continue an indeterminate attempt only with exact reconciliation evidence."""
+
+        return self._record_generation_blob_transition(
+            attempt_id,
+            expected_version=expected_version,
+            raw_response=raw_response,
+            provider_request_id=provider_request_id,
+            source_state="indeterminate",
+            target_state="reconciled",
+        )
+
+    def fail_generation_attempt(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        failure_code: str,
+        failure_detail_json: str,
+    ) -> GenerationAttempt:
+        """Persist an exact terminal provider failure without creating a command receipt."""
+
+        if type(failure_code) is not str or not failure_code.strip():  # noqa: E721
+            raise StoreValidationError("generation failure_code must be non-empty")
+        try:
+            detail = json.loads(failure_detail_json)
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError("generation failure_detail_json must contain JSON") from error
+        if not isinstance(detail, dict):
+            raise StoreValidationError("generation failure_detail_json must contain a JSON object")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, _, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
+            self._require_attempt_transition(
+                attempt,
+                expected_version,
+                ("reserved", "dispatched", "responded", "indeterminate", "reconciled"),
+                "fail",
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET state = 'failed', failure_code = %s, failure_detail = %s::jsonb,
+                       version = version + 1, completed_at = transaction_timestamp()
+                 WHERE attempt_id = %s AND version = %s
+                """,
+                (failure_code, failure_detail_json, attempt_id, expected_version),
+            )
+            return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def commit_generation_success(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        success: CommandSuccess,
+    ) -> GenerationAttempt:
+        """Atomically bind a reconciled response to its command set, receipt, and attempt."""
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+                cursor, attempt_id
+            )
+            if attempt.command_slot_id != success.command_slot_id:
+                raise StoreValidationError("generation success belongs to another command slot")
+            if attempt.state == "committed":
+                if attempt.artifact_set_id is None:
+                    raise BlobIntegrityError("committed generation lost its artifact set binding")
+                cursor.execute(
+                    "SELECT set_hash FROM runtime.artifact_sets WHERE artifact_set_id = %s",
+                    (attempt.artifact_set_id,),
+                )
+                row = cursor.fetchone()
+                if row is None or _text(row[0]) != success.set_hash:
+                    raise CommandStateError(
+                        "generation was already committed with a different artifact set"
+                    )
+                return attempt
+            self._require_attempt_transition(
+                attempt, expected_version, ("responded", "reconciled"), "commit"
+            )
+            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError("generation command cannot be committed")
+            outcome = self._write_success(cursor, success, job_id)
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET state = 'committed', version = version + 1,
+                       receipt_id = %s, artifact_set_id = %s,
+                       completed_at = transaction_timestamp()
+                 WHERE attempt_id = %s AND version = %s
+                """,
+                (
+                    outcome.receipt_id,
+                    outcome.artifact_set_id,
+                    attempt_id,
+                    expected_version,
+                ),
+            )
+            return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def read_generation_attempt(self, attempt_id: UUID) -> GenerationAttempt:
+        """Read one exact attempt identity without a latest/by-provider escape hatch."""
+
+        self._validate_uuid(attempt_id, "attempt_id")
+        return self._transaction(
+            lambda cursor: self._read_generation_attempt_by_id(
+                cursor, attempt_id, for_update=False
+            )
+        )
 
     # ------------------------------------------------------------------
     # read_outcome
@@ -740,6 +1114,363 @@ class PostgresRuntimeStore:
     # internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _validate_uuid(value: object, field_name: str) -> None:
+        if not isinstance(value, UUID):
+            raise StoreValidationError(f"{field_name} must be a UUID")
+
+    @staticmethod
+    def _validate_sha256(value: object, field_name: str) -> None:
+        if (
+            type(value) is not str  # noqa: E721
+            or len(value) != 71
+            or not value.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in value[7:])
+        ):
+            raise StoreValidationError(f"{field_name} must be a lowercase sha256 digest")
+
+    def _write_success(
+        self, cursor: DbCursor, success: CommandSuccess, job_id: UUID
+    ) -> CommandOutcome:
+        """Shared internal ArtifactSet/Receipt writer; caller holds Job then slot locks."""
+
+        artifact_set_id = uuid4()
+        cursor.execute(
+            """
+            INSERT INTO runtime.artifact_sets
+                (artifact_set_id, command_slot_id, job_id, set_hash, member_count)
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                artifact_set_id,
+                success.command_slot_id,
+                job_id,
+                success.set_hash,
+                len(success.artifacts),
+            ),
+        )
+        inserted: list[tuple[UUID, ArtifactMember]] = []
+        for ordinal, artifact in enumerate(success.artifacts):
+            self._assert_next_revision(cursor, job_id, artifact)
+            artifact_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.artifacts
+                    (artifact_id, artifact_set_id, job_id, artifact_type, logical_id, revision,
+                     namespace, scope_kind, scope_key, content_hash, payload_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    artifact_id,
+                    artifact_set_id,
+                    job_id,
+                    artifact.artifact_type,
+                    artifact.logical_id,
+                    artifact.revision,
+                    artifact.scope.namespace,
+                    artifact.scope.kind,
+                    artifact.scope.key,
+                    artifact.content_hash,
+                    artifact.payload_json,
+                ),
+            )
+            cursor.execute(
+                """
+                INSERT INTO runtime.artifact_set_members (artifact_set_id, ordinal, artifact_id)
+                VALUES (%s, %s, %s)
+                """,
+                (artifact_set_id, ordinal, artifact_id),
+            )
+            inserted.append((artifact_id, artifact))
+        for artifact_id, artifact in inserted:
+            cursor.execute(
+                """
+                INSERT INTO runtime.logical_heads
+                    (job_id, namespace, scope_kind, scope_key, artifact_type, logical_id,
+                     artifact_id, revision)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (job_id, namespace, scope_kind, scope_key, artifact_type, logical_id)
+                DO UPDATE SET artifact_id = EXCLUDED.artifact_id, revision = EXCLUDED.revision
+                """,
+                (
+                    job_id,
+                    artifact.scope.namespace,
+                    artifact.scope.kind,
+                    artifact.scope.key,
+                    artifact.artifact_type,
+                    artifact.logical_id,
+                    artifact_id,
+                    artifact.revision,
+                ),
+            )
+        receipt_id = uuid4()
+        cursor.execute(
+            """
+            INSERT INTO runtime.command_receipts
+                (receipt_id, command_slot_id, outcome, result_artifact_set_id)
+            VALUES (%s, %s, 'succeeded', %s)
+            """,
+            (receipt_id, success.command_slot_id, artifact_set_id),
+        )
+        self._complete_slot(cursor, success.command_slot_id, "succeeded")
+        return CommandOutcome(
+            command_slot_id=success.command_slot_id,
+            state="succeeded",
+            receipt_id=receipt_id,
+            artifact_set_id=artifact_set_id,
+            job_id=job_id,
+        )
+
+    def _write_rejection(
+        self, cursor: DbCursor, rejection: CommandRejection, job_id: UUID
+    ) -> CommandOutcome:
+        receipt_id = uuid4()
+        cursor.execute(
+            """
+            INSERT INTO runtime.command_receipts
+                (receipt_id, command_slot_id, outcome, failure_code, failure_detail)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            """,
+            (
+                receipt_id,
+                rejection.command_slot_id,
+                rejection.outcome,
+                rejection.failure_code,
+                rejection.failure_detail_json,
+            ),
+        )
+        self._complete_slot(cursor, rejection.command_slot_id, rejection.outcome)
+        return CommandOutcome(
+            command_slot_id=rejection.command_slot_id,
+            state=rejection.outcome,
+            receipt_id=receipt_id,
+            failure_code=rejection.failure_code,
+            failure_detail_json=rejection.failure_detail_json,
+            job_id=job_id,
+        )
+
+    @staticmethod
+    def _assert_no_other_open_slots(cursor: DbCursor, job_id: UUID, finalizer_id: UUID) -> None:
+        cursor.execute(
+            """
+            SELECT command_slot_id, state FROM runtime.command_slots
+             WHERE job_id = %s AND command_slot_id <> %s
+             ORDER BY command_slot_id FOR UPDATE
+            """,
+            (job_id, finalizer_id),
+        )
+        while (row := cursor.fetchone()) is not None:
+            if _text(row[1]) in ("pending", "running"):
+                raise CommandStateError(
+                    "run finalizer is blocked while another command slot is pending or running"
+                )
+
+    def _record_generation_blob_transition(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        raw_response: BlobRef,
+        provider_request_id: str | None,
+        source_state: str,
+        target_state: str,
+    ) -> GenerationAttempt:
+        if provider_request_id is not None and (
+            type(provider_request_id) is not str or not provider_request_id.strip()  # noqa: E721
+        ):
+            raise StoreValidationError("provider_request_id must be non-empty when present")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            attempt, job_id, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
+            self._require_attempt_transition(
+                attempt, expected_version, (source_state,), target_state
+            )
+            verified_blob = self._claimed_blob_ref(
+                cursor,
+                job_id,
+                raw_response,
+                field_name="raw-response",
+            )
+            effective_request_id = self._exact_provider_request_id(
+                attempt.provider_request_id, provider_request_id
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET state = %s, provider_request_id = %s, raw_response_object_id = %s,
+                       version = version + 1, responded_at = transaction_timestamp()
+                 WHERE attempt_id = %s AND version = %s
+                """,
+                (
+                    target_state,
+                    effective_request_id,
+                    verified_blob.object_id,
+                    attempt_id,
+                    expected_version,
+                ),
+            )
+            return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _require_attempt_transition(
+        attempt: GenerationAttempt,
+        expected_version: int,
+        allowed_states: tuple[str, ...],
+        operation_name: str,
+    ) -> None:
+        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+            raise StoreValidationError("expected_version must be a non-negative integer")
+        if attempt.version != expected_version:
+            raise GenerationAttemptStateError(
+                f"stale generation version for {operation_name}: expected {attempt.version}"
+            )
+        if attempt.state not in allowed_states:
+            raise GenerationAttemptStateError(
+                f"generation in state {attempt.state} cannot {operation_name}"
+            )
+
+    @staticmethod
+    def _exact_provider_request_id(existing: str | None, supplied: str | None) -> str | None:
+        if existing is not None and supplied is not None and existing != supplied:
+            raise IdempotencyConflictError("provider_request_id cannot change for one attempt")
+        return supplied or existing
+
+    def _locked_attempt_aggregate(
+        self, cursor: DbCursor, attempt_id: UUID
+    ) -> tuple[GenerationAttempt, UUID, str, str]:
+        self._validate_uuid(attempt_id, "attempt_id")
+        cursor.execute(
+            "SELECT job_id, command_slot_id FROM runtime.generation_attempts WHERE attempt_id = %s",
+            (attempt_id,),
+        )
+        identity = cursor.fetchone()
+        if identity is None:
+            raise StoreValidationError("attempt_id is unknown")
+        expected_job_id = UUID(str(identity[0]))
+        slot_id = UUID(str(identity[1]))
+        job_id, slot_state, command_name, _ = self._locked_job_then_slot(cursor, slot_id)
+        if job_id != expected_job_id:
+            raise RuntimeStoreError("generation attempt changed jobs while being locked")
+        attempt = self._read_generation_attempt_by_id(cursor, attempt_id, for_update=True)
+        if attempt.job_id != job_id or attempt.command_slot_id != slot_id:
+            raise RuntimeStoreError("generation attempt identity changed while being locked")
+        return attempt, job_id, slot_state, command_name
+
+    def _read_generation_attempt_by_id(
+        self, cursor: DbCursor, attempt_id: UUID, *, for_update: bool
+    ) -> GenerationAttempt:
+        suffix = " FOR UPDATE OF attempt" if for_update else ""
+        cursor.execute(
+            """
+            SELECT attempt.job_id, attempt.command_slot_id, attempt.request_hash,
+                   attempt.provider_id, attempt.provider_idempotency_key,
+                   request_blob.object_id, request_blob.content_hash,
+                   request_blob.byte_length, request_blob.media_type,
+                   attempt.state, attempt.version, attempt.provider_request_id,
+                   response_blob.object_id, response_blob.content_hash,
+                   response_blob.byte_length, response_blob.media_type,
+                   attempt.receipt_id, attempt.artifact_set_id,
+                   attempt.failure_code, attempt.failure_detail::text
+              FROM runtime.generation_attempts AS attempt
+              JOIN storage.blob_objects AS request_blob
+                ON request_blob.object_id = attempt.request_payload_object_id
+              LEFT JOIN storage.blob_objects AS response_blob
+                ON response_blob.object_id = attempt.raw_response_object_id
+             WHERE attempt.attempt_id = %s
+            """
+            + suffix,
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("attempt_id is unknown")
+        (
+            job_id,
+            slot_id,
+            request_hash,
+            provider_id,
+            provider_idempotency_key,
+            request_object_id,
+            request_blob_hash,
+            request_byte_length,
+            request_media_type,
+            state,
+            version,
+            provider_request_id,
+            object_id,
+            blob_hash,
+            byte_length,
+            media_type,
+            receipt_id,
+            artifact_set_id,
+            failure_code,
+            failure_detail,
+        ) = row
+        request_payload = BlobRef(
+            UUID(str(request_object_id)),
+            _text(request_blob_hash),
+            int(_text(request_byte_length)),
+            _text(request_media_type),
+        )
+        raw_response = None
+        if object_id is not None:
+            raw_response = BlobRef(
+                UUID(str(object_id)),
+                _text(blob_hash),
+                int(_text(byte_length)),
+                _text(media_type),
+            )
+        return GenerationAttempt(
+            UUID(str(attempt_id)),
+            UUID(str(job_id)),
+            UUID(str(slot_id)),
+            _text(request_hash),
+            _text(provider_id),
+            _text(provider_idempotency_key),
+            request_payload,
+            _text(state),  # type: ignore[arg-type]
+            int(_text(version)),
+            None if provider_request_id is None else _text(provider_request_id),
+            raw_response,
+            None if receipt_id is None else UUID(str(receipt_id)),
+            None if artifact_set_id is None else UUID(str(artifact_set_id)),
+            None if failure_code is None else _text(failure_code),
+            None if failure_detail is None else _text(failure_detail),
+        )
+
+    @staticmethod
+    def _claimed_blob_ref(
+        cursor: DbCursor,
+        job_id: UUID,
+        reference: BlobRef,
+        *,
+        field_name: str,
+    ) -> BlobRef:
+        cursor.execute(
+            """
+            SELECT object.object_id, object.content_hash, object.byte_length, object.media_type
+              FROM storage.blob_objects AS object
+              JOIN storage.blob_claims AS claim ON claim.object_id = object.object_id
+             WHERE claim.job_id = %s AND object.object_id = %s
+            """,
+            (job_id, reference.object_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise BlobIntegrityError(
+                f"{field_name} BlobRef is not claimed by the attempt Job"
+            )
+        durable = BlobRef(
+            UUID(str(row[0])), _text(row[1]), int(_text(row[2])), _text(row[3])
+        )
+        if durable != reference:
+            raise BlobIntegrityError(
+                f"{field_name} BlobRef does not match durable blob metadata"
+            )
+        return durable
+
     def _ensure_job(self, cursor: DbCursor, job: Job) -> UUID:
         """Insert-or-verify one Job row, never leaking a raw unique violation.
 
@@ -774,17 +1505,22 @@ class PostgresRuntimeStore:
         return UUID(str(existing_id))
 
     @staticmethod
-    def _locked_slot(cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str]:
+    def _locked_slot(cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str, str, str]:
         cursor.execute(
-            "SELECT job_id, state FROM runtime.command_slots WHERE command_slot_id = %s FOR UPDATE",
+            """
+            SELECT job_id, state, command_name, request_hash
+              FROM runtime.command_slots WHERE command_slot_id = %s FOR UPDATE
+            """,
             (slot_id,),
         )
         row = cursor.fetchone()
         if row is None:
             raise StoreValidationError("command_slot_id is unknown")
-        return UUID(str(row[0])), _text(row[1])
+        return UUID(str(row[0])), _text(row[1]), _text(row[2]), _text(row[3])
 
-    def _locked_job_then_slot(self, cursor: DbCursor, slot_id: UUID) -> tuple[UUID, str]:
+    def _locked_job_then_slot(
+        self, cursor: DbCursor, slot_id: UUID
+    ) -> tuple[UUID, str, str, str]:
         """Lock an existing slot's aggregate in the global Job → slot order."""
         cursor.execute(
             "SELECT job_id FROM runtime.command_slots WHERE command_slot_id = %s", (slot_id,)
@@ -794,10 +1530,10 @@ class PostgresRuntimeStore:
             raise StoreValidationError("command_slot_id is unknown")
         job_id = UUID(str(row[0]))
         self._locked_job_state(cursor, job_id)
-        locked_job_id, state = self._locked_slot(cursor, slot_id)
+        locked_job_id, state, command_name, request_hash = self._locked_slot(cursor, slot_id)
         if locked_job_id != job_id:
             raise RuntimeStoreError("command slot changed jobs while being completed")
-        return job_id, state
+        return job_id, state, command_name, request_hash
 
     @staticmethod
     def _locked_job_state(cursor: DbCursor, job_id: UUID) -> str:
@@ -808,18 +1544,11 @@ class PostgresRuntimeStore:
         return _text(row[0])
 
     @staticmethod
-    def _complete(cursor: DbCursor, slot_id: UUID, job_id: UUID, outcome: str) -> None:
+    def _complete_slot(cursor: DbCursor, slot_id: UUID, outcome: str) -> None:
         cursor.execute(
             "UPDATE runtime.command_slots SET state = %s, completed_at = transaction_timestamp()"
             " WHERE command_slot_id = %s",
             (outcome, slot_id),
-        )
-        # The caller already holds Job then slot locks. Only transition job state forward from running to terminal.
-        # Once a job is terminal it stays terminal — later commands never
-        # overwrite the aggregate outcome.
-        cursor.execute(
-            "UPDATE runtime.jobs SET state = %s WHERE job_id = %s AND state = 'running'",
-            (outcome, job_id),
         )
 
     def _assert_next_revision(self, cursor: DbCursor, job_id: UUID, member: ArtifactMember) -> None:

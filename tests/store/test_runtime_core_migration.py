@@ -45,3 +45,27 @@ def test_follow_up_migration_binds_head_to_its_exact_scoped_revision() -> None:
     assert "pending or running command slot must not have a receipt" in sql
     assert "terminal jobs are immutable" in sql
     assert "terminal command slots are immutable" in sql
+
+
+def test_vlm_generation_migration_closes_blob_attempt_and_finalizer_relations() -> None:
+    sql = (MIGRATIONS / "0003_vlm_generation_and_run_finalization.sql").read_text()
+
+    for relation in (
+        "storage.blob_objects",
+        "storage.blob_claims",
+        "runtime.generation_attempts",
+    ):
+        assert f"CREATE TABLE {relation}" in sql
+    assert "content_hash = 'sha256:' || encode(sha256(content_bytes), 'hex')" in sql
+    assert "immutable blob objects and claims cannot be mutated" in sql
+    assert "generation attempts must begin as a clean reservation" in sql
+    assert "UNIQUE (provider_id, provider_idempotency_key)" in sql
+    assert "request_payload_object_id uuid NOT NULL" in sql
+    assert "generation request payload must be an immutable blob claimed by its Job" in sql
+    assert "invalid generation attempt state transition" in sql
+    assert "generation raw response must be an immutable blob claimed by its Job" in sql
+    assert "committed generation must bind its exact command Receipt and ArtifactSet" in sql
+    assert "runtime_one_run_finalizer_per_job" in sql
+    assert "terminal Job requires exactly one matching FinalizeRunOutcome receipt" in sql
+    assert "successful FinalizeRunOutcome requires exactly one run_outcome member" in sql
+    assert "terminal Job cannot accept a fresh command slot" in sql

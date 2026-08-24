@@ -40,3 +40,26 @@ The second read-only review confirmed both P1 findings are closed and found no n
 ## Decision
 
 **Go for the Layer 1 checkpoint only.** The generated values remain coarse semantic evidence and cannot be consumed as physical edit endpoints. Store/attempt atomicity, real provider invocation, A/V exact pairing, and end-to-end admission require later checkpoints and independent review.
+
+## Layer 2 review — Store lifecycle and exact A/V compiler
+
+### Findings and repairs
+
+- Normal command completion previously terminalized the whole Job. It now closes only its slot and Receipt; only an exact `FinalizeRunOutcome` command can atomically terminalize the Job.
+- The first generation-attempt implementation bound only an opaque request hash. Main-agent adversarial review required and added durable `provider_id`, `provider_idempotency_key`, and exact request-payload `BlobRef` identity. These fields are immutable and the payload must be claimed by the same Job.
+- Request and response blobs are content-addressed, byte/hash/length checked, immutable, and locator-free at the Kernel API.
+- An ambiguous provider timeout leaves the command slot running and the attempt `indeterminate`; the same attempt may only reconcile and cannot dispatch again.
+- The exact compiler now enumerates four endpoints from authoritative frame/sample evidence. VLM types are rejected at this boundary.
+- A zero subtitle-clearance floor is rejected for the production A/V policy; detector timing error and the positive policy floor are conjunctive.
+
+### Verification
+
+- Store/unit/migration and A/V targeted suite: `73 passed`.
+- Real PostgreSQL 16 Store integration suite after the main-agent repairs: `41 passed`.
+- Ruff: passed.
+- BasedPyright: `0 errors, 0 warnings, 0 notes`.
+- Podman database `autocut` was created in `ac_postgres`, owned by the existing `ac_user`, and migrations `0001` through `0003` were applied. The legacy `ac_db` database was not modified.
+
+### Decision
+
+**Go for the Layer 2 checkpoint.** This does not yet approve a real provider adapter, VLM command orchestration, semantic-chain consumption, rendering, or publication.

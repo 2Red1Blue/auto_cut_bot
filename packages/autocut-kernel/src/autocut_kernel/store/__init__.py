@@ -1,7 +1,9 @@
 """Durable semantic persistence for the local Pipeline MVP."""
 
 from .errors import (
+    BlobIntegrityError,
     CommandStateError,
+    GenerationAttemptStateError,
     IdempotencyConflictError,
     JobProfileMismatchError,
     MediaEvidenceIntegrityError,
@@ -21,10 +23,13 @@ from .errors import (
 from .models import (
     ArtifactMember,
     ArtifactScope,
+    BlobRef,
     CommandClaim,
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    GenerationAttempt,
+    GenerationAttemptState,
     Job,
     MediaEvidenceReference,
     PersistedMediaEvidence,
@@ -39,11 +44,16 @@ from .postgres import PostgresRuntimeStore
 __all__ = [
     "ArtifactMember",
     "ArtifactScope",
+    "BlobIntegrityError",
+    "BlobRef",
     "CommandClaim",
     "CommandOutcome",
     "CommandRejection",
     "CommandStateError",
     "CommandSuccess",
+    "GenerationAttempt",
+    "GenerationAttemptState",
+    "GenerationAttemptStateError",
     "IdempotencyConflictError",
     "Job",
     "JobProfileMismatchError",

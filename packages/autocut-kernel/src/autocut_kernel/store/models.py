@@ -12,6 +12,15 @@ from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
 JobProfile = Literal["test", "shadow", "production"]
+GenerationAttemptState = Literal[
+    "reserved",
+    "dispatched",
+    "responded",
+    "indeterminate",
+    "reconciled",
+    "committed",
+    "failed",
+]
 
 
 def _text(value: str, field_name: str) -> None:
@@ -269,6 +278,99 @@ class PersistedSemanticResolutionProof:
                 raise StoreValidationError(f"{field_name} must be a UUID")
         if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
             raise StoreValidationError("payload_json does not match semantic resolution proof content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class BlobRef:
+    """Kernel-visible identity for immutable bytes, without a storage locator."""
+
+    object_id: UUID
+    content_hash: str
+    byte_length: int
+    media_type: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.object_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("blob object_id must be a UUID")
+        _sha256(self.content_hash, "blob.content_hash")
+        if type(self.byte_length) is not int or self.byte_length < 0:  # noqa: E721
+            raise StoreValidationError("blob.byte_length must be a non-negative integer")
+        _text(self.media_type, "blob.media_type")
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationAttempt:
+    """One durable, versioned provider invocation owned by a command slot."""
+
+    attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    request_hash: str
+    provider_id: str
+    provider_idempotency_key: str
+    request_payload: BlobRef
+    state: GenerationAttemptState
+    version: int
+    provider_request_id: str | None = None
+    raw_response: BlobRef | None = None
+    receipt_id: UUID | None = None
+    artifact_set_id: UUID | None = None
+    failure_code: str | None = None
+    failure_detail_json: str | None = None
+    is_fresh_reservation: bool = field(default=False, compare=False)
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("attempt_id", self.attempt_id),
+            ("job_id", self.job_id),
+            ("command_slot_id", self.command_slot_id),
+        ):
+            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise StoreValidationError(f"{field_name} must be a UUID")
+        _sha256(self.request_hash, "generation.request_hash")
+        _text(self.provider_id, "generation.provider_id")
+        _text(
+            self.provider_idempotency_key,
+            "generation.provider_idempotency_key",
+        )
+        if type(self.request_payload) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "generation.request_payload must be an exact BlobRef"
+            )
+        if self.state not in (
+            "reserved",
+            "dispatched",
+            "responded",
+            "indeterminate",
+            "reconciled",
+            "committed",
+            "failed",
+        ):
+            raise StoreValidationError("generation attempt has an unsupported state")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError("generation version must be a non-negative integer")
+        if self.provider_request_id is not None:
+            _text(self.provider_request_id, "generation.provider_request_id")
+        if self.state in ("responded", "reconciled", "committed") and self.raw_response is None:
+            raise StoreValidationError(f"{self.state} generation requires an exact raw-response BlobRef")
+        if self.state in ("reserved", "dispatched", "indeterminate") and self.raw_response is not None:
+            raise StoreValidationError(f"{self.state} generation cannot claim a raw response")
+        if self.state == "committed":
+            if self.receipt_id is None or self.artifact_set_id is None:
+                raise StoreValidationError("committed generation requires receipt and artifact set bindings")
+        elif self.receipt_id is not None or self.artifact_set_id is not None:
+            raise StoreValidationError("only committed generation may bind a receipt or artifact set")
+        if self.state == "failed":
+            _text(self.failure_code or "", "generation.failure_code")
+            _text(self.failure_detail_json or "", "generation.failure_detail_json")
+            try:
+                detail = json.loads(self.failure_detail_json or "")
+            except (TypeError, ValueError) as error:
+                raise StoreValidationError("generation.failure_detail_json must contain JSON") from error
+            if not isinstance(detail, dict):
+                raise StoreValidationError("generation.failure_detail_json must contain a JSON object")
+        elif self.failure_code is not None or self.failure_detail_json is not None:
+            raise StoreValidationError("only failed generation may contain failure diagnostics")
 
 
 @dataclass(frozen=True, slots=True)

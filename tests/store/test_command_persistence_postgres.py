@@ -14,10 +14,12 @@ import pytest
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
+    BlobIntegrityError,
     CommandClaim,
     CommandRejection,
     CommandStateError,
     CommandSuccess,
+    GenerationAttemptStateError,
     IdempotencyConflictError,
     Job,
     JobProfileMismatchError,
@@ -25,6 +27,7 @@ from autocut_kernel.store import (
     MediaEvidenceReference,
     MediaEvidenceUnavailableError,
     MediaOutputsUnavailableError,
+    PersistenceConflictError,
     PostgresRuntimeStore,
     RecipeIntegrityError,
     RecipeReference,
@@ -114,8 +117,13 @@ def migrated_database() -> None:
     assert DSN is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
             cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
-            for name in ("0001_runtime_core.sql", "0002_runtime_core_constraints.sql"):
+            for name in (
+                "0001_runtime_core.sql",
+                "0002_runtime_core_constraints.sql",
+                "0003_vlm_generation_and_run_finalization.sql",
+            ):
                 cursor.execute((Path("packages/autocut-kernel/migrations") / name).read_text())
 
 
@@ -1002,33 +1010,49 @@ def test_same_set_hash_under_same_job_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Job terminal state is not overwritten
+# Job finalization is explicit
 # ---------------------------------------------------------------------------
 
 
-def test_terminal_job_closes_fresh_keys_but_replays_existing_keys() -> None:
-    """A terminal Job is closed to new claims, but pre-existing slots finish."""
+def test_multi_command_job_stays_running_until_explicit_finalizer() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
 
-    job = Job("terminal-job", "test")
+    job = Job("explicit-finalizer-job", "test")
 
-    # Both slots are claimed while the Job is still running.
     r1 = store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1")))
     r2 = store.claim_command(CommandClaim(job, "cmd2", "preflight", _digest("r2")))
     member = _make_member(job.job_key)
     set_hash = _make_set_hash((member,))
     first = store.commit_command_success(CommandSuccess(r1.command_slot_id, set_hash, (member,)))
+    store.commit_command_rejection(CommandRejection(r2.command_slot_id, "DENY", '{"r":"x"}'))
 
     assert store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1"))) == first
-    with pytest.raises(CommandStateError, match="job is already terminal"):
-        store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+    fresh = store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+    store.commit_command_rejection(CommandRejection(fresh.command_slot_id, "DONE", "{}"))
 
-    # A previously claimed command may still complete, without changing the
-    # Job's terminal state.
-    store.commit_command_rejection(
-        CommandRejection(r2.command_slot_id, "DENY", '{"r":"x"}')
+    finalizer = store.claim_command(
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
     )
+    run_outcome = _make_member(
+        job.job_key,
+        artifact_type="run_outcome",
+        logical_id="run_outcome",
+        content="run-complete",
+    )
+    terminal = store.finalize_run_success(
+        CommandSuccess(
+            finalizer.command_slot_id,
+            _make_set_hash((run_outcome,)),
+            (run_outcome,),
+        )
+    )
+    assert terminal.state == "succeeded"
+    assert store.finalize_run_success(
+        CommandSuccess(finalizer.command_slot_id, _make_set_hash((run_outcome,)), (run_outcome,))
+    ) == terminal
+    with pytest.raises(CommandStateError, match="job is already terminal"):
+        store.claim_command(CommandClaim(job, "post-final", "preflight", _digest("closed")))
 
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
@@ -1079,46 +1103,153 @@ def test_command_slot_receipt_lifecycle_is_enforced_at_commit(
             conn.rollback()
 
 
-def test_terminal_job_and_fresh_claim_are_serialized() -> None:
-    """A fresh claim blocked behind the aggregate lock observes the committed terminal state."""
+def test_run_finalizer_is_blocked_by_another_running_slot() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
-    job = Job("terminal-race-job", "test")
-    first = store.claim_command(CommandClaim(job, "first", "preflight", _digest("first")))
-
-    terminal_connection = psycopg.connect(DSN)
-    terminal_cursor = terminal_connection.cursor()
-    terminal_cursor.execute("SELECT job_id FROM runtime.jobs WHERE job_key = %s FOR UPDATE", (job.job_key,))
-    terminal_cursor.execute(
-        "UPDATE runtime.jobs SET state = 'denied' WHERE job_key = %s", (job.job_key,)
+    job = Job("blocked-finalizer-job", "test")
+    running = store.claim_command(CommandClaim(job, "work", "preflight", _digest("work")))
+    finalizer = store.claim_command(
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
     )
 
-    outcome: list[object] = []
+    rejection = CommandRejection(finalizer.command_slot_id, "RUN_FAILED", "{}", "failed")
+    with pytest.raises(CommandStateError, match="blocked"):
+        store.finalize_run_rejection(rejection)
+
+    store.commit_command_rejection(CommandRejection(running.command_slot_id, "WORK_DONE", "{}"))
+    assert store.finalize_run_rejection(rejection).state == "failed"
+    with pytest.raises(CommandStateError, match="job is already terminal"):
+        store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+
+
+def test_success_and_failure_run_finalization_race_has_one_terminal_winner() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("finalizer-outcome-race", "test")
+    finalizer = store.claim_command(
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+    )
+    member = _make_member(
+        job.job_key,
+        artifact_type="run_outcome",
+        logical_id="run_outcome",
+        content="terminal-race",
+    )
+    success = CommandSuccess(
+        finalizer.command_slot_id, _make_set_hash((member,)), (member,)
+    )
+    rejection = CommandRejection(finalizer.command_slot_id, "FAILED", "{}", "failed")
+    gate = threading.Barrier(2)
+    outcomes: list[object] = []
+
+    def succeed() -> None:
+        gate.wait()
+        try:
+            outcomes.append(store.finalize_run_success(success))
+        except Exception as error:  # pragma: no cover - asserted below
+            outcomes.append(error)
+
+    def fail() -> None:
+        gate.wait()
+        try:
+            outcomes.append(store.finalize_run_rejection(rejection))
+        except Exception as error:  # pragma: no cover - asserted below
+            outcomes.append(error)
+
+    workers = [threading.Thread(target=succeed), threading.Thread(target=fail)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert sum(getattr(item, "state", None) in ("succeeded", "failed") for item in outcomes) == 1
+    assert sum(isinstance(item, CommandStateError) for item in outcomes) == 1
+
+
+def test_finalizer_holding_job_lock_serializes_with_a_fresh_claim() -> None:
+    assert DSN is not None
+    setup_store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("finalizer-fresh-claim-race", "test")
+    finalizer = setup_store.claim_command(
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+    )
+    member = _make_member(
+        job.job_key,
+        artifact_type="run_outcome",
+        logical_id="run_outcome",
+        content="serialized-final",
+    )
+    success = CommandSuccess(
+        finalizer.command_slot_id, _make_set_hash((member,)), (member,)
+    )
+    job_locked = threading.Event()
+    allow_finalizer = threading.Event()
+
+    class PausingCursor:
+        def __init__(self, cursor: object) -> None:
+            self._cursor = cursor
+
+        def execute(self, query: str, params: tuple[object, ...] = ()) -> object:
+            result = self._cursor.execute(query, params)  # type: ignore[attr-defined]
+            if "SELECT state FROM runtime.jobs WHERE job_id = %s FOR UPDATE" in query:
+                job_locked.set()
+                assert allow_finalizer.wait(timeout=5)
+            return result
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self._cursor.fetchone()  # type: ignore[attr-defined,no-any-return]
+
+        def close(self) -> None:
+            self._cursor.close()  # type: ignore[attr-defined]
+
+    class PausingConnection:
+        def __init__(self) -> None:
+            self._connection = psycopg.connect(DSN)
+
+        def cursor(self) -> PausingCursor:
+            return PausingCursor(self._connection.cursor())
+
+        def commit(self) -> None:
+            self._connection.commit()
+
+        def rollback(self) -> None:
+            self._connection.rollback()
+
+        def close(self) -> None:
+            self._connection.close()
+
+    finalizer_store = PostgresRuntimeStore(PausingConnection)
+    results: list[object] = []
+
+    def finalize() -> None:
+        try:
+            results.append(finalizer_store.finalize_run_success(success))
+        except Exception as error:  # pragma: no cover - asserted below
+            results.append(error)
 
     def claim_fresh() -> None:
         try:
-            outcome.append(
-                store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+            results.append(
+                setup_store.claim_command(
+                    CommandClaim(job, "fresh", "preflight", _digest("fresh"))
+                )
             )
         except Exception as error:  # pragma: no cover - asserted below
-            outcome.append(error)
+            results.append(error)
 
-    worker = threading.Thread(target=claim_fresh)
-    worker.start()
-    terminal_connection.commit()
-    worker.join()
-    terminal_cursor.close()
-    terminal_connection.close()
+    finalizer_worker = threading.Thread(target=finalize)
+    finalizer_worker.start()
+    assert job_locked.wait(timeout=5)
+    claim_worker = threading.Thread(target=claim_fresh)
+    claim_worker.start()
+    claim_worker.join(timeout=0.2)
+    assert claim_worker.is_alive()
+    allow_finalizer.set()
+    finalizer_worker.join(timeout=5)
+    claim_worker.join(timeout=5)
 
-    assert len(outcome) == 1
-    assert isinstance(outcome[0], CommandStateError)
-    with psycopg.connect(DSN) as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT state FROM runtime.command_slots WHERE job_id = %s AND idempotency_key = 'fresh'",
-                (first.job_id,),
-            )
-            assert cur.fetchone() is None
+    assert sum(getattr(item, "state", None) == "succeeded" for item in results) == 1
+    assert sum(isinstance(item, CommandStateError) for item in results) == 1
 
 
 def test_revision_race_returns_one_success_and_one_stale_head() -> None:
@@ -1203,4 +1334,280 @@ def test_recommit_success_with_different_set_is_rejected() -> None:
     with pytest.raises(CommandStateError, match="different artifact set"):
         store.commit_command_success(
             CommandSuccess(running.command_slot_id, _make_set_hash((member2,)), (member2,))
+        )
+
+
+# ---------------------------------------------------------------------------
+# Immutable blobs and provider generation attempts
+# ---------------------------------------------------------------------------
+
+
+def test_blob_bytes_are_verified_immutable_and_claimable_by_multiple_jobs() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    content = b'{"provider":"raw"}'
+    content_hash = "sha256:" + hashlib.sha256(content).hexdigest()
+
+    with pytest.raises(BlobIntegrityError, match="declared SHA-256"):
+        store.put_immutable_blob(
+            Job("blob-mismatch", "test"),
+            content=content,
+            content_hash=_digest("wrong"),
+            media_type="application/json",
+        )
+
+    first = store.put_immutable_blob(
+        Job("blob-job-a", "test"),
+        content=content,
+        content_hash=content_hash,
+        media_type="application/json",
+    )
+    second = store.put_immutable_blob(
+        Job("blob-job-b", "test"),
+        content=content,
+        content_hash=content_hash,
+        media_type="application/json",
+    )
+    assert second == first
+
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(Exception, match="immutable blob objects"):
+                cursor.execute(
+                    "UPDATE storage.blob_objects SET content_bytes = %s WHERE object_id = %s",
+                    (b"tampered", first.object_id),
+                )
+            connection.rollback()
+
+
+def test_same_generation_request_reserves_once_even_concurrently() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("generation-reservation-race", "test")
+    request_hash = _digest("generation-request")
+    slot = store.claim_command(
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+    )
+    payload = b'{"request":"reservation-race"}'
+    payload_ref = store.put_immutable_blob(
+        job,
+        content=payload,
+        content_hash="sha256:" + hashlib.sha256(payload).hexdigest(),
+        media_type="application/json",
+    )
+    gate = threading.Barrier(2)
+    attempts: list[object] = []
+
+    def reserve() -> None:
+        gate.wait()
+        try:
+            attempts.append(
+                store.reserve_generation_attempt(
+                    slot.command_slot_id,
+                    request_hash,
+                    provider_id="provider-test",
+                    provider_idempotency_key="reservation-race",
+                    request_payload=payload_ref,
+                )
+            )
+        except Exception as error:  # pragma: no cover - asserted below
+            attempts.append(error)
+
+    workers = [threading.Thread(target=reserve), threading.Thread(target=reserve)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert len(attempts) == 2
+    assert len({getattr(item, "attempt_id", None) for item in attempts}) == 1
+    assert sum(getattr(item, "is_fresh_reservation", False) for item in attempts) == 1
+
+
+def test_generation_reservation_binds_exact_provider_and_request_payload() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("generation-request-binding", "test")
+    request_hash = _digest("generation-request-binding")
+    slot = store.claim_command(
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+    )
+    payload = b'{"request":"bound"}'
+    payload_ref = store.put_immutable_blob(
+        job,
+        content=payload,
+        content_hash="sha256:" + hashlib.sha256(payload).hexdigest(),
+        media_type="application/json",
+    )
+    reserved = store.reserve_generation_attempt(
+        slot.command_slot_id,
+        request_hash,
+        provider_id="provider-test",
+        provider_idempotency_key="binding-key",
+        request_payload=payload_ref,
+    )
+    assert reserved.provider_id == "provider-test"
+    assert reserved.provider_idempotency_key == "binding-key"
+    assert reserved.request_payload == payload_ref
+
+    with pytest.raises(IdempotencyConflictError, match="provider request identity"):
+        store.reserve_generation_attempt(
+            slot.command_slot_id,
+            request_hash,
+            provider_id="provider-other",
+            provider_idempotency_key="binding-key",
+            request_payload=payload_ref,
+        )
+
+    foreign_payload = store.put_immutable_blob(
+        Job("generation-request-binding-foreign", "test"),
+        content=b"foreign",
+        content_hash="sha256:" + hashlib.sha256(b"foreign").hexdigest(),
+        media_type="application/octet-stream",
+    )
+    with pytest.raises(BlobIntegrityError, match="request-payload"):
+        foreign_job = Job("generation-request-binding-foreign-slot", "test")
+        foreign_hash = _digest("generation-request-binding-foreign-slot")
+        foreign_slot = store.claim_command(
+            CommandClaim(
+                foreign_job,
+                "generation",
+                "GenerateVlmEvidenceCommand",
+                foreign_hash,
+            )
+        )
+        store.reserve_generation_attempt(
+            foreign_slot.command_slot_id,
+            foreign_hash,
+            provider_id="provider-test",
+            provider_idempotency_key="foreign-binding-key",
+            request_payload=foreign_payload,
+        )
+
+
+def test_indeterminate_attempt_cannot_blind_retry_and_exact_reconciliation_can_commit() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("generation-reconcile", "test")
+    request_hash = _digest("generation-request")
+    slot = store.claim_command(
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+    )
+    payload = b'{"request":"reconcile"}'
+    payload_ref = store.put_immutable_blob(
+        job,
+        content=payload,
+        content_hash="sha256:" + hashlib.sha256(payload).hexdigest(),
+        media_type="application/json",
+    )
+    reserved = store.reserve_generation_attempt(
+        slot.command_slot_id,
+        request_hash,
+        provider_id="provider-test",
+        provider_idempotency_key="generation-reconcile",
+        request_payload=payload_ref,
+    )
+    dispatched = store.dispatch_generation_attempt(
+        reserved.attempt_id,
+        expected_version=reserved.version,
+        provider_request_id="provider-request-reconcile",
+    )
+    indeterminate = store.mark_generation_indeterminate(
+        reserved.attempt_id,
+        expected_version=dispatched.version,
+    )
+    replay = store.reserve_generation_attempt(
+        slot.command_slot_id,
+        request_hash,
+        provider_id="provider-test",
+        provider_idempotency_key="generation-reconcile",
+        request_payload=payload_ref,
+    )
+    assert replay.state == "indeterminate"
+    assert replay.is_fresh_reservation is False
+    with pytest.raises(GenerationAttemptStateError):
+        store.dispatch_generation_attempt(
+            reserved.attempt_id,
+            expected_version=indeterminate.version,
+        )
+
+    raw = b'{"observations":[]}'
+    raw_ref = store.put_immutable_blob(
+        job,
+        content=raw,
+        content_hash="sha256:" + hashlib.sha256(raw).hexdigest(),
+        media_type="application/json",
+    )
+    reconciled = store.reconcile_generation_response(
+        reserved.attempt_id,
+        expected_version=indeterminate.version,
+        raw_response=raw_ref,
+    )
+    member = _make_member(
+        job.job_key,
+        artifact_type="vlm_observation_set",
+        logical_id="vlm_observations",
+        content="vlm-observations",
+    )
+    success = CommandSuccess(slot.command_slot_id, _make_set_hash((member,)), (member,))
+    committed = store.commit_generation_success(
+        reserved.attempt_id,
+        expected_version=reconciled.version,
+        success=success,
+    )
+    assert committed.state == "committed"
+    assert committed.raw_response == raw_ref
+    assert committed.receipt_id is not None and committed.artifact_set_id is not None
+    assert store.commit_generation_success(
+        reserved.attempt_id,
+        expected_version=reconciled.version,
+        success=success,
+    ) == committed
+
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT state FROM runtime.jobs WHERE job_key = %s", (job.job_key,)
+            )
+            state = cursor.fetchone()[0]
+            assert (state.decode() if isinstance(state, bytes) else state) == "running"
+
+
+def test_provider_request_identity_is_unique_across_generation_attempts() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    attempts = []
+    for suffix in ("a", "b"):
+        job = Job(f"provider-request-unique-{suffix}", "test")
+        request_hash = _digest(f"request-{suffix}")
+        slot = store.claim_command(
+            CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+        )
+        payload = f'{{"request":"{suffix}"}}'.encode()
+        payload_ref = store.put_immutable_blob(
+            job,
+            content=payload,
+            content_hash="sha256:" + hashlib.sha256(payload).hexdigest(),
+            media_type="application/json",
+        )
+        attempts.append(
+            store.reserve_generation_attempt(
+                slot.command_slot_id,
+                request_hash,
+                provider_id="provider-test",
+                provider_idempotency_key=f"provider-attempt-{suffix}",
+                request_payload=payload_ref,
+            )
+        )
+
+    store.dispatch_generation_attempt(
+        attempts[0].attempt_id,
+        expected_version=0,
+        provider_request_id="provider-request-shared",
+    )
+    with pytest.raises(PersistenceConflictError):
+        store.dispatch_generation_attempt(
+            attempts[1].attempt_id,
+            expected_version=0,
+            provider_request_id="provider-request-shared",
         )

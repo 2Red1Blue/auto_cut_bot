@@ -29,6 +29,14 @@ class CommandStateError(RuntimeStoreError):
     """The requested terminal transition is incompatible with the claimed command."""
 
 
+class BlobIntegrityError(RuntimeStoreError):
+    """Blob bytes, digest, length, media type, or durable claim do not agree."""
+
+
+class GenerationAttemptStateError(CommandStateError):
+    """A provider attempt transition is stale, invalid, or would dispatch twice."""
+
+
 class JobProfileMismatchError(RuntimeStoreError):
     """A durable Job exists, but belongs to a different runtime profile."""
 

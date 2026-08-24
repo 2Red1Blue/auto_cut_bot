@@ -8,10 +8,12 @@ import pytest
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
+    BlobRef,
     CommandClaim,
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    GenerationAttempt,
     Job,
     MediaEvidenceReference,
     PersistedMediaEvidence,
@@ -42,6 +44,66 @@ def test_command_outcome_defaults_to_a_replay_claim() -> None:
     outcome = CommandOutcome(command_slot_id=uuid4(), state="running")
 
     assert outcome.is_fresh_claim is False
+
+
+def test_blob_ref_exposes_only_kernel_identity_and_rejects_invalid_length() -> None:
+    reference = BlobRef(uuid4(), digest("raw"), 3, "application/json")
+
+    assert set(reference.__dataclass_fields__) == {
+        "object_id",
+        "content_hash",
+        "byte_length",
+        "media_type",
+    }
+    with pytest.raises(StoreValidationError, match="byte_length"):
+        BlobRef(uuid4(), digest("raw"), -1, "application/json")
+
+
+def test_generation_attempt_closes_state_dependent_blob_and_receipt_shape() -> None:
+    attempt_id, job_id, slot_id = uuid4(), uuid4(), uuid4()
+    blob = BlobRef(uuid4(), digest("raw"), 3, "application/json")
+    request_blob = BlobRef(uuid4(), digest("request-payload"), 7, "application/json")
+    responded = GenerationAttempt(
+        attempt_id,
+        job_id,
+        slot_id,
+        digest("request"),
+        "provider-test",
+        "provider-idempotency-1",
+        request_blob,
+        "responded",
+        2,
+        "provider-request-1",
+        blob,
+    )
+    assert responded.raw_response == blob
+    assert responded.request_payload == request_blob
+
+    with pytest.raises(StoreValidationError, match="raw-response BlobRef"):
+        GenerationAttempt(
+            attempt_id,
+            job_id,
+            slot_id,
+            digest("request"),
+            "provider-test",
+            "provider-idempotency-1",
+            request_blob,
+            "responded",
+            2,
+        )
+    with pytest.raises(StoreValidationError, match="receipt and artifact set"):
+        GenerationAttempt(
+            attempt_id,
+            job_id,
+            slot_id,
+            digest("request"),
+            "provider-test",
+            "provider-idempotency-1",
+            request_blob,
+            "committed",
+            3,
+            raw_response=blob,
+        )
 
 
 def test_success_requires_a_non_empty_set_with_bound_member_hash() -> None:
@@ -352,11 +414,11 @@ def test_store_decodes_bytes_text_values_from_database_rows() -> None:
                     (b"running", None, None, None, None),
                     (job_id,),
                     (b"running",),
-                    (job_id, b"running"),
+                    (job_id, b"running", b"preflight", request_hash.encode()),
                     (b"1",),
                     (job_id,),
                     (b"running",),
-                    (job_id, b"succeeded"),
+                    (job_id, b"succeeded", b"preflight", request_hash.encode()),
                     (b"succeeded", receipt_id, artifact_set_id, None, None),
                     (set_hash.encode(),),
                 )
