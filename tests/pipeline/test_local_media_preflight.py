@@ -17,13 +17,22 @@ from autocut_kernel.media import (
     AudioSourceOutcome,
     Coverage,
     CoverageOutcome,
+    EvidenceCompleteness,
     EvidenceContext,
     FramePtsIndexSet,
     MediaKind,
     PTSIndex,
+    SpeechActivitySegment,
+    SpeechActivitySet,
     SpeechSourceOutcome,
     SubtitleSourceOutcome,
     TimeBase,
+    TranscriptCompleteness,
+    TranscriptSegment,
+    TranscriptSentence,
+    TranscriptSet,
+    TranscriptSourceOutcome,
+    TranscriptWord,
     VisualClassification,
 )
 from autocut_kernel.media.types import canonical_sha256
@@ -38,6 +47,10 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightRequest,
     LocalMediaToolError,
     ProducerCalibrationIdentity,
+    TimedSpeechEvidence,
+    TimedSpeechEvidenceRequest,
+    TimedSpeechInvocationTrace,
+    TimedSpeechProducerIdentity,
 )
 
 
@@ -58,12 +71,12 @@ def _calibration(kind: str, producer_id: str, policy_sha: str) -> ProducerCalibr
     )
 
 
-def _policy(model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPreflightPolicy:
+def _policy(_model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPreflightPolicy:
     producer_ids = {
         "frame": "frame-decoder-v1",
         "audio": "audio-decoder-v1",
-        "asr": "whisper-asr-v1",
-        "vad": "silencedetect-vad-v1",
+        "asr": "sensevoice-asr-v1",
+        "vad": "fsmn-vad-v1",
         "shot": "pixel-shot-v1",
         "scene": "pixel-scene-v1",
         "visual": "pixel-visual-v1",
@@ -72,15 +85,29 @@ def _policy(model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPref
     policies = {
         "frame": frame_policy,
         "audio": audio_policy,
-        **{kind: f"sha256:{position + 1:064x}" for position, kind in enumerate(tuple(producer_ids)[2:])},
+        **{
+            kind: f"sha256:{position + 1:064x}"
+            for position, kind in enumerate(tuple(producer_ids)[2:])
+        },
     }
     return LocalMediaPreflightPolicy(
         policy_id="media-preflight-policy-1",
         policy_version="1.0.0",
-        whisper_model_name="tiny",
-        whisper_model_path=model,
-        whisper_model_sha256=_sha(model.read_bytes()),
-        whisper_language="zh",
+        timed_speech_endpoint_url="http://127.0.0.1:8765/v1/timed-speech-evidence",
+        timed_speech_provider_id="funasr-http-v1",
+        timed_speech_provider_version="1.0.0",
+        funasr_version="1.4.3",
+        torch_version="2.7.1",
+        speech_device="cpu",
+        word_timing_capability="required",
+        asr_model_id="SenseVoiceSmall",
+        asr_model_revision="master",
+        asr_model_sha256="sha256:" + "6" * 64,
+        vad_model_id="fsmn-vad",
+        vad_model_revision="v2.0.4",
+        vad_model_sha256="sha256:" + "7" * 64,
+        timed_speech_policy_sha256="sha256:" + "8" * 64,
+        timed_speech_calibration_sha256="sha256:" + "9" * 64,
         initial_left_expansion_milliseconds=500,
         initial_right_expansion_milliseconds=500,
         expansion_step_milliseconds=250,
@@ -95,9 +122,10 @@ def _policy(model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPref
         max_stderr_bytes=64 * 1024,
         probe_timeout_seconds=10,
         analysis_timeout_seconds=20,
-        whisper_timeout_seconds=30,
-        vad_noise_db=-35,
-        vad_min_silence_milliseconds=200,
+        timed_speech_timeout_seconds=30,
+        timed_speech_max_response_bytes=1024 * 1024,
+        utterance_gap_milliseconds=700,
+        vad_merge_gap_milliseconds=350,
         black_luma_max=10,
         white_luma_min=245,
         frozen_change_ppm_max=1_000,
@@ -108,19 +136,14 @@ def _policy(model: Path, frame_policy: str, audio_policy: str) -> LocalMediaPref
         subtitle_edge_fraction_ppm_min=500_000,
         subtitle_min_consecutive_samples=2,
         calibrations=tuple(
-            _calibration(kind, producer_ids[kind], policies[kind])
-            for kind in producer_ids
+            _calibration(kind, producer_ids[kind], policies[kind]) for kind in producer_ids
         ),
     )
 
 
 class _Runner:
-    def __init__(
-        self, *, complete_sentence: bool = True, split_sentence: bool = False
-    ) -> None:
+    def __init__(self) -> None:
         self.argvs: list[tuple[str, ...]] = []
-        self.complete_sentence = complete_sentence
-        self.split_sentence = split_sentence
 
     def run(
         self,
@@ -166,48 +189,114 @@ class _Runner:
                     for index in range(4)
                 ),
             )
-        if any("silencedetect=" in item for item in args):
-            return CommandOutput(args, 0, b"", b"")
-        if "--output_format" in args:
-            output_dir = Path(args[args.index("--output_dir") + 1])
-            source = Path(args[1])
-            text = "你好。" if self.complete_sentence else "你好"
-            segments = [
-                    {
-                        "start": 0.5,
-                        "end": 1.0,
-                        "text": text,
-                        "words": [{"start": 0.5, "end": 1.0, "word": text}],
-                    }
-                ]
-            if self.split_sentence:
-                segments = [
-                    {
-                        "start": 0.5,
-                        "end": 0.75,
-                        "text": "你",
-                        "words": [{"start": 0.5, "end": 0.75, "word": "你"}],
-                    },
-                    {
-                        "start": 0.75,
-                        "end": 1.0,
-                        "text": "好。",
-                        "words": [{"start": 0.75, "end": 1.0, "word": "好。"}],
-                    },
-                ]
-            payload = {"segments": segments}
-            (output_dir / f"{source.stem}.json").write_text(json.dumps(payload))
-            return CommandOutput(args, 0, b"", b"")
         raise AssertionError(args)
 
 
-def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, LocalMediaPreflightRequest]:
+class _SpeechPort:
+    def __init__(self) -> None:
+        self.requests: list[TimedSpeechEvidenceRequest] = []
+
+    def produce(self, r: TimedSpeechEvidenceRequest) -> TimedSpeechEvidence:
+        self.requests.append(r)
+        a, v = r.expected_producers
+        ac = replace(
+            EvidenceContext(
+                r.source_id,
+                r.source_sha256,
+                MediaKind.AUDIO,
+                r.clock_id,
+                r.time_base,
+                r.origin_tick,
+                r.duration_tick,
+                a.producer_id,
+                a.generation_policy_sha256,
+            )
+        )
+        vc = replace(
+            ac, producer_id=v.producer_id, generation_policy_sha256=v.generation_policy_sha256
+        )
+        cov = Coverage(
+            r.source_id,
+            r.source_sha256,
+            r.clock_id,
+            r.time_base,
+            r.origin_tick,
+            r.requested_out_tick,
+            CoverageOutcome.COMPLETE,
+        )
+        w = TranscriptWord(
+            "w", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, "你好。"
+        )
+        s = TranscriptSentence(
+            "s", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, ("w",), "你好。"
+        )
+        g = TranscriptSegment(
+            "g", r.source_id, r.source_sha256, r.clock_id, r.time_base, 500, 1000, ("s",), "你好。"
+        )
+        tr = TranscriptSet(
+            "t",
+            ac,
+            cov,
+            TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE,
+            TranscriptCompleteness(
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+            ),
+            (g,),
+            (w,),
+            (s,),
+        )
+        sp = SpeechActivitySet(
+            "v",
+            vc,
+            cov,
+            SpeechSourceOutcome.SPEECH_DETECTED,
+            (
+                SpeechActivitySegment(
+                    "v", r.source_id, r.source_sha256, r.clock_id, r.time_base, 400, 1100, None
+                ),
+            ),
+        )
+        ids = tuple(
+            TimedSpeechProducerIdentity(
+                x.producer_kind,
+                r.provider_id,
+                r.provider_version,
+                r.funasr_version,
+                r.torch_version,
+                r.device,
+                x.model_id,
+                x.model_revision,
+                x.model_sha256,
+                x.producer_id,
+                x.producer_version,
+                x.generation_policy_sha256,
+                x.detector_sha256,
+                x.calibration_policy_sha256,
+                x.calibration_record_sha256,
+            )
+            for x in r.expected_producers
+        )
+        return TimedSpeechEvidence(
+            tr,
+            sp,
+            ids,
+            TimedSpeechInvocationTrace(
+                r.endpoint_url, r.identity_sha256, "sha256:" + "a" * 64, "sha256:" + "b" * 64
+            ),
+        )  # type: ignore[arg-type]
+
+
+def _request(
+    tmp_path: Path, runner: _Runner
+) -> tuple[LocalMediaPreflightPort, LocalMediaPreflightRequest, _SpeechPort]:
     source = tmp_path / "episode.mp4"
     source.write_bytes(b"verified-mp4-materialization")
     model = tmp_path / "tiny.pt"
     model.write_bytes(b"verified-whisper-model")
     executables = []
-    for name in ("ffprobe", "ffmpeg", "whisper"):
+    for name in ("ffprobe", "ffmpeg"):
         executable = tmp_path / name
         executable.write_bytes(name.encode())
         executables.append(executable)
@@ -236,10 +325,22 @@ def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, 
         audio_policy,
     )
     frame_coverage = Coverage(
-        "source-1", _sha(source.read_bytes()), "source-1:video", TimeBase(1, 100), 0, 400, CoverageOutcome.COMPLETE
+        "source-1",
+        _sha(source.read_bytes()),
+        "source-1:video",
+        TimeBase(1, 100),
+        0,
+        400,
+        CoverageOutcome.COMPLETE,
     )
     audio_coverage = Coverage(
-        "source-1", _sha(source.read_bytes()), "source-1:audio", TimeBase(1, 1000), 0, 4000, CoverageOutcome.COMPLETE
+        "source-1",
+        _sha(source.read_bytes()),
+        "source-1:audio",
+        TimeBase(1, 1000),
+        0,
+        4000,
+        CoverageOutcome.COMPLETE,
     )
     pts = PTSIndex((0, 100, 200, 300))
     frame_set = FramePtsIndexSet(
@@ -263,10 +364,11 @@ def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, 
             for tick in (0, 4000)
         ),
     )
+    speech = _SpeechPort()
     port = LocalMediaPreflightPort(
         ffprobe_executable=str(executables[0]),
         ffmpeg_executable=str(executables[1]),
-        whisper_executable=str(executables[2]),
+        speech_port=speech,
         runner=runner,
     )
     policy = _policy(model.resolve(), frame_policy, audio_policy)
@@ -292,12 +394,12 @@ def _request(tmp_path: Path, runner: _Runner) -> tuple[LocalMediaPreflightPort, 
         measured["audio"],
         policy,
     )
-    return port, request
+    return port, request, speech
 
 
 def test_prepare_builds_conjunctive_real_tool_evidence(tmp_path: Path) -> None:
     runner = _Runner()
-    port, request = _request(tmp_path, runner)
+    port, request, speech = _request(tmp_path, runner)
 
     result = port.prepare(request)
 
@@ -312,21 +414,19 @@ def test_prepare_builds_conjunctive_real_tool_evidence(tmp_path: Path) -> None:
     ]
     assert len(result.producer_identities) == 8
     assert len(result.calibration_bindings) == 8
-    assert result.provenance_mapping()["tool_trace_sha256"] == (
-        result.tool_trace.canonical_hash
-    )
+    assert result.provenance_mapping()["tool_trace_sha256"] == (result.tool_trace.canonical_hash)
     assert {item.executable for item in result.tool_trace.invocations} <= {
         "ffmpeg",
         "ffprobe",
-        "whisper",
     }
+    assert speech.requests[0].word_timing_capability == "required"
     assert all("-nostdin" in argv for argv in runner.argvs if "ffmpeg" in Path(argv[0]).name)
     rawvideo_argv = next(argv for argv in runner.argvs if "rawvideo" in argv)
     assert "-copyts" in rawvideo_argv
 
 
 def test_replaced_detector_binary_cannot_reuse_old_calibration(tmp_path: Path) -> None:
-    port, request = _request(tmp_path, _Runner())
+    port, request, _ = _request(tmp_path, _Runner())
     mismatched = replace(
         request.policy,
         calibrations=(
@@ -339,21 +439,12 @@ def test_replaced_detector_binary_cannot_reuse_old_calibration(tmp_path: Path) -
         port.prepare(replace(request, policy=mismatched))
 
 
-def test_incomplete_whisper_sentence_is_indeterminate(tmp_path: Path) -> None:
-    port, request = _request(tmp_path, _Runner(complete_sentence=False))
-
-    with pytest.raises(LocalMediaEvidenceError, match="unclosed sentence tail"):
-        port.prepare(request)
-
-
-def test_sentence_can_close_across_whisper_segments(tmp_path: Path) -> None:
-    port, request = _request(tmp_path, _Runner(split_sentence=True))
-
-    result = port.prepare(request)
-
-    assert len(result.evidence.transcript.segments) == 2
-    assert len(result.evidence.transcript.sentences) == 1
-    assert result.evidence.transcript.sentences[0].text == "你好。"
+def test_production_process_never_invokes_whisper_or_silencedetect(tmp_path: Path) -> None:
+    runner = _Runner()
+    port, request, _ = _request(tmp_path, runner)
+    port.prepare(request)
+    flattened = " ".join(x for argv in runner.argvs for x in argv).lower()
+    assert "whisper" not in flattened and "silencedetect" not in flattened
 
 
 def test_policy_mapping_is_closed_and_hashes_all_values(tmp_path: Path) -> None:
