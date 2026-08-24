@@ -1,0 +1,7 @@
+{"path":"packages/autocut-kernel/src/autocut_kernel/media/preflight.py","reason":"已持久化 MediaEvidence 的唯一输入边界"}
+{"path":"packages/autocut-kernel/src/autocut_kernel/pipeline/local_media_command.py","reason":"媒体 ArtifactSet 的持久化模式"}
+{"path":"packages/autocut-kernel/src/autocut_kernel/pipeline/semantic_chain_command.py","reason":"既有纯语义 Command 与证据投影边界"}
+{"path":"packages/autocut-kernel/src/autocut_kernel/store/postgres.py","reason":"Command/Receipt/ArtifactSet 原子写入和精确读取模式"}
+{"path":"packages/autocut-kernel/src/autocut_kernel/semantic_chain/models.py","reason":"EventCard/RegisteredFact 的闭合语义边界"}
+{"path":"auto_cut_bot/providers/registry.py","reason":"仅供 composition adapter 选择提供商；Kernel 不依赖"}
+{"path":"auto_cut_bot/providers/factory.py","reason":"仅供 composition adapter 选择提供商；Kernel 不依赖"}
