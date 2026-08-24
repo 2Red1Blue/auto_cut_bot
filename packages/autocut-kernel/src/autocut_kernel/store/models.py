@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID
 
@@ -21,6 +22,11 @@ GenerationAttemptState = Literal[
     "committed",
     "failed",
 ]
+GenerationFailureDisposition = Literal["retryable", "nonretryable", "repairable"]
+
+_LEGACY_GENERATION_RETRY_POLICY_HASH = (
+    "sha256:70f279a4b886d1aaf1498b432af937495e431113db3f38728a635ed24a6fbe39"
+)
 
 
 def _text(value: str, field_name: str) -> None:
@@ -614,6 +620,15 @@ class GenerationAttempt:
     artifact_set_id: UUID | None = None
     failure_code: str | None = None
     failure_detail_json: str | None = None
+    attempt_ordinal: int = 1
+    previous_attempt_id: UUID | None = None
+    retry_policy_hash: str = _LEGACY_GENERATION_RETRY_POLICY_HASH
+    max_attempts: int = 1
+    failure_disposition: GenerationFailureDisposition | None = None
+    dispatch_lease_token: str | None = None
+    dispatch_lease_expires_at: datetime | None = None
+    not_before_at: datetime | None = None
+    retry_backoff_seconds: int = 0
     is_fresh_reservation: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -646,6 +661,18 @@ class GenerationAttempt:
             raise StoreValidationError("generation attempt has an unsupported state")
         if type(self.version) is not int or self.version < 0:  # noqa: E721
             raise StoreValidationError("generation version must be a non-negative integer")
+        if type(self.attempt_ordinal) is not int or self.attempt_ordinal < 1:  # noqa: E721
+            raise StoreValidationError("generation attempt_ordinal must be positive")
+        if type(self.max_attempts) is not int or self.max_attempts < self.attempt_ordinal:  # noqa: E721
+            raise StoreValidationError(
+                "generation max_attempts must cover the attempt ordinal"
+            )
+        _sha256(self.retry_policy_hash, "generation.retry_policy_hash")
+        if self.attempt_ordinal == 1:
+            if self.previous_attempt_id is not None:
+                raise StoreValidationError("first generation attempt cannot have a predecessor")
+        elif not isinstance(self.previous_attempt_id, UUID):
+            raise StoreValidationError("later generation attempt requires a predecessor UUID")
         if self.provider_request_id is not None:
             _text(self.provider_request_id, "generation.provider_request_id")
         if self.state in ("responded", "reconciled", "committed") and self.raw_response is None:
@@ -666,8 +693,72 @@ class GenerationAttempt:
                 raise StoreValidationError("generation.failure_detail_json must contain JSON") from error
             if not isinstance(detail, dict):
                 raise StoreValidationError("generation.failure_detail_json must contain a JSON object")
+            if self.failure_disposition not in (
+                "retryable",
+                "nonretryable",
+                "repairable",
+            ):
+                raise StoreValidationError(
+                    "failed generation requires a closed failure disposition"
+                )
         elif self.failure_code is not None or self.failure_detail_json is not None:
             raise StoreValidationError("only failed generation may contain failure diagnostics")
+        elif self.failure_disposition is not None:
+            raise StoreValidationError(
+                "only failed generation may contain a failure disposition"
+            )
+        if (self.dispatch_lease_token is None) != (
+            self.dispatch_lease_expires_at is None
+        ):
+            raise StoreValidationError(
+                "generation dispatch lease token and expiry must be paired"
+            )
+        if self.dispatch_lease_token is not None:
+            _text(self.dispatch_lease_token, "generation.dispatch_lease_token")
+            if (
+                not isinstance(self.dispatch_lease_expires_at, datetime)
+                or self.dispatch_lease_expires_at.tzinfo is None
+            ):
+                raise StoreValidationError(
+                    "generation dispatch lease expiry must be timezone-aware"
+                )
+            if self.state not in ("dispatched", "indeterminate"):
+                raise StoreValidationError(
+                    "only dispatched or reconciling generation may hold a lease"
+                )
+        if self.state == "dispatched" and self.dispatch_lease_token is None:
+            raise StoreValidationError("dispatched generation requires an active lease identity")
+        if self.not_before_at is not None and (
+            self.not_before_at.tzinfo is None
+        ):
+            raise StoreValidationError(
+                "generation not_before_at must be timezone-aware when present"
+            )
+        if (
+            type(self.retry_backoff_seconds) is not int  # noqa: E721
+            or self.retry_backoff_seconds < 0
+        ):
+            raise StoreValidationError(
+                "generation retry_backoff_seconds must be non-negative"
+            )
+        if self.attempt_ordinal == 1 and self.retry_backoff_seconds != 0:
+            raise StoreValidationError("first generation attempt cannot have retry backoff")
+
+    def retry_delay_is_active(self, now: datetime | None = None) -> bool:
+        if self.not_before_at is None:
+            return False
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            raise StoreValidationError("retry delay comparison time must be timezone-aware")
+        return self.not_before_at > reference
+
+    def dispatch_lease_is_active(self, now: datetime | None = None) -> bool:
+        if self.dispatch_lease_expires_at is None:
+            return False
+        reference = now or datetime.now(timezone.utc)
+        if reference.tzinfo is None:
+            raise StoreValidationError("dispatch lease comparison time must be timezone-aware")
+        return self.dispatch_lease_expires_at > reference
 
 
 @dataclass(frozen=True, slots=True)

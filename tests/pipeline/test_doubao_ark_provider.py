@@ -7,10 +7,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from autocut_kernel.vlm import (
     ProviderCompleted,
     ProviderDispatchRequest,
     ProviderFailed,
+    ProviderFailureDisposition,
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
@@ -187,13 +189,19 @@ class FakeResponses:
         self.create_calls: list[dict[str, object]] = []
         self.retrieve_calls: list[str] = []
         self.retrieve_result = _response("response-reconciled", '{"schema_version":1}')
+        self.create_error: Exception | None = None
+        self.retrieve_error: Exception | None = None
 
     def create(self, **kwargs: object) -> object:
         self.create_calls.append(kwargs)
+        if self.create_error is not None:
+            raise self.create_error
         return self.stream
 
     def retrieve(self, response_id: str) -> object:
         self.retrieve_calls.append(response_id)
+        if self.retrieve_error is not None:
+            raise self.retrieve_error
         return self.retrieve_result
 
 
@@ -211,6 +219,14 @@ class FakeClientFactory:
 
 def _payload() -> bytes:
     video = b"real-proxy-video"
+    retry_policy = {
+        "backoff_seconds": [2, 8],
+        "max_attempts": 3,
+        "strategy_version": "generation-retry-v1",
+    }
+    retry_policy_bytes = json.dumps(
+        retry_policy, separators=(",", ":"), sort_keys=True
+    ).encode()
     return json.dumps(
         {
             "model_id": "doubao-seed-2-1-pro-260628",
@@ -230,6 +246,9 @@ def _payload() -> bytes:
                 "temperature": 0,
                 "video_fps": 1.0,
             },
+            "retry_policy": retry_policy,
+            "retry_policy_sha256": "sha256:"
+            + hashlib.sha256(retry_policy_bytes).hexdigest(),
             "response_schema": {"type": "object"},
             "window_manifest_set_sha256": "sha256:" + "2" * 64,
             "window_manifest_sha256": "sha256:" + "3" * 64,
@@ -396,7 +415,142 @@ def test_doubao_ark_rejects_partial_output_from_incomplete_stream() -> None:
 
     assert isinstance(result, ProviderFailed)
     assert result.failure_code == "PROVIDER_RESPONSE_INCOMPLETE"
+    assert result.disposition is ProviderFailureDisposition.REPAIRABLE
     assert len(factory.responses.create_calls) == 1
+
+
+def test_doubao_ark_classifies_explicit_create_503_as_retryable_without_using_trace_id() -> None:
+    factory = FakeClientFactory(_completed_stream())
+    error = RuntimeError("provider overloaded")
+    error.status_code = 503  # type: ignore[attr-defined]
+    error.request_id = "http-trace-not-response-id"  # type: ignore[attr-defined]
+    factory.responses.create_error = error
+    provider = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=factory
+    )
+
+    result = provider.dispatch(_dispatch(created_ids=[]))
+
+    assert isinstance(result, ProviderFailed)
+    assert result.failure_code == "PROVIDER_HTTP_503"
+    assert result.disposition is ProviderFailureDisposition.RETRYABLE
+    assert result.provider_request_id is None
+    assert json.loads(result.failure_detail_json) == {
+        "disposition": "retryable",
+        "http_status": 503,
+        "provider_trace_id": "http-trace-not-response-id",
+        "retryable": True,
+    }
+
+
+def test_doubao_ark_reconcile_503_keeps_original_response_id_indeterminate() -> None:
+    factory = FakeClientFactory([])
+    error = RuntimeError("retrieve temporarily unavailable")
+    error.status_code = 503  # type: ignore[attr-defined]
+    error.request_id = "http-trace-not-response-id"  # type: ignore[attr-defined]
+    factory.responses.retrieve_error = error
+    provider = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=factory
+    )
+
+    result = provider.reconcile(
+        ProviderReconcileQuery(
+            DOUBAO_ARK_PROVIDER_ID,
+            MODEL_ID,
+            "sha256:" + "8" * 64,
+            "response-authoritative",
+        )
+    )
+
+    assert isinstance(result, ProviderIndeterminate)
+    assert result.reason_code == "PROVIDER_RECONCILE_HTTP_503"
+    assert result.provider_request_id == "response-authoritative"
+    assert factory.responses.retrieve_calls == ["response-authoritative"]
+
+
+def test_doubao_ark_reconcile_deterministic_http_error_is_terminal() -> None:
+    factory = FakeClientFactory([])
+    error = RuntimeError("response is not accessible")
+    error.status_code = 403  # type: ignore[attr-defined]
+    factory.responses.retrieve_error = error
+    provider = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=factory
+    )
+
+    result = provider.reconcile(
+        ProviderReconcileQuery(
+            DOUBAO_ARK_PROVIDER_ID,
+            MODEL_ID,
+            "sha256:" + "8" * 64,
+            "response-authoritative",
+        )
+    )
+
+    assert isinstance(result, ProviderFailed)
+    assert result.failure_code == "PROVIDER_RECONCILE_HTTP_403"
+    assert result.disposition is ProviderFailureDisposition.NONRETRYABLE
+    assert result.provider_request_id == "response-authoritative"
+
+
+def test_doubao_ark_terminal_response_failed_requires_explicit_transient_evidence() -> None:
+    factory = FakeClientFactory(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="response-failed", model=MODEL_ID),
+            ),
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    id="response-failed", model=MODEL_ID, status="failed"
+                ),
+            ),
+        ]
+    )
+    provider = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=factory
+    )
+
+    result = provider.dispatch(_dispatch(created_ids=[]))
+
+    assert isinstance(result, ProviderFailed)
+    assert result.failure_code == "PROVIDER_RESPONSE_FAILED"
+    assert result.disposition is ProviderFailureDisposition.NONRETRYABLE
+    assert result.provider_request_id == "response-failed"
+
+    transient_factory = FakeClientFactory(
+        [
+            SimpleNamespace(
+                type="response.created",
+                response=SimpleNamespace(id="response-transient", model=MODEL_ID),
+            ),
+            SimpleNamespace(
+                type="response.failed",
+                response=SimpleNamespace(
+                    id="response-transient",
+                    model=MODEL_ID,
+                    status="failed",
+                    error=SimpleNamespace(status_code=503, code="server_error"),
+                ),
+            ),
+        ]
+    )
+    transient = DoubaoArkVlmProvider(
+        _config(),
+        file_cache=MemoryFileCache(),
+        client_factory=transient_factory,
+    ).dispatch(_dispatch(created_ids=[]))
+    assert isinstance(transient, ProviderFailed)
+    assert transient.disposition is ProviderFailureDisposition.RETRYABLE
+
+
+def test_doubao_ark_timeouts_must_fit_inside_generation_lease() -> None:
+    with pytest.raises(ValueError, match="fit inside the generation lease"):
+        _config(
+            timeout_seconds=700.0,
+            upload_timeout_seconds=500.0,
+            file_cache_lease_seconds=2_000,
+        )
 
 
 def test_doubao_ark_missing_terminal_event_is_indeterminate_and_not_resubmitted() -> None:
@@ -635,15 +789,17 @@ def test_doubao_ark_unknown_upload_outcome_is_quarantined_without_blind_upload()
 
     result = provider.dispatch(_dispatch(created_ids=[]))
 
-    assert isinstance(result, ProviderIndeterminate)
-    assert result.reason_code == "PROVIDER_TRANSPORT_UNKNOWN"
+    assert isinstance(result, ProviderFailed)
+    assert result.failure_code == "PROVIDER_FILE_OUTCOME_UNKNOWN"
+    assert result.disposition is ProviderFailureDisposition.REPAIRABLE
     assert cache.record is not None and cache.record.state == "indeterminate"
     second = FakeClientFactory(_completed_stream())
     replay = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=second).dispatch(
         _dispatch(created_ids=[])
     )
-    assert isinstance(replay, ProviderIndeterminate)
-    assert replay.reason_code == "PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN"
+    assert isinstance(replay, ProviderFailed)
+    assert replay.failure_code == "PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN"
+    assert replay.disposition is ProviderFailureDisposition.REPAIRABLE
     assert not second.files.create_calls
 
 
@@ -656,7 +812,9 @@ def test_doubao_ark_recovers_a_known_processing_file_by_retrieve_without_upload(
 
     interrupted = provider.dispatch(_dispatch(created_ids=[]))
 
-    assert isinstance(interrupted, ProviderIndeterminate)
+    assert isinstance(interrupted, ProviderFailed)
+    assert interrupted.failure_code == "PROVIDER_MEDIA_PROCESSING_UNKNOWN"
+    assert interrupted.disposition is ProviderFailureDisposition.RETRYABLE
     assert cache.record is not None and cache.record.state == "processing"
     assert cache.record.provider_file_id == "file-doubao-1"
     cache.lease_acquired_on_replay = True

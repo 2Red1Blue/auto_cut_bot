@@ -28,7 +28,11 @@ from autocut_kernel.store import (
     WholeSeriesSourceManifestReference,
 )
 from autocut_kernel.store.models import canonical_payload_hash
-from autocut_kernel.vlm import VlmParsePolicy
+from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
+    VlmParsePolicy,
+)
 
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
@@ -291,6 +295,7 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
         "model",
         "provider",
         VlmParsePolicy(Decimal("0.5"), 100_000, 10, 100, 1_000),
+        GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 1, ()),
     )
     assert vlm_request.proxy_blob == episode.proxy_blob
 

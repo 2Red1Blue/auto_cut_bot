@@ -15,6 +15,10 @@ from typing import Protocol, cast
 import psycopg
 from autocut_kernel.store import PostgresRuntimeStore
 from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
+from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
+)
 
 from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
 from auto_cut_bot.pipeline.vlm import (
@@ -57,6 +61,12 @@ _REQUIRED_ENVIRONMENT = (
 )
 _CATALOG_FIELDS = frozenset(
     {"authorization_id", "authorized_path", "expected_source_count", "series_id"}
+)
+
+DOUBAO_GENERATION_RETRY_POLICY = GenerationRetryPolicy(
+    strategy_version=GENERATION_RETRY_STRATEGY_VERSION,
+    max_attempts=3,
+    backoff_seconds=(2, 8),
 )
 
 
@@ -239,7 +249,10 @@ def compose_pipeline_runtime_from_environment(
     catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
     try:
         policy = DoubaoVlmRequestPolicy(model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip())
-        execution_profile = PipelineExecutionProfile.from_doubao_policy(policy)
+        execution_profile = PipelineExecutionProfile.from_doubao_policy(
+            policy,
+            retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
+        )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()

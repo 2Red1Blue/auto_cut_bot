@@ -6,6 +6,10 @@ from uuid import uuid4
 
 import pytest
 from autocut_kernel.store import RuntimeStoreError
+from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
+)
 from psycopg import OperationalError
 
 from auto_cut_bot.pipeline.runtime import (
@@ -127,7 +131,12 @@ def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
 
 def execution_profile(*, model_id: str = "doubao-seed-2-1-pro-260628") -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_doubao_policy(
-        DoubaoVlmRequestPolicy(model_id=model_id)
+        DoubaoVlmRequestPolicy(model_id=model_id),
+        retry_policy=GenerationRetryPolicy(
+            GENERATION_RETRY_STRATEGY_VERSION,
+            3,
+            (2, 8),
+        ),
     )
 
 
@@ -208,7 +217,13 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
     assert reconstructed.canonical_json == profile.canonical_json
     assert reconstructed.canonical_hash == profile.canonical_hash
     assert profile.canonical_hash.startswith("sha256:")
-    assert PipelineExecutionProfile.from_doubao_policy(profile.to_doubao_policy()) == profile
+    assert (
+        PipelineExecutionProfile.from_doubao_policy(
+            profile.to_doubao_policy(),
+            retry_policy=profile.to_generation_retry_policy(),
+        )
+        == profile
+    )
     with pytest.raises(FrozenInstanceError):
         profile.model_id = "mutated"  # type: ignore[misc]
 
@@ -219,6 +234,30 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
 
     with pytest.raises(PipelineRunValidationError, match="canonical JSON"):
         replace(profile, request_parameters_json='{ "temperature": 0 }')
+
+
+def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() -> None:
+    v2 = execution_profile()
+    v1_mapping = v2.to_mapping()
+    v1_mapping["schema_version"] = "pipeline-execution-profile-v1"
+    del v1_mapping["generation_retry_policy"]
+
+    v1 = PipelineExecutionProfile.from_mapping(v1_mapping)
+
+    assert v1.to_generation_retry_policy().max_attempts == 1
+    assert v1.to_generation_retry_policy().backoff_seconds == ()
+    assert v2.to_generation_retry_policy().max_attempts == 3
+    assert v2.to_generation_retry_policy().backoff_seconds == (2, 8)
+    assert v1.canonical_hash != v2.canonical_hash
+
+    invalid_v2 = v2.to_mapping()
+    invalid_v2["generation_retry_policy"] = {
+        "strategy_version": GENERATION_RETRY_STRATEGY_VERSION,
+        "max_attempts": 4,
+        "backoff_seconds": [0, 0, 0],
+    }
+    with pytest.raises(PipelineRunValidationError, match="retry policy is invalid"):
+        PipelineExecutionProfile.from_mapping(invalid_v2)
 
 
 def test_execution_profile_rejects_open_or_unclosed_embedded_json() -> None:

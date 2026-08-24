@@ -18,9 +18,11 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from autocut_kernel.vlm import (
+    GENERATION_PROVIDER_LEASE_SECONDS,
     ProviderCompleted,
     ProviderDispatchRequest,
     ProviderFailed,
+    ProviderFailureDisposition,
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
@@ -43,6 +45,8 @@ _EXPECTED_PAYLOAD_FIELDS = frozenset(
         "provider_id",
         "proxy_blob",
         "request_parameters",
+        "retry_policy",
+        "retry_policy_sha256",
         "response_schema",
         "window_manifest_set_sha256",
         "window_manifest_sha256",
@@ -94,6 +98,13 @@ class DoubaoArkVlmProviderConfig:
             < self.upload_timeout_seconds + (2 * self.timeout_seconds)
         ):
             raise ValueError("Ark file_cache_lease_seconds must cover Files API recovery")
+        if (
+            self.upload_timeout_seconds + self.timeout_seconds
+            >= GENERATION_PROVIDER_LEASE_SECONDS
+        ):
+            raise ValueError(
+                "Ark upload and response timeouts must fit inside the generation lease"
+            )
         if (
             type(self.unknown_upload_quarantine_seconds) is not int  # noqa: E721
             or self.unknown_upload_quarantine_seconds < self.provider_file_ttl_seconds
@@ -181,13 +192,16 @@ class DoubaoArkVlmProvider:
                     max_retries=0,
                 ),
             )
-            file_result = self._get_file_id(
-                client=client,
-                request=request,
-                video_fps=cast(float, parameters["video_fps"]),
-            )
-            if not isinstance(file_result, str):
-                return file_result
+        except Exception as error:
+            return _map_client_error(error)
+        file_result = self._get_file_id(
+            client=client,
+            request=request,
+            video_fps=cast(float, parameters["video_fps"]),
+        )
+        if not isinstance(file_result, str):
+            return file_result
+        try:
             stream = client.responses.create(
                 model=request.model_id,
                 input=[
@@ -225,7 +239,7 @@ class DoubaoArkVlmProvider:
                 on_provider_request_id=request.on_provider_request_id,
             )
         except Exception as error:
-            return _map_provider_error(error)
+            return _map_response_create_error(error)
 
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
         if type(query) is not ProviderReconcileQuery:  # noqa: E721
@@ -269,14 +283,26 @@ class DoubaoArkVlmProvider:
                 return ProviderCompleted(text.encode("utf-8"), response_id)
             if status in {"queued", "in_progress", "processing"}:
                 return ProviderPending(response_id)
-            if status in {"failed", "cancelled", "incomplete"}:
+            if status == "failed":
                 return _failure(
-                    "PROVIDER_RESPONSE_" + status.upper(),
+                    "PROVIDER_RESPONSE_FAILED",
+                    provider_request_id=response_id,
+                    disposition=_response_failure_disposition(response),
+                )
+            if status == "incomplete":
+                return _failure(
+                    "PROVIDER_RESPONSE_INCOMPLETE",
+                    provider_request_id=response_id,
+                    disposition=ProviderFailureDisposition.REPAIRABLE,
+                )
+            if status == "cancelled":
+                return _failure(
+                    "PROVIDER_RESPONSE_CANCELLED",
                     provider_request_id=response_id,
                 )
             return ProviderIndeterminate("PROVIDER_RESPONSE_STATUS_UNKNOWN", response_id)
         except Exception as error:
-            return _map_provider_error(error, fallback_request_id=query.provider_request_id)
+            return _map_reconcile_error(error, response_id=query.provider_request_id)
 
     def _get_file_id(
         self,
@@ -309,7 +335,7 @@ class DoubaoArkVlmProvider:
             try:
                 info = client.files.retrieve(cast(str, record.provider_file_id))
             except Exception as error:
-                mapped = _map_provider_error(error)
+                mapped = _map_file_error(error)
                 if (
                     isinstance(mapped, ProviderFailed)
                     and mapped.failure_code == "PROVIDER_HTTP_404"
@@ -332,7 +358,10 @@ class DoubaoArkVlmProvider:
             return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status=status)
         if record.state == "processing":
             if not lease_acquired:
-                return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_IN_PROGRESS")
+                return _failure(
+                    "PROVIDER_MEDIA_UPLOAD_IN_PROGRESS",
+                    disposition=ProviderFailureDisposition.REPAIRABLE,
+                )
             if record.provider_file_id is None:
                 return _failure("PROVIDER_MEDIA_CACHE_INVALID")
             return self._finish_processing_file(
@@ -341,10 +370,16 @@ class DoubaoArkVlmProvider:
                 file_id=record.provider_file_id,
             )
         if record.state == "indeterminate":
-            return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN")
+            return _failure(
+                "PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN",
+                disposition=ProviderFailureDisposition.REPAIRABLE,
+            )
         if not lease_acquired:
             if record.state == "reserved":
-                return ProviderIndeterminate("PROVIDER_MEDIA_UPLOAD_IN_PROGRESS")
+                return _failure(
+                    "PROVIDER_MEDIA_UPLOAD_IN_PROGRESS",
+                    disposition=ProviderFailureDisposition.REPAIRABLE,
+                )
             return _failure(
                 "PROVIDER_MEDIA_TERMINAL",
                 state=record.state,
@@ -366,8 +401,11 @@ class DoubaoArkVlmProvider:
                 provider_status=str(getattr(uploaded, "status", "processing")),
             )
         except Exception as error:
-            mapped = _map_provider_error(error)
-            if isinstance(mapped, ProviderFailed):
+            mapped = _map_file_error(error)
+            if (
+                isinstance(mapped, ProviderFailed)
+                and mapped.failure_code != "PROVIDER_FILE_OUTCOME_UNKNOWN"
+            ):
                 self._file_cache.record_failed(
                     record.media_object_id,
                     expected_version=record.version,
@@ -429,7 +467,10 @@ class DoubaoArkVlmProvider:
                     expected_lease_token=record.lease_token,
                     provider_status=status or "provider_status_unknown",
                 )
-                return ProviderIndeterminate("PROVIDER_MEDIA_STATUS_UNKNOWN")
+                return _failure(
+                    "PROVIDER_MEDIA_STATUS_UNKNOWN",
+                    disposition=ProviderFailureDisposition.REPAIRABLE,
+                )
             self._file_cache.record_available(
                 record.media_object_id,
                 expected_version=record.version,
@@ -440,8 +481,11 @@ class DoubaoArkVlmProvider:
             )
             return file_id
         except Exception as error:
-            mapped = _map_provider_error(error)
-            if isinstance(mapped, ProviderFailed):
+            mapped = _map_file_error(error)
+            if (
+                isinstance(mapped, ProviderFailed)
+                and mapped.failure_code != "PROVIDER_FILE_OUTCOME_UNKNOWN"
+            ):
                 self._file_cache.record_failed(
                     record.media_object_id,
                     expected_version=record.version,
@@ -456,9 +500,9 @@ class DoubaoArkVlmProvider:
                 expected_lease_token=record.lease_token,
                 provider_status="processing_outcome_unknown",
             )
-            return ProviderIndeterminate(
+            return _failure(
                 "PROVIDER_MEDIA_PROCESSING_UNKNOWN",
-                mapped.provider_request_id,
+                disposition=ProviderFailureDisposition.RETRYABLE,
             )
 
 
@@ -491,6 +535,17 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         raise ValueError("request payload provider_id mismatch")
     if not isinstance(payload["response_schema"], dict):
         raise ValueError("response_schema must be an object")
+    if not isinstance(payload["retry_policy"], dict):
+        raise ValueError("retry_policy must be an object")
+    retry_policy_bytes = json.dumps(
+        payload["retry_policy"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    expected_retry_hash = "sha256:" + hashlib.sha256(retry_policy_bytes).hexdigest()
+    if payload["retry_policy_sha256"] != expected_retry_hash:
+        raise ValueError("retry_policy_sha256 does not bind retry_policy")
     return payload
 
 
@@ -558,6 +613,7 @@ def _consume_stream(
                         return _failure(
                             "PROVIDER_STREAM_LIMIT_EXCEEDED",
                             provider_request_id=request_id,
+                            disposition=ProviderFailureDisposition.REPAIRABLE,
                             limit=max_stream_bytes,
                         )
             elif event_type == "response.created":
@@ -599,18 +655,30 @@ def _consume_stream(
                     return _failure(
                         "PROVIDER_RESPONSE_OUTPUT_INVALID",
                         provider_request_id=request_id,
+                        disposition=ProviderFailureDisposition.REPAIRABLE,
                     )
                 if len(final_text.encode("utf-8")) > max_stream_bytes:
                     return _failure(
                         "PROVIDER_STREAM_LIMIT_EXCEEDED",
                         provider_request_id=request_id,
+                        disposition=ProviderFailureDisposition.REPAIRABLE,
                         limit=max_stream_bytes,
                     )
                 return ProviderCompleted(final_text.encode("utf-8"), request_id)
             elif event_type == "response.incomplete":
-                return _failure("PROVIDER_RESPONSE_INCOMPLETE", provider_request_id=request_id)
-            elif event_type in {"response.failed", "error"}:
-                return _failure("PROVIDER_RESPONSE_FAILED", provider_request_id=request_id)
+                return _failure(
+                    "PROVIDER_RESPONSE_INCOMPLETE",
+                    provider_request_id=request_id,
+                    disposition=ProviderFailureDisposition.REPAIRABLE,
+                )
+            elif event_type == "response.failed":
+                return _failure(
+                    "PROVIDER_RESPONSE_FAILED",
+                    provider_request_id=request_id,
+                    disposition=_response_failure_disposition(response),
+                )
+            elif event_type == "error":
+                return ProviderIndeterminate("PROVIDER_STREAM_ERROR_EVENT", request_id)
     except Exception:
         return ProviderIndeterminate("PROVIDER_STREAM_INTERRUPTED", request_id)
     return ProviderIndeterminate("PROVIDER_STREAM_TERMINAL_EVENT_MISSING", request_id)
@@ -668,32 +736,135 @@ def _failure(
     code: str,
     *,
     provider_request_id: str | None = None,
+    disposition: ProviderFailureDisposition = ProviderFailureDisposition.NONRETRYABLE,
     **details: object,
 ) -> ProviderFailed:
     return ProviderFailed(
         code,
-        json.dumps({"retryable": False, **details}, separators=(",", ":"), sort_keys=True),
+        json.dumps(
+            {
+                "disposition": disposition.value,
+                "retryable": disposition is ProviderFailureDisposition.RETRYABLE,
+                **details,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         provider_request_id,
+        disposition,
     )
 
 
-def _map_provider_error(
-    error: Exception,
-    *,
-    fallback_request_id: str | None = None,
-) -> ProviderResult:
+def _error_status(error: Exception) -> int | None:
     status = getattr(error, "status_code", None)
-    status_code = status if isinstance(status, int) and not isinstance(status, bool) else None
+    return status if isinstance(status, int) and not isinstance(status, bool) else None
+
+
+def _trace_id(error: Exception) -> str | None:
     value = getattr(error, "request_id", None)
-    request_id = value if isinstance(value, str) and value else fallback_request_id
+    # Ark SDK exceptions expose an HTTP trace/request id.  It is not the
+    # Responses API response.id and must never be persisted as reconcile identity.
+    return value if isinstance(value, str) and value else None
+
+
+def _map_client_error(error: Exception) -> ProviderResult:
+    status_code = _error_status(error)
+    return _failure(
+        (
+            f"PROVIDER_CLIENT_HTTP_{status_code}"
+            if status_code is not None
+            else "PROVIDER_CLIENT_INITIALIZATION_FAILED"
+        ),
+        http_status=status_code,
+        provider_trace_id=_trace_id(error),
+    )
+
+
+def _map_response_create_error(error: Exception) -> ProviderResult:
+    status_code = _error_status(error)
+    if status_code in {429, 500, 502, 503, 504}:
+        return _failure(
+            f"PROVIDER_HTTP_{status_code}",
+            disposition=ProviderFailureDisposition.RETRYABLE,
+            http_status=status_code,
+            provider_trace_id=_trace_id(error),
+        )
     if status_code in {400, 401, 403, 404, 409, 422}:
         return _failure(
             f"PROVIDER_HTTP_{status_code}",
-            provider_request_id=request_id,
             http_status=status_code,
+            provider_trace_id=_trace_id(error),
         )
-    reason = f"PROVIDER_HTTP_{status_code}" if status_code else "PROVIDER_TRANSPORT_UNKNOWN"
-    return ProviderIndeterminate(reason, request_id)
+    reason = (
+        f"PROVIDER_CREATE_HTTP_{status_code}"
+        if status_code is not None
+        else "PROVIDER_TRANSPORT_UNKNOWN"
+    )
+    return ProviderIndeterminate(reason)
+
+
+def _map_reconcile_error(error: Exception, *, response_id: str) -> ProviderResult:
+    status_code = _error_status(error)
+    if status_code in {400, 401, 403, 404, 409, 422}:
+        return _failure(
+            f"PROVIDER_RECONCILE_HTTP_{status_code}",
+            provider_request_id=response_id,
+            http_status=status_code,
+            provider_trace_id=_trace_id(error),
+        )
+    reason = (
+        f"PROVIDER_RECONCILE_HTTP_{status_code}"
+        if status_code is not None
+        else "PROVIDER_RECONCILE_TRANSPORT_UNKNOWN"
+    )
+    return ProviderIndeterminate(reason, response_id)
+
+
+def _response_failure_disposition(response: object) -> ProviderFailureDisposition:
+    """Retry only terminal response failures carrying explicit transient evidence."""
+
+    error = getattr(response, "error", None)
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool) and status in {
+        429,
+        500,
+        502,
+        503,
+        504,
+    }:
+        return ProviderFailureDisposition.RETRYABLE
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and code.lower() in {
+        "rate_limit_exceeded",
+        "server_error",
+        "service_unavailable",
+        "timeout",
+    }:
+        return ProviderFailureDisposition.RETRYABLE
+    return ProviderFailureDisposition.NONRETRYABLE
+
+
+def _map_file_error(error: Exception) -> ProviderResult:
+    status_code = _error_status(error)
+    if status_code in {400, 401, 403, 404, 409, 422}:
+        return _failure(
+            f"PROVIDER_HTTP_{status_code}",
+            http_status=status_code,
+            provider_trace_id=_trace_id(error),
+        )
+    if status_code in {429, 500, 502, 503, 504}:
+        return _failure(
+            f"PROVIDER_FILE_HTTP_{status_code}",
+            disposition=ProviderFailureDisposition.RETRYABLE,
+            http_status=status_code,
+            provider_trace_id=_trace_id(error),
+        )
+    return _failure(
+        "PROVIDER_FILE_OUTCOME_UNKNOWN",
+        disposition=ProviderFailureDisposition.REPAIRABLE,
+        http_status=status_code,
+        provider_trace_id=_trace_id(error),
+    )
 
 
 __all__ = [

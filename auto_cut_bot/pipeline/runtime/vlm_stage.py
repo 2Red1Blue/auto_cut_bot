@@ -149,6 +149,7 @@ class VlmPipelineStage:
                 "VLM stage requires at least one committed source episode"
             )
         policy = context.execution_profile.to_doubao_policy()
+        retry_policy = context.execution_profile.to_generation_retry_policy()
         return source_bundle, tuple(
             replace(
                 build_doubao_vlm_request(
@@ -164,6 +165,7 @@ class VlmPipelineStage:
                         execution_profile_hash=context.execution_profile_hash,
                     ),
                     policy=policy,
+                    retry_policy=retry_policy,
                 ),
                 episode_index=episode_index,
                 source_manifest_sha256=source_bundle.artifact_reference.content_hash,

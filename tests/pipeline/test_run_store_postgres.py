@@ -8,6 +8,10 @@ from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
+)
 
 from auto_cut_bot.api.server import create_app
 from auto_cut_bot.pipeline.runtime import (
@@ -96,7 +100,12 @@ def _execution_profile(
     model_id: str = "doubao-seed-2-1-pro-260628",
 ) -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_doubao_policy(
-        DoubaoVlmRequestPolicy(model_id=model_id)
+        DoubaoVlmRequestPolicy(model_id=model_id),
+        retry_policy=GenerationRetryPolicy(
+            GENERATION_RETRY_STRATEGY_VERSION,
+            3,
+            (2, 8),
+        ),
     )
 
 

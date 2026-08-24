@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import cast
 from uuid import UUID, uuid4
@@ -34,6 +35,8 @@ from autocut_kernel.store import (
 )
 from autocut_kernel.store.models import canonical_payload_hash, canonical_recipe_scope
 from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
     ProviderCompleted,
     ProviderDispatchRequest,
     ProviderIndeterminate,
@@ -199,6 +202,7 @@ class KernelStore:
         self.blobs = dict(blobs)
         self.claims: dict[tuple[str, str], tuple[CommandClaim, CommandOutcome]] = {}
         self.attempts: dict[UUID, GenerationAttempt] = {}
+        self.attempt_chains: dict[UUID, list[GenerationAttempt]] = {}
         self.generation_successes: dict[UUID, CommandSuccess] = {}
 
     def read_outcome(self, job: Job, idempotency_key: str) -> CommandOutcome | None:
@@ -244,6 +248,8 @@ class KernelStore:
         provider_id: str,
         provider_idempotency_key: str,
         request_payload: BlobRef,
+        retry_policy_hash: str,
+        max_attempts: int,
     ) -> GenerationAttempt:
         attempt = GenerationAttempt(
             uuid4(),
@@ -255,9 +261,43 @@ class KernelStore:
             request_payload,
             "reserved",
             0,
+            retry_policy_hash=retry_policy_hash,
+            max_attempts=max_attempts,
             is_fresh_reservation=True,
         )
         self.attempts[command_slot_id] = attempt
+        self.attempt_chains[command_slot_id] = [attempt]
+        return attempt
+
+    def reserve_next_generation_attempt(
+        self,
+        previous_attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_idempotency_key: str,
+    ) -> GenerationAttempt:
+        previous = next(
+            item for item in self.attempts.values() if item.attempt_id == previous_attempt_id
+        )
+        assert previous.version == expected_version
+        attempt = GenerationAttempt(
+            uuid4(),
+            previous.job_id,
+            previous.command_slot_id,
+            previous.request_hash,
+            previous.provider_id,
+            provider_idempotency_key,
+            previous.request_payload,
+            "reserved",
+            0,
+            attempt_ordinal=previous.attempt_ordinal + 1,
+            previous_attempt_id=previous.attempt_id,
+            retry_policy_hash=previous.retry_policy_hash,
+            max_attempts=previous.max_attempts,
+            is_fresh_reservation=True,
+        )
+        self.attempts[previous.command_slot_id] = attempt
+        self.attempt_chains[previous.command_slot_id].append(attempt)
         return attempt
 
     def _transition(self, attempt_id: UUID, **changes: object) -> GenerationAttempt:
@@ -268,6 +308,8 @@ class KernelStore:
         )
         updated = replace(attempt, version=attempt.version + 1, **changes)
         self.attempts[slot_id] = updated
+        chain = self.attempt_chains[slot_id]
+        chain[chain.index(attempt)] = updated
         return updated
 
     def dispatch_generation_attempt(
@@ -282,7 +324,25 @@ class KernelStore:
             attempt_id,
             state="dispatched",
             provider_request_id=provider_request_id,
+            dispatch_lease_token="fixture-dispatch-lease",
+            dispatch_lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             is_fresh_reservation=False,
+        )
+
+    def acquire_generation_reconcile_lease(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+    ) -> GenerationAttempt | None:
+        attempt = next(item for item in self.attempts.values() if item.attempt_id == attempt_id)
+        assert attempt.version == expected_version
+        if attempt.dispatch_lease_is_active():
+            return None
+        return self._transition(
+            attempt_id,
+            dispatch_lease_token="fixture-reconcile-lease",
+            dispatch_lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         )
 
     def record_generation_provider_request_id(
@@ -291,8 +351,9 @@ class KernelStore:
         *,
         expected_version: int,
         provider_request_id: str,
+        dispatch_lease_token: str,
     ) -> GenerationAttempt:
-        del expected_version
+        del expected_version, dispatch_lease_token
         return self._transition(attempt_id, provider_request_id=provider_request_id)
 
     def record_generation_response(
@@ -301,14 +362,17 @@ class KernelStore:
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
-        del expected_version
+        del expected_version, dispatch_lease_token
         return self._transition(
             attempt_id,
             state="responded",
             raw_response=raw_response,
             provider_request_id=provider_request_id,
+            dispatch_lease_token=None,
+            dispatch_lease_expires_at=None,
         )
 
     def mark_generation_indeterminate(
@@ -316,13 +380,16 @@ class KernelStore:
         attempt_id: UUID,
         *,
         expected_version: int,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
-        del expected_version
+        del expected_version, dispatch_lease_token
         return self._transition(
             attempt_id,
             state="indeterminate",
             provider_request_id=provider_request_id,
+            dispatch_lease_token=None,
+            dispatch_lease_expires_at=None,
         )
 
     def reconcile_generation_response(
@@ -331,14 +398,17 @@ class KernelStore:
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
-        del expected_version
+        del expected_version, dispatch_lease_token
         return self._transition(
             attempt_id,
             state="reconciled",
             raw_response=raw_response,
             provider_request_id=provider_request_id,
+            dispatch_lease_token=None,
+            dispatch_lease_expires_at=None,
         )
 
     def fail_generation_attempt(
@@ -349,14 +419,19 @@ class KernelStore:
         failure_code: str,
         failure_detail_json: str,
         provider_request_id: str | None = None,
+        failure_disposition: str = "nonretryable",
+        dispatch_lease_token: str | None = None,
     ) -> GenerationAttempt:
-        del expected_version
+        del expected_version, dispatch_lease_token
         return self._transition(
             attempt_id,
             state="failed",
             failure_code=failure_code,
             failure_detail_json=failure_detail_json,
             provider_request_id=provider_request_id,
+            failure_disposition=failure_disposition,
+            dispatch_lease_token=None,
+            dispatch_lease_expires_at=None,
         )
 
     def commit_generation_success(
@@ -374,6 +449,8 @@ class KernelStore:
             state="committed",
             receipt_id=receipt_id,
             artifact_set_id=artifact_set_id,
+            dispatch_lease_token=None,
+            dispatch_lease_expires_at=None,
         )
         self.generation_successes[success.command_slot_id] = success
         self._replace_outcome(
@@ -387,6 +464,26 @@ class KernelStore:
             ),
         )
         return attempt
+
+    def commit_generation_rejection(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        rejection: CommandRejection,
+    ) -> CommandOutcome:
+        attempt = next(item for item in self.attempts.values() if item.attempt_id == attempt_id)
+        assert attempt.version == expected_version
+        outcome = CommandOutcome(
+            rejection.command_slot_id,
+            rejection.outcome,
+            receipt_id=uuid4(),
+            failure_code=rejection.failure_code,
+            failure_detail_json=rejection.failure_detail_json,
+            job_id=attempt.job_id,
+        )
+        self._replace_outcome(rejection.command_slot_id, outcome)
+        return outcome
 
     def read_committed_vlm_generation_child(
         self,
@@ -467,6 +564,14 @@ class KernelStore:
         del job
         return self.attempts.get(command_slot_id)
 
+    def read_generation_attempt_chain(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+    ) -> tuple[GenerationAttempt, ...]:
+        del job
+        return tuple(self.attempt_chains.get(command_slot_id, ()))
+
     def read_whole_series_source_manifest(self, job: Job, artifact_set_id: UUID):
         del job, artifact_set_id
         raise AssertionError("tests inject the exact provenance-bearing source reader")
@@ -540,7 +645,12 @@ def _profile() -> PipelineExecutionProfile:
         DoubaoVlmRequestPolicy(
             model_id="doubao-seed-2-1-pro-260628",
             parse_policy=VlmParsePolicy(Decimal("0.80"), 1_000_000, 4, 128, 512),
-        )
+        ),
+        retry_policy=GenerationRetryPolicy(
+            GENERATION_RETRY_STRATEGY_VERSION,
+            3,
+            (2, 8),
+        ),
     )
 
 

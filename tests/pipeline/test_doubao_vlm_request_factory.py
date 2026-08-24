@@ -29,6 +29,8 @@ from autocut_kernel.store.models import (
     canonical_recipe_scope,
 )
 from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
     ProxyTimelineMap,
     VlmParsePolicy,
     WindowFrameSample,
@@ -148,6 +150,14 @@ def _parse_policy() -> VlmParsePolicy:
     return VlmParsePolicy(Decimal("0.80"), 1_000_000, 4, 128, 512)
 
 
+def _retry_policy() -> GenerationRetryPolicy:
+    return GenerationRetryPolicy(
+        GENERATION_RETRY_STRATEGY_VERSION,
+        3,
+        (2, 8),
+    )
+
+
 def _source_bundle(
     prepared_episode: PreparedSourceEpisode | None = None,
     *,
@@ -227,8 +237,9 @@ def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:
         artifact_revision=3,
         idempotency_key="vlm-window-001",
         policy=policy,
+        retry_policy=_retry_policy(),
     )
-    via_factory = DoubaoVlmRequestFactory(policy).build(
+    via_factory = DoubaoVlmRequestFactory(policy, _retry_policy()).build(
         source_bundle=source_bundle,
         episode_index=0,
         job=job,
@@ -250,6 +261,7 @@ def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:
     assert request.model_id == policy.model_id
     assert request.provider_id == DOUBAO_ARK_PROVIDER_ID
     assert request.parse_policy is policy.parse_policy
+    assert request.retry_policy == _retry_policy()
     assert request.parser_strategy_version == VLM_PARSER_STRATEGY_VERSION
     assert request.source_provenance_sha256 == source_bundle.canonical_hash
     assert json.loads(request.request_payload)["parser_strategy_version"] == (
@@ -319,6 +331,7 @@ def test_parse_policy_and_parameters_change_policy_and_kernel_request_identity()
             artifact_revision=1,
             idempotency_key="identity-window",
             policy=policy,
+            retry_policy=_retry_policy(),
         )
 
     assert len(
@@ -341,7 +354,7 @@ def test_factory_fails_closed_on_cross_manifest_and_blob_tampering() -> None:
     prepared = _prepared_episode()
     other = _prepared_episode()
     job = Job("run-tamper", "test")
-    factory = DoubaoVlmRequestFactory(_policy())
+    factory = DoubaoVlmRequestFactory(_policy(), _retry_policy())
 
     with pytest.raises(ValueError, match="manifest_set"):
         factory.build(
@@ -380,6 +393,7 @@ def test_raw_episode_without_persisted_provenance_has_no_public_factory_entry() 
             artifact_revision=1,
             idempotency_key="untrusted-episode",
             policy=_policy(),
+            retry_policy=_retry_policy(),
         )
 
 
@@ -417,6 +431,7 @@ def test_kernel_request_rejects_parser_drift_and_binds_source_provenance() -> No
             artifact_revision=1,
             idempotency_key="provenance-bound-request",
             policy=_policy(),
+            retry_policy=_retry_policy(),
         )
 
     first = build(first_bundle)

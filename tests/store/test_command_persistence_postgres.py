@@ -123,6 +123,10 @@ def migrated_database() -> None:
                 "0001_runtime_core.sql",
                 "0002_runtime_core_constraints.sql",
                 "0003_vlm_generation_and_run_finalization.sql",
+                "0004_provider_media_objects.sql",
+                "0006_ark_provider_recovery.sql",
+                "0009_vlm_bounded_retry.sql",
+                "0011_generation_retry_schedule.sql",
             ):
                 cursor.execute((Path("packages/autocut-kernel/migrations") / name).read_text())
 
@@ -1519,9 +1523,11 @@ def test_indeterminate_attempt_cannot_blind_retry_and_exact_reconciliation_can_c
         expected_version=reserved.version,
         provider_request_id="provider-request-reconcile",
     )
+    assert dispatched is not None
     indeterminate = store.mark_generation_indeterminate(
         reserved.attempt_id,
         expected_version=dispatched.version,
+        dispatch_lease_token=dispatched.dispatch_lease_token or "",
     )
     replay = store.reserve_generation_attempt(
         slot.command_slot_id,
@@ -1545,10 +1551,16 @@ def test_indeterminate_attempt_cannot_blind_retry_and_exact_reconciliation_can_c
         content_hash="sha256:" + hashlib.sha256(raw).hexdigest(),
         media_type="application/json",
     )
-    reconciled = store.reconcile_generation_response(
+    reconcile_lease = store.acquire_generation_reconcile_lease(
         reserved.attempt_id,
         expected_version=indeterminate.version,
+    )
+    assert reconcile_lease is not None
+    reconciled = store.reconcile_generation_response(
+        reserved.attempt_id,
+        expected_version=reconcile_lease.version,
         raw_response=raw_ref,
+        dispatch_lease_token=reconcile_lease.dispatch_lease_token or "",
     )
     member = _make_member(
         job.job_key,
@@ -1607,11 +1619,12 @@ def test_provider_request_identity_is_unique_across_generation_attempts() -> Non
             )
         )
 
-    store.dispatch_generation_attempt(
+    first_dispatch = store.dispatch_generation_attempt(
         attempts[0].attempt_id,
         expected_version=0,
         provider_request_id="provider-request-shared",
     )
+    assert first_dispatch is not None
     with pytest.raises(PersistenceConflictError):
         store.dispatch_generation_attempt(
             attempts[1].attempt_id,

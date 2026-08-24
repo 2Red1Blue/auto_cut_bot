@@ -10,11 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
+from ..vlm import GENERATION_PROVIDER_LEASE_SECONDS
 from .errors import (
     BlobIntegrityError,
     CommandStateError,
@@ -295,6 +297,10 @@ class PostgresRuntimeStore:
                 )
             if command_name == "FinalizeRunOutcome":
                 raise CommandStateError("FinalizeRunOutcome requires the explicit run finalizer API")
+            if command_name == "GenerateVlmEvidenceCommand":
+                raise CommandStateError(
+                    "GenerateVlmEvidenceCommand rejection requires the explicit generation API"
+                )
             return self._write_rejection(cursor, rejection, job_id)
 
         return self._transaction(operation)
@@ -492,11 +498,20 @@ class PostgresRuntimeStore:
         provider_id: str,
         provider_idempotency_key: str,
         request_payload: BlobRef,
+        retry_policy_hash: str = (
+            "sha256:70f279a4b886d1aaf1498b432af937495e431113db3f38728a635ed24a6fbe39"
+        ),
+        max_attempts: int = 1,
     ) -> GenerationAttempt:
         """Reserve exactly one provider invocation identity for a generation slot."""
 
         self._validate_uuid(command_slot_id, "command_slot_id")
         self._validate_sha256(request_hash, "generation.request_hash")
+        self._validate_sha256(retry_policy_hash, "generation.retry_policy_hash")
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 3:  # noqa: E721
+            raise StoreValidationError(
+                "generation.max_attempts must be between one and three"
+            )
         if type(provider_id) is not str or not provider_id.strip():  # noqa: E721
             raise StoreValidationError("generation.provider_id must be non-empty")
         if (
@@ -534,7 +549,7 @@ class PostgresRuntimeStore:
             cursor.execute(
                 """
                 SELECT attempt_id FROM runtime.generation_attempts
-                 WHERE command_slot_id = %s FOR UPDATE
+                 WHERE command_slot_id = %s AND attempt_ordinal = 1 FOR UPDATE
                 """,
                 (command_slot_id,),
             )
@@ -551,6 +566,8 @@ class PostgresRuntimeStore:
                     attempt.provider_id != provider_id
                     or attempt.provider_idempotency_key != provider_idempotency_key
                     or attempt.request_payload != verified_request_payload
+                    or attempt.retry_policy_hash != retry_policy_hash
+                    or attempt.max_attempts != max_attempts
                 ):
                     raise IdempotencyConflictError(
                         "generation slot was reserved with different provider request identity"
@@ -562,8 +579,10 @@ class PostgresRuntimeStore:
                 INSERT INTO runtime.generation_attempts
                     (attempt_id, job_id, command_slot_id, request_hash,
                      provider_id, provider_idempotency_key, request_payload_object_id,
-                     state, version)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'reserved', 0)
+                     attempt_ordinal, previous_attempt_id, retry_policy_hash, max_attempts,
+                     not_before_at, retry_backoff_seconds, state, version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 1, NULL, %s, %s,
+                        transaction_timestamp(), 0, 'reserved', 0)
                 """,
                 (
                     attempt_id,
@@ -573,7 +592,12 @@ class PostgresRuntimeStore:
                     provider_id,
                     provider_idempotency_key,
                     verified_request_payload.object_id,
+                    retry_policy_hash,
+                    max_attempts,
                 ),
+            )
+            persisted = self._read_generation_attempt_by_id(
+                cursor, attempt_id, for_update=False
             )
             return GenerationAttempt(
                 attempt_id,
@@ -585,6 +609,116 @@ class PostgresRuntimeStore:
                 verified_request_payload,
                 "reserved",
                 0,
+                attempt_ordinal=1,
+                retry_policy_hash=retry_policy_hash,
+                max_attempts=max_attempts,
+                not_before_at=persisted.not_before_at,
+                is_fresh_reservation=True,
+            )
+
+        return self._transaction(operation)
+
+    def reserve_next_generation_attempt(
+        self,
+        previous_attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_idempotency_key: str,
+    ) -> GenerationAttempt:
+        """Atomically reserve the sole next ordinal after a retryable failure."""
+
+        if type(provider_idempotency_key) is not str or not provider_idempotency_key.strip():  # noqa: E721
+            raise StoreValidationError(
+                "generation.provider_idempotency_key must be non-empty"
+            )
+        def operation(cursor: DbCursor) -> GenerationAttempt:
+            previous, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+                cursor, previous_attempt_id
+            )
+            self._require_attempt_transition(
+                previous, expected_version, ("failed",), "reserve retry"
+            )
+            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError("generation retry slot is not running")
+            if previous.failure_disposition != "retryable":
+                raise GenerationAttemptStateError(
+                    "only an explicitly retryable failure may reserve another attempt"
+                )
+            if previous.attempt_ordinal >= previous.max_attempts:
+                raise GenerationAttemptStateError("generation retry budget is exhausted")
+            backoff_seconds = self._generation_retry_backoff_seconds(
+                cursor,
+                previous,
+            )
+            next_ordinal = previous.attempt_ordinal + 1
+            cursor.execute(
+                """
+                SELECT attempt_id
+                  FROM runtime.generation_attempts
+                 WHERE command_slot_id = %s AND attempt_ordinal = %s
+                   FOR UPDATE
+                """,
+                (previous.command_slot_id, next_ordinal),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                attempt = self._read_generation_attempt_by_id(
+                    cursor, UUID(str(existing[0])), for_update=False
+                )
+                if (
+                    attempt.previous_attempt_id != previous.attempt_id
+                    or attempt.provider_idempotency_key != provider_idempotency_key
+                ):
+                    raise IdempotencyConflictError(
+                        "generation retry ordinal has a different request identity"
+                    )
+                return attempt
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.generation_attempts
+                    (attempt_id, job_id, command_slot_id, request_hash,
+                     provider_id, provider_idempotency_key, request_payload_object_id,
+                     attempt_ordinal, previous_attempt_id, retry_policy_hash, max_attempts,
+                     not_before_at, retry_backoff_seconds, state, version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        transaction_timestamp() + make_interval(secs => %s),
+                        %s, 'reserved', 0)
+                """,
+                (
+                    attempt_id,
+                    job_id,
+                    previous.command_slot_id,
+                    previous.request_hash,
+                    previous.provider_id,
+                    provider_idempotency_key,
+                    previous.request_payload.object_id,
+                    next_ordinal,
+                    previous.attempt_id,
+                    previous.retry_policy_hash,
+                    previous.max_attempts,
+                    backoff_seconds,
+                    backoff_seconds,
+                ),
+            )
+            return GenerationAttempt(
+                attempt_id,
+                job_id,
+                previous.command_slot_id,
+                previous.request_hash,
+                previous.provider_id,
+                provider_idempotency_key,
+                previous.request_payload,
+                "reserved",
+                0,
+                attempt_ordinal=next_ordinal,
+                previous_attempt_id=previous.attempt_id,
+                retry_policy_hash=previous.retry_policy_hash,
+                max_attempts=previous.max_attempts,
+                not_before_at=self._read_generation_attempt_by_id(
+                    cursor, attempt_id, for_update=False
+                ).not_before_at,
+                retry_backoff_seconds=backoff_seconds,
                 is_fresh_reservation=True,
             )
 
@@ -596,7 +730,7 @@ class PostgresRuntimeStore:
         *,
         expected_version: int,
         provider_request_id: str | None = None,
-    ) -> GenerationAttempt:
+    ) -> GenerationAttempt | None:
         """Move one fresh reservation to dispatched exactly once."""
 
         if provider_request_id is not None and (
@@ -604,7 +738,12 @@ class PostgresRuntimeStore:
         ):
             raise StoreValidationError("provider_request_id must be non-empty when present")
 
-        def operation(cursor: DbCursor) -> GenerationAttempt:
+        lease_token = str(uuid4())
+        lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=GENERATION_PROVIDER_LEASE_SECONDS
+        )
+
+        def operation(cursor: DbCursor) -> GenerationAttempt | None:
             attempt, _, slot_state, command_name = self._locked_attempt_aggregate(cursor, attempt_id)
             self._require_attempt_transition(
                 attempt, expected_version, ("reserved",), "dispatch"
@@ -612,15 +751,76 @@ class PostgresRuntimeStore:
             if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
                 raise GenerationAttemptStateError("generation slot cannot be dispatched")
             cursor.execute(
+                "SELECT transaction_timestamp() >= %s",
+                (attempt.not_before_at,),
+            )
+            ready = cursor.fetchone()
+            if ready is None or ready[0] is not True:
+                return None
+            cursor.execute(
                 """
                 UPDATE runtime.generation_attempts
-                   SET state = 'dispatched', provider_request_id = %s, version = version + 1,
+                   SET state = 'dispatched', provider_request_id = %s,
+                       dispatch_lease_token = %s, dispatch_lease_expires_at = %s,
+                       version = version + 1,
                        dispatched_at = transaction_timestamp()
                  WHERE attempt_id = %s AND version = %s
                 """,
-                (provider_request_id, attempt_id, expected_version),
+                (
+                    provider_request_id,
+                    lease_token,
+                    lease_expires_at,
+                    attempt_id,
+                    expected_version,
+                ),
             )
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def acquire_generation_reconcile_lease(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+    ) -> GenerationAttempt | None:
+        """Acquire expired dispatch/indeterminate ownership without racing an active owner."""
+
+        lease_token = str(uuid4())
+        lease_expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=GENERATION_PROVIDER_LEASE_SECONDS
+        )
+
+        def operation(cursor: DbCursor) -> GenerationAttempt | None:
+            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(
+                cursor, attempt_id
+            )
+            self._require_attempt_transition(
+                attempt,
+                expected_version,
+                ("dispatched", "indeterminate"),
+                "acquire reconcile lease",
+            )
+            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError("generation slot cannot be reconciled")
+            if attempt.dispatch_lease_is_active():
+                return None
+            cursor.execute(
+                """
+                UPDATE runtime.generation_attempts
+                   SET dispatch_lease_token = %s, dispatch_lease_expires_at = %s,
+                       version = version + 1
+                 WHERE attempt_id = %s AND version = %s
+                   AND (dispatch_lease_expires_at IS NULL
+                        OR dispatch_lease_expires_at <= transaction_timestamp())
+                """,
+                (lease_token, lease_expires_at, attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            return self._read_generation_attempt_by_id(
+                cursor, attempt_id, for_update=False
+            )
 
         return self._transaction(operation)
 
@@ -630,6 +830,7 @@ class PostgresRuntimeStore:
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
         """Bind the exact immutable provider response to a dispatched attempt."""
@@ -639,6 +840,7 @@ class PostgresRuntimeStore:
             expected_version=expected_version,
             raw_response=raw_response,
             provider_request_id=provider_request_id,
+            dispatch_lease_token=dispatch_lease_token,
             source_state="dispatched",
             target_state="responded",
         )
@@ -649,6 +851,7 @@ class PostgresRuntimeStore:
         *,
         expected_version: int,
         provider_request_id: str,
+        dispatch_lease_token: str,
     ) -> GenerationAttempt:
         """CAS-bind ``response.created`` identity while the stream is still open."""
 
@@ -671,6 +874,9 @@ class PostgresRuntimeStore:
                 ("dispatched",),
                 "bind provider request id",
             )
+            self._require_attempt_lease(
+                attempt, dispatch_lease_token, "bind provider request id"
+            )
             if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
                 raise GenerationAttemptStateError(
                     "generation slot cannot bind a provider request identity"
@@ -681,8 +887,15 @@ class PostgresRuntimeStore:
                    SET provider_request_id = %s, version = version + 1
                  WHERE attempt_id = %s AND version = %s
                    AND state = 'dispatched' AND provider_request_id IS NULL
+                   AND dispatch_lease_token = %s
+                   AND dispatch_lease_expires_at > transaction_timestamp()
                 """,
-                (provider_request_id, attempt_id, expected_version),
+                (
+                    provider_request_id,
+                    attempt_id,
+                    expected_version,
+                    dispatch_lease_token,
+                ),
             )
             if cursor.rowcount != 1:
                 raise GenerationAttemptStateError(
@@ -699,6 +912,7 @@ class PostgresRuntimeStore:
         attempt_id: UUID,
         *,
         expected_version: int,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
         """Record ambiguous timeout without a receipt or permission to blind retry."""
@@ -711,7 +925,13 @@ class PostgresRuntimeStore:
         def operation(cursor: DbCursor) -> GenerationAttempt:
             attempt, _, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
             self._require_attempt_transition(
-                attempt, expected_version, ("dispatched",), "mark indeterminate"
+                attempt,
+                expected_version,
+                ("dispatched", "indeterminate"),
+                "mark indeterminate",
+            )
+            self._require_attempt_lease(
+                attempt, dispatch_lease_token, "mark indeterminate"
             )
             effective_request_id = self._exact_provider_request_id(
                 attempt.provider_request_id, provider_request_id
@@ -719,11 +939,22 @@ class PostgresRuntimeStore:
             cursor.execute(
                 """
                 UPDATE runtime.generation_attempts
-                   SET state = 'indeterminate', provider_request_id = %s, version = version + 1
+                   SET state = 'indeterminate', provider_request_id = %s,
+                       dispatch_lease_token = NULL, dispatch_lease_expires_at = NULL,
+                       version = version + 1
                  WHERE attempt_id = %s AND version = %s
+                   AND dispatch_lease_token = %s
+                   AND dispatch_lease_expires_at > transaction_timestamp()
                 """,
-                (effective_request_id, attempt_id, expected_version),
+                (
+                    effective_request_id,
+                    attempt_id,
+                    expected_version,
+                    dispatch_lease_token,
+                ),
             )
+            if cursor.rowcount != 1:
+                raise GenerationAttemptStateError("generation dispatch lease was lost")
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
 
         return self._transaction(operation)
@@ -734,6 +965,7 @@ class PostgresRuntimeStore:
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt:
         """Continue an indeterminate attempt only with exact reconciliation evidence."""
@@ -743,6 +975,7 @@ class PostgresRuntimeStore:
             expected_version=expected_version,
             raw_response=raw_response,
             provider_request_id=provider_request_id,
+            dispatch_lease_token=dispatch_lease_token,
             source_state="indeterminate",
             target_state="reconciled",
         )
@@ -755,6 +988,8 @@ class PostgresRuntimeStore:
         failure_code: str,
         failure_detail_json: str,
         provider_request_id: str | None = None,
+        failure_disposition: str = "nonretryable",
+        dispatch_lease_token: str | None = None,
     ) -> GenerationAttempt:
         """Persist an exact terminal provider failure without creating a command receipt."""
 
@@ -771,6 +1006,8 @@ class PostgresRuntimeStore:
             or not provider_request_id.strip()
         ):
             raise StoreValidationError("provider_request_id must be non-empty when present")
+        if failure_disposition not in ("retryable", "nonretryable", "repairable"):
+            raise StoreValidationError("generation failure_disposition is unsupported")
 
         def operation(cursor: DbCursor) -> GenerationAttempt:
             attempt, _, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
@@ -784,22 +1021,51 @@ class PostgresRuntimeStore:
                 attempt.provider_request_id,
                 provider_request_id,
             )
+            leased_source = attempt.state in ("dispatched", "indeterminate")
+            if leased_source:
+                self._require_attempt_lease(
+                    attempt, dispatch_lease_token, "fail generation"
+                )
+            lease_predicate = ""
+            params: tuple[object, ...]
+            if leased_source:
+                lease_predicate = (
+                    " AND dispatch_lease_token = %s"
+                    " AND dispatch_lease_expires_at > transaction_timestamp()"
+                )
+                params = (
+                    failure_code,
+                    failure_detail_json,
+                    failure_disposition,
+                    effective_request_id,
+                    attempt_id,
+                    expected_version,
+                    dispatch_lease_token,
+                )
+            else:
+                params = (
+                    failure_code,
+                    failure_detail_json,
+                    failure_disposition,
+                    effective_request_id,
+                    attempt_id,
+                    expected_version,
+                )
             cursor.execute(
                 """
                 UPDATE runtime.generation_attempts
                    SET state = 'failed', failure_code = %s, failure_detail = %s::jsonb,
-                       provider_request_id = %s, version = version + 1,
+                       failure_disposition = %s, provider_request_id = %s,
+                       dispatch_lease_token = NULL, dispatch_lease_expires_at = NULL,
+                       version = version + 1,
                        completed_at = transaction_timestamp()
                  WHERE attempt_id = %s AND version = %s
-                """,
-                (
-                    failure_code,
-                    failure_detail_json,
-                    effective_request_id,
-                    attempt_id,
-                    expected_version,
-                ),
+                """
+                + lease_predicate,
+                params,
             )
+            if cursor.rowcount != 1:
+                raise GenerationAttemptStateError("generation failure CAS or lease was lost")
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
 
         return self._transaction(operation)
@@ -853,7 +1119,69 @@ class PostgresRuntimeStore:
                     expected_version,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise GenerationAttemptStateError("generation commit CAS was lost")
+            self._bind_generation_receipt_chain(
+                cursor, success.command_slot_id, outcome.receipt_id
+            )
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
+
+        return self._transaction(operation)
+
+    def commit_generation_rejection(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        rejection: CommandRejection,
+    ) -> CommandOutcome:
+        """Commit one final generation Receipt and its complete durable Attempt chain."""
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            attempt, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+                cursor, attempt_id
+            )
+            if attempt.command_slot_id != rejection.command_slot_id:
+                raise StoreValidationError("generation rejection belongs to another slot")
+            if slot_state != "running":
+                return self._replay_or_raise(
+                    cursor,
+                    rejection.command_slot_id,
+                    job_id,
+                    rejection.outcome,
+                    None,
+                )
+            self._require_attempt_transition(
+                attempt, expected_version, ("failed",), "commit rejection"
+            )
+            if command_name != "GenerateVlmEvidenceCommand":
+                raise GenerationAttemptStateError("generation rejection requires generation slot")
+            if (
+                attempt.failure_disposition == "retryable"
+                and attempt.attempt_ordinal < attempt.max_attempts
+            ):
+                raise GenerationAttemptStateError(
+                    "retryable generation failure still has remaining budget"
+                )
+            cursor.execute(
+                """
+                SELECT attempt_id
+                  FROM runtime.generation_attempts
+                 WHERE command_slot_id = %s
+                 ORDER BY attempt_ordinal DESC LIMIT 1
+                """,
+                (attempt.command_slot_id,),
+            )
+            latest = cursor.fetchone()
+            if latest is None or UUID(str(latest[0])) != attempt.attempt_id:
+                raise GenerationAttemptStateError(
+                    "only the final generation attempt may reject its command"
+                )
+            outcome = self._write_rejection(cursor, rejection, job_id)
+            self._bind_generation_receipt_chain(
+                cursor, rejection.command_slot_id, outcome.receipt_id
+            )
+            return outcome
 
         return self._transaction(operation)
 
@@ -872,7 +1200,7 @@ class PostgresRuntimeStore:
         job: Job,
         command_slot_id: UUID,
     ) -> GenerationAttempt | None:
-        """Resolve at most one attempt through the exact Job and command slot."""
+        """Resolve the latest attempt through the exact Job and command slot."""
 
         self._validate_uuid(command_slot_id, "command_slot_id")
 
@@ -895,6 +1223,8 @@ class PostgresRuntimeStore:
                     ON slot.command_slot_id = attempt.command_slot_id
                    AND slot.job_id = attempt.job_id
                  WHERE attempt.job_id = %s AND attempt.command_slot_id = %s
+                 ORDER BY attempt.attempt_ordinal DESC
+                 LIMIT 1
                 """,
                 (UUID(str(job_id)), command_slot_id),
             )
@@ -905,6 +1235,47 @@ class PostgresRuntimeStore:
                 cursor,
                 UUID(str(row[0])),
                 for_update=False,
+            )
+
+        return self._transaction(operation)
+
+    def read_generation_attempt_chain(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+    ) -> tuple[GenerationAttempt, ...]:
+        """Read the complete ordered Attempt chain for one exact command slot."""
+
+        self._validate_uuid(command_slot_id, "command_slot_id")
+
+        def operation(cursor: DbCursor) -> tuple[GenerationAttempt, ...]:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                return ()
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            cursor.execute(
+                """
+                SELECT attempt_id
+                  FROM runtime.generation_attempts
+                 WHERE job_id = %s AND command_slot_id = %s
+                 ORDER BY attempt_ordinal
+                """,
+                (UUID(str(job_id)), command_slot_id),
+            )
+            attempt_ids: list[UUID] = []
+            while (row := cursor.fetchone()) is not None:
+                attempt_ids.append(UUID(str(row[0])))
+            return tuple(
+                self._read_generation_attempt_by_id(
+                    cursor, item, for_update=False
+                )
+                for item in attempt_ids
             )
 
         return self._transaction(operation)
@@ -1848,6 +2219,7 @@ class PostgresRuntimeStore:
         expected_version: int,
         raw_response: BlobRef,
         provider_request_id: str | None,
+        dispatch_lease_token: str,
         source_state: str,
         target_state: str,
     ) -> GenerationAttempt:
@@ -1860,6 +2232,9 @@ class PostgresRuntimeStore:
             attempt, job_id, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
             self._require_attempt_transition(
                 attempt, expected_version, (source_state,), target_state
+            )
+            self._require_attempt_lease(
+                attempt, dispatch_lease_token, target_state
             )
             verified_blob = self._claimed_blob_ref(
                 cursor,
@@ -1874,8 +2249,11 @@ class PostgresRuntimeStore:
                 """
                 UPDATE runtime.generation_attempts
                    SET state = %s, provider_request_id = %s, raw_response_object_id = %s,
+                       dispatch_lease_token = NULL, dispatch_lease_expires_at = NULL,
                        version = version + 1, responded_at = transaction_timestamp()
                  WHERE attempt_id = %s AND version = %s
+                   AND dispatch_lease_token = %s
+                   AND dispatch_lease_expires_at > transaction_timestamp()
                 """,
                 (
                     target_state,
@@ -1883,8 +2261,11 @@ class PostgresRuntimeStore:
                     verified_blob.object_id,
                     attempt_id,
                     expected_version,
+                    dispatch_lease_token,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise GenerationAttemptStateError("generation response lease was lost")
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
 
         return self._transaction(operation)
@@ -1906,6 +2287,41 @@ class PostgresRuntimeStore:
             raise GenerationAttemptStateError(
                 f"generation in state {attempt.state} cannot {operation_name}"
             )
+
+    @staticmethod
+    def _require_attempt_lease(
+        attempt: GenerationAttempt,
+        dispatch_lease_token: str | None,
+        operation_name: str,
+    ) -> None:
+        if type(dispatch_lease_token) is not str or not dispatch_lease_token.strip():  # noqa: E721
+            raise StoreValidationError(
+                f"dispatch_lease_token is required to {operation_name}"
+            )
+        if attempt.dispatch_lease_token != dispatch_lease_token:
+            raise GenerationAttemptStateError("generation dispatch lease is owned elsewhere")
+        if not attempt.dispatch_lease_is_active():
+            raise GenerationAttemptStateError("generation dispatch lease has expired")
+
+    @staticmethod
+    def _bind_generation_receipt_chain(
+        cursor: DbCursor,
+        command_slot_id: UUID,
+        receipt_id: UUID | None,
+    ) -> None:
+        if receipt_id is None:
+            raise RuntimeStoreError("terminal generation outcome lost its Receipt")
+        cursor.execute(
+            """
+            INSERT INTO runtime.generation_receipt_attempts
+                (receipt_id, attempt_id, attempt_ordinal)
+            SELECT %s, attempt_id, attempt_ordinal
+              FROM runtime.generation_attempts
+             WHERE command_slot_id = %s
+             ORDER BY attempt_ordinal
+            """,
+            (receipt_id, command_slot_id),
+        )
 
     @staticmethod
     def _exact_provider_request_id(existing: str | None, supplied: str | None) -> str | None:
@@ -1948,7 +2364,12 @@ class PostgresRuntimeStore:
                    response_blob.object_id, response_blob.content_hash,
                    response_blob.byte_length, response_blob.media_type,
                    attempt.receipt_id, attempt.artifact_set_id,
-                   attempt.failure_code, attempt.failure_detail::text
+                   attempt.failure_code, attempt.failure_detail::text,
+                   attempt.attempt_ordinal, attempt.previous_attempt_id,
+                   attempt.retry_policy_hash, attempt.max_attempts,
+                   attempt.failure_disposition, attempt.dispatch_lease_token,
+                   attempt.dispatch_lease_expires_at, attempt.not_before_at,
+                   attempt.retry_backoff_seconds
               FROM runtime.generation_attempts AS attempt
               JOIN storage.blob_objects AS request_blob
                 ON request_blob.object_id = attempt.request_payload_object_id
@@ -1983,6 +2404,15 @@ class PostgresRuntimeStore:
             artifact_set_id,
             failure_code,
             failure_detail,
+            attempt_ordinal,
+            previous_attempt_id,
+            retry_policy_hash,
+            max_attempts,
+            failure_disposition,
+            dispatch_lease_token,
+            dispatch_lease_expires_at,
+            not_before_at,
+            retry_backoff_seconds,
         ) = row
         request_payload = BlobRef(
             UUID(str(request_object_id)),
@@ -2014,7 +2444,82 @@ class PostgresRuntimeStore:
             None if artifact_set_id is None else UUID(str(artifact_set_id)),
             None if failure_code is None else _text(failure_code),
             None if failure_detail is None else _text(failure_detail),
+            attempt_ordinal=int(_text(attempt_ordinal)),
+            previous_attempt_id=(
+                None
+                if previous_attempt_id is None
+                else UUID(str(previous_attempt_id))
+            ),
+            retry_policy_hash=_text(retry_policy_hash),
+            max_attempts=int(_text(max_attempts)),
+            failure_disposition=(
+                None
+                if failure_disposition is None
+                else _text(failure_disposition)  # type: ignore[arg-type]
+            ),
+            dispatch_lease_token=(
+                None if dispatch_lease_token is None else _text(dispatch_lease_token)
+            ),
+            dispatch_lease_expires_at=cast(
+                datetime | None, dispatch_lease_expires_at
+            ),
+            not_before_at=cast(datetime | None, not_before_at),
+            retry_backoff_seconds=int(_text(retry_backoff_seconds)),
         )
+
+    @staticmethod
+    def _generation_retry_backoff_seconds(
+        cursor: DbCursor,
+        previous: GenerationAttempt,
+    ) -> int:
+        cursor.execute(
+            "SELECT content_bytes FROM storage.blob_objects WHERE object_id = %s",
+            (previous.request_payload.object_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+            raise BlobIntegrityError("generation retry policy payload is unavailable")
+        raw = row[0].tobytes() if isinstance(row[0], memoryview) else bytes(row[0])
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise BlobIntegrityError(
+                "generation retry policy payload is not canonical JSON"
+            ) from error
+        if not isinstance(payload, dict):
+            raise BlobIntegrityError("generation retry policy payload must be an object")
+        payload_object = cast(dict[str, object], payload)
+        policy = payload_object.get("retry_policy")
+        declared_hash = payload_object.get("retry_policy_sha256")
+        if not isinstance(policy, dict) or declared_hash != previous.retry_policy_hash:
+            raise BlobIntegrityError("generation retry policy identity is unavailable")
+        policy_object = cast(dict[str, object], policy)
+        policy_json = json.dumps(
+            policy_object,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if canonical_payload_hash(policy_json) != previous.retry_policy_hash:
+            raise BlobIntegrityError("generation retry policy hash does not match its bytes")
+        if set(policy_object) != {
+            "backoff_seconds",
+            "max_attempts",
+            "strategy_version",
+        }:
+            raise BlobIntegrityError("generation retry policy shape is not closed")
+        if policy_object.get("max_attempts") != previous.max_attempts:
+            raise BlobIntegrityError("generation retry budget changed after reservation")
+        backoffs = policy_object.get("backoff_seconds")
+        if not isinstance(backoffs, list):
+            raise BlobIntegrityError("generation retry backoff schedule is invalid")
+        backoff_values = cast(list[object], backoffs)
+        if len(backoff_values) != previous.max_attempts - 1:
+            raise BlobIntegrityError("generation retry backoff schedule is invalid")
+        value = backoff_values[previous.attempt_ordinal - 1]
+        if type(value) is not int or value < 0:  # noqa: E721
+            raise BlobIntegrityError("generation retry backoff value is invalid")
+        return value
 
     @staticmethod
     def _claimed_blob_ref(

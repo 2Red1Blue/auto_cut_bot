@@ -15,6 +15,8 @@ from uuid import UUID
 from .errors import PipelineRunValidationError
 
 if TYPE_CHECKING:
+    from autocut_kernel.vlm import GenerationRetryPolicy
+
     from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 PipelineProfile = Literal["test", "shadow"]
@@ -169,7 +171,11 @@ _PARSE_POLICY_FIELDS = frozenset(
         "max_total_summary_characters",
     }
 )
-_EXECUTION_PROFILE_SCHEMA_VERSION = "pipeline-execution-profile-v1"
+_EXECUTION_PROFILE_SCHEMA_VERSION_V1 = "pipeline-execution-profile-v1"
+_EXECUTION_PROFILE_SCHEMA_VERSION_V2 = "pipeline-execution-profile-v2"
+_RETRY_POLICY_FIELDS = frozenset(
+    {"backoff_seconds", "max_attempts", "strategy_version"}
+)
 _DECIMAL_ZERO_TO_ONE = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)\Z")
 
 
@@ -191,6 +197,8 @@ class PipelineExecutionProfile:
     request_parameters_json: str | None
     parse_policy_json: str | None
     vlm_stage_strategy_version: str | None
+    generation_retry_policy_json: str | None = None
+    schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V2
     kind: PipelineExecutionProfileKind = "doubao_vlm"
 
     def __post_init__(self) -> None:
@@ -207,10 +215,15 @@ class PipelineExecutionProfile:
                     self.request_parameters_json,
                     self.parse_policy_json,
                     self.vlm_stage_strategy_version,
+                    self.generation_retry_policy_json,
                 )
             ):
                 raise PipelineRunValidationError(
                     "legacy-unresolved execution profile cannot claim a VLM strategy"
+                )
+            if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
+                raise PipelineRunValidationError(
+                    "legacy-unresolved execution profile must retain schema v1"
                 )
             return
         if self.kind != "doubao_vlm":
@@ -298,6 +311,15 @@ class PipelineExecutionProfile:
             raise PipelineRunValidationError(
                 "parse policy per-observation summary budget exceeds its total budget"
             )
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
+            if self.generation_retry_policy_json is not None:
+                raise PipelineRunValidationError(
+                    "execution profile v1 cannot claim a generation retry policy"
+                )
+        elif self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+            self._decode_generation_retry_policy()
+        else:
+            raise PipelineRunValidationError("execution profile schema version is unsupported")
         _build_registered_doubao_policy(self)
 
     @classmethod
@@ -305,28 +327,38 @@ class PipelineExecutionProfile:
         """Return the explicit fail-closed marker for pre-0008 run rows."""
 
         return cls(
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            "legacy_unresolved",
+            provider_id=None,
+            model_id=None,
+            adapter_strategy_version=None,
+            prompt_version=None,
+            kernel_parser_strategy_version=None,
+            response_schema_json=None,
+            request_parameters_json=None,
+            parse_policy_json=None,
+            vlm_stage_strategy_version=None,
+            generation_retry_policy_json=None,
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V1,
+            kind="legacy_unresolved",
         )
 
     @classmethod
     def from_doubao_policy(
         cls,
         policy: DoubaoVlmRequestPolicy,
+        *,
+        retry_policy: GenerationRetryPolicy,
     ) -> PipelineExecutionProfile:
+        from autocut_kernel.vlm import GenerationRetryPolicy
+
         from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
         if type(policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
             raise PipelineRunValidationError(
                 "execution profile requires an exact DoubaoVlmRequestPolicy"
+            )
+        if type(retry_policy) is not GenerationRetryPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution profile requires an exact GenerationRetryPolicy"
             )
         return cls(
             provider_id=policy.provider_id,
@@ -338,6 +370,8 @@ class PipelineExecutionProfile:
             request_parameters_json=policy.request_parameters_json,
             parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
             vlm_stage_strategy_version=policy.stage_strategy_version,
+            generation_retry_policy_json=_canonical_json(retry_policy.to_mapping()),
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V2,
         )
 
     @classmethod
@@ -347,6 +381,7 @@ class PipelineExecutionProfile:
                 "execution profile field names must be strings"
             )
         kind = value.get("kind")
+        schema_version = value.get("schema_version")
         if kind == "legacy_unresolved":
             allowed = {"kind", "schema_version"}
             unsupported = set(value) - allowed
@@ -354,10 +389,13 @@ class PipelineExecutionProfile:
                 raise PipelineRunValidationError(
                     f"execution profile contains unsupported fields: {', '.join(sorted(unsupported))}"
                 )
-            if set(value) != allowed or value.get("schema_version") != _EXECUTION_PROFILE_SCHEMA_VERSION:
+            if (
+                set(value) != allowed
+                or schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V1
+            ):
                 raise PipelineRunValidationError("legacy execution profile marker is invalid")
             return cls.legacy_unresolved()
-        allowed = {
+        base_allowed = {
             "adapter_strategy_version",
             "kind",
             "kernel_parser_strategy_version",
@@ -370,6 +408,12 @@ class PipelineExecutionProfile:
             "schema_version",
             "vlm_stage_strategy_version",
         }
+        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
+            allowed = base_allowed
+        elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+            allowed = base_allowed | {"generation_retry_policy"}
+        else:
+            raise PipelineRunValidationError("execution profile schema version is invalid")
         unsupported = set(value) - allowed
         if unsupported:
             raise PipelineRunValidationError(
@@ -380,7 +424,7 @@ class PipelineExecutionProfile:
             raise PipelineRunValidationError(
                 f"execution profile is missing fields: {', '.join(sorted(missing))}"
             )
-        if kind != "doubao_vlm" or value.get("schema_version") != _EXECUTION_PROFILE_SCHEMA_VERSION:
+        if kind != "doubao_vlm":
             raise PipelineRunValidationError("execution profile kind or schema version is invalid")
         for field_name in ("response_schema", "request_parameters", "parse_policy"):
             if type(value[field_name]) is not dict:  # noqa: E721
@@ -409,6 +453,12 @@ class PipelineExecutionProfile:
                 value["vlm_stage_strategy_version"],
                 "execution_profile.vlm_stage_strategy_version",
             ),
+            generation_retry_policy_json=(
+                None
+                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1
+                else _canonical_json(value["generation_retry_policy"])
+            ),
+            schema_version=cast(str, schema_version),
         )
 
     @property
@@ -419,9 +469,9 @@ class PipelineExecutionProfile:
         if self.is_legacy_unresolved:
             return {
                 "kind": "legacy_unresolved",
-                "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+                "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION_V1,
             }
-        return {
+        result: dict[str, object] = {
             "adapter_strategy_version": self.adapter_strategy_version,
             "kind": "doubao_vlm",
             "kernel_parser_strategy_version": self.kernel_parser_strategy_version,
@@ -437,9 +487,15 @@ class PipelineExecutionProfile:
                 self.response_schema_json,
                 "response_schema_json",
             ),
-            "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+            "schema_version": self.schema_version,
             "vlm_stage_strategy_version": self.vlm_stage_strategy_version,
         }
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+            result["generation_retry_policy"] = _decode_canonical_json(
+                self.generation_retry_policy_json,
+                "generation_retry_policy_json",
+            )
+        return result
 
     @property
     def canonical_json(self) -> str:
@@ -453,6 +509,62 @@ class PipelineExecutionProfile:
         """Rebuild the exact registered policy without consulting process defaults."""
 
         return _build_registered_doubao_policy(self)
+
+    def _decode_generation_retry_policy(self) -> GenerationRetryPolicy:
+        from autocut_kernel.vlm import GenerationRetryPolicy
+
+        value = _decode_canonical_json(
+            self.generation_retry_policy_json,
+            "generation_retry_policy_json",
+        )
+        if frozenset(value) != _RETRY_POLICY_FIELDS:
+            raise PipelineRunValidationError(
+                "generation_retry_policy_json must match the closed retry contract"
+            )
+        backoff = value["backoff_seconds"]
+        if type(backoff) is not list:  # noqa: E721
+            raise PipelineRunValidationError(
+                "generation retry backoff_seconds must be an integer array"
+            )
+        backoff_items = cast(list[object], backoff)
+        if any(type(item) is not int for item in backoff_items):  # noqa: E721
+            raise PipelineRunValidationError(
+                "generation retry backoff_seconds must be an integer array"
+            )
+        try:
+            return GenerationRetryPolicy(
+                strategy_version=_profile_text(
+                    value["strategy_version"],
+                    "generation_retry_policy.strategy_version",
+                ),
+                max_attempts=cast(int, value["max_attempts"]),
+                backoff_seconds=tuple(cast(int, item) for item in backoff_items),
+            )
+        except (TypeError, ValueError) as error:
+            raise PipelineRunValidationError(
+                "generation retry policy is invalid"
+            ) from error
+
+    def to_generation_retry_policy(self) -> GenerationRetryPolicy:
+        from autocut_kernel.vlm import (
+            GENERATION_RETRY_STRATEGY_VERSION,
+            GenerationRetryPolicy,
+        )
+
+        if self.is_legacy_unresolved:
+            raise PipelineRunValidationError(
+                "legacy-unresolved execution profile has no generation retry policy"
+            )
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
+            return GenerationRetryPolicy(
+                strategy_version=GENERATION_RETRY_STRATEGY_VERSION,
+                max_attempts=1,
+                backoff_seconds=(),
+            )
+        policy = self._decode_generation_retry_policy()
+        if type(policy) is not GenerationRetryPolicy:  # noqa: E721
+            raise PipelineRunValidationError("generation retry policy lost its exact type")
+        return policy
 
 
 def _build_registered_doubao_policy(
@@ -517,9 +629,13 @@ def _build_registered_doubao_policy(
             rebuilt.response_schema_json,
             "response_schema_json",
         ),
-        "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+        "schema_version": profile.schema_version,
         "vlm_stage_strategy_version": rebuilt.stage_strategy_version,
     }
+    if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
+        registered_mapping["generation_retry_policy"] = (
+            profile.to_generation_retry_policy().to_mapping()
+        )
     if _canonical_json(registered_mapping) != profile.canonical_json:
         raise PipelineRunValidationError(
             "execution profile cannot exactly reconstruct its registered Doubao policy"

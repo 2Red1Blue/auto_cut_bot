@@ -22,7 +22,7 @@ from autocut_kernel.pipeline import (
 )
 from autocut_kernel.store import BlobRef, Job
 from autocut_kernel.store.models import canonical_recipe_scope
-from autocut_kernel.vlm import VlmParsePolicy
+from autocut_kernel.vlm import GenerationRetryPolicy, VlmParsePolicy
 
 from auto_cut_bot.pipeline.source_prep.command import (
     PersistedPreparedSources,
@@ -224,6 +224,7 @@ def build_doubao_vlm_request(
     artifact_revision: int,
     idempotency_key: str,
     policy: DoubaoVlmRequestPolicy,
+    retry_policy: GenerationRetryPolicy,
 ) -> GenerateVlmEvidenceRequest:
     """Build one request from a provenance-bearing committed source episode."""
 
@@ -235,6 +236,8 @@ def build_doubao_vlm_request(
         raise ValueError("VLM Job must match the persisted source Job")
     if type(policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
         raise TypeError("policy must be an exact DoubaoVlmRequestPolicy")
+    if type(retry_policy) is not GenerationRetryPolicy:  # noqa: E721
+        raise TypeError("retry_policy must be an exact GenerationRetryPolicy")
     if type(episode_index) is not int or not 0 <= episode_index < len(  # noqa: E721
         source_bundle.prepared.episodes
     ):
@@ -259,6 +262,7 @@ def build_doubao_vlm_request(
         model_id=policy.model_id,
         provider_id=policy.provider_id,
         parse_policy=policy.parse_policy,
+        retry_policy=retry_policy,
         parser_strategy_version=policy.parser_strategy_version,
         source_provenance_sha256=source_bundle.canonical_hash,
     )
@@ -269,10 +273,13 @@ class DoubaoVlmRequestFactory:
     """Immutable convenience facade around :func:`build_doubao_vlm_request`."""
 
     policy: DoubaoVlmRequestPolicy
+    retry_policy: GenerationRetryPolicy
 
     def __post_init__(self) -> None:
         if type(self.policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
             raise TypeError("policy must be an exact DoubaoVlmRequestPolicy")
+        if type(self.retry_policy) is not GenerationRetryPolicy:  # noqa: E721
+            raise TypeError("retry_policy must be an exact GenerationRetryPolicy")
 
     def build(
         self,
@@ -290,6 +297,7 @@ class DoubaoVlmRequestFactory:
             artifact_revision=artifact_revision,
             idempotency_key=idempotency_key,
             policy=self.policy,
+            retry_policy=self.retry_policy,
         )
 
 

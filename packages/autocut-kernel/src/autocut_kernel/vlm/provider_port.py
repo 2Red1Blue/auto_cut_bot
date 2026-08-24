@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol, TypeAlias, runtime_checkable
 
 from ..media.types import sha256_prefixed
@@ -113,11 +114,20 @@ class ProviderIndeterminate:
             _text(self.provider_request_id, "result.provider_request_id")
 
 
+class ProviderFailureDisposition(str, Enum):
+    """Closed Kernel decision input for a terminal provider failure."""
+
+    RETRYABLE = "retryable"
+    NONRETRYABLE = "nonretryable"
+    REPAIRABLE = "repairable"
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderFailed:
     failure_code: str
     failure_detail_json: str
     provider_request_id: str | None = None
+    disposition: ProviderFailureDisposition = ProviderFailureDisposition.NONRETRYABLE
 
     def __post_init__(self) -> None:
         _text(self.failure_code, "result.failure_code")
@@ -130,6 +140,10 @@ class ProviderFailed:
             raise VlmValidationError("provider failure detail must be a JSON object")
         if self.provider_request_id is not None:
             _text(self.provider_request_id, "result.provider_request_id")
+        if type(self.disposition) is not ProviderFailureDisposition:  # noqa: E721
+            raise VlmValidationError(
+                "provider failure disposition must be a ProviderFailureDisposition"
+            )
 
 
 ProviderResult: TypeAlias = (
@@ -147,6 +161,7 @@ class VlmProviderPort(Protocol):
 __all__ = [
     "ProviderCompleted",
     "ProviderDispatchRequest",
+    "ProviderFailureDisposition",
     "ProviderFailed",
     "ProviderIndeterminate",
     "ProviderPending",

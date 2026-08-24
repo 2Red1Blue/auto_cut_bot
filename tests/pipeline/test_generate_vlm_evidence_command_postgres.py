@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -28,11 +29,21 @@ from autocut_kernel.pipeline import (
     adapt_vlm_observations,
 )
 from autocut_kernel.semantic_chain import SemanticChainBuilder, SemanticProfile
-from autocut_kernel.store import Job, PostgresRuntimeStore, StoreValidationError
+from autocut_kernel.store import (
+    CommandClaim,
+    CommandRejection,
+    CommandStateError,
+    Job,
+    PostgresRuntimeStore,
+    StoreValidationError,
+)
 from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import (
+    GENERATION_RETRY_STRATEGY_VERSION,
+    GenerationRetryPolicy,
     ProviderCompleted,
     ProviderFailed,
+    ProviderFailureDisposition,
     ProviderIndeterminate,
     ProviderReconcileQuery,
     ProviderResult,
@@ -111,6 +122,8 @@ def migrated_database() -> None:
                 "0003_vlm_generation_and_run_finalization.sql",
                 "0004_provider_media_objects.sql",
                 "0006_ark_provider_recovery.sql",
+                "0009_vlm_bounded_retry.sql",
+                "0011_generation_retry_schedule.sql",
             ):
                 cursor.execute((MIGRATIONS / name).read_text())
 
@@ -133,6 +146,52 @@ class FakeProvider:
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
         self.reconcile_calls.append(query)
         return self.reconcile_result
+
+
+class SequencedProvider:
+    def __init__(self, results: tuple[ProviderResult, ...]) -> None:
+        self._results = list(results)
+        self.dispatch_calls: list[ProviderDispatchRequest] = []
+
+    def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
+        self.dispatch_calls.append(request)
+        return self._results.pop(0)
+
+    def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
+        raise AssertionError(f"unexpected reconciliation: {query}")
+
+
+class ReentrantLeaseProbeProvider:
+    def __init__(self, completed: ProviderCompleted) -> None:
+        self.completed = completed
+        self.command: GenerateVlmEvidenceCommand | None = None
+        self.request: GenerateVlmEvidenceRequest | None = None
+        self.concurrent_result: object | None = None
+        self.reconcile_calls = 0
+
+    def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
+        assert self.command is not None and self.request is not None
+        self.concurrent_result = self.command.execute(self.request)
+        return self.completed
+
+    def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
+        self.reconcile_calls += 1
+        raise AssertionError(f"active dispatch lease must suppress reconcile: {query}")
+
+
+class BarrierReserveNextStore:
+    def __init__(self, delegate: PostgresRuntimeStore) -> None:
+        self.delegate = delegate
+        self.entered = threading.Event()
+        self.barrier = threading.Barrier(2)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.delegate, name)
+
+    def reserve_next_generation_attempt(self, *args: object, **kwargs: object) -> object:
+        self.entered.set()
+        self.barrier.wait(timeout=5)
+        return self.delegate.reserve_next_generation_attempt(*args, **kwargs)  # type: ignore[arg-type]
 
 
 class CreatedThenInterruptedProvider:
@@ -187,8 +246,9 @@ class FailFirstProviderRequestIdStore:
         *,
         expected_version: int,
         provider_request_id: str,
+        dispatch_lease_token: str,
     ) -> object:
-        del attempt_id, expected_version, provider_request_id
+        del attempt_id, expected_version, provider_request_id, dispatch_lease_token
         if not self.failed:
             self.failed = True
             raise RuntimeError("simulated response.created CAS failure")
@@ -273,6 +333,11 @@ def _request(
         model_id="fake-vlm-v1",
         provider_id="fake-provider",
         parse_policy=VlmParsePolicy(Decimal("0.80"), 4_096, 4, 128, 256),
+        retry_policy=GenerationRetryPolicy(
+            GENERATION_RETRY_STRATEGY_VERSION,
+            3,
+            (0, 0),
+        ),
         episode_index=0,
     )
 
@@ -344,7 +409,8 @@ def test_success_is_persisted_once_and_replay_never_calls_provider() -> None:
             cursor.execute(
                 "SELECT state FROM runtime.jobs WHERE job_key = 'vlm-success'"
             )
-            assert cursor.fetchone()[0] == "running"
+            state = cursor.fetchone()[0]
+            assert (state.decode() if isinstance(state, bytes) else state) == "running"
 
 
 def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> None:
@@ -581,3 +647,229 @@ def test_provider_terminal_failure_closes_attempt_and_command_without_artifacts(
         with connection.cursor() as cursor:
             cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
             assert cursor.fetchone()[0] == 0
+
+
+def test_generic_rejection_api_cannot_terminalize_generation_command() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    outcome = store.claim_command(
+        CommandClaim(
+            Job("vlm-generic-rejection-blocked", "test"),
+            "vlm-generic-rejection",
+            "GenerateVlmEvidenceCommand",
+            "sha256:" + "1" * 64,
+        )
+    )
+
+    with pytest.raises(CommandStateError, match="explicit generation API"):
+        store.commit_command_rejection(
+            CommandRejection(outcome.command_slot_id, "FORBIDDEN", "{}")
+        )
+
+
+def test_retryable_503_then_429_then_success_commits_three_attempt_chain() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-retry-success", "test"))
+    provider = SequencedProvider(
+        (
+            ProviderFailed(
+                "PROVIDER_503",
+                '{"status":503}',
+                "provider-retry-1",
+                ProviderFailureDisposition.RETRYABLE,
+            ),
+            ProviderFailed(
+                "PROVIDER_429",
+                '{"status":429}',
+                "provider-retry-2",
+                ProviderFailureDisposition.RETRYABLE,
+            ),
+            ProviderCompleted(_raw_success(request), "provider-retry-3"),
+        )
+    )
+    command = GenerateVlmEvidenceCommand(store, provider)
+
+    first = command.execute(request)
+    second = command.execute(request)
+    final = command.execute(request)
+
+    assert first.outcome.state == second.outcome.state == "running"
+    assert final.outcome.state == "succeeded"
+    assert [item.attempt_ordinal for item in store.read_generation_attempt_chain(
+        request.job, final.outcome.command_slot_id
+    )] == [1, 2, 3]
+    assert len({call.provider_idempotency_key for call in provider.dispatch_calls}) == 3
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM runtime.generation_receipt_attempts WHERE receipt_id = %s",
+                (final.outcome.receipt_id,),
+            )
+            assert cursor.fetchone()[0] == 3
+
+
+def test_retryable_budget_exhaustion_commits_one_complete_failure_receipt() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-retry-exhausted", "test"))
+    provider = SequencedProvider(
+        tuple(
+            ProviderFailed(
+                f"PROVIDER_RETRY_{ordinal}",
+                json.dumps({"ordinal": ordinal}, separators=(",", ":")),
+                f"provider-exhausted-{ordinal}",
+                ProviderFailureDisposition.RETRYABLE,
+            )
+            for ordinal in range(1, 4)
+        )
+    )
+    command = GenerateVlmEvidenceCommand(store, provider)
+
+    assert command.execute(request).outcome.state == "running"
+    assert command.execute(request).outcome.state == "running"
+    final = command.execute(request)
+
+    assert final.outcome.state == "failed"
+    assert final.outcome.failure_code == "RETRY_BUDGET_EXHAUSTED"
+    assert final.outcome.receipt_id is not None
+    detail = json.loads(final.outcome.failure_detail_json or "{}")
+    assert [item["attempt_ordinal"] for item in detail["attempts"]] == [1, 2, 3]
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) FROM runtime.command_receipts WHERE command_slot_id = %s",
+                (final.outcome.command_slot_id,),
+            )
+            assert cursor.fetchone()[0] == 1
+            cursor.execute(
+                "SELECT count(*) FROM runtime.generation_receipt_attempts WHERE receipt_id = %s",
+                (final.outcome.receipt_id,),
+            )
+            assert cursor.fetchone()[0] == 3
+
+
+def test_retry_backoff_is_persisted_and_suppresses_early_redispatch() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = replace(
+        _request(store, Job("vlm-retry-backoff", "test")),
+        retry_policy=GenerationRetryPolicy(
+            GENERATION_RETRY_STRATEGY_VERSION,
+            3,
+            (60, 120),
+        ),
+    )
+    provider = SequencedProvider(
+        (
+            ProviderFailed(
+                "PROVIDER_503",
+                '{"status":503}',
+                "provider-backoff-1",
+                ProviderFailureDisposition.RETRYABLE,
+            ),
+        )
+    )
+    command = GenerateVlmEvidenceCommand(store, provider)
+
+    first = command.execute(request)
+    early_replay = command.execute(request)
+
+    assert first.attempt is not None and first.attempt.attempt_ordinal == 2
+    assert first.attempt.retry_delay_is_active()
+    assert first.attempt.retry_backoff_seconds == 60
+    assert early_replay.attempt is not None
+    assert early_replay.attempt.attempt_id == first.attempt.attempt_id
+    assert early_replay.attempt.state == "reserved"
+    assert len(provider.dispatch_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    (
+        ProviderFailureDisposition.NONRETRYABLE,
+        ProviderFailureDisposition.REPAIRABLE,
+    ),
+)
+def test_nonretryable_and_repairable_failures_stop_after_one_attempt(
+    disposition: ProviderFailureDisposition,
+) -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job(f"vlm-stop-{disposition.value}", "test"))
+    provider = SequencedProvider(
+        (
+            ProviderFailed(
+                "PROVIDER_TERMINAL",
+                '{"terminal":true}',
+                "provider-terminal",
+                disposition,
+            ),
+        )
+    )
+
+    result = GenerateVlmEvidenceCommand(store, provider).execute(request)
+
+    assert result.outcome.state == "failed"
+    assert len(provider.dispatch_calls) == 1
+    assert len(store.read_generation_attempt_chain(
+        request.job, result.outcome.command_slot_id
+    )) == 1
+
+
+def test_active_dispatch_lease_suppresses_reentrant_reconcile_and_version_change() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-active-dispatch-lease", "test"))
+    provider = ReentrantLeaseProbeProvider(
+        ProviderCompleted(_raw_success(request), "provider-active-lease")
+    )
+    command = GenerateVlmEvidenceCommand(store, provider)
+    provider.command = command
+    provider.request = request
+
+    result = command.execute(request)
+
+    assert result.outcome.state == "succeeded"
+    assert provider.reconcile_calls == 0
+    concurrent = provider.concurrent_result
+    assert concurrent is not None
+    assert concurrent.outcome.state == "running"  # type: ignore[attr-defined]
+    assert concurrent.attempt.version == 1  # type: ignore[attr-defined]
+    assert concurrent.attempt.state == "dispatched"  # type: ignore[attr-defined]
+
+
+def test_concurrent_recovery_reserves_only_one_next_ordinal() -> None:
+    assert DSN is not None
+    durable_store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    wrapped_store = BarrierReserveNextStore(durable_store)
+    request = _request(durable_store, Job("vlm-reserve-next-race", "test"))
+    provider = SequencedProvider(
+        (
+            ProviderFailed(
+                "PROVIDER_503",
+                '{"status":503}',
+                "provider-race-1",
+                ProviderFailureDisposition.RETRYABLE,
+            ),
+        )
+    )
+    command = GenerateVlmEvidenceCommand(wrapped_store, provider)  # type: ignore[arg-type]
+    results: list[object] = []
+
+    first = threading.Thread(target=lambda: results.append(command.execute(request)))
+    first.start()
+    assert wrapped_store.entered.wait(timeout=5)
+    second = threading.Thread(target=lambda: results.append(command.execute(request)))
+    second.start()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert len(results) == 2
+    attempt_ids = {result.attempt.attempt_id for result in results}  # type: ignore[attr-defined]
+    assert len(attempt_ids) == 1
+    chain = durable_store.read_generation_attempt_chain(
+        request.job, results[0].outcome.command_slot_id  # type: ignore[attr-defined]
+    )
+    assert [attempt.attempt_ordinal for attempt in chain] == [1, 2]

@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from ..media.types import canonical_sha256, sha256_prefixed
@@ -27,9 +27,11 @@ from ..store import (
 )
 from ..store.models import canonical_payload_hash, canonical_recipe_scope
 from ..vlm import (
+    GenerationRetryPolicy,
     ProviderCompleted,
     ProviderDispatchRequest,
     ProviderFailed,
+    ProviderFailureDisposition,
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
@@ -104,6 +106,16 @@ class GenerationStore(Protocol):
         provider_id: str,
         provider_idempotency_key: str,
         request_payload: BlobRef,
+        retry_policy_hash: str,
+        max_attempts: int,
+    ) -> GenerationAttempt: ...
+
+    def reserve_next_generation_attempt(
+        self,
+        previous_attempt_id: UUID,
+        *,
+        expected_version: int,
+        provider_idempotency_key: str,
     ) -> GenerationAttempt: ...
 
     def dispatch_generation_attempt(
@@ -112,7 +124,14 @@ class GenerationStore(Protocol):
         *,
         expected_version: int,
         provider_request_id: str | None = None,
-    ) -> GenerationAttempt: ...
+    ) -> GenerationAttempt | None: ...
+
+    def acquire_generation_reconcile_lease(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+    ) -> GenerationAttempt | None: ...
 
     def record_generation_provider_request_id(
         self,
@@ -120,6 +139,7 @@ class GenerationStore(Protocol):
         *,
         expected_version: int,
         provider_request_id: str,
+        dispatch_lease_token: str,
     ) -> GenerationAttempt: ...
 
     def record_generation_response(
@@ -128,6 +148,7 @@ class GenerationStore(Protocol):
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt: ...
 
@@ -136,6 +157,7 @@ class GenerationStore(Protocol):
         attempt_id: UUID,
         *,
         expected_version: int,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt: ...
 
@@ -145,6 +167,7 @@ class GenerationStore(Protocol):
         *,
         expected_version: int,
         raw_response: BlobRef,
+        dispatch_lease_token: str,
         provider_request_id: str | None = None,
     ) -> GenerationAttempt: ...
 
@@ -156,6 +179,8 @@ class GenerationStore(Protocol):
         failure_code: str,
         failure_detail_json: str,
         provider_request_id: str | None = None,
+        failure_disposition: str = "nonretryable",
+        dispatch_lease_token: str | None = None,
     ) -> GenerationAttempt: ...
 
     def commit_generation_success(
@@ -166,13 +191,25 @@ class GenerationStore(Protocol):
         success: CommandSuccess,
     ) -> GenerationAttempt: ...
 
-    def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome: ...
+    def commit_generation_rejection(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        rejection: CommandRejection,
+    ) -> CommandOutcome: ...
 
     def read_generation_attempt_for_slot(
         self,
         job: Job,
         command_slot_id: UUID,
     ) -> GenerationAttempt | None: ...
+
+    def read_generation_attempt_chain(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+    ) -> tuple[GenerationAttempt, ...]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +228,7 @@ class GenerateVlmEvidenceRequest:
     model_id: str
     provider_id: str
     parse_policy: VlmParsePolicy
+    retry_policy: GenerationRetryPolicy
     episode_index: int = 0
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
     source_provenance_sha256: str | None = None
@@ -245,6 +283,8 @@ class GenerateVlmEvidenceRequest:
         _json_object(self.request_parameters_json, "request_parameters_json")
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
             raise ValueError("parse_policy must be a VlmParsePolicy")
+        if type(self.retry_policy) is not GenerationRetryPolicy:  # noqa: E721
+            raise ValueError("retry_policy must be a GenerationRetryPolicy")
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
             raise ValueError("episode_index must be non-negative")
 
@@ -262,6 +302,8 @@ class GenerateVlmEvidenceRequest:
                     self.request_parameters_json,
                     "request_parameters_json",
                 ),
+                "retry_policy": self.retry_policy.to_mapping(),
+                "retry_policy_sha256": self.retry_policy.canonical_hash,
                 "response_schema": _json_object(
                     self.response_schema_json,
                     "response_schema_json",
@@ -306,6 +348,7 @@ class GenerateVlmEvidenceRequest:
                 "identity_sha256": self.request_identity.canonical_hash,
                 "job": {"job_key": self.job.job_key, "profile": self.job.profile},
                 "parser_strategy_version": self.parser_strategy_version,
+                "retry_policy_sha256": self.retry_policy.canonical_hash,
                 "proxy_blob": _blob_mapping(self.proxy_blob),
                 "source_provenance_sha256": self.source_provenance_sha256,
                 "source_manifest_sha256": self.source_manifest_sha256,
@@ -313,15 +356,34 @@ class GenerateVlmEvidenceRequest:
         )
 
     @property
-    def provider_idempotency_key(self) -> str:
+    def provider_request_base(self) -> str:
         return canonical_sha256(
             {
                 "command": _COMMAND_NAME,
                 "idempotency_key": self.idempotency_key,
                 "job_key": self.job.job_key,
                 "request_hash": self.request_hash,
+                "retry_policy_sha256": self.retry_policy.canonical_hash,
             }
         )
+
+    def provider_idempotency_key_for(self, attempt_ordinal: int) -> str:
+        if type(attempt_ordinal) is not int or not (  # noqa: E721
+            1 <= attempt_ordinal <= self.retry_policy.max_attempts
+        ):
+            raise ValueError("attempt_ordinal is outside the frozen retry budget")
+        return canonical_sha256(
+            {
+                "attempt_ordinal": attempt_ordinal,
+                "provider_request_base": self.provider_request_base,
+            }
+        )
+
+    @property
+    def provider_idempotency_key(self) -> str:
+        """Compatibility projection for the first durable invocation identity."""
+
+        return self.provider_idempotency_key_for(1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,26 +435,32 @@ class GenerateVlmEvidenceCommand:
                 provider_id=request.provider_id,
                 provider_idempotency_key=request.provider_idempotency_key,
                 request_payload=payload_blob,
+                retry_policy_hash=request.retry_policy.canonical_hash,
+                max_attempts=request.retry_policy.max_attempts,
             )
         self._assert_attempt_identity(request, outcome, attempt)
 
         if attempt.state == "reserved":
+            dispatched = self._store.dispatch_generation_attempt(
+                attempt.attempt_id,
+                expected_version=attempt.version,
+            )
+            if dispatched is None:
+                return GenerateVlmEvidenceResult(outcome, attempt)
+            attempt = dispatched
             proxy_content = self._store.read_immutable_blob(
                 request.job,
                 request.proxy_blob,
-            )
-            attempt = self._store.dispatch_generation_attempt(
-                attempt.attempt_id,
-                expected_version=attempt.version,
             )
             attempt_box = [attempt]
 
             def persist_provider_request_id(provider_request_id: str) -> None:
                 current = attempt_box[0]
                 attempt_box[0] = self._store.record_generation_provider_request_id(
-                    current.attempt_id,
-                    expected_version=current.version,
-                    provider_request_id=provider_request_id,
+                        current.attempt_id,
+                        expected_version=current.version,
+                        provider_request_id=provider_request_id,
+                        dispatch_lease_token=self._lease_token(current),
                 )
 
             try:
@@ -400,7 +468,7 @@ class GenerateVlmEvidenceCommand:
                     ProviderDispatchRequest(
                         request.provider_id,
                         request.model_id,
-                        request.provider_idempotency_key,
+                        attempt.provider_idempotency_key,
                         request.request_payload,
                         request.request_identity.request_payload_sha256,
                         request.manifest.proxy_blob_ref,
@@ -413,12 +481,20 @@ class GenerateVlmEvidenceCommand:
                 attempt = self._store.mark_generation_indeterminate(
                     attempt.attempt_id,
                     expected_version=attempt.version,
+                    dispatch_lease_token=self._lease_token(attempt),
                 )
                 return GenerateVlmEvidenceResult(outcome, attempt)
             attempt = attempt_box[0]
             return self._handle_provider_result(request, outcome, attempt, provider_result)
 
         if attempt.state in ("dispatched", "indeterminate"):
+            acquired = self._store.acquire_generation_reconcile_lease(
+                attempt.attempt_id,
+                expected_version=attempt.version,
+            )
+            if acquired is None:
+                return GenerateVlmEvidenceResult(outcome, attempt)
+            attempt = acquired
             try:
                 provider_result = self._provider.reconcile(
                     ProviderReconcileQuery(
@@ -429,27 +505,19 @@ class GenerateVlmEvidenceCommand:
                     )
                 )
             except Exception:
-                if attempt.state == "dispatched":
-                    attempt = self._store.mark_generation_indeterminate(
-                        attempt.attempt_id,
-                        expected_version=attempt.version,
-                        provider_request_id=attempt.provider_request_id,
-                    )
+                attempt = self._store.mark_generation_indeterminate(
+                    attempt.attempt_id,
+                    expected_version=attempt.version,
+                    dispatch_lease_token=self._lease_token(attempt),
+                    provider_request_id=attempt.provider_request_id,
+                )
                 return GenerateVlmEvidenceResult(outcome, attempt)
             return self._handle_provider_result(request, outcome, attempt, provider_result)
 
         if attempt.state in ("responded", "reconciled"):
             return self._parse_and_commit(request, outcome, attempt)
         if attempt.state == "failed":
-            rejection = self._store.commit_command_rejection(
-                CommandRejection(
-                    outcome.command_slot_id,
-                    attempt.failure_code or "GENERATION_FAILED",
-                    attempt.failure_detail_json or '{"reason":"generation failed"}',
-                    outcome="failed",
-                )
-            )
-            return GenerateVlmEvidenceResult(rejection, attempt)
+            return self._recover_failed_attempt(request, outcome, attempt)
         if attempt.state == "committed":
             return self._replay_committed(request, outcome, attempt)
         return GenerateVlmEvidenceResult(outcome, attempt)
@@ -473,6 +541,7 @@ class GenerateVlmEvidenceCommand:
                     attempt.attempt_id,
                     expected_version=attempt.version,
                     raw_response=response_blob,
+                    dispatch_lease_token=self._lease_token(attempt),
                     provider_request_id=provider_result.provider_request_id,
                 )
             elif attempt.state == "indeterminate":
@@ -480,6 +549,7 @@ class GenerateVlmEvidenceCommand:
                     attempt.attempt_id,
                     expected_version=attempt.version,
                     raw_response=response_blob,
+                    dispatch_lease_token=self._lease_token(attempt),
                     provider_request_id=provider_result.provider_request_id,
                 )
             return self._parse_and_commit(request, outcome, attempt)
@@ -491,31 +561,27 @@ class GenerateVlmEvidenceCommand:
                 failure_code=provider_result.failure_code,
                 failure_detail_json=provider_result.failure_detail_json,
                 provider_request_id=provider_result.provider_request_id,
+                failure_disposition=provider_result.disposition.value,
+                dispatch_lease_token=self._lease_token(attempt),
             )
-            rejection = self._store.commit_command_rejection(
-                CommandRejection(
-                    outcome.command_slot_id,
-                    provider_result.failure_code,
-                    provider_result.failure_detail_json,
-                    outcome="failed",
-                )
-            )
-            return GenerateVlmEvidenceResult(rejection, attempt)
+            return self._recover_failed_attempt(request, outcome, attempt)
 
         if isinstance(provider_result, (ProviderPending, ProviderIndeterminate)):
             provider_request_id = provider_result.provider_request_id
-            if attempt.state == "dispatched":
+            if attempt.state in ("dispatched", "indeterminate"):
                 attempt = self._store.mark_generation_indeterminate(
                     attempt.attempt_id,
                     expected_version=attempt.version,
+                    dispatch_lease_token=self._lease_token(attempt),
                     provider_request_id=provider_request_id,
                 )
             return GenerateVlmEvidenceResult(outcome, attempt)
 
-        if attempt.state == "dispatched":
+        if attempt.state in ("dispatched", "indeterminate"):
             attempt = self._store.mark_generation_indeterminate(
                 attempt.attempt_id,
                 expected_version=attempt.version,
+                dispatch_lease_token=self._lease_token(attempt),
             )
         return GenerateVlmEvidenceResult(outcome, attempt)
 
@@ -544,14 +610,14 @@ class GenerateVlmEvidenceCommand:
                 expected_version=attempt.version,
                 failure_code=code,
                 failure_detail_json=detail,
+                failure_disposition=ProviderFailureDisposition.REPAIRABLE.value,
             )
-            rejection = self._store.commit_command_rejection(
-                CommandRejection(
-                    outcome.command_slot_id,
-                    code,
-                    detail,
-                    outcome="denied",
-                )
+            rejection = self._commit_terminal_failure(
+                request,
+                outcome,
+                failed,
+                terminal_code=code,
+                terminal_outcome="denied",
             )
             return GenerateVlmEvidenceResult(rejection, failed)
 
@@ -579,6 +645,100 @@ class GenerateVlmEvidenceCommand:
             observation_set,
             artifacts,
         )
+
+    def _recover_failed_attempt(
+        self,
+        request: GenerateVlmEvidenceRequest,
+        outcome: CommandOutcome,
+        attempt: GenerationAttempt,
+    ) -> GenerateVlmEvidenceResult:
+        if (
+            attempt.failure_disposition
+            == ProviderFailureDisposition.RETRYABLE.value
+            and attempt.attempt_ordinal < attempt.max_attempts
+        ):
+            next_ordinal = attempt.attempt_ordinal + 1
+            next_attempt = self._store.reserve_next_generation_attempt(
+                attempt.attempt_id,
+                expected_version=attempt.version,
+                provider_idempotency_key=request.provider_idempotency_key_for(
+                    next_ordinal
+                ),
+            )
+            self._assert_attempt_identity(request, outcome, next_attempt)
+            return GenerateVlmEvidenceResult(outcome, next_attempt)
+        terminal_code = (
+            "RETRY_BUDGET_EXHAUSTED"
+            if attempt.failure_disposition
+            == ProviderFailureDisposition.RETRYABLE.value
+            else attempt.failure_code or "GENERATION_FAILED"
+        )
+        rejection = self._commit_terminal_failure(
+            request,
+            outcome,
+            attempt,
+            terminal_code=terminal_code,
+            terminal_outcome="failed",
+        )
+        return GenerateVlmEvidenceResult(rejection, attempt)
+
+    def _commit_terminal_failure(
+        self,
+        request: GenerateVlmEvidenceRequest,
+        outcome: CommandOutcome,
+        attempt: GenerationAttempt,
+        *,
+        terminal_code: str,
+        terminal_outcome: Literal["denied", "failed"],
+    ) -> CommandOutcome:
+        chain = self._store.read_generation_attempt_chain(
+            request.job, outcome.command_slot_id
+        )
+        if not chain or chain[-1].attempt_id != attempt.attempt_id:
+            raise ValueError("terminal generation failure lost its exact Attempt chain")
+        causal_attempts: list[dict[str, object]] = []
+        for member in chain:
+            if member.state != "failed":
+                raise ValueError("terminal generation chain contains a non-failed predecessor")
+            causal_attempts.append(
+                {
+                    "attempt_id": str(member.attempt_id),
+                    "attempt_ordinal": member.attempt_ordinal,
+                    "failure_code": member.failure_code,
+                    "failure_detail": _json_object(
+                        member.failure_detail_json or "{}",
+                        "failure_detail_json",
+                    ),
+                    "failure_disposition": member.failure_disposition,
+                    "provider_idempotency_key": member.provider_idempotency_key,
+                    "provider_request_id": member.provider_request_id,
+                }
+            )
+        detail = _json_bytes(
+            {
+                "attempts": causal_attempts,
+                "max_attempts": attempt.max_attempts,
+                "retry_policy_sha256": attempt.retry_policy_hash,
+                "terminal_reason": terminal_code,
+            }
+        ).decode("utf-8")
+        return self._store.commit_generation_rejection(
+            attempt.attempt_id,
+            expected_version=attempt.version,
+            rejection=CommandRejection(
+                outcome.command_slot_id,
+                terminal_code,
+                detail,
+                outcome=terminal_outcome,
+            ),
+        )
+
+    @staticmethod
+    def _lease_token(attempt: GenerationAttempt) -> str:
+        token = attempt.dispatch_lease_token
+        if token is None:
+            raise ValueError("generation provider operation requires its persisted lease token")
+        return token
 
     def _replay_committed(
         self,
@@ -614,9 +774,12 @@ class GenerateVlmEvidenceCommand:
             attempt.command_slot_id != outcome.command_slot_id
             or attempt.request_hash != request.request_hash
             or attempt.provider_id != request.provider_id
-            or attempt.provider_idempotency_key != request.provider_idempotency_key
+            or attempt.provider_idempotency_key
+            != request.provider_idempotency_key_for(attempt.attempt_ordinal)
             or attempt.request_payload.content_hash
             != request.request_identity.request_payload_sha256
+            or attempt.retry_policy_hash != request.retry_policy.canonical_hash
+            or attempt.max_attempts != request.retry_policy.max_attempts
         ):
             raise ValueError("durable generation attempt does not match the exact command request")
 

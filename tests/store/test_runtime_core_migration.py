@@ -93,3 +93,42 @@ def test_ark_recovery_migration_adds_scope_leases_and_immediate_request_id_cas()
     assert "provider_media_scoped_file_id_unique" in sql
     assert "generation provider request identity is immutable once known" in sql
     assert "OLD.state = 'dispatched' AND NEW.state = 'dispatched'" in sql
+
+
+def test_vlm_bounded_retry_migration_adds_chain_lease_and_receipt_proof() -> None:
+    sql = (MIGRATIONS / "0009_vlm_bounded_retry.sql").read_text()
+
+    assert "attempt_ordinal" in sql
+    assert "previous_attempt_id" in sql
+    assert "retry_policy_hash" in sql
+    assert "max_attempts" in sql
+    assert "failure_disposition" in sql
+    assert "dispatch_lease_token" in sql
+    assert "dispatch_lease_expires_at" in sql
+    assert "not_before_at" in sql
+    assert "generation_attempt_budget_bounded" in sql
+    assert "generation_attempt_slot_ordinal_unique" in sql
+    assert "generation_attempt_previous_unique" in sql
+    assert "runtime.generation_receipt_attempts" in sql
+    assert "generation Receipt must bind the complete contiguous Attempt chain" in sql
+    assert "generation retry predecessor must be the exact retryable prior attempt" in sql
+
+
+def test_pipeline_retry_profile_migration_closes_v2_and_preserves_v1() -> None:
+    sql = (MIGRATIONS / "0010_pipeline_retry_profile.sql").read_text()
+
+    assert "pipeline-execution-profile-v1" in sql
+    assert "pipeline-execution-profile-v2" in sql
+    assert "generation_retry_policy" in sql
+    assert "generation-retry-v1" in sql
+    assert "jsonb_array_length" in sql
+    assert "max_attempts') ~ '^[1-3]$'" in sql
+    assert "v1 runs remain frozen at one attempt" in sql
+
+
+def test_generation_retry_schedule_migration_makes_backoff_a_durable_identity() -> None:
+    sql = (MIGRATIONS / "0011_generation_retry_schedule.sql").read_text()
+
+    assert "retry_backoff_seconds" in sql
+    assert "generation_attempt_retry_schedule_exact" in sql
+    assert "generation retry schedule is immutable" in sql
