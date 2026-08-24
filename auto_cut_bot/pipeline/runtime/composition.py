@@ -50,6 +50,7 @@ PIPELINE_ARK_API_KEY_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_API_KEY"
 PIPELINE_ARK_TENANT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_TENANT_ID"
 PIPELINE_ARK_PROJECT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID"
 PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
+PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS"
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
 PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
 
@@ -64,6 +65,7 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_ARK_TENANT_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_MODEL_ID_ENV,
+    PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
 )
 _CATALOG_FIELDS = frozenset(
@@ -255,7 +257,13 @@ def compose_pipeline_runtime_from_environment(
     kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
     catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
     try:
-        policy = DoubaoVlmRequestPolicy(model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip())
+        raw_max_output_tokens = values[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV].strip()
+        if not raw_max_output_tokens.isdecimal():
+            raise ValueError("Ark max output tokens must be a decimal integer")
+        policy = DoubaoVlmRequestPolicy(
+            model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip(),
+            max_output_tokens=int(raw_max_output_tokens),
+        )
         decoded_media_policy = cast(
             object,
             json.loads(
@@ -369,6 +377,7 @@ __all__ = (
     "PIPELINE_ARK_API_KEY_ENV",
     "PIPELINE_ARK_BASE_URL_ENV",
     "PIPELINE_ARK_MODEL_ID_ENV",
+    "PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV",
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",
     "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
