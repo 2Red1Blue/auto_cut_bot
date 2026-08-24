@@ -70,16 +70,24 @@ AUDIO_END = 96
 
 
 def _context(
-    kind: MediaKind, producer: str, *, audio_end: int = AUDIO_END
+    kind: MediaKind,
+    producer: str,
+    *,
+    video_origin: int = 0,
+    video_end: int = VIDEO_END,
+    audio_origin: int = 0,
+    audio_end: int = AUDIO_END,
 ) -> EvidenceContext:
+    origin = video_origin if kind is MediaKind.VIDEO else audio_origin
+    end = video_end if kind is MediaKind.VIDEO else audio_end
     return EvidenceContext(
         SOURCE_ID,
         SOURCE_HASH,
         kind,
         VIDEO_CLOCK if kind is MediaKind.VIDEO else AUDIO_CLOCK,
         VIDEO_BASE if kind is MediaKind.VIDEO else AUDIO_BASE,
-        0,
-        VIDEO_END if kind is MediaKind.VIDEO else audio_end,
+        origin,
+        end - origin,
         producer,
         HASH_A,
     )
@@ -97,8 +105,15 @@ def _coverage(context: EvidenceContext) -> Coverage:
     )
 
 
-def _frame_set(ticks: tuple[int, ...]) -> FramePtsIndexSet:
-    context = _context(MediaKind.VIDEO, "frame-v1")
+def _frame_set(
+    ticks: tuple[int, ...], *, video_origin: int = 0, video_end: int = VIDEO_END
+) -> FramePtsIndexSet:
+    context = _context(
+        MediaKind.VIDEO,
+        "frame-v1",
+        video_origin=video_origin,
+        video_end=video_end,
+    )
     index = PTSIndex(ticks)
     return FramePtsIndexSet(
         "frames-vfr",
@@ -110,9 +125,18 @@ def _frame_set(ticks: tuple[int, ...]) -> FramePtsIndexSet:
 
 
 def _audio_set(
-    ticks: tuple[int, ...], *, present: bool = True, audio_end: int = AUDIO_END
+    ticks: tuple[int, ...],
+    *,
+    present: bool = True,
+    audio_origin: int = 0,
+    audio_end: int = AUDIO_END,
 ) -> AudioSampleBoundarySet:
-    context = _context(MediaKind.AUDIO, "audio-v1", audio_end=audio_end)
+    context = _context(
+        MediaKind.AUDIO,
+        "audio-v1",
+        audio_origin=audio_origin,
+        audio_end=audio_end,
+    )
     points = tuple(
         AudioSampleBoundary(
             f"audio-{tick:03d}",
@@ -135,9 +159,18 @@ def _audio_set(
 
 
 def _transcript(
-    *, protected: tuple[int, int] | None, audio_present: bool, audio_end: int = AUDIO_END
+    *,
+    protected: tuple[int, int] | None,
+    audio_present: bool,
+    audio_origin: int = 0,
+    audio_end: int = AUDIO_END,
 ) -> TranscriptSet:
-    context = _context(MediaKind.AUDIO, "asr-v1", audio_end=audio_end)
+    context = _context(
+        MediaKind.AUDIO,
+        "asr-v1",
+        audio_origin=audio_origin,
+        audio_end=audio_end,
+    )
     if not audio_present:
         return TranscriptSet(
             "transcript-na",
@@ -199,9 +232,18 @@ def _transcript(
 
 
 def _vad(
-    *, protected: tuple[int, int] | None, audio_present: bool, audio_end: int = AUDIO_END
+    *,
+    protected: tuple[int, int] | None,
+    audio_present: bool,
+    audio_origin: int = 0,
+    audio_end: int = AUDIO_END,
 ) -> SpeechActivitySet:
-    context = _context(MediaKind.AUDIO, "vad-v1", audio_end=audio_end)
+    context = _context(
+        MediaKind.AUDIO,
+        "vad-v1",
+        audio_origin=audio_origin,
+        audio_end=audio_end,
+    )
     if not audio_present:
         return SpeechActivitySet(
             "vad-na",
@@ -233,8 +275,16 @@ def _vad(
 
 def _visual(
     intervals: tuple[tuple[int, int, VisualClassification], ...],
+    *,
+    video_origin: int = 0,
+    video_end: int = VIDEO_END,
 ) -> VisualValiditySet:
-    context = _context(MediaKind.VIDEO, "visual-v1")
+    context = _context(
+        MediaKind.VIDEO,
+        "visual-v1",
+        video_origin=video_origin,
+        video_end=video_end,
+    )
     return VisualValiditySet(
         "visual-set",
         context,
@@ -256,8 +306,18 @@ def _visual(
     )
 
 
-def _subtitles(cue: tuple[int, int, int, int] | None) -> SubtitleCueSet:
-    context = _context(MediaKind.VIDEO, "subtitle-v1")
+def _subtitles(
+    cue: tuple[int, int, int, int] | None,
+    *,
+    video_origin: int = 0,
+    video_end: int = VIDEO_END,
+) -> SubtitleCueSet:
+    context = _context(
+        MediaKind.VIDEO,
+        "subtitle-v1",
+        video_origin=video_origin,
+        video_end=video_end,
+    )
     cues: tuple[SubtitleCue, ...] = ()
     outcome = SubtitleSourceOutcome.NONE_DETECTED
     if cue is not None:
@@ -300,9 +360,16 @@ def _bundle(
     ),
     subtitle: tuple[int, int, int, int] | None = None,
     audio_present: bool = True,
+    video_origin: int = 0,
+    video_end: int = VIDEO_END,
+    audio_origin: int = 0,
     audio_end: int = AUDIO_END,
 ) -> RootMediaEvidenceBundle:
-    frame_set = _frame_set(frame_ticks)
+    frame_set = _frame_set(
+        frame_ticks,
+        video_origin=video_origin,
+        video_end=video_end,
+    )
     video_hash = frame_set.canonical_hash
     video_context = frame_set.context
     shots = ShotBoundarySet(
@@ -322,19 +389,34 @@ def _bundle(
         frame_set,
         shots,
         scenes,
-        _audio_set(audio_ticks, present=audio_present, audio_end=audio_end),
+        _audio_set(
+            audio_ticks,
+            present=audio_present,
+            audio_origin=audio_origin,
+            audio_end=audio_end,
+        ),
         _transcript(
             protected=transcript_protected,
             audio_present=audio_present,
+            audio_origin=audio_origin,
             audio_end=audio_end,
         ),
         _vad(
             protected=vad_protected,
             audio_present=audio_present,
+            audio_origin=audio_origin,
             audio_end=audio_end,
         ),
-        _visual(visual),
-        _subtitles(subtitle),
+        _visual(
+            visual,
+            video_origin=video_origin,
+            video_end=video_end,
+        ),
+        _subtitles(
+            subtitle,
+            video_origin=video_origin,
+            video_end=video_end,
+        ),
     )
 
 
@@ -345,14 +427,14 @@ def _request(bundle: RootMediaEvidenceBundle) -> ExactAvSpanRequest:
         SOURCE_HASH,
         context.clock_id,
         context.time_base,
-        TickRange(0, VIDEO_END),
+        TickRange(context.origin_tick, context.end_tick),
     )
     anchor = VideoClockRange(
         SOURCE_ID,
         SOURCE_HASH,
         context.clock_id,
         context.time_base,
-        TickRange(60, 120),
+        TickRange(context.origin_tick + 60, context.origin_tick + 120),
     )
     return ExactAvSpanRequest(desired, anchor, 40)
 
@@ -360,7 +442,6 @@ def _request(bundle: RootMediaEvidenceBundle) -> ExactAvSpanRequest:
 def _clock_map(
     bundle: RootMediaEvidenceBundle,
     *,
-    error: int = 0,
     outcome: ClockMapOutcome = ClockMapOutcome.COMPLETE,
 ) -> VideoToAudioClockMapCertificate:
     if outcome is ClockMapOutcome.INDETERMINATE:
@@ -374,16 +455,8 @@ def _clock_map(
             outcome,
             None,
             (),
-            error,
-            HASH_A,
-            HASH_B,
         )
-    return VideoToAudioClockMapCertificate.from_root_evidence(
-        bundle,
-        max_error_audio_tick=error,
-        source_media_probe_sha256=HASH_A,
-        generation_policy_sha256=HASH_B,
-    )
+    return VideoToAudioClockMapCertificate.from_root_evidence(bundle)
 
 
 def _policy(**changes: int | bool) -> ExactAvSpanPolicy:
@@ -392,7 +465,6 @@ def _policy(**changes: int | bool) -> ExactAvSpanPolicy:
         "endpoint_stability_video_tick": 1,
         "subtitle_clearance_floor_video_tick": 1,
         "av_sync_tolerance_audio_tick": 0,
-        "maximum_mapping_error_audio_tick": 0,
         "require_audio": True,
     }
     values.update(changes)
@@ -449,7 +521,7 @@ def test_forbidden_or_unknown_visual_endpoint_region_fails_closed(
         compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
 
 
-def test_equal_presentation_map_is_exact_and_uncertainty_over_budget_is_rejected() -> None:
+def test_equal_presentation_map_is_exact() -> None:
     bundle = _bundle()
     certificate = _clock_map(bundle)
     assert certificate.map_video_tick_bounds(60) == (32, 32)
@@ -457,11 +529,6 @@ def test_equal_presentation_map_is_exact_and_uncertainty_over_budget_is_rejected
     assert compile_exact_av_span(
         _request(bundle), bundle, certificate, _policy()
     ).audio_range == TickRange(32, 64)
-
-    with pytest.raises(ExactSpanValidationError, match="uncertainty"):
-        compile_exact_av_span(
-            _request(bundle), bundle, _clock_map(bundle, error=2), _policy()
-        )
 
 
 def test_unequal_audio_tail_is_exposed_without_duration_ratio_drift() -> None:
@@ -483,6 +550,58 @@ def test_unequal_audio_tail_is_exposed_without_duration_ratio_drift() -> None:
     assert compile_exact_av_span(
         _request(bundle), bundle, certificate, _policy()
     ).audio_range == TickRange(32, 64)
+
+
+def test_leading_video_non_overlap_is_explicit_and_outside_endpoint_fails() -> None:
+    bundle = _bundle(
+        frame_ticks=(-15, 0, 45, 105, 180),
+        visual=((-15, VIDEO_END, VisualClassification.VALID_CONTENT),),
+        video_origin=-15,
+    )
+    certificate = _clock_map(bundle)
+
+    assert certificate.non_overlaps == (
+        PresentationNonOverlap(
+            MediaKind.VIDEO,
+            NonOverlapPosition.LEADING,
+            PresentationTimeRange(-1, 6000, 0, 1),
+        ),
+    )
+    with pytest.raises(ExactSpanValidationError, match="common presentation interval"):
+        compile_exact_av_span(_request(bundle), bundle, certificate, _policy())
+
+
+def test_nonzero_origins_and_fractional_rounding_use_absolute_presentation_time() -> None:
+    bundle = _bundle(
+        frame_ticks=(90, 105, 150, 210, 270),
+        audio_ticks=(48, 56, 80, 112, 144),
+        visual=((90, 270, VisualClassification.VALID_CONTENT),),
+        video_origin=90,
+        video_end=270,
+        audio_origin=48,
+        audio_end=144,
+    )
+    certificate = _clock_map(bundle)
+
+    assert certificate.non_overlaps == ()
+    assert certificate.map_video_tick_bounds(150) == (80, 80)
+    assert compile_exact_av_span(
+        _request(bundle), bundle, certificate, _policy()
+    ).audio_range == TickRange(80, 112)
+
+    fractional = VideoToAudioClockMapCertificate(
+        SOURCE_ID,
+        SOURCE_HASH,
+        VIDEO_CLOCK,
+        VIDEO_BASE,
+        AUDIO_CLOCK,
+        AUDIO_BASE,
+        ClockMapOutcome.COMPLETE,
+        PresentationTimeRange(-1, 1, 1, 1),
+        (),
+    )
+    assert fractional.map_video_tick_bounds(1) == (0, 1)
+    assert fractional.map_video_tick_bounds(-15) == (-8, -8)
 
 
 def test_tampered_partition_and_indeterminate_map_are_rejected() -> None:

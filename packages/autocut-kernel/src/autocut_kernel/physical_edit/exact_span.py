@@ -288,9 +288,6 @@ class VideoToAudioClockMapCertificate:
     outcome: ClockMapOutcome
     common_presentation_range: PresentationTimeRange | None
     non_overlaps: tuple[PresentationNonOverlap, ...]
-    max_error_audio_tick: int
-    source_media_probe_sha256: str
-    generation_policy_sha256: str
 
     def __post_init__(self) -> None:
         _require_text(self.source_id, "clock_map.source_id")
@@ -306,17 +303,6 @@ class VideoToAudioClockMapCertificate:
             raise ExactSpanValidationError("audio_time_base must be an exact TimeBase")
         if type(self.outcome) is not ClockMapOutcome:  # noqa: E721
             raise ExactSpanValidationError("clock map outcome must be a ClockMapOutcome")
-        if require_pts(self.max_error_audio_tick, "clock_map.max_error_audio_tick") < 0:
-            raise ExactSpanValidationError("clock map error must be non-negative")
-        try:
-            sha256_prefixed(
-                self.source_media_probe_sha256, "clock_map.source_media_probe_sha256"
-            )
-            sha256_prefixed(
-                self.generation_policy_sha256, "clock_map.generation_policy_sha256"
-            )
-        except MediaValidationError as error:
-            raise ExactSpanValidationError(str(error)) from error
         non_overlaps = tuple(self.non_overlaps)
         if not all(type(item) is PresentationNonOverlap for item in non_overlaps):
             raise ExactSpanValidationError("clock map contains an invalid non-overlap")
@@ -338,10 +324,6 @@ class VideoToAudioClockMapCertificate:
     def from_root_evidence(
         cls,
         evidence: RootMediaEvidenceBundle,
-        *,
-        max_error_audio_tick: int,
-        source_media_probe_sha256: str,
-        generation_policy_sha256: str,
     ) -> VideoToAudioClockMapCertificate:
         common, non_overlaps = _expected_presentation_partition(evidence)
         video = evidence.frame_pts_index.context
@@ -356,9 +338,6 @@ class VideoToAudioClockMapCertificate:
             ClockMapOutcome.COMPLETE,
             common,
             non_overlaps,
-            max_error_audio_tick,
-            source_media_probe_sha256,
-            generation_policy_sha256,
         )
 
     def assert_complete_for(self, evidence: RootMediaEvidenceBundle) -> None:
@@ -406,10 +385,7 @@ class VideoToAudioClockMapCertificate:
         )
         floor_value = exact_audio_tick.numerator // exact_audio_tick.denominator
         ceil_value = -((-exact_audio_tick.numerator) // exact_audio_tick.denominator)
-        return (
-            floor_value - self.max_error_audio_tick,
-            ceil_value + self.max_error_audio_tick,
-        )
+        return floor_value, ceil_value
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -424,9 +400,6 @@ class VideoToAudioClockMapCertificate:
             if self.common_presentation_range is None
             else self.common_presentation_range.to_mapping(),
             "non_overlaps": [item.to_mapping() for item in self.non_overlaps],
-            "max_error_audio_tick": self.max_error_audio_tick,
-            "source_media_probe_sha256": self.source_media_probe_sha256,
-            "generation_policy_sha256": self.generation_policy_sha256,
         }
 
     @property
@@ -449,7 +422,6 @@ class ExactAvSpanPolicy:
     endpoint_stability_video_tick: int
     subtitle_clearance_floor_video_tick: int
     av_sync_tolerance_audio_tick: int
-    maximum_mapping_error_audio_tick: int
     require_audio: bool = True
     forbidden_visual_classes: tuple[VisualClassification, ...] = _DEFAULT_FORBIDDEN
 
@@ -459,7 +431,6 @@ class ExactAvSpanPolicy:
             ("endpoint_stability_video_tick", True),
             ("subtitle_clearance_floor_video_tick", True),
             ("av_sync_tolerance_audio_tick", False),
-            ("maximum_mapping_error_audio_tick", False),
         ):
             value = require_pts(getattr(self, field_name), field_name)
             if (positive and value <= 0) or (not positive and value < 0):
@@ -486,7 +457,6 @@ class ExactAvSpanPolicy:
             "endpoint_stability_video_tick": self.endpoint_stability_video_tick,
             "subtitle_clearance_floor_video_tick": self.subtitle_clearance_floor_video_tick,
             "av_sync_tolerance_audio_tick": self.av_sync_tolerance_audio_tick,
-            "maximum_mapping_error_audio_tick": self.maximum_mapping_error_audio_tick,
             "require_audio": self.require_audio,
             "forbidden_visual_classes": [item.value for item in self.forbidden_visual_classes],
         }
@@ -659,8 +629,6 @@ def _validate_production_inputs(
     ):
         raise ExactSpanValidationError("word and sentence transcript evidence must be complete")
     clock_map.assert_complete_for(evidence)
-    if clock_map.max_error_audio_tick > policy.maximum_mapping_error_audio_tick:
-        raise ExactSpanValidationError("clock map uncertainty exceeds policy maximum")
 
 
 def _visual_stable(
