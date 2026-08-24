@@ -77,6 +77,32 @@ class CoveragePolicy(CanonicalModel):
         return {"coverage_mode": self.coverage_mode, "policy_id": self.policy_id}
 
 
+@dataclass(frozen=True, slots=True)
+class DependencyPropagationPolicy(CanonicalModel):
+    """Frozen Stage 1 policy defining the only graph arcs that propagate taint."""
+
+    policy_id: str
+    policy_version: str
+    propagating_edge_types: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        identifier(self.policy_id, "dependency policy_id")
+        safe_token(self.policy_version, "dependency policy_version")
+        values = tuple(self.propagating_edge_types)
+        if not values or set(values) - _EDGE_TYPES:
+            raise ProductionModelError("dependency policy contains an unknown edge type")
+        if values != tuple(sorted(values, key=jcs_key)) or len(values) != len(set(values)):
+            raise ProductionModelError("dependency edge types must be unique and canonical")
+        object.__setattr__(self, "propagating_edge_types", values)
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "propagating_edge_types": list(self.propagating_edge_types),
+        }
+
+
 _EDGE_TYPES: Final = frozenset(
     {
         "supports",
@@ -313,9 +339,7 @@ def _validate_id_array(
     return values
 
 
-def _validate_attribute_variant(
-    variant: NarrativeNodeType, item: Mapping[str, object]
-) -> None:
+def _validate_attribute_variant(variant: NarrativeNodeType, item: Mapping[str, object]) -> None:
     if variant is NarrativeNodeType.FACT:
         identifier(item["subject_node_id"], "fact.subject_node_id")
         identifier(item["predicate"], "fact.predicate")
@@ -369,16 +393,12 @@ def _validate_attribute_variant(
         _validate_id_array(item["obligation_ids"], "beat.obligation_ids", nonempty=True)
     elif variant is NarrativeNodeType.OBLIGATION:
         text(item["description"], "obligation.description")
-        _validate_id_array(
-            item["required_fact_ids"], "obligation.required_fact_ids", nonempty=True
-        )
+        _validate_id_array(item["required_fact_ids"], "obligation.required_fact_ids", nonempty=True)
         text(item["success_criteria"], "obligation.success_criteria")
     elif variant is NarrativeNodeType.STORY_THREAD:
         text(item["title"], "story_thread.title")
         text(item["premise"], "story_thread.premise")
-        _validate_id_array(
-            item["obligation_ids"], "story_thread.obligation_ids", nonempty=True
-        )
+        _validate_id_array(item["obligation_ids"], "story_thread.obligation_ids", nonempty=True)
     elif variant is NarrativeNodeType.CHARACTER:
         text(item["canonical_name"], "character.canonical_name")
         aliases = object_list(item["aliases"], "character.aliases")
@@ -404,16 +424,10 @@ def _validate_attribute_variant(
         text(item["text"], "question.text")
         if item["status"] not in {"open", "answered", "invalidated"}:
             raise ProductionModelError("question.status is unknown")
-        _validate_id_array(
-            item["answer_fact_ids"], "question.answer_fact_ids", nonempty=False
-        )
+        _validate_id_array(item["answer_fact_ids"], "question.answer_fact_ids", nonempty=False)
     else:
-        _validate_id_array(
-            item["setup_event_ids"], "foreshadow.setup_event_ids", nonempty=True
-        )
-        _validate_id_array(
-            item["payoff_event_ids"], "foreshadow.payoff_event_ids", nonempty=False
-        )
+        _validate_id_array(item["setup_event_ids"], "foreshadow.setup_event_ids", nonempty=True)
+        _validate_id_array(item["payoff_event_ids"], "foreshadow.payoff_event_ids", nonempty=False)
         if item["status"] not in {"setup_only", "paid_off", "broken"}:
             raise ProductionModelError("foreshadow.status is unknown")
 
@@ -682,12 +696,23 @@ class CoverageLedger(EvaluatorOwnedModel):
             raise ProductionModelError("coverage rows contain duplicate coverage IDs")
         row_keys = tuple(jcs_key(item.unit_ref) for item in row_values)
         duplicates = tuple(
-            sorted({item.unit_ref for item in row_values if row_keys.count(jcs_key(item.unit_ref)) > 1}, key=jcs_key)
+            sorted(
+                {
+                    item.unit_ref
+                    for item in row_values
+                    if row_keys.count(jcs_key(item.unit_ref)) > 1
+                },
+                key=jcs_key,
+            )
         )
         expected_by_key = {jcs_key(item): item for item in expected}
         actual_by_key = {jcs_key(item.unit_ref): item.unit_ref for item in row_values}
-        missing = tuple(expected_by_key[key] for key in sorted(set(expected_by_key) - set(actual_by_key)))
-        unexpected = tuple(actual_by_key[key] for key in sorted(set(actual_by_key) - set(expected_by_key)))
+        missing = tuple(
+            expected_by_key[key] for key in sorted(set(expected_by_key) - set(actual_by_key))
+        )
+        unexpected = tuple(
+            actual_by_key[key] for key in sorted(set(actual_by_key) - set(expected_by_key))
+        )
         conservation = CoverageConservation(
             len(expected), len(row_values), duplicates, missing, unexpected
         )
@@ -840,7 +865,9 @@ class DependencyArc(CanonicalModel):
     source_ref: DomainRef
 
     def __post_init__(self) -> None:
-        if any(type(value) is not DomainRef for value in (self.from_ref, self.to_ref, self.source_ref)):  # noqa: E721
+        if any(
+            type(value) is not DomainRef for value in (self.from_ref, self.to_ref, self.source_ref)
+        ):  # noqa: E721
             raise ProductionModelError("dependency arc refs must be DomainRefs")
         identifier(self.kind, "dependency arc kind")
 
@@ -892,39 +919,6 @@ class TaintSeedProof(EvaluatorOwnedModel):
     isolation_status: str
     closure_hash: str
 
-    @classmethod
-    def evaluate(
-        cls,
-        *,
-        taint_seed_id: str,
-        root_refs: Sequence[DomainRef],
-        affected_refs: Sequence[DomainRef],
-        frontier_refs: Sequence[DomainRef],
-        isolation_status: str,
-    ) -> TaintSeedProof:
-        identifier(taint_seed_id, "taint_seed_id")
-        roots = canonical_domain_refs(root_refs, "root_refs", nonempty=True)
-        affected = canonical_domain_refs(affected_refs, "affected_refs", nonempty=True)
-        frontier = canonical_domain_refs(frontier_refs, "frontier_refs")
-        if not {jcs_key(item) for item in roots} <= {jcs_key(item) for item in affected}:
-            raise ProductionModelError("affected_refs must contain every taint root")
-        if isolation_status not in {"bounded", "unbounded"}:
-            raise ProductionModelError("isolation_status is unknown")
-        if isolation_status == "bounded" and frontier:
-            raise ProductionModelError("bounded taint proof must have an empty frontier")
-        instance = object.__new__(cls)
-        object.__setattr__(instance, "taint_seed_id", taint_seed_id)
-        object.__setattr__(instance, "root_refs", roots)
-        object.__setattr__(instance, "affected_refs", affected)
-        object.__setattr__(instance, "frontier_refs", frontier)
-        object.__setattr__(instance, "isolation_status", isolation_status)
-        object.__setattr__(
-            instance,
-            "closure_hash",
-            canonical_json_hash([item.to_mapping() for item in affected]),
-        )
-        return instance
-
     def to_mapping(self) -> dict[str, object]:
         return {
             "affected_refs": [item.to_mapping() for item in self.affected_refs],
@@ -936,8 +930,8 @@ class TaintSeedProof(EvaluatorOwnedModel):
         }
 
 
-@dataclass(frozen=True, slots=True)
-class DependencyClosureProof(CanonicalModel):
+@dataclass(frozen=True, slots=True, init=False)
+class DependencyClosureProof(EvaluatorOwnedModel):
     dependency_closure_proof_id: str
     graph_ref: ArtifactRef
     policy_ref: ArtifactRef
@@ -997,6 +991,188 @@ class DependencyClosureProof(CanonicalModel):
         }
 
 
+def _graph_node_ref(graph_ref: ArtifactRef, node_id: str) -> DomainRef:
+    return DomainRef(graph_ref, "narrative_node", node_id)
+
+
+def _strongly_connected_components(
+    graph_ref: ArtifactRef,
+    node_ids: Sequence[str],
+    adjacency: Mapping[str, tuple[str, ...]],
+) -> tuple[DependencyScc, ...]:
+    """Deterministic Tarjan SCC projection over the exact frozen graph."""
+
+    next_index = 0
+    index_by_id: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[tuple[str, ...]] = []
+
+    def visit(node_id: str) -> None:
+        nonlocal next_index
+        index_by_id[node_id] = next_index
+        lowlink[node_id] = next_index
+        next_index += 1
+        stack.append(node_id)
+        on_stack.add(node_id)
+        for target_id in adjacency[node_id]:
+            if target_id not in index_by_id:
+                visit(target_id)
+                lowlink[node_id] = min(lowlink[node_id], lowlink[target_id])
+            elif target_id in on_stack:
+                lowlink[node_id] = min(lowlink[node_id], index_by_id[target_id])
+        if lowlink[node_id] != index_by_id[node_id]:
+            return
+        members: list[str] = []
+        while True:
+            member = stack.pop()
+            on_stack.remove(member)
+            members.append(member)
+            if member == node_id:
+                break
+        components.append(tuple(sorted(members, key=jcs_key)))
+
+    for node_id in sorted(node_ids, key=jcs_key):
+        if node_id not in index_by_id:
+            visit(node_id)
+    component_by_node: dict[str, str] = {}
+    component_ids: dict[tuple[str, ...], str] = {}
+    for component in components:
+        refs = tuple(sorted((_graph_node_ref(graph_ref, item) for item in component), key=jcs_key))
+        component_id = canonical_json_hash([item.to_mapping() for item in refs])
+        component_ids[component] = component_id
+        for node_id in component:
+            component_by_node[node_id] = component_id
+    values: list[DependencyScc] = []
+    for component in components:
+        own_id = component_ids[component]
+        outgoing = {
+            component_by_node[target]
+            for node_id in component
+            for target in adjacency[node_id]
+            if component_by_node[target] != own_id
+        }
+        values.append(
+            DependencyScc.from_nodes(
+                tuple(_graph_node_ref(graph_ref, item) for item in component),
+                tuple(sorted(outgoing, key=jcs_key)),
+            )
+        )
+    return tuple(sorted(values, key=jcs_key))
+
+
+class DependencyClosureEvaluator:
+    """Recompute arcs, SCCs, roots, closure and frontier from authoritative DTOs."""
+
+    @staticmethod
+    def evaluate(
+        *,
+        proof_id: str,
+        graph_ref: ArtifactRef,
+        graph: NarrativeGraph,
+        ledger: CoverageLedger,
+        evidence_diagnostics_ref: ArtifactRef,
+        evidence_diagnostics: EvidenceDiagnostics,
+        conflict_diagnostics_ref: ArtifactRef,
+        conflict_diagnostics: ConflictDiagnostics,
+        policy_ref: ArtifactRef,
+        policy: DependencyPropagationPolicy,
+    ) -> DependencyClosureProof:
+        identifier(proof_id, "dependency_closure_proof_id")
+        if graph_ref.content_hash != graph.canonical_hash:
+            raise ProductionModelError("dependency evaluator graph ref does not bind graph payload")
+        if policy_ref.content_hash != policy.canonical_hash:
+            raise ProductionModelError("dependency policy ref does not bind policy payload")
+        evidence_ids = {item.diagnostic_id for item in evidence_diagnostics.items}
+        conflict_ids = {item.diagnostic_id for item in conflict_diagnostics.items}
+        node_ids = tuple(item.node_id for item in graph.nodes)
+        graph_refs = {item: _graph_node_ref(graph_ref, item) for item in node_ids}
+        arcs = tuple(
+            sorted(
+                (
+                    DependencyArc(
+                        graph_refs[edge.from_node_id],
+                        graph_refs[edge.to_node_id],
+                        edge.edge_type,
+                        DomainRef(graph_ref, "narrative_edge", edge.edge_id),
+                    )
+                    for edge in graph.edges
+                    if edge.edge_type in policy.propagating_edge_types
+                ),
+                key=jcs_key,
+            )
+        )
+        adjacency_lists: dict[str, list[str]] = {item: [] for item in node_ids}
+        for edge in graph.edges:
+            if edge.edge_type in policy.propagating_edge_types:
+                adjacency_lists[edge.from_node_id].append(edge.to_node_id)
+        adjacency = {
+            key: tuple(sorted(set(values), key=jcs_key)) for key, values in adjacency_lists.items()
+        }
+        sccs = _strongly_connected_components(graph_ref, node_ids, adjacency)
+        seeds: list[TaintSeedProof] = []
+        for row in ledger.rows:
+            if row.resolution_status is CoverageResolution.RESOLVED:
+                continue
+            diagnostic_ids = {item.object_id for item in row.diagnostic_refs}
+            if not diagnostic_ids:
+                raise ProductionModelError("unresolved/conflicted coverage requires diagnostics")
+            expected_owner = (
+                conflict_diagnostics_ref
+                if row.resolution_status is CoverageResolution.CONFLICTED
+                else evidence_diagnostics_ref
+            )
+            expected_ids = (
+                conflict_ids
+                if row.resolution_status is CoverageResolution.CONFLICTED
+                else evidence_ids
+            )
+            if any(item.artifact_ref != expected_owner for item in row.diagnostic_refs):
+                raise ProductionModelError("coverage diagnostic has the wrong authoritative owner")
+            if not diagnostic_ids <= expected_ids:
+                raise ProductionModelError("coverage diagnostic does not resolve exactly")
+            seed_id = row.taint_seed_refs[0].object_id
+            roots = row.graph_node_refs or (row.unit_ref,)
+            for root in row.graph_node_refs:
+                if root.artifact_ref != graph_ref or root.object_id not in graph_refs:
+                    raise ProductionModelError("taint root points outside exact NarrativeGraph")
+            affected_by_key = {jcs_key(item): item for item in roots}
+            pending_nodes = [item.object_id for item in row.graph_node_refs]
+            visited: set[str] = set()
+            while pending_nodes:
+                node_id = pending_nodes.pop()
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                ref = graph_refs[node_id]
+                affected_by_key[jcs_key(ref)] = ref
+                pending_nodes.extend(adjacency[node_id])
+            affected = tuple(affected_by_key[key] for key in sorted(affected_by_key))
+            seed = object.__new__(TaintSeedProof)
+            object.__setattr__(seed, "taint_seed_id", seed_id)
+            object.__setattr__(
+                seed, "root_refs", canonical_domain_refs(roots, "root_refs", nonempty=True)
+            )
+            object.__setattr__(seed, "affected_refs", affected)
+            object.__setattr__(seed, "frontier_refs", ())
+            object.__setattr__(seed, "isolation_status", "bounded")
+            object.__setattr__(
+                seed,
+                "closure_hash",
+                canonical_json_hash([item.to_mapping() for item in affected]),
+            )
+            seeds.append(seed)
+        instance = object.__new__(DependencyClosureProof)
+        object.__setattr__(instance, "dependency_closure_proof_id", proof_id)
+        object.__setattr__(instance, "graph_ref", graph_ref)
+        object.__setattr__(instance, "policy_ref", policy_ref)
+        object.__setattr__(instance, "dependency_arcs", arcs)
+        object.__setattr__(instance, "sccs", sccs)
+        object.__setattr__(instance, "seed_proofs", tuple(sorted(seeds, key=jcs_key)))
+        return instance
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class CoverageAdmission(EvaluatorOwnedModel):
     admission_id: str
@@ -1029,11 +1205,17 @@ class CoverageAdmission(EvaluatorOwnedModel):
 
 
 _COVERAGE_RULES: Final = {
+    "KC-IN-001",
+    "KC-GRAPH-001",
+    "KC-GRAPH-002",
     "KC-COV-001",
+    "KC-COV-002",
     "KC-COV-003",
     "KC-COV-004",
     "KC-COV-005",
+    "KC-EXCLUDE-001",
     "KC-EVENT-001",
+    "KC-DEP-001",
     "KC-DEP-002",
     "KC-DEP-003",
     "KC-ISO-001",
@@ -1067,6 +1249,8 @@ class CoverageAdmissionEvaluator:
         dependency_proof: DependencyClosureProof,
         coverage_policy_ref: ArtifactRef,
         coverage_policy: CoveragePolicy,
+        dependency_policy_ref: ArtifactRef,
+        dependency_policy: DependencyPropagationPolicy,
     ) -> CoverageAdmission:
         identifier(admission_id, "admission_id")
         if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "coverage":  # noqa: E721
@@ -1076,15 +1260,22 @@ class CoverageAdmissionEvaluator:
         event_ref = pending_set.require_member("event_card_set", event_cards)
         graph_ref = pending_set.require_member("narrative_graph", graph)
         ledger_ref = pending_set.require_member("coverage_ledger", ledger)
-        pending_set.require_member("evidence_diagnostics", evidence_diagnostics)
-        pending_set.require_member("conflict_diagnostics", conflict_diagnostics)
+        evidence_ref = pending_set.require_member("evidence_diagnostics", evidence_diagnostics)
+        conflict_ref = pending_set.require_member("conflict_diagnostics", conflict_diagnostics)
         proof_ref = pending_set.require_member("dependency_closure_proof", dependency_proof)
         if dependency_proof.graph_ref != graph_ref:
             raise ProductionModelError("dependency proof does not bind the exact NarrativeGraph")
-        if type(coverage_policy_ref) is not ArtifactRef or type(coverage_policy) is not CoveragePolicy:  # noqa: E721
+        if (
+            type(coverage_policy_ref) is not ArtifactRef
+            or type(coverage_policy) is not CoveragePolicy
+        ):  # noqa: E721
             raise ProductionModelError("coverage evaluator requires a frozen CoveragePolicy")
         if coverage_policy_ref.content_hash != coverage_policy.canonical_hash:
             raise ProductionModelError("coverage policy ref does not bind the exact policy")
+        if dependency_policy_ref.content_hash != dependency_policy.canonical_hash:
+            raise ProductionModelError("dependency policy ref does not bind the exact policy")
+        if dependency_proof.policy_ref != dependency_policy_ref:
+            raise ProductionModelError("dependency proof does not bind the frozen policy")
         coverage_mode = coverage_policy.coverage_mode
         event_ids = {item.event_id for item in event_cards.events}
         for node in graph.nodes:
@@ -1095,28 +1286,57 @@ class CoverageAdmissionEvaluator:
                     raise ProductionModelError("Graph Event event_card_ref has the wrong owner/ID")
                 if node.node_id not in event_ids:
                     raise ProductionModelError("Graph Event does not resolve to EventCardSet")
-        seed_ids = tuple(
-            ref.object_id for row in ledger.rows for ref in row.taint_seed_refs
+        expected_units: dict[bytes, tuple[CoverageUnitType, DomainRef]] = {}
+        for digest in episode_digests.digests:
+            for ref in digest.source_window_refs:
+                expected_units[jcs_key(ref)] = (CoverageUnitType.VLM_WINDOW, ref)
+            for ref in digest.evidence_refs:
+                expected_units[jcs_key(ref)] = (CoverageUnitType.VLM_OBSERVATION, ref)
+        for event in event_cards.events:
+            ref = DomainRef(event_ref, "event", event.event_id)
+            expected_units[jcs_key(ref)] = (CoverageUnitType.EVENT, ref)
+        for node in graph.nodes:
+            if node.node_type is NarrativeNodeType.OBLIGATION:
+                ref = _graph_node_ref(graph_ref, node.node_id)
+                expected_units[jcs_key(ref)] = (CoverageUnitType.OBLIGATION, ref)
+        actual_units = {jcs_key(row.unit_ref): row for row in ledger.rows}
+        if set(actual_units) != set(expected_units):
+            raise ProductionModelError(
+                "Coverage universe does not exactly match Digest/Event/Obligation authority"
+            )
+        if any(actual_units[key].unit_type is not expected_units[key][0] for key in expected_units):
+            raise ProductionModelError("Coverage unit type does not match authoritative unit")
+        recomputed = DependencyClosureEvaluator.evaluate(
+            proof_id=dependency_proof.dependency_closure_proof_id,
+            graph_ref=graph_ref,
+            graph=graph,
+            ledger=ledger,
+            evidence_diagnostics_ref=evidence_ref,
+            evidence_diagnostics=evidence_diagnostics,
+            conflict_diagnostics_ref=conflict_ref,
+            conflict_diagnostics=conflict_diagnostics,
+            policy_ref=dependency_policy_ref,
+            policy=dependency_policy,
         )
+        if recomputed != dependency_proof:
+            raise ProductionModelError(
+                "dependency proof was not recomputed from exact Stage 1 inputs"
+            )
+        seed_ids = tuple(ref.object_id for row in ledger.rows for ref in row.taint_seed_refs)
         if len(seed_ids) != len(set(seed_ids)):
             raise ProductionModelError("each taint seed must belong to exactly one coverage row")
         proof_by_id = {item.taint_seed_id: item for item in dependency_proof.seed_proofs}
         if set(seed_ids) != set(proof_by_id):
-            raise ProductionModelError("coverage taint seeds and dependency proofs do not join exactly")
-        unresolved = tuple(
-            row for row in ledger.rows if row.resolution_status is CoverageResolution.UNRESOLVED
-        )
+            raise ProductionModelError(
+                "coverage taint seeds and dependency proofs do not join exactly"
+            )
         all_bounded = all(item.isolation_status == "bounded" for item in proof_by_id.values())
         next_action = "continue"
         if seed_ids and coverage_mode == "strict_global":
             next_action = "quarantine"
-        elif seed_ids and (unresolved or not all_bounded):
-            # The production repair deliberately does not allow an unresolved row
-            # to mint continue merely because a caller supplied a bounded label.
+        elif seed_ids and not all_bounded:
             next_action = "quarantine"
-        failed_rules: set[str] = (
-            {"KC-GATE-001"} if next_action != "continue" else set()
-        )
+        failed_rules: set[str] = {"KC-GATE-001"} if next_action != "continue" else set()
         rules = computed_rule_results(
             _COVERAGE_RULES,
             pending_set.canonical_hash,
@@ -1132,9 +1352,7 @@ class CoverageAdmissionEvaluator:
         ordered_seeds = tuple(sorted(seed_ids, key=jcs_key))
         object.__setattr__(instance, "taint_seed_ids", ordered_seeds)
         object.__setattr__(instance, "dependency_closure_proof_ref", proof_ref)
-        object.__setattr__(
-            instance, "taint_seeds_hash", canonical_json_hash(list(ordered_seeds))
-        )
+        object.__setattr__(instance, "taint_seeds_hash", canonical_json_hash(list(ordered_seeds)))
         object.__setattr__(
             instance, "dependency_closure_hash", dependency_proof.dependency_closure_hash
         )
@@ -1155,6 +1373,8 @@ __all__ = [
     "CoverageUnitType",
     "DependencyArc",
     "DependencyClosureProof",
+    "DependencyClosureEvaluator",
+    "DependencyPropagationPolicy",
     "DependencyScc",
     "DiagnosticItem",
     "EpisodeDigest",

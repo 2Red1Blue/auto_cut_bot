@@ -61,9 +61,7 @@ _MEASUREMENT_KINDS: Final = frozenset(
         "visual_salience",
     }
 )
-_ANCHOR_ROLES: Final = frozenset(
-    {"semantic_center", "dialogue_semantic", "visual_event", "action"}
-)
+_ANCHOR_ROLES: Final = frozenset({"semantic_center", "dialogue_semantic", "visual_event", "action"})
 _PHYSICAL_REQUIREMENTS: Final = {
     "dialogue_integrity": "complete",
     "subtitle_clearance": "protect_detected_cues",
@@ -96,18 +94,27 @@ class CommittedVlmObservation(EvaluatorOwnedModel):
         observation_set: VlmObservationSet,
         observation: VlmObservation,
     ) -> CommittedVlmObservation:
+        raise ProductionModelError(
+            "raw VLM values are not an authoritative reader result; "
+            "Receipt/ArtifactSet-backed Store integration is required"
+        )
         if type(observation_set_ref) is not ArtifactRef:  # noqa: E721
             raise ProductionModelError("observation_set_ref must be an ArtifactRef")
         if type(request_identity) is not VlmRequestIdentity:  # noqa: E721
             raise ProductionModelError("request_identity must be a VlmRequestIdentity")
-        if type(observation_set) is not VlmObservationSet or type(observation) is not VlmObservation:  # noqa: E721
+        if (
+            type(observation_set) is not VlmObservationSet
+            or type(observation) is not VlmObservation
+        ):  # noqa: E721
             raise ProductionModelError("committed observation reader returned wrong value types")
         if observation_set_ref.content_hash != observation_set.canonical_hash:
             raise ProductionModelError("observation_set_ref does not bind the exact committed set")
         if observation_set.request_identity_sha256 != request_identity.canonical_hash:
             raise ProductionModelError("observation set does not bind the exact request identity")
         matching = tuple(
-            item for item in observation_set.observations if item.observation_id == observation.observation_id
+            item
+            for item in observation_set.observations
+            if item.observation_id == observation.observation_id
         )
         if len(matching) != 1 or matching[0] != observation:
             raise ProductionModelError("observation is not an exact member of the committed set")
@@ -166,7 +173,10 @@ class SemanticAnchor(CanonicalModel):
     def __post_init__(self) -> None:
         if self.anchor_role not in _ANCHOR_ROLES:
             raise ProductionModelError("anchor_role is unknown")
-        if type(self.ref) is not DomainRef or self.ref.object_type not in {"event", "vlm_observation"}:  # noqa: E721
+        if type(self.ref) is not DomainRef or self.ref.object_type not in {
+            "event",
+            "vlm_observation",
+        }:  # noqa: E721
             raise ProductionModelError("semantic anchor must point to an Event or VLM observation")
 
     def to_mapping(self) -> dict[str, object]:
@@ -196,7 +206,9 @@ class CandidateMeasurementPolicy(CanonicalModel):
             "deterministic_vlm_projection",
         }:
             raise ProductionModelError("measurement policy contains an unknown producer")
-        if tuple(sorted(producers, key=jcs_key)) != producers or len(producers) != len(set(producers)):
+        if tuple(sorted(producers, key=jcs_key)) != producers or len(producers) != len(
+            set(producers)
+        ):
             raise ProductionModelError("measurement producers must be unique and canonical")
         object.__setattr__(self, "allowed_kinds", kinds)
         object.__setattr__(self, "allowed_producers", producers)
@@ -313,9 +325,16 @@ class CommittedCandidateSemanticEvidence(EvaluatorOwnedModel):
         measurements: Sequence[SemanticMeasurement],
         measurement_policy_ref: ArtifactRef,
     ) -> CommittedCandidateSemanticEvidence:
+        raise ProductionModelError(
+            "caller-selected anchors/measurements are not VLM-owned evidence; "
+            "an audited generation reader projection is required"
+        )
         if type(committed_observation) is not CommittedVlmObservation:  # noqa: E721
             raise ProductionModelError("semantic evidence requires committed VLM reader output")
-        if type(semantic_evidence_ref) is not ArtifactRef or type(measurement_policy_ref) is not ArtifactRef:  # noqa: E721
+        if (
+            type(semantic_evidence_ref) is not ArtifactRef
+            or type(measurement_policy_ref) is not ArtifactRef
+        ):  # noqa: E721
             raise ProductionModelError("semantic evidence refs must be ArtifactRefs")
         anchor_values = cast(
             tuple[SemanticAnchor, ...],
@@ -412,7 +431,9 @@ class CapabilityRule(CanonicalModel):
             raise ProductionModelError("capability output_kind is unknown")
         predicates = cast(
             tuple[CapabilityPredicate, ...],
-            canonical_values(self.all_of, CapabilityPredicate, "capability predicates", nonempty=True),
+            canonical_values(
+                self.all_of, CapabilityPredicate, "capability predicates", nonempty=True
+            ),
         )
         object.__setattr__(self, "all_of", predicates)
 
@@ -529,9 +550,7 @@ class CandidateCapabilityEvaluator:
             raise ProductionModelError("capability policy ref does not bind the exact policy")
         anchor_values = cast(
             tuple[SemanticAnchor, ...],
-            canonical_values(
-                semantic_evidence.anchors, SemanticAnchor, "anchors", nonempty=True
-            ),
+            canonical_values(semantic_evidence.anchors, SemanticAnchor, "anchors", nonempty=True),
         )
         measurement_values = cast(
             tuple[SemanticMeasurement, ...],
@@ -555,7 +574,9 @@ class CandidateCapabilityEvaluator:
             if Decimal(measurement.confidence) < Decimal(measurement_policy.minimum_confidence):
                 raise ProductionModelError("measurement confidence is below frozen policy")
             if not any(jcs_key(ref) == observation_key for ref in measurement.evidence_refs):
-                raise ProductionModelError("measurement does not bind the exact committed observation")
+                raise ProductionModelError(
+                    "measurement does not bind the exact committed observation"
+                )
         anchor_roles = {item.anchor_role for item in anchor_values}
         measurement_by_kind: dict[str, list[SemanticMeasurement]] = {}
         for measurement in measurement_values:
@@ -605,9 +626,7 @@ class CandidateCapabilityEvaluator:
             "anchor_refs_hash",
             canonical_json_hash([item.to_mapping() for item in anchor_values]),
         )
-        object.__setattr__(
-            assessment, "vlm_observation_sha256", committed.vlm_observation_sha256
-        )
+        object.__setattr__(assessment, "vlm_observation_sha256", committed.vlm_observation_sha256)
         trusted = object.__new__(OwnerBoundVlmObservationRef)
         object.__setattr__(trusted, "observation_ref", committed.observation_ref)
         object.__setattr__(trusted, "vlm_observation_sha256", committed.vlm_observation_sha256)
@@ -660,7 +679,9 @@ class TickDurationProof(EvaluatorOwnedModel):
             canonical_values(spans, DeclaredSpan, "declared_spans", nonempty=True),
         )
         first = values[0]
-        if any(item.time_base != first.time_base or item.clock_id != first.clock_id for item in values):
+        if any(
+            item.time_base != first.time_base or item.clock_id != first.clock_id for item in values
+        ):
             raise ProductionModelError("duration proof requires one clock and time base")
         for previous, current in zip(values, values[1:], strict=False):
             if previous.out_tick > current.in_tick:
@@ -677,10 +698,7 @@ class TickDurationProof(EvaluatorOwnedModel):
 
     def supports_seconds(self, seconds: int) -> bool:
         integer(seconds, "minimum_usable_seconds", minimum=1)
-        return (
-            self.total_ticks * self.time_base.numerator
-            >= seconds * self.time_base.denominator
-        )
+        return self.total_ticks * self.time_base.numerator >= seconds * self.time_base.denominator
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -697,6 +715,10 @@ class SourceAuthorizationRef(CanonicalModel):
     purpose: str
 
     def __post_init__(self) -> None:
+        raise ProductionModelError(
+            "an ArtifactRef cannot attest Source render authorization; "
+            "a committed SourceManifest reader result is required"
+        )
         if type(self.source_manifest_ref) is not ArtifactRef:  # noqa: E721
             raise ProductionModelError("source_manifest_ref must be an ArtifactRef")
         identifier(self.source_id, "authorization source_id")
@@ -739,7 +761,10 @@ class Candidate(EvaluatorOwnedModel):
         authorization_ref: SourceAuthorizationRef,
     ) -> Candidate:
         identifier(candidate_id, "candidate_id")
-        if type(semantic_evidence) is not CommittedCandidateSemanticEvidence or type(authority) is not OwnerBoundVlmObservationRef:  # noqa: E721
+        if (
+            type(semantic_evidence) is not CommittedCandidateSemanticEvidence
+            or type(authority) is not OwnerBoundVlmObservationRef
+        ):  # noqa: E721
             raise ProductionModelError("Candidate requires committed evaluator authority")
         committed = semantic_evidence.committed_observation
         if (
@@ -788,7 +813,9 @@ class Candidate(EvaluatorOwnedModel):
             or item.in_tick >= interval.coarse_range.end_pts
             for item in span_values
         ):
-            raise ProductionModelError("declared span does not intersect committed coarse observation")
+            raise ProductionModelError(
+                "declared span does not intersect committed coarse observation"
+            )
         if (
             type(authorization_ref) is not SourceAuthorizationRef
             or authorization_ref.source_id != committed.request_identity.source_id
@@ -897,7 +924,10 @@ class MaterialRequirement(CanonicalModel):
 
     def __post_init__(self) -> None:
         identifier(self.requirement_id, "requirement_id")
-        if type(self.obligation_ref) is not DomainRef or self.obligation_ref.object_type != "obligation":  # noqa: E721
+        if (
+            type(self.obligation_ref) is not DomainRef
+            or self.obligation_ref.object_type != "obligation"
+        ):  # noqa: E721
             raise ProductionModelError("obligation_ref must point to an obligation")
         integer(self.minimum_usable_seconds, "minimum_usable_seconds", minimum=1)
         object.__setattr__(
@@ -977,6 +1007,10 @@ class MaterialSupportEvaluator:
         candidate_catalog: CandidateCatalog,
         tainted_candidate_ids: Sequence[str] = (),
     ) -> MaterialSupport:
+        raise ProductionModelError(
+            "material support is disabled until SourceManifest authorization and "
+            "Stage 1 dependency closure are authoritative evaluator inputs"
+        )
         if candidate_catalog_ref.content_hash != candidate_catalog.canonical_hash:
             raise ProductionModelError("CandidateCatalog ref does not bind exact catalog")
         requirement_values = cast(
@@ -1003,9 +1037,7 @@ class MaterialSupportEvaluator:
                     continue
                 if candidate.authorization_ref.purpose != "render":
                     continue
-                if candidate.duration_proof.supports_seconds(
-                    requirement.minimum_usable_seconds
-                ):
+                if candidate.duration_proof.supports_seconds(requirement.minimum_usable_seconds):
                     safe.append(candidate)
             safe_refs = tuple(
                 sorted(
@@ -1025,9 +1057,7 @@ class MaterialSupportEvaluator:
                     key=jcs_key,
                 )
             )
-            source_refs = tuple(
-                sorted({item.source_ref for item in safe}, key=jcs_key)
-            )
+            source_refs = tuple(sorted({item.source_ref for item in safe}, key=jcs_key))
             proof = object.__new__(RequirementProof)
             object.__setattr__(proof, "requirement_id", requirement.requirement_id)
             object.__setattr__(proof, "status", "supported" if safe_refs else "unsupported")
@@ -1336,9 +1366,7 @@ class PortfolioSelectionRecord(CanonicalModel):
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "hard_constraint_results": [
-                item.to_mapping() for item in self.hard_constraint_results
-            ],
+            "hard_constraint_results": [item.to_mapping() for item in self.hard_constraint_results],
             "proposal_id": self.proposal_id,
             "proposal_index": self.proposal_index,
             "selected": True,
@@ -1382,6 +1410,10 @@ class PortfolioCompiler:
         job_policy_ref: ArtifactRef,
         job_policy: PortfolioPolicy,
     ) -> Portfolio:
+        raise ProductionModelError(
+            "Portfolio compilation is disabled until full JobPolicy, CandidateCatalog, "
+            "SourceManifest and dependency-closure joins are authoritative"
+        )
         identifier(portfolio_id, "portfolio_id")
         if proposal_set_ref.content_hash != proposal_set.canonical_hash:
             raise ProductionModelError("proposal_set_ref does not bind the exact ProposalSet")
@@ -1397,10 +1429,8 @@ class PortfolioCompiler:
                 and set(proposal.genre_tags) <= set(job_policy.allowed_genre_tags)
                 and proposal.editing_profile in job_policy.editing_profiles
                 and proposal.teaser_strategy in job_policy.teaser_strategies
-                and proposal.target_duration_seconds.minimum
-                >= job_policy.duration_seconds.minimum
-                and proposal.target_duration_seconds.maximum
-                <= job_policy.duration_seconds.maximum
+                and proposal.target_duration_seconds.minimum >= job_policy.duration_seconds.minimum
+                and proposal.target_duration_seconds.maximum <= job_policy.duration_seconds.maximum
             ):
                 individually_feasible.add(index)
         chosen: tuple[int, ...] | None = None
@@ -1415,7 +1445,9 @@ class PortfolioCompiler:
                 for index in candidate_tuple:
                     proposal_candidates = {
                         jcs_key(ref)
-                        for proof in proposal_set.proposals[index].material_support.requirement_proofs
+                        for proof in proposal_set.proposals[
+                            index
+                        ].material_support.requirement_proofs
                         for ref in proof.safe_candidate_refs
                     }
                     if seen_candidates & proposal_candidates:
@@ -1502,7 +1534,10 @@ class SourceUsageLedger(CanonicalModel):
     def for_portfolio(cls, ledger_id: str, portfolio: Portfolio) -> SourceUsageLedger:
         return cls(
             ledger_id,
-            tuple(SourceUsageRow(story_id, index, "pending") for index, story_id in enumerate(portfolio.target_story_ids)),
+            tuple(
+                SourceUsageRow(story_id, index, "pending")
+                for index, story_id in enumerate(portfolio.target_story_ids)
+            ),
             0,
             False,
         )
@@ -1575,6 +1610,9 @@ class PortfolioAdmissionEvaluator:
         portfolio: Portfolio,
         source_usage_ledger: SourceUsageLedger,
     ) -> PortfolioAdmission:
+        raise ProductionModelError(
+            "Portfolio continue is disabled until authoritative Stage 2 readers are wired"
+        )
         identifier(admission_id, "admission_id")
         if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "portfolio":  # noqa: E721
             raise ProductionModelError("Portfolio evaluator requires portfolio pending set")

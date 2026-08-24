@@ -77,7 +77,10 @@ class RequiredCandidate(CanonicalModel):
     authorization_ref: SourceAuthorizationRef
 
     def __post_init__(self) -> None:
-        if type(self.candidate_ref) is not DomainRef or self.candidate_ref.object_type != "candidate":  # noqa: E721
+        if (
+            type(self.candidate_ref) is not DomainRef
+            or self.candidate_ref.object_type != "candidate"
+        ):  # noqa: E721
             raise ProductionModelError("required Candidate ref has the wrong type")
         text(self.reason, "required Candidate reason")
         if type(self.authorization_ref) is not SourceAuthorizationRef:  # noqa: E721
@@ -231,7 +234,10 @@ class BlueprintBeat(CanonicalModel):
         }
         if any(jcs_key(item) not in alternatives for item in preferences):
             raise ProductionModelError("candidate preferences must be legal alternatives")
-        if type(self.span_policy) is not SpanPolicy or type(self.duration_seconds) is not DurationRangeSeconds:  # noqa: E721
+        if (
+            type(self.span_policy) is not SpanPolicy
+            or type(self.duration_seconds) is not DurationRangeSeconds
+        ):  # noqa: E721
             raise ProductionModelError("beat span/duration policy is invalid")
         object.__setattr__(self, "required_obligation_refs", obligations)
         object.__setattr__(self, "required_fact_refs", facts)
@@ -565,7 +571,10 @@ class BlueprintFragment(EvaluatorOwnedModel):
         identifier(blueprint_fragment_id, "blueprint_fragment_id")
         identifier(story_id, "fragment story_id")
         identifier(partition_id, "fragment partition_id")
-        if type(generation_invocation_ref) is not ArtifactRef or type(parse_normalization_record_ref) is not ArtifactRef:  # noqa: E721
+        if (
+            type(generation_invocation_ref) is not ArtifactRef
+            or type(parse_normalization_record_ref) is not ArtifactRef
+        ):  # noqa: E721
             raise ProductionModelError("fragment audit refs must be ArtifactRefs")
         beat_values = tuple(beats)  # parser order is authoritative.
         if not beat_values or any(type(item) is not BlueprintBeat for item in beat_values):  # noqa: E721
@@ -583,10 +592,12 @@ class BlueprintFragment(EvaluatorOwnedModel):
             raise ProductionModelError("fragment ordering constraints contain duplicates")
         beat_ids = {item.stable_beat_id for item in fragment_beats}
         if any(
-            item.first_beat_id not in beat_ids or item.second_beat_id not in beat_ids
+            item.first_beat_id not in beat_ids and item.second_beat_id not in beat_ids
             for item in constraints
         ):
-            raise ProductionModelError("fragment ordering constraint points outside fragment")
+            raise ProductionModelError(
+                "fragment ordering constraint must have at least one locally owned endpoint"
+            )
         payload = {
             "beats": [item.to_mapping() for item in fragment_beats],
             "generation_invocation_ref": generation_invocation_ref.to_mapping(),
@@ -712,6 +723,8 @@ class BlueprintMerger:
             raise ProductionModelError("partition plan ref does not bind exact plan")
         if merge_policy_ref.content_hash != merge_policy.canonical_hash:
             raise ProductionModelError("merge policy ref does not bind exact policy")
+        if partition_plan.merge_policy_ref != merge_policy_ref:
+            raise ProductionModelError("partition plan and merger use different MergePolicy refs")
         if partition_plan.story_id != story_id:
             raise ProductionModelError("partition plan belongs to another Story")
         by_partition = {item.partition_id: item for item in fragments}
@@ -722,6 +735,37 @@ class BlueprintMerger:
         ordered_fragments = tuple(by_partition[item] for item in partition_plan.partition_ids)
         if any(item.story_id != story_id for item in ordered_fragments):
             raise ProductionModelError("fragment belongs to another Story")
+        for partition, fragment in zip(partition_plan.partitions, ordered_fragments, strict=True):
+            fragment_obligations = {
+                ref.object_id
+                for beat in fragment.beats
+                for ref in beat.normalized_beat.required_obligation_refs
+            }
+            fragment_requirements = {
+                requirement.requirement_id
+                for beat in fragment.beats
+                for requirement in beat.normalized_beat.evidence_requirements
+            }
+            if fragment_obligations != set(partition.writer_obligation_ids):
+                raise ProductionModelError(
+                    "fragment obligations do not exactly match partition writer assignment"
+                )
+            if fragment_requirements != set(partition.writer_requirement_ids):
+                raise ProductionModelError(
+                    "fragment requirements do not exactly match partition writer assignment"
+                )
+        writer_closure_ids = tuple(
+            item.closure_id
+            for partition in partition_plan.partitions
+            for item in partition.writer_closure_refs
+        )
+        if len(writer_closure_ids) != len(set(writer_closure_ids)):
+            raise ProductionModelError("partition closure writers are not exclusive")
+        for partition in partition_plan.partitions:
+            writer_ids = {item.closure_id for item in partition.writer_closure_refs}
+            shared_ids = {item.closure_id for item in partition.shared_read_only_closure_refs}
+            if writer_ids & shared_ids:
+                raise ProductionModelError("a partition cannot both write and share a closure")
         beat_owner: dict[str, tuple[int, int, BlueprintBeat]] = {}
         constraints: list[OrderingConstraint] = []
         for partition_position, fragment in enumerate(ordered_fragments):
@@ -773,6 +817,24 @@ class BlueprintMerger:
             )
         )
         ordered_beats = tuple(beat_owner[item][2] for item in ordered_beat_ids)
+        position = {beat_id: index for index, beat_id in enumerate(ordered_beat_ids)}
+        for constraint in constraints:
+            first = position[constraint.first_beat_id]
+            second = position[constraint.second_beat_id]
+            if first >= second:
+                raise ProductionModelError("hard ordering constraint was not preserved")
+            if constraint.constraint_type == "adjacent" and second != first + 1:
+                raise ProductionModelError("adjacent Beats are not consecutive in merged order")
+            if constraint.constraint_type == "max_gap":
+                gap = cast(TickGap, constraint.maximum_gap)
+                intervening_minimum_seconds = sum(
+                    item.duration_seconds.minimum for item in ordered_beats[first + 1 : second]
+                )
+                if (
+                    intervening_minimum_seconds * gap.time_base.denominator
+                    > gap.tick * gap.time_base.numerator
+                ):
+                    raise ProductionModelError("merged Beats exceed maximum_gap")
         merge_result_hash = canonical_json_hash(
             {
                 "fragment_refs": [item.domain_ref.to_mapping() for item in ordered_fragments],
@@ -820,6 +882,7 @@ class EvidenceClosureMember(CanonicalModel):
             "vlm_observation",
             "character_state",
             "candidate_metadata",
+            "dependency_closure",
         }:
             raise ProductionModelError("evidence closure member kind is unknown")
         if type(self.source_artifact_ref) is not ArtifactRef:  # noqa: E721
@@ -846,16 +909,24 @@ class EvidenceClosure(CanonicalModel):
     def __post_init__(self) -> None:
         identifier(self.closure_id, "closure_id")
         identifier(self.requirement_id, "closure requirement_id")
-        object.__setattr__(
-            self,
-            "members",
-            cast(
-                tuple[EvidenceClosureMember, ...],
-                canonical_values(
-                    self.members, EvidenceClosureMember, "closure members", nonempty=True
-                ),
-            ),
+        members = cast(
+            tuple[EvidenceClosureMember, ...],
+            canonical_values(self.members, EvidenceClosureMember, "closure members", nonempty=True),
         )
+        if len({item.object_id for item in members}) != len(members):
+            raise ProductionModelError("closure members must have unique object IDs")
+        mandatory = {
+            "fact",
+            "event",
+            "vlm_observation",
+            "candidate_metadata",
+            "dependency_closure",
+        }
+        if not mandatory <= {item.kind for item in members}:
+            raise ProductionModelError(
+                "closure omits mandatory Fact/Event/VLM/Candidate/dependency evidence"
+            )
+        object.__setattr__(self, "members", members)
         object.__setattr__(
             self,
             "dependency_refs",
@@ -995,7 +1066,10 @@ class ContextManifest(EvaluatorOwnedModel):
     ) -> ContextManifest:
         identifier(context_manifest_id, "context_manifest_id")
         identifier(story_id, "context story_id")
-        if closure_set.story_id != story_id or evidence_closure_set_ref.content_hash != closure_set.canonical_hash:
+        if (
+            closure_set.story_id != story_id
+            or evidence_closure_set_ref.content_hash != closure_set.canonical_hash
+        ):
             raise ProductionModelError("Context does not bind exact Story EvidenceClosureSet")
         inputs = canonical_artifact_refs(input_refs, "context input_refs", nonempty=True)
         required = tuple(
@@ -1119,8 +1193,15 @@ class SemanticFeasibilityEvaluator:
         candidate_catalog_ref: ArtifactRef,
         candidate_catalog: CandidateCatalog,
     ) -> SemanticFeasibilityAdmission:
+        raise ProductionModelError(
+            "semantic continue is disabled until every closure member is resolved by an "
+            "authoritative Graph/Event/VLM/Candidate/dependency reader"
+        )
         identifier(admission_id, "admission_id")
-        if type(pending_set) is not PendingBusinessSet or pending_set.admission_kind != "semantic_feasibility":  # noqa: E721
+        if (
+            type(pending_set) is not PendingBusinessSet
+            or pending_set.admission_kind != "semantic_feasibility"
+        ):  # noqa: E721
             raise ProductionModelError("semantic evaluator requires semantic pending set")
         pending_set.require_exact_types(_STAGE3_MEMBER_TYPES)
         blueprint_ref = pending_set.require_member("editorial_blueprint", blueprint)
@@ -1162,7 +1243,10 @@ class SemanticFeasibilityEvaluator:
             raise ProductionModelError("source_usage_ledger_ref does not bind exact ledger")
         if candidate_catalog_ref.content_hash != candidate_catalog.canonical_hash:
             raise ProductionModelError("candidate_catalog_ref does not bind exact catalog")
-        if portfolio_admission.portfolio_ref != portfolio_ref or portfolio_admission.next_action != "continue":
+        if (
+            portfolio_admission.portfolio_ref != portfolio_ref
+            or portfolio_admission.next_action != "continue"
+        ):
             raise ProductionModelError("Story is not backed by exact continuing PortfolioAdmission")
         if portfolio_admission.source_usage_ledger_ref != source_usage_ledger_ref:
             raise ProductionModelError("PortfolioAdmission does not bind exact SourceUsageLedger")
@@ -1173,7 +1257,8 @@ class SemanticFeasibilityEvaluator:
         if tuple(item.story_id for item in source_usage_ledger.rows) != portfolio.target_story_ids:
             raise ProductionModelError("SourceUsageLedger target join is incomplete")
         record = next(
-            (item for item in portfolio.selection_records if item.story_id == blueprint.story_id), None
+            (item for item in portfolio.selection_records if item.story_id == blueprint.story_id),
+            None,
         )
         if record is None or record.proposal_index >= len(proposal_set.proposals):
             raise ProductionModelError("Blueprint Story has no selected Proposal")
@@ -1194,44 +1279,49 @@ class SemanticFeasibilityEvaluator:
         }
         source_ids = tuple(item.source_material_requirement_id for item in requirements)
         if len(source_ids) != len(set(source_ids)) or set(source_ids) != set(material_by_id):
-            raise ProductionModelError("Proposal material requirements and Blueprint evidence requirements are not bijective")
+            raise ProductionModelError(
+                "Proposal material requirements and Blueprint evidence requirements are not bijective"
+            )
         closure_requirement_ids = {item.requirement_id for item in closure_set.closures}
         if closure_requirement_ids != {item.requirement_id for item in requirements}:
-            raise ProductionModelError("EvidenceClosureSet does not exactly cover evidence requirements")
+            raise ProductionModelError(
+                "EvidenceClosureSet does not exactly cover evidence requirements"
+            )
         candidates = {item.candidate_id: item for item in candidate_catalog.candidates}
         for beat in blueprint.beats:
             for requirement in beat.evidence_requirements:
                 material = material_by_id[requirement.source_material_requirement_id]
                 if (
                     requirement.physical_requirements != material.physical_requirements
-                    or requirement.physical_requirements_hash
-                    != material.physical_requirements_hash
+                    or requirement.physical_requirements_hash != material.physical_requirements_hash
                 ):
                     raise ProductionModelError("Stage 3 changed deferred physical requirements")
                 alternative_statuses: list[bool] = []
                 for alternative in requirement.alternative_sets:
-                    resolved = tuple(candidates.get(ref.object_id) for ref in alternative.candidate_refs)
-                    if any(ref.artifact_ref != candidate_catalog_ref for ref in alternative.candidate_refs):
-                        raise ProductionModelError("alternative Candidate has the wrong catalog owner")
+                    resolved = tuple(
+                        candidates.get(ref.object_id) for ref in alternative.candidate_refs
+                    )
+                    if any(
+                        ref.artifact_ref != candidate_catalog_ref
+                        for ref in alternative.candidate_refs
+                    ):
+                        raise ProductionModelError(
+                            "alternative Candidate has the wrong catalog owner"
+                        )
                     if any(item is None for item in resolved):
                         raise ProductionModelError("alternative points outside CandidateCatalog")
                     typed = cast(tuple[Candidate, ...], resolved)
                     covered = {
-                        jcs_key(event)
-                        for candidate in typed
-                        for event in candidate.event_refs
+                        jcs_key(event) for candidate in typed for event in candidate.event_refs
                     }
                     alternative_statuses.append(
                         {jcs_key(event) for event in alternative.event_refs} <= covered
                         and all(
-                            beat.narrative_function
-                            in candidate.supported_narrative_functions
+                            beat.narrative_function in candidate.supported_narrative_functions
                             for candidate in typed
                         )
                         and any(
-                            candidate.duration_proof.supports_seconds(
-                                beat.duration_seconds.minimum
-                            )
+                            candidate.duration_proof.supports_seconds(beat.duration_seconds.minimum)
                             for candidate in typed
                         )
                     )
@@ -1289,7 +1379,9 @@ class SemanticFeasibilityEvaluator:
             or len(writer_requirements) != len(set(writer_requirements))
             or set(writer_requirements) != {item.requirement_id for item in requirements}
         ):
-            raise ProductionModelError("partition writers do not exactly cover obligations/requirements")
+            raise ProductionModelError(
+                "partition writers do not exactly cover obligations/requirements"
+            )
         rules = computed_rule_results(_SEMANTIC_RULES, pending_set.canonical_hash)
         instance = object.__new__(SemanticFeasibilityAdmission)
         object.__setattr__(instance, "admission_id", admission_id)
@@ -1312,9 +1404,7 @@ class SemanticFeasibilityEvaluator:
         object.__setattr__(
             instance,
             "required_requirements_hash",
-            canonical_json_hash(
-                [item.to_mapping() for item in sorted(requirements, key=jcs_key)]
-            ),
+            canonical_json_hash([item.to_mapping() for item in sorted(requirements, key=jcs_key)]),
         )
         object.__setattr__(instance, "next_action", "continue")
         object.__setattr__(instance, "rule_results", rules)
@@ -1328,7 +1418,10 @@ class SemanticStoryEvaluation(CanonicalModel):
 
     def __post_init__(self) -> None:
         identifier(self.story_id, "semantic batch story_id")
-        if type(self.admission) is not SemanticFeasibilityAdmission or self.admission.story_id != self.story_id:  # noqa: E721
+        if (
+            type(self.admission) is not SemanticFeasibilityAdmission
+            or self.admission.story_id != self.story_id
+        ):  # noqa: E721
             raise ProductionModelError("semantic batch result has a mismatched admission")
 
     def to_mapping(self) -> dict[str, object]:

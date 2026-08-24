@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Final, Mapping, Sequence, cast
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
@@ -108,6 +109,15 @@ def exact_decimal(value: object, label: str) -> str:
     result = text(value, label)
     if not _EXACT_DECIMAL.fullmatch(result):
         raise ProductionModelError(f"{label} must be an exact decimal in [0,1]")
+    try:
+        decimal = Decimal(result)
+    except InvalidOperation as error:
+        raise ProductionModelError(f"{label} must be an exact decimal in [0,1]") from error
+    canonical = format(decimal.normalize(), "f")
+    if canonical == "-0":
+        canonical = "0"
+    if result != canonical:
+        raise ProductionModelError(f"{label} must use canonical decimal lexical form ({canonical})")
     return result
 
 
