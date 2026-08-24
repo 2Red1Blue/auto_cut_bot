@@ -38,11 +38,17 @@ def tree_hash(path: Path) -> str:
         if p.is_symlink():
             raise RuntimeError("model symlink forbidden")
         if p.is_file():
+            digest = hashlib.sha256()
+            size = 0
+            with p.open("rb") as source:
+                while block := source.read(1024 * 1024):
+                    digest.update(block)
+                    size += len(block)
             records.append(
                 {
                     "path": p.relative_to(path).as_posix(),
-                    "size": p.stat().st_size,
-                    "sha256": sha(p.read_bytes()),
+                    "size": size,
+                    "sha256": "sha256:" + digest.hexdigest(),
                 }
             )
     return sha(canon(records))
