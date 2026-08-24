@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import platform
 import runpy
 import sys
 import threading
@@ -116,12 +117,32 @@ class _AutoModel:
 class _BlockingAutoModel(_AutoModel):
     started = threading.Event()
     release = threading.Event()
+    active = 0
+    max_active = 0
+    generate_calls = 0
+    counter_lock = threading.Lock()
 
     def generate(self, **kwargs: object) -> list[dict[str, object]]:
-        self.started.set()
-        if not self.release.wait(10):
-            raise RuntimeError("test inference release timed out")
-        return super().generate(**kwargs)
+        with self.counter_lock:
+            type(self).active += 1
+            type(self).generate_calls += 1
+            type(self).max_active = max(type(self).max_active, type(self).active)
+        try:
+            self.started.set()
+            if not self.release.wait(10):
+                raise RuntimeError("test inference release timed out")
+            return super().generate(**kwargs)
+        finally:
+            with self.counter_lock:
+                type(self).active -= 1
+
+
+class _CountingAutoModel(_AutoModel):
+    constructions = 0
+
+    def __init__(self, **kwargs: object) -> None:
+        type(self).constructions += 1
+        super().__init__(**kwargs)
 
 
 def _service_profile(
@@ -180,8 +201,13 @@ def _service_environment(
         "FUNASR_MAX_REQUEST_BYTES": "1000000",
         "FUNASR_MAX_RESPONSE_BYTES": "1000000",
         "FUNASR_INFERENCE_TIMEOUT_SECONDS": "30",
-        "FUNASR_QUEUE_CAPACITY": "1",
+        "FUNASR_QUEUE_CAPACITY": "3",
         "FUNASR_SHARED_TOKEN": "secret",
+        "FUNASR_REQUIRED_PYTHON_VERSION": platform.python_version(),
+        "FUNASR_STARTUP_MIN_AVAILABLE_BYTES": "1",
+        "FUNASR_INFERENCE_MIN_AVAILABLE_BYTES": "1",
+        "FUNASR_MAX_SWAP_USED_BYTES": "999999999999999",
+        "FUNASR_SINGLETON_LOCK_PATH": str(asr.parents[2] / "funasr-service.lock"),
     }
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -323,6 +349,101 @@ def test_explicit_empty_asr_distinguishes_silence_from_vad_only(
     assert state == "speech" and len(segs) == 1 and segs[0]["confidence_ppm"] is None
 
 
+def test_resource_snapshots_parse_linux_and_macos_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ns = namespace(monkeypatch)
+    linux = ns["linux_resource_snapshot"](
+        "MemTotal: 1000 kB\nMemAvailable: 640 kB\nSwapTotal: 200 kB\nSwapFree: 80 kB\n"
+    )
+    assert linux.available_bytes == 640 * 1024
+    assert linux.swap_total_bytes == 200 * 1024
+    assert linux.swap_used_bytes == 120 * 1024
+
+    macos = ns["macos_resource_snapshot"](
+        "Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+        "Pages free: 10.\nPages inactive: 20.\nPages speculative: 2.\n",
+        "total = 4.00G  used = 1.50G  free = 2.50G",
+    )
+    assert macos.available_bytes == 32 * 16384
+    assert macos.swap_total_bytes == 4 * 1024**3
+    assert macos.swap_used_bytes == int(1.5 * 1024**3)
+
+
+@pytest.mark.asyncio
+async def test_startup_resource_pressure_fails_before_model_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _CountingAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_STARTUP_MIN_AVAILABLE_BYTES", "1000")
+    snapshot = ns["ResourceSnapshot"](999, 100, 0)
+
+    with pytest.raises(RuntimeError, match="resource-pressure"):
+        await ns["Service"](resource_reader=lambda: snapshot).load()
+
+    assert _CountingAutoModel.constructions == 0
+
+
+@pytest.mark.asyncio
+async def test_startup_swap_pressure_fails_before_model_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _CountingAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_MAX_SWAP_USED_BYTES", "100")
+    snapshot = ns["ResourceSnapshot"](10_000, 1_000, 101)
+
+    with pytest.raises(RuntimeError, match="resource-pressure"):
+        await ns["Service"](resource_reader=lambda: snapshot).load()
+
+    assert _CountingAutoModel.constructions == 0
+
+
+@pytest.mark.asyncio
+async def test_host_singleton_rejects_second_instance_before_model_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _CountingAutoModel.constructions = 0
+    ns = namespace(monkeypatch, _CountingAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+
+    first = ns["Service"]()
+    second = ns["Service"]()
+    await first.load()
+    with pytest.raises(RuntimeError, match="singleton lock"):
+        await second.load()
+
+    assert _CountingAutoModel.constructions == 1
+    await first.close()
+
+
 @pytest.mark.asyncio
 async def test_service_load_binds_model_bytes_service_and_actual_device(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -348,6 +469,7 @@ async def test_service_load_binds_model_bytes_service_and_actual_device(
         "fsmn-vad-direct",
     ]
     assert service.identities == profile["producers"]
+    await service.close()
 
 
 @pytest.mark.asyncio
@@ -456,11 +578,66 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
 
 
 @pytest.mark.asyncio
-async def test_http_queue_capacity_rejects_before_third_request_spools(
+async def test_request_resource_pressure_rejects_before_admission_or_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_INFERENCE_MIN_AVAILABLE_BYTES", "1000")
+    snapshots = iter(
+        (
+            ns["ResourceSnapshot"](10_000, 1_000, 0),
+            ns["ResourceSnapshot"](999, 1_000, 0),
+        )
+    )
+    service = ns["Service"](resource_reader=lambda: next(snapshots))
+    temporary_directory = ns["tempfile"].TemporaryDirectory
+    spool_count = 0
+
+    def counted_temporary_directory(*args: object, **kwargs: object) -> object:
+        nonlocal spool_count
+        spool_count += 1
+        return temporary_directory(*args, **kwargs)
+
+    monkeypatch.setattr(ns["tempfile"], "TemporaryDirectory", counted_temporary_directory)
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        request_value = _request_for_profile(
+            tmp_path, profile, str(client.make_url("/v1/timed-speech-evidence"))
+        )
+        response = await client.post(
+            "/v1/timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers=_headers(request_value),
+        )
+
+        assert response.status == 503
+        assert await response.text() == "resource-pressure"
+        assert response.headers["Retry-After"] == "1"
+        assert service.admitted == 0
+        assert spool_count == 0
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_three_in_flight_requests_serialize_inference_and_fourth_does_not_spool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _BlockingAutoModel.started.clear()
     _BlockingAutoModel.release.clear()
+    _BlockingAutoModel.active = 0
+    _BlockingAutoModel.max_active = 0
+    _BlockingAutoModel.generate_calls = 0
     ns = namespace(monkeypatch, _BlockingAutoModel)
     monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
     asr = tmp_path / "asr" / "snapshots" / "master"
@@ -471,7 +648,7 @@ async def test_http_queue_capacity_rejects_before_third_request_spools(
     (vad / "model.pt").write_bytes(b"vad")
     profile = _service_profile(ns, asr, vad)
     _service_environment(monkeypatch, profile, asr, vad)
-    monkeypatch.setenv("FUNASR_QUEUE_CAPACITY", "2")
+    monkeypatch.setenv("FUNASR_QUEUE_CAPACITY", "3")
     service = ns["Service"]()
     temporary_directory = ns["tempfile"].TemporaryDirectory
     spool_count = 0
@@ -489,24 +666,33 @@ async def test_http_queue_capacity_rejects_before_third_request_spools(
     )
     body = request_value.source_path.read_bytes()
     headers = _headers(request_value)
-    first = asyncio.create_task(client.post("/v1/timed-speech-evidence", data=body, headers=headers))
+    first = asyncio.create_task(
+        client.post("/v1/timed-speech-evidence", data=body, headers=headers)
+    )
     try:
         assert await asyncio.to_thread(_BlockingAutoModel.started.wait, 3)
         second = asyncio.create_task(
             client.post("/v1/timed-speech-evidence", data=body, headers=headers)
         )
+        third = asyncio.create_task(
+            client.post("/v1/timed-speech-evidence", data=body, headers=headers)
+        )
         for _ in range(300):
-            if service.admitted == 2 and spool_count == 2:
+            if service.admitted == 3 and spool_count == 3:
                 break
             await asyncio.sleep(0.01)
-        assert service.admitted == 2 and spool_count == 2
+        assert service.admitted == 3 and spool_count == 3
+        assert _BlockingAutoModel.generate_calls == 1
+        assert _BlockingAutoModel.max_active == 1
 
-        third = await client.post("/v1/timed-speech-evidence", data=body, headers=headers)
-        assert third.status == 503
-        assert spool_count == 2
+        fourth = await client.post("/v1/timed-speech-evidence", data=body, headers=headers)
+        assert fourth.status == 503
+        assert spool_count == 3
         _BlockingAutoModel.release.set()
-        responses = await asyncio.gather(first, second)
-        assert [response.status for response in responses] == [200, 200]
+        responses = await asyncio.gather(first, second, third)
+        assert [response.status for response in responses] == [200, 200, 200]
+        assert _BlockingAutoModel.generate_calls == 3
+        assert _BlockingAutoModel.max_active == 1
     finally:
         _BlockingAutoModel.release.set()
         await client.close()

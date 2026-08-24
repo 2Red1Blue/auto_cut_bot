@@ -5,15 +5,23 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
+import fcntl
 import hashlib
 import hmac
 import importlib.metadata
 import json
 import os
+import platform
+import re
+import stat
+import subprocess
 import tempfile
+import threading
+from dataclasses import dataclass
+from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import torch
 from aiohttp import web
@@ -25,6 +33,141 @@ ASR_MODEL_ID = "SenseVoiceSmall"
 VAD_MODEL_ID = "fsmn-vad"
 ASR_INFERENCE_KIND = "sensevoice-word-timestamp"
 VAD_INFERENCE_KIND = "fsmn-vad-direct"
+RESOURCE_PRESSURE_TEXT = "resource-pressure"
+
+
+@dataclass(frozen=True)
+class ResourceSnapshot:
+    available_bytes: int
+    swap_total_bytes: int
+    swap_used_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            self.available_bytes < 0
+            or self.swap_total_bytes < 0
+            or self.swap_used_bytes < 0
+            or self.swap_used_bytes > self.swap_total_bytes
+        ):
+            raise RuntimeError("resource snapshot contains invalid byte counts")
+
+
+ResourceReader = Callable[[], ResourceSnapshot]
+
+
+def linux_resource_snapshot(meminfo: str) -> ResourceSnapshot:
+    values: dict[str, int] = {}
+    for line in meminfo.splitlines():
+        match = re.fullmatch(r"(MemAvailable|SwapTotal|SwapFree):\s+([0-9]+)\s+kB", line)
+        if match is not None:
+            values[match.group(1)] = int(match.group(2)) * 1024
+    if set(values) != {"MemAvailable", "SwapTotal", "SwapFree"}:
+        raise RuntimeError("Linux resource snapshot is incomplete")
+    if values["SwapFree"] > values["SwapTotal"]:
+        raise RuntimeError("Linux swap counters are invalid")
+    return ResourceSnapshot(
+        values["MemAvailable"],
+        values["SwapTotal"],
+        values["SwapTotal"] - values["SwapFree"],
+    )
+
+
+def _scaled_bytes(value: str, unit: str) -> int:
+    scales = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    return int(Decimal(value) * scales[unit.upper()])
+
+
+def macos_resource_snapshot(vm_stat: str, swapusage: str) -> ResourceSnapshot:
+    page_match = re.search(r"page size of ([0-9]+) bytes", vm_stat)
+    if page_match is None:
+        raise RuntimeError("macOS page size is unavailable")
+    pages: dict[str, int] = {}
+    for line in vm_stat.splitlines():
+        match = re.fullmatch(r"Pages (free|inactive|speculative):\s+([0-9]+)\.", line)
+        if match is not None:
+            pages[match.group(1)] = int(match.group(2))
+    if set(pages) != {"free", "inactive", "speculative"}:
+        raise RuntimeError("macOS available-page snapshot is incomplete")
+    swap: dict[str, int] = {}
+    for match in re.finditer(r"\b(total|used)\s*=\s*([0-9]+(?:\.[0-9]+)?)([KMGT])\b", swapusage):
+        swap[match.group(1)] = _scaled_bytes(match.group(2), match.group(3))
+    if set(swap) != {"total", "used"}:
+        raise RuntimeError("macOS swap snapshot is incomplete")
+    return ResourceSnapshot(
+        sum(pages.values()) * int(page_match.group(1)),
+        swap["total"],
+        swap["used"],
+    )
+
+
+def system_resource_snapshot() -> ResourceSnapshot:
+    sys_platform = platform.system()
+    if sys_platform == "Linux":
+        return linux_resource_snapshot(Path("/proc/meminfo").read_text(encoding="ascii"))
+    if sys_platform == "Darwin":
+        vm_stat = subprocess.run(
+            ["/usr/bin/vm_stat"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        swapusage = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout
+        return macos_resource_snapshot(vm_stat, swapusage)
+    raise RuntimeError("resource snapshots support only macOS and Linux")
+
+
+_PROCESS_LOCK_PATHS: set[Path] = set()
+_PROCESS_LOCK_GUARD = threading.Lock()
+
+
+class HostSingletonLock:
+    def __init__(self, raw_path: str) -> None:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            raise RuntimeError("FUNASR_SINGLETON_LOCK_PATH must be absolute")
+        self.path = path.parent.resolve(strict=True) / path.name
+        self.fd: int | None = None
+
+    def acquire(self) -> None:
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        with _PROCESS_LOCK_GUARD:
+            if self.path in _PROCESS_LOCK_PATHS:
+                raise RuntimeError("FunASR singleton lock is already held")
+            fd = os.open(self.path, flags, 0o600)
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise RuntimeError("FunASR singleton lock must be a regular file")
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+            except BlockingIOError as error:
+                os.close(fd)
+                raise RuntimeError("FunASR singleton lock is already held") from error
+            except Exception:
+                os.close(fd)
+                raise
+            _PROCESS_LOCK_PATHS.add(self.path)
+            self.fd = fd
+
+    def release(self) -> None:
+        with _PROCESS_LOCK_GUARD:
+            if self.fd is None:
+                return
+            fd = self.fd
+            self.fd = None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+                _PROCESS_LOCK_PATHS.discard(self.path)
 
 
 def canon(v: object) -> bytes:
@@ -292,7 +435,7 @@ def vad(
 
 
 class Service:
-    def __init__(self) -> None:
+    def __init__(self, resource_reader: ResourceReader = system_resource_snapshot) -> None:
         profile = json.loads(os.environ["FUNASR_PROFILE_JSON"])
         if type(profile) is not dict:
             raise RuntimeError("FUNASR_PROFILE_JSON must be an object")
@@ -305,6 +448,16 @@ class Service:
         self.max_response = positive_environment("FUNASR_MAX_RESPONSE_BYTES")
         self.timeout = positive_environment("FUNASR_INFERENCE_TIMEOUT_SECONDS")
         self.queue_capacity = positive_environment("FUNASR_QUEUE_CAPACITY")
+        if self.queue_capacity != 3:
+            raise RuntimeError("FUNASR_QUEUE_CAPACITY must be 3")
+        required_python = os.environ["FUNASR_REQUIRED_PYTHON_VERSION"]
+        if required_python != platform.python_version():
+            raise RuntimeError("FUNASR_REQUIRED_PYTHON_VERSION does not match the runtime")
+        self.startup_min_available = positive_environment("FUNASR_STARTUP_MIN_AVAILABLE_BYTES")
+        self.inference_min_available = positive_environment("FUNASR_INFERENCE_MIN_AVAILABLE_BYTES")
+        self.max_swap_used = positive_environment("FUNASR_MAX_SWAP_USED_BYTES")
+        self.resource_reader = resource_reader
+        self.singleton = HostSingletonLock(os.environ["FUNASR_SINGLETON_LOCK_PATH"])
         token = os.environ["FUNASR_SHARED_TOKEN"]
         if not token:
             raise RuntimeError("FUNASR_SHARED_TOKEN must be non-empty")
@@ -314,6 +467,22 @@ class Service:
         self.measured_profile: dict[str, object] | None = None
         self.identities: list[dict[str, object]] = []
         self._fatal_exit = os._exit
+
+    async def require_resources(self, minimum_available: int) -> ResourceSnapshot:
+        try:
+            snapshot = await asyncio.to_thread(self.resource_reader)
+        except Exception as error:
+            raise RuntimeError(f"{RESOURCE_PRESSURE_TEXT}: snapshot unavailable") from error
+        if (
+            snapshot.available_bytes < minimum_available
+            or snapshot.swap_used_bytes > self.max_swap_used
+        ):
+            raise RuntimeError(
+                f"{RESOURCE_PRESSURE_TEXT}: available={snapshot.available_bytes} "
+                f"required={minimum_available} swap_used={snapshot.swap_used_bytes} "
+                f"max_swap_used={self.max_swap_used}"
+            )
+        return snapshot
 
     async def load(self) -> None:
         a = Path(os.environ["FUNASR_ASR_MODEL_PATH"]).resolve(strict=True)
@@ -350,8 +519,20 @@ class Service:
             raise RuntimeError("profile must contain ASR and VAD producers")
         declared = cast(list[dict[str, object]], producers)
         measured_models = (
-            ("asr", ASR_MODEL_ID, a.name, await asyncio.to_thread(tree_hash, a), ASR_INFERENCE_KIND),
-            ("vad", VAD_MODEL_ID, v.name, await asyncio.to_thread(tree_hash, v), VAD_INFERENCE_KIND),
+            (
+                "asr",
+                ASR_MODEL_ID,
+                a.name,
+                await asyncio.to_thread(tree_hash, a),
+                ASR_INFERENCE_KIND,
+            ),
+            (
+                "vad",
+                VAD_MODEL_ID,
+                v.name,
+                await asyncio.to_thread(tree_hash, v),
+                VAD_INFERENCE_KIND,
+            ),
         )
         identity_fields = {
             "producer_kind",
@@ -390,17 +571,31 @@ class Service:
         for key, actual in measured.items():
             if key != "producers" and actual != self.profile[key]:
                 raise RuntimeError(f"measured profile identity mismatch {key}")
-        self.model = await asyncio.to_thread(
-            AutoModel,
-            model=str(a),
-            vad_model=str(v),
-            device=self.profile["device"],
-            disable_update=True,
-            disable_pbar=True,
+        await self.require_resources(self.startup_min_available)
+        self.singleton.acquire()
+        model_task = asyncio.create_task(
+            asyncio.to_thread(
+                AutoModel,
+                model=str(a),
+                vad_model=str(v),
+                device=self.profile["device"],
+                disable_update=True,
+                disable_pbar=True,
+            )
         )
-        devices = (module_device(self.model.model), module_device(self.model.vad_model))
-        if devices != (self.profile["device"], self.profile["device"]):
-            raise RuntimeError("model parameter device mismatch")
+        try:
+            try:
+                self.model = await asyncio.shield(model_task)
+            except asyncio.CancelledError:
+                await asyncio.shield(model_task)
+                raise
+            devices = (module_device(self.model.model), module_device(self.model.vad_model))
+            if devices != (self.profile["device"], self.profile["device"]):
+                raise RuntimeError("model parameter device mismatch")
+        except BaseException:
+            self.model = None
+            self.singleton.release()
+            raise
         measured["producers"] = identities
         self.measured_profile = measured
         self.identities = identities
@@ -414,6 +609,12 @@ class Service:
 
     async def admit(self) -> None:
         async with self.admission_lock:
+            try:
+                await self.require_resources(self.inference_min_available)
+            except RuntimeError as error:
+                raise web.HTTPServiceUnavailable(
+                    text=RESOURCE_PRESSURE_TEXT, headers={"Retry-After": "1"}
+                ) from error
             if self.admitted >= self.queue_capacity:
                 raise web.HTTPServiceUnavailable(text="inference queue full")
             self.admitted += 1
@@ -421,6 +622,12 @@ class Service:
     async def release(self) -> None:
         async with self.admission_lock:
             self.admitted -= 1
+
+    async def close(self) -> None:
+        self.ready = False
+        async with self.lock:
+            self.model = None
+            self.singleton.release()
 
     def fatal(self, code: int) -> None:
         self.ready = False
@@ -464,12 +671,8 @@ class Service:
         if manifest.get("timed_speech_policy_sha256") != self.measured_profile.get(
             "timed_speech_policy_sha256"
         ) or manifest.get("timing_policy") != {
-            "utterance_gap_milliseconds": self.measured_profile.get(
-                "utterance_gap_milliseconds"
-            ),
-            "vad_merge_gap_milliseconds": self.measured_profile.get(
-                "vad_merge_gap_milliseconds"
-            ),
+            "utterance_gap_milliseconds": self.measured_profile.get("utterance_gap_milliseconds"),
+            "vad_merge_gap_milliseconds": self.measured_profile.get("vad_merge_gap_milliseconds"),
         }:
             raise web.HTTPConflict(text="measured timing policy drift")
         word = (
@@ -662,6 +865,10 @@ async def startup(app: web.Application) -> None:
     await app[SERVICE_KEY].load()
 
 
+async def cleanup(app: web.Application) -> None:
+    await app[SERVICE_KEY].close()
+
+
 async def live(_: web.Request) -> web.Response:
     return web.json_response({"status": "live"})
 
@@ -689,6 +896,7 @@ def create_app(service: Service | None = None) -> web.Application:
         ]
     )
     app.on_startup.append(startup)
+    app.on_cleanup.append(cleanup)
     return app
 
 
