@@ -1,0 +1,5 @@
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/prd.md","reason":"Authoritative Stage 1-3 outcome and acceptance criteria"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/design.md","reason":"Committed input joins and ArtifactSet membership"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/implement.md","reason":"Wave ordering and file ownership"}
+{"file":"packages/autocut-kernel/src/autocut_kernel/semantic_chain/production_common.py","reason":"Evaluator-owned authority model"}
+{"file":"packages/autocut-kernel/src/autocut_kernel/store/postgres.py","reason":"Exact committed reader and atomic command persistence patterns"}
