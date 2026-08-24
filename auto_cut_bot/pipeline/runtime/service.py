@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from .errors import PipelineRunNotFoundError, PipelineRunValidationError, SourceDeniedError
 from .models import (
+    PipelineExecutionProfile,
     PipelineRunRequest,
     PipelineRunSnapshot,
     RunClaim,
@@ -28,10 +29,19 @@ class DurablePipelineRunService:
         store: PipelineRunStore,
         scheduler: PipelineSchedulerPort,
         source_authority: SourceAuthorizationPort,
+        *,
+        execution_profile: PipelineExecutionProfile | None = None,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
         self._source_authority = source_authority
+        self._execution_profile = (
+            PipelineExecutionProfile.legacy_unresolved()
+            if execution_profile is None
+            else execution_profile
+        )
+        if type(self._execution_profile) is not PipelineExecutionProfile:  # noqa: E721
+            raise TypeError("execution_profile must be a PipelineExecutionProfile")
 
     async def submit(self, request: PipelineRunRequest, idempotency_key: str) -> RunClaim:
         if type(request) is not PipelineRunRequest:  # noqa: E721
@@ -44,6 +54,7 @@ class DurablePipelineRunService:
             idempotency_key=idempotency_key,
             request=request,
             request_hash=request.request_hash,
+            execution_profile=self._execution_profile,
         )
         if claim.snapshot.request != request or claim.snapshot.request_hash != request.request_hash:
             raise PipelineRunValidationError(

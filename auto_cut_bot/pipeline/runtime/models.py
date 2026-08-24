@@ -1,15 +1,21 @@
 """Closed request and status values for the pipeline run control plane."""
 
+# pyright: reportMissingTypeStubs=false
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Literal, Mapping
+from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Literal, Mapping, cast
 from uuid import UUID
 
 from .errors import PipelineRunValidationError
+
+if TYPE_CHECKING:
+    from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 PipelineProfile = Literal["test", "shadow"]
 PipelineRunStatus = Literal["accepted", "running", "succeeded", "denied", "failed"]
@@ -23,6 +29,7 @@ PipelineCommandStatus = Literal[
     "blocked",
 ]
 PipelineStageOutcome = Literal["succeeded", "denied", "failed", "indeterminate"]
+PipelineExecutionProfileKind = Literal["doubao_vlm", "legacy_unresolved"]
 
 _RUN_ID = re.compile(r"pipeline_run_[0-9a-f]{32}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -47,6 +54,480 @@ def _required_text(value: object, field_name: str) -> str:
     if type(value) is not str or not value.strip():  # noqa: E721
         raise PipelineRunValidationError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _profile_text(value: object, field_name: str) -> str:
+    result = _required_text(value, field_name)
+    if (
+        result != result.strip()
+        or len(result) > 256
+        or any(ord(character) < 32 or ord(character) == 127 for character in result)
+    ):
+        raise PipelineRunValidationError(
+            f"{field_name} must be canonical text of at most 256 characters"
+        )
+    try:
+        result.encode("utf-8", errors="strict")
+    except UnicodeEncodeError as error:
+        raise PipelineRunValidationError(f"{field_name} must contain valid Unicode") from error
+    return result
+
+
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError(key)
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _canonical_json(value: object) -> str:
+    try:
+        rendered = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        rendered.encode("utf-8", errors="strict")
+        return rendered
+    except (TypeError, UnicodeEncodeError, ValueError) as error:
+        raise PipelineRunValidationError("execution profile contains invalid JSON") from error
+
+
+def _decode_canonical_json(raw: object, field_name: str) -> dict[str, object]:
+    if type(raw) is not str:  # noqa: E721
+        raise PipelineRunValidationError(f"{field_name} must be canonical JSON text")
+    try:
+        value = cast(
+            object,
+            json.loads(
+                raw,
+                object_pairs_hook=_closed_json_object,
+                parse_constant=_reject_json_constant,
+            ),
+        )
+    except (json.JSONDecodeError, UnicodeError, ValueError) as error:
+        raise PipelineRunValidationError(f"{field_name} must be strict canonical JSON") from error
+    if type(value) is not dict:  # noqa: E721
+        raise PipelineRunValidationError(f"{field_name} must encode a JSON object")
+    result = cast(dict[str, object], value)
+    if _canonical_json(result) != raw:
+        raise PipelineRunValidationError(f"{field_name} must be canonical JSON")
+    return result
+
+
+def _require_closed_response_schema(schema: dict[str, object]) -> None:
+    if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
+        raise PipelineRunValidationError(
+            "response_schema_json must be a closed object schema"
+        )
+
+    def visit(value: object) -> None:
+        if type(value) is dict:  # noqa: E721
+            node = cast(dict[str, object], value)
+            if "properties" in node and (
+                node.get("type") != "object"
+                or node.get("additionalProperties") is not False
+                or type(node["properties"]) is not dict  # noqa: E721
+            ):
+                raise PipelineRunValidationError(
+                    "response_schema_json properties require a closed object schema"
+                )
+            if node.get("type") == "object" and node.get("additionalProperties") is not False:
+                raise PipelineRunValidationError(
+                    "response_schema_json contains an open object schema"
+                )
+            for member in node.values():
+                visit(member)
+        elif type(value) is list:  # noqa: E721
+            for member in cast(list[object], value):
+                visit(member)
+
+    visit(schema)
+
+
+_REQUEST_PARAMETER_FIELDS = frozenset(
+    {"adapter_strategy_version", "max_output_tokens", "temperature", "video_fps"}
+)
+_PARSE_POLICY_FIELDS = frozenset(
+    {
+        "minimum_confidence",
+        "max_response_bytes",
+        "max_observations",
+        "max_summary_characters",
+        "max_total_summary_characters",
+    }
+)
+_EXECUTION_PROFILE_SCHEMA_VERSION = "pipeline-execution-profile-v1"
+_DECIMAL_ZERO_TO_ONE = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineExecutionProfile:
+    """Frozen, hash-bound strategy needed to reconstruct a Doubao VLM request.
+
+    Embedded JSON is retained as canonical immutable text.  The persisted
+    profile stores those documents as JSON objects, while this value closes
+    their schemas and prevents process defaults from participating in replay.
+    """
+
+    provider_id: str | None
+    model_id: str | None
+    adapter_strategy_version: str | None
+    prompt_version: str | None
+    kernel_parser_strategy_version: str | None
+    response_schema_json: str | None
+    request_parameters_json: str | None
+    parse_policy_json: str | None
+    vlm_stage_strategy_version: str | None
+    kind: PipelineExecutionProfileKind = "doubao_vlm"
+
+    def __post_init__(self) -> None:
+        if self.kind == "legacy_unresolved":
+            if any(
+                value is not None
+                for value in (
+                    self.provider_id,
+                    self.model_id,
+                    self.adapter_strategy_version,
+                    self.prompt_version,
+                    self.kernel_parser_strategy_version,
+                    self.response_schema_json,
+                    self.request_parameters_json,
+                    self.parse_policy_json,
+                    self.vlm_stage_strategy_version,
+                )
+            ):
+                raise PipelineRunValidationError(
+                    "legacy-unresolved execution profile cannot claim a VLM strategy"
+                )
+            return
+        if self.kind != "doubao_vlm":
+            raise PipelineRunValidationError("execution profile kind is unsupported")
+        for field_name in (
+            "provider_id",
+            "model_id",
+            "adapter_strategy_version",
+            "prompt_version",
+            "kernel_parser_strategy_version",
+            "vlm_stage_strategy_version",
+        ):
+            _profile_text(getattr(self, field_name), f"execution_profile.{field_name}")
+        response_schema = _decode_canonical_json(
+            self.response_schema_json,
+            "response_schema_json",
+        )
+        _require_closed_response_schema(response_schema)
+        request_parameters = _decode_canonical_json(
+            self.request_parameters_json,
+            "request_parameters_json",
+        )
+        if frozenset(request_parameters) != _REQUEST_PARAMETER_FIELDS:
+            raise PipelineRunValidationError(
+                "request_parameters_json must match the closed Doubao parameter contract"
+            )
+        if request_parameters["adapter_strategy_version"] != self.adapter_strategy_version:
+            raise PipelineRunValidationError(
+                "request parameters must bind adapter_strategy_version"
+            )
+        tokens = request_parameters["max_output_tokens"]
+        temperature = request_parameters["temperature"]
+        video_fps = request_parameters["video_fps"]
+        if type(tokens) is not int or not 1 <= tokens <= 32_768:  # noqa: E721
+            raise PipelineRunValidationError(
+                "request_parameters_json.max_output_tokens is invalid"
+            )
+        for value, field_name, minimum, maximum in (
+            (temperature, "temperature", 0, 2),
+            (video_fps, "video_fps", 0.1, 10),
+        ):
+            if isinstance(value, bool) or type(value) not in (int, float):
+                raise PipelineRunValidationError(
+                    f"request_parameters_json.{field_name} is invalid"
+                )
+            numeric_value = cast(int | float, value)
+            if not minimum <= numeric_value <= maximum:
+                raise PipelineRunValidationError(
+                    f"request_parameters_json.{field_name} is invalid"
+                )
+        parse_policy = _decode_canonical_json(self.parse_policy_json, "parse_policy_json")
+        if frozenset(parse_policy) != _PARSE_POLICY_FIELDS:
+            raise PipelineRunValidationError(
+                "parse_policy_json must match the closed VLM parse policy contract"
+            )
+        confidence = parse_policy["minimum_confidence"]
+        if type(confidence) is not str:  # noqa: E721
+            raise PipelineRunValidationError(
+                "parse_policy_json.minimum_confidence must be a decimal string"
+            )
+        if _DECIMAL_ZERO_TO_ONE.fullmatch(confidence) is None:
+            raise PipelineRunValidationError(
+                "parse_policy_json.minimum_confidence must use canonical fixed-point syntax"
+            )
+        try:
+            minimum_confidence = Decimal(confidence)
+        except InvalidOperation as error:
+            raise PipelineRunValidationError(
+                "parse_policy_json.minimum_confidence is invalid"
+            ) from error
+        if not minimum_confidence.is_finite() or not Decimal("0") <= minimum_confidence <= Decimal("1"):
+            raise PipelineRunValidationError(
+                "parse_policy_json.minimum_confidence must be between zero and one"
+            )
+        for field_name in _PARSE_POLICY_FIELDS - {"minimum_confidence"}:
+            value = parse_policy[field_name]
+            if type(value) is not int or value <= 0:  # noqa: E721
+                raise PipelineRunValidationError(
+                    f"parse_policy_json.{field_name} must be a positive integer"
+                )
+        if cast(int, parse_policy["max_summary_characters"]) > cast(
+            int,
+            parse_policy["max_total_summary_characters"],
+        ):
+            raise PipelineRunValidationError(
+                "parse policy per-observation summary budget exceeds its total budget"
+            )
+        _build_registered_doubao_policy(self)
+
+    @classmethod
+    def legacy_unresolved(cls) -> PipelineExecutionProfile:
+        """Return the explicit fail-closed marker for pre-0008 run rows."""
+
+        return cls(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "legacy_unresolved",
+        )
+
+    @classmethod
+    def from_doubao_policy(
+        cls,
+        policy: DoubaoVlmRequestPolicy,
+    ) -> PipelineExecutionProfile:
+        from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
+
+        if type(policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution profile requires an exact DoubaoVlmRequestPolicy"
+            )
+        return cls(
+            provider_id=policy.provider_id,
+            model_id=policy.model_id,
+            adapter_strategy_version=policy.adapter_strategy_version,
+            prompt_version=policy.prompt_version,
+            kernel_parser_strategy_version=policy.parser_strategy_version,
+            response_schema_json=policy.response_schema_json,
+            request_parameters_json=policy.request_parameters_json,
+            parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
+            vlm_stage_strategy_version=policy.stage_strategy_version,
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> PipelineExecutionProfile:
+        if any(type(key) is not str for key in value):  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution profile field names must be strings"
+            )
+        kind = value.get("kind")
+        if kind == "legacy_unresolved":
+            allowed = {"kind", "schema_version"}
+            unsupported = set(value) - allowed
+            if unsupported:
+                raise PipelineRunValidationError(
+                    f"execution profile contains unsupported fields: {', '.join(sorted(unsupported))}"
+                )
+            if set(value) != allowed or value.get("schema_version") != _EXECUTION_PROFILE_SCHEMA_VERSION:
+                raise PipelineRunValidationError("legacy execution profile marker is invalid")
+            return cls.legacy_unresolved()
+        allowed = {
+            "adapter_strategy_version",
+            "kind",
+            "kernel_parser_strategy_version",
+            "model_id",
+            "parse_policy",
+            "prompt_version",
+            "provider_id",
+            "request_parameters",
+            "response_schema",
+            "schema_version",
+            "vlm_stage_strategy_version",
+        }
+        unsupported = set(value) - allowed
+        if unsupported:
+            raise PipelineRunValidationError(
+                f"execution profile contains unsupported fields: {', '.join(sorted(unsupported))}"
+            )
+        if set(value) != allowed:
+            missing = allowed - set(value)
+            raise PipelineRunValidationError(
+                f"execution profile is missing fields: {', '.join(sorted(missing))}"
+            )
+        if kind != "doubao_vlm" or value.get("schema_version") != _EXECUTION_PROFILE_SCHEMA_VERSION:
+            raise PipelineRunValidationError("execution profile kind or schema version is invalid")
+        for field_name in ("response_schema", "request_parameters", "parse_policy"):
+            if type(value[field_name]) is not dict:  # noqa: E721
+                raise PipelineRunValidationError(
+                    f"execution profile {field_name} must be a JSON object"
+                )
+        return cls(
+            provider_id=_profile_text(value["provider_id"], "execution_profile.provider_id"),
+            model_id=_profile_text(value["model_id"], "execution_profile.model_id"),
+            adapter_strategy_version=_profile_text(
+                value["adapter_strategy_version"],
+                "execution_profile.adapter_strategy_version",
+            ),
+            prompt_version=_profile_text(
+                value["prompt_version"],
+                "execution_profile.prompt_version",
+            ),
+            kernel_parser_strategy_version=_profile_text(
+                value["kernel_parser_strategy_version"],
+                "execution_profile.kernel_parser_strategy_version",
+            ),
+            response_schema_json=_canonical_json(value["response_schema"]),
+            request_parameters_json=_canonical_json(value["request_parameters"]),
+            parse_policy_json=_canonical_json(value["parse_policy"]),
+            vlm_stage_strategy_version=_profile_text(
+                value["vlm_stage_strategy_version"],
+                "execution_profile.vlm_stage_strategy_version",
+            ),
+        )
+
+    @property
+    def is_legacy_unresolved(self) -> bool:
+        return self.kind == "legacy_unresolved"
+
+    def to_mapping(self) -> dict[str, object]:
+        if self.is_legacy_unresolved:
+            return {
+                "kind": "legacy_unresolved",
+                "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+            }
+        return {
+            "adapter_strategy_version": self.adapter_strategy_version,
+            "kind": "doubao_vlm",
+            "kernel_parser_strategy_version": self.kernel_parser_strategy_version,
+            "model_id": self.model_id,
+            "parse_policy": _decode_canonical_json(self.parse_policy_json, "parse_policy_json"),
+            "prompt_version": self.prompt_version,
+            "provider_id": self.provider_id,
+            "request_parameters": _decode_canonical_json(
+                self.request_parameters_json,
+                "request_parameters_json",
+            ),
+            "response_schema": _decode_canonical_json(
+                self.response_schema_json,
+                "response_schema_json",
+            ),
+            "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+            "vlm_stage_strategy_version": self.vlm_stage_strategy_version,
+        }
+
+    @property
+    def canonical_json(self) -> str:
+        return _canonical_json(self.to_mapping())
+
+    @property
+    def canonical_hash(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
+    def to_doubao_policy(self) -> DoubaoVlmRequestPolicy:
+        """Rebuild the exact registered policy without consulting process defaults."""
+
+        return _build_registered_doubao_policy(self)
+
+
+def _build_registered_doubao_policy(
+    profile: PipelineExecutionProfile,
+) -> DoubaoVlmRequestPolicy:
+    from autocut_kernel.vlm import VlmParsePolicy
+
+    from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
+
+    if profile.is_legacy_unresolved:
+        raise PipelineRunValidationError(
+            "legacy-unresolved execution profile cannot reconstruct a Doubao policy"
+        )
+    parameters = _decode_canonical_json(
+        profile.request_parameters_json,
+        "request_parameters_json",
+    )
+    parse_policy = _decode_canonical_json(profile.parse_policy_json, "parse_policy_json")
+    try:
+        rebuilt = DoubaoVlmRequestPolicy(
+            model_id=cast(str, profile.model_id),
+            provider_id=cast(str, profile.provider_id),
+            adapter_strategy_version=cast(str, profile.adapter_strategy_version),
+            prompt_version=cast(str, profile.prompt_version),
+            parser_strategy_version=cast(
+                str,
+                profile.kernel_parser_strategy_version,
+            ),
+            response_schema_json=cast(str, profile.response_schema_json),
+            video_fps=cast(float, parameters["video_fps"]),
+            max_output_tokens=cast(int, parameters["max_output_tokens"]),
+            temperature=cast(int | float, parameters["temperature"]),
+            parse_policy=VlmParsePolicy(
+                minimum_confidence=Decimal(cast(str, parse_policy["minimum_confidence"])),
+                max_response_bytes=cast(int, parse_policy["max_response_bytes"]),
+                max_observations=cast(int, parse_policy["max_observations"]),
+                max_summary_characters=cast(
+                    int,
+                    parse_policy["max_summary_characters"],
+                ),
+                max_total_summary_characters=cast(
+                    int,
+                    parse_policy["max_total_summary_characters"],
+                ),
+            ),
+            stage_strategy_version=cast(str, profile.vlm_stage_strategy_version),
+        )
+    except (TypeError, ValueError) as error:
+        raise PipelineRunValidationError(
+            "execution profile does not match the registered Doubao policy"
+        ) from error
+    registered_mapping: dict[str, object] = {
+        "adapter_strategy_version": rebuilt.adapter_strategy_version,
+        "kind": "doubao_vlm",
+        "kernel_parser_strategy_version": rebuilt.parser_strategy_version,
+        "model_id": rebuilt.model_id,
+        "parse_policy": rebuilt.parse_policy.to_mapping(),
+        "prompt_version": rebuilt.prompt_version,
+        "provider_id": rebuilt.provider_id,
+        "request_parameters": rebuilt.request_parameters,
+        "response_schema": _decode_canonical_json(
+            rebuilt.response_schema_json,
+            "response_schema_json",
+        ),
+        "schema_version": _EXECUTION_PROFILE_SCHEMA_VERSION,
+        "vlm_stage_strategy_version": rebuilt.stage_strategy_version,
+    }
+    if _canonical_json(registered_mapping) != profile.canonical_json:
+        raise PipelineRunValidationError(
+            "execution profile cannot exactly reconstruct its registered Doubao policy"
+        )
+    return rebuilt
+
+
+_LEGACY_UNRESOLVED_EXECUTION_PROFILE = PipelineExecutionProfile.legacy_unresolved()
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,11 +669,16 @@ class PipelineRunSnapshot:
     status: PipelineRunStatus
     commands: tuple[PipelineCommand, ...]
     version: int
+    execution_profile: PipelineExecutionProfile = _LEGACY_UNRESOLVED_EXECUTION_PROFILE
 
     def __post_init__(self) -> None:
         validate_run_id(self.run_id)
         if type(self.request) is not PipelineRunRequest:  # noqa: E721
             raise PipelineRunValidationError("request must be a PipelineRunRequest")
+        if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution_profile must be a PipelineExecutionProfile"
+            )
         if self.request_hash != self.request.request_hash:
             raise PipelineRunValidationError("request_hash does not bind the canonical request")
         if self.status not in ("accepted", "running", "succeeded", "denied", "failed"):
@@ -234,10 +720,15 @@ class PipelineRunSnapshot:
             "run_id": self.run_id,
             "profile": self.request.profile,
             "request_hash": self.request_hash,
+            "execution_profile_hash": self.execution_profile_hash,
             "status": self.status,
             "commands": [command.to_mapping() for command in self.commands],
             "version": self.version,
         }
+
+    @property
+    def execution_profile_hash(self) -> str:
+        return self.execution_profile.canonical_hash
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +772,7 @@ class PipelineStageContext:
     run_id: str
     request: PipelineRunRequest
     command: PipelineCommand
+    execution_profile: PipelineExecutionProfile = _LEGACY_UNRESOLVED_EXECUTION_PROFILE
 
     def __post_init__(self) -> None:
         validate_run_id(self.run_id)
@@ -288,6 +780,18 @@ class PipelineStageContext:
             raise PipelineRunValidationError("stage context request must be canonical")
         if type(self.command) is not PipelineCommand:  # noqa: E721
             raise PipelineRunValidationError("stage context command must be persisted")
+        if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
+            raise PipelineRunValidationError(
+                "stage context execution_profile must be persisted"
+            )
+        if self.command.stage == "vlm" and self.execution_profile.is_legacy_unresolved:
+            raise PipelineRunValidationError(
+                "legacy-unresolved execution profile cannot execute VLM"
+            )
+
+    @property
+    def execution_profile_hash(self) -> str:
+        return self.execution_profile.canonical_hash
 
 
 @dataclass(frozen=True, slots=True)

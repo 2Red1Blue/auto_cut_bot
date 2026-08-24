@@ -13,7 +13,9 @@ from auto_cut_bot.api.server import create_app
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
     IdempotencyConflictError,
+    PipelineExecutionProfile,
     PipelineRunRequest,
+    PipelineRunValidationError,
     PipelineStageContext,
     PipelineStageReconciler,
     PipelineStageResult,
@@ -27,6 +29,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_SOURCE_ROOTS_ENV,
     ConfiguredSourceAuthority,
 )
+from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -59,7 +62,25 @@ def _composition(source_root: Path):
     store = PostgresPipelineRunStore(factory)
     scheduler = PostgresPipelineScheduler(factory)
     authority = ConfiguredSourceAuthority((source_root,), frozenset({"source:fixture-1"}))
-    return DurablePipelineRunService(store, scheduler, authority), store, scheduler
+    return (
+        DurablePipelineRunService(
+            store,
+            scheduler,
+            authority,
+            execution_profile=_execution_profile(),
+        ),
+        store,
+        scheduler,
+    )
+
+
+def _execution_profile(
+    *,
+    model_id: str = "doubao-seed-2-1-pro-260628",
+) -> PipelineExecutionProfile:
+    return PipelineExecutionProfile.from_doubao_policy(
+        DoubaoVlmRequestPolicy(model_id=model_id)
+    )
 
 
 def _force_terminal_command(cursor, command_id: str, outcome: str) -> str:
@@ -124,6 +145,94 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
     )
     assert await restarted.status(first.snapshot.run_id) == first.snapshot
     assert await restarted.reconstruct() == (first.snapshot.run_id,)
+
+
+@pytest.mark.asyncio
+async def test_postgres_replay_uses_frozen_profile_and_new_key_uses_changed_profile(
+    tmp_path: Path,
+) -> None:
+    assert DSN is not None
+
+    def factory():
+        return psycopg.connect(DSN)
+
+    store = PostgresPipelineRunStore(factory)
+    scheduler = PostgresPipelineScheduler(factory)
+    authority = ConfiguredSourceAuthority((tmp_path,), frozenset())
+    first_profile = _execution_profile(model_id="doubao-model-v1")
+    changed_profile = _execution_profile(model_id="doubao-model-v2")
+    first_service = DurablePipelineRunService(
+        store,
+        scheduler,
+        authority,
+        execution_profile=first_profile,
+    )
+    changed_service = DurablePipelineRunService(
+        PostgresPipelineRunStore(factory),
+        PostgresPipelineScheduler(factory),
+        authority,
+        execution_profile=changed_profile,
+    )
+    request = PipelineRunRequest("test", source_root=str(tmp_path / "input"))
+
+    first = await first_service.submit(request, "postgres-profile-frozen")
+    replay = await changed_service.submit(request, "postgres-profile-frozen")
+    changed = await changed_service.submit(request, "postgres-profile-new")
+
+    assert replay.replayed is True
+    assert replay.snapshot.execution_profile == first_profile
+    assert replay.snapshot.execution_profile_hash == first_profile.canonical_hash
+    assert changed.snapshot.execution_profile == changed_profile
+    assert changed.snapshot.execution_profile_hash == changed_profile.canonical_hash
+    assert first.snapshot.request_hash == changed.snapshot.request_hash
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT execution_profile, execution_profile_hash
+                  FROM runtime.pipeline_runs WHERE run_id = %s
+                """,
+                (first.snapshot.run_id,),
+            )
+            persisted = cursor.fetchone()
+            assert persisted is not None
+            assert persisted[0] == first_profile.to_mapping()
+            persisted_hash = (
+                persisted[1].decode() if isinstance(persisted[1], bytes) else persisted[1]
+            )
+            assert persisted_hash == first_profile.canonical_hash
+
+
+@pytest.mark.asyncio
+async def test_postgres_read_recomputes_execution_profile_hash(tmp_path: Path) -> None:
+    assert DSN is not None
+    service, store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        "postgres-profile-hash-tamper",
+    )
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE runtime.pipeline_runs DISABLE TRIGGER runtime_pipeline_run_transition_guard"
+            )
+            try:
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_runs
+                       SET execution_profile_hash = %s
+                     WHERE run_id = %s
+                    """,
+                    ("sha256:" + "0" * 64, submitted.snapshot.run_id),
+                )
+            finally:
+                cursor.execute(
+                    "ALTER TABLE runtime.pipeline_runs ENABLE TRIGGER runtime_pipeline_run_transition_guard"
+                )
+
+    with pytest.raises(PipelineRunValidationError, match="hash does not bind"):
+        await store.read_run(submitted.snapshot.run_id)
 
 
 @pytest.mark.asyncio
@@ -631,6 +740,152 @@ def test_0007_upgrades_active_0005_single_stage_runs_with_causal_vlm_state() -> 
                         if source_state in ("denied", "failed")
                         else None
                     )
+
+
+@pytest.mark.asyncio
+async def test_0008_aborts_on_old_active_runs_and_marks_only_terminal_history() -> None:
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+    active_request = PipelineRunRequest("test", source_root="/legacy/active")
+    terminal_request = PipelineRunRequest("test", source_root="/legacy/terminal")
+    active_run_id = "pipeline_run_" + "a" * 32
+    terminal_run_id = "pipeline_run_" + "b" * 32
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+            cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+            for migration in sorted(migration_root.glob("000[1-6]_*.sql")):
+                cursor.execute(migration.read_text(encoding="utf-8"))
+            for run_id, idempotency_key, request in (
+                (active_run_id, "legacy-active", active_request),
+                (terminal_run_id, "legacy-terminal", terminal_request),
+            ):
+                command_id = str(uuid4())
+                with connection.transaction():
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_runs
+                            (run_id, idempotency_key, request_hash, profile,
+                             source_kind, source_value, state, version)
+                        VALUES (%s, %s, %s, 'test', 'root', %s, 'accepted', 0)
+                        """,
+                        (run_id, idempotency_key, request.request_hash, request.source_root),
+                    )
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES (%s, %s, 0, 'source_prep', 'pending', 0)
+                        """,
+                        (command_id, run_id),
+                    )
+                    _force_terminal_command(cursor, command_id, "succeeded")
+                    cursor.execute(
+                        """
+                        UPDATE runtime.pipeline_runs
+                           SET state = %s, version = version + 1,
+                               updated_at = transaction_timestamp()
+                         WHERE run_id = %s
+                        """,
+                        (
+                            "running" if run_id == active_run_id else "succeeded",
+                            run_id,
+                        ),
+                    )
+            cursor.execute(
+                (migration_root / "0007_pipeline_stage_worker.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            profile_migration = (
+                migration_root / "0008_pipeline_execution_profile.sql"
+            ).read_text(encoding="utf-8")
+            with pytest.raises(
+                psycopg.DatabaseError,
+                match="refuses legacy accepted/running pipeline runs",
+            ):
+                cursor.execute(profile_migration)
+            connection.rollback()
+            cursor.execute(
+                """
+                SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = 'runtime'
+                   AND table_name = 'pipeline_runs'
+                   AND column_name = 'execution_profile'
+                """
+            )
+            assert cursor.fetchone() is None
+
+            cursor.execute(
+                """
+                SELECT command_id FROM runtime.pipeline_commands
+                 WHERE run_id = %s AND stage = 'vlm' AND state = 'pending'
+                """,
+                (active_run_id,),
+            )
+            active_vlm = cursor.fetchone()
+            assert active_vlm is not None
+            with connection.transaction():
+                _force_terminal_command(cursor, str(active_vlm[0]), "failed")
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_runs
+                       SET state = 'failed', version = version + 1,
+                           updated_at = transaction_timestamp()
+                     WHERE run_id = %s AND state = 'running'
+                    """,
+                    (active_run_id,),
+                )
+            cursor.execute(profile_migration)
+
+            for index, malformed_profile in enumerate(
+                (
+                    "{}",
+                    '{"kind":"legacy_unresolved"}',
+                    '{"kind":null,"schema_version":null}',
+                )
+            ):
+                with pytest.raises(
+                    psycopg.errors.CheckViolation,
+                    match="pipeline_runs_execution_profile_closed_check",
+                ):
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_runs
+                            (run_id, idempotency_key, request_hash, profile,
+                             source_kind, source_value, state, version,
+                             execution_profile, execution_profile_hash)
+                        VALUES (%s, %s, %s, 'test', 'root', %s, 'accepted', 0,
+                                %s::jsonb, %s)
+                        """,
+                        (
+                            "pipeline_run_" + str(index + 1) * 32,
+                            f"malformed-profile-{index}",
+                            active_request.request_hash,
+                            f"/malformed/{index}",
+                            malformed_profile,
+                            "sha256:" + "0" * 64,
+                        ),
+                    )
+
+    def factory():
+        return psycopg.connect(DSN)
+
+    store = PostgresPipelineRunStore(factory)
+    failed_history = await store.read_run(active_run_id)
+    succeeded_history = await store.read_run(terminal_run_id)
+
+    assert failed_history is not None and failed_history.status == "failed"
+    assert failed_history.execution_profile.is_legacy_unresolved
+    assert tuple(command.stage for command in failed_history.commands) == (
+        "source_prep",
+        "vlm",
+    )
+    assert failed_history.commands[1].status == "failed"
+    assert succeeded_history is not None and succeeded_history.status == "succeeded"
+    assert succeeded_history.execution_profile.is_legacy_unresolved
+    assert await store.list_reconstructible_runs() == ()
 
 
 def _agent() -> MagicMock:

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from typing import Protocol, TypeVar
+import json
+from collections.abc import Callable, Mapping
+from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
@@ -20,6 +21,7 @@ from .errors import (
 from .models import (
     OutboxLease,
     PipelineCommand,
+    PipelineExecutionProfile,
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineStageResult,
@@ -51,6 +53,29 @@ _Result = TypeVar("_Result")
 
 def _text(value: object) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _execution_profile(value: object, expected_hash: object) -> PipelineExecutionProfile:
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, object], value)
+    else:
+        try:
+            decoded = cast(object, json.loads(_text(value)))
+        except (json.JSONDecodeError, UnicodeError) as error:
+            raise PipelineRunValidationError(
+                "persisted execution profile is not JSON"
+            ) from error
+        if not isinstance(decoded, Mapping):
+            raise PipelineRunValidationError(
+                "persisted execution profile must be an object"
+            )
+        mapping = cast(Mapping[str, object], decoded)
+    profile = PipelineExecutionProfile.from_mapping(mapping)
+    if profile.canonical_hash != _text(expected_hash):
+        raise PipelineRunValidationError(
+            "persisted execution profile hash does not bind its canonical JSON"
+        )
+    return profile
 
 
 def _ensure_pending_outbox(cursor: DbCursor, run_id: str) -> None:
@@ -124,6 +149,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         idempotency_key: str,
         request: PipelineRunRequest,
         request_hash: str,
+        execution_profile: PipelineExecutionProfile,
     ) -> RunClaim:
         return await asyncio.to_thread(
             self._claim_run_sync,
@@ -131,6 +157,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             idempotency_key,
             request,
             request_hash,
+            execution_profile,
         )
 
     def _claim_run_sync(
@@ -139,7 +166,16 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         idempotency_key: str,
         request: PipelineRunRequest,
         request_hash: str,
+        execution_profile: PipelineExecutionProfile,
     ) -> RunClaim:
+        if type(execution_profile) is not PipelineExecutionProfile:  # noqa: E721
+            raise PipelineRunValidationError(
+                "claim_run requires a PipelineExecutionProfile"
+            )
+        if request_hash != request.request_hash:
+            raise PipelineRunValidationError(
+                "claim_run request_hash does not bind the canonical request"
+            )
         source_kind = "root" if request.source_root is not None else "reference"
         source_value = request.source_root or request.source_reference
         if source_value is None:
@@ -150,8 +186,9 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 """
                 INSERT INTO runtime.pipeline_runs
                     (run_id, idempotency_key, request_hash, profile, source_kind,
-                     source_value, state, version)
-                VALUES (%s, %s, %s, %s, %s, %s, 'accepted', 0)
+                     source_value, execution_profile, execution_profile_hash,
+                     state, version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'accepted', 0)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING run_id
                 """,
@@ -162,6 +199,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     request.profile,
                     source_kind,
                     source_value,
+                    execution_profile.canonical_json,
+                    execution_profile.canonical_hash,
                 ),
             )
             inserted = cursor.fetchone()
@@ -454,6 +493,14 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                   FROM runtime.pipeline_commands AS candidate
                  WHERE candidate.run_id = %s AND candidate.state = 'pending'
                    AND candidate.version = %s
+                   AND (
+                       candidate.stage <> 'vlm'
+                       OR EXISTS (
+                           SELECT 1 FROM runtime.pipeline_runs AS profile_run
+                            WHERE profile_run.run_id = candidate.run_id
+                              AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
+                       )
+                   )
                    AND NOT EXISTS (
                        SELECT 1 FROM runtime.pipeline_commands AS predecessor
                         WHERE predecessor.run_id = candidate.run_id
@@ -788,7 +835,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
     def _read_snapshot(cursor: DbCursor, run_id: str) -> PipelineRunSnapshot:
         cursor.execute(
             """
-            SELECT request_hash, profile, source_kind, source_value, state, version
+            SELECT request_hash, profile, source_kind, source_value, state, version,
+                   execution_profile, execution_profile_hash
               FROM runtime.pipeline_runs WHERE run_id = %s
             """,
             (run_id,),
@@ -796,12 +844,25 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         run = cursor.fetchone()
         if run is None:
             raise PipelineRunNotFoundError(run_id)
-        request_hash, profile, source_kind, source_value, state, version = run
+        (
+            request_hash,
+            profile,
+            source_kind,
+            source_value,
+            state,
+            version,
+            execution_profile_json,
+            execution_profile_hash,
+        ) = run
         request_mapping: dict[str, object] = {"profile": _text(profile)}
         request_mapping[
             "source_root" if _text(source_kind) == "root" else "source_reference"
         ] = _text(source_value)
         request = PipelineRunRequest.from_mapping(request_mapping)
+        frozen_execution_profile = _execution_profile(
+            execution_profile_json,
+            execution_profile_hash,
+        )
         cursor.execute(
             """
             SELECT command.command_id, command.stage, command.state, receipt.receipt_id,
@@ -833,6 +894,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             _text(state),  # type: ignore[arg-type]
             tuple(commands),
             int(_text(version)),
+            frozen_execution_profile,
         )
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from uuid import uuid4
 
 import pytest
@@ -12,6 +12,7 @@ from auto_cut_bot.pipeline.runtime import (
     IdempotencyConflictError,
     OutboxLease,
     PipelineCommand,
+    PipelineExecutionProfile,
     PipelineRunNotFoundError,
     PipelineRunRequest,
     PipelineRunSnapshot,
@@ -26,6 +27,7 @@ from auto_cut_bot.pipeline.runtime import (
     SourceDeniedError,
     StaleRunVersionError,
 )
+from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 
 class FakeRunStore:
@@ -40,6 +42,7 @@ class FakeRunStore:
         idempotency_key: str,
         request: PipelineRunRequest,
         request_hash: str,
+        execution_profile: PipelineExecutionProfile,
     ) -> RunClaim:
         existing_id = self.by_key.get(idempotency_key)
         if existing_id is not None:
@@ -57,6 +60,7 @@ class FakeRunStore:
                 PipelineCommand("command-2", "vlm", "pending"),
             ),
             version=0,
+            execution_profile=execution_profile,
         )
         self.by_key[idempotency_key] = run_id
         self.by_run_id[run_id] = snapshot
@@ -119,6 +123,12 @@ def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
     return PipelineRunRequest.from_mapping({"profile": "test", "source_root": source_root})
 
 
+def execution_profile(*, model_id: str = "doubao-seed-2-1-pro-260628") -> PipelineExecutionProfile:
+    return PipelineExecutionProfile.from_doubao_policy(
+        DoubaoVlmRequestPolicy(model_id=model_id)
+    )
+
+
 def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
     return PipelineRunSnapshot(
         "pipeline_run_" + "a" * 32,
@@ -127,6 +137,7 @@ def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
         "running" if command.status != "pending" else "accepted",
         (command,),
         0,
+        execution_profile(),
     )
 
 
@@ -134,7 +145,13 @@ def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
 async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
-    service = DurablePipelineRunService(store, scheduler, FakeAuthorizer())
+    profile = execution_profile()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=profile,
+    )
 
     first = await service.submit(request(), "request-1")
     replay = await service.submit(request(), "request-1")
@@ -144,6 +161,94 @@ async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
     assert replay.replayed is True
     assert scheduler.enqueued == [first.snapshot.run_id, first.snapshot.run_id]
     assert store.by_run_id[first.snapshot.run_id].status == "accepted"
+    assert first.snapshot.execution_profile == profile
+    assert first.snapshot.execution_profile_hash == profile.canonical_hash
+    assert first.snapshot.to_mapping()["execution_profile_hash"] == profile.canonical_hash
+
+
+@pytest.mark.asyncio
+async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    first_profile = execution_profile(model_id="doubao-model-v1")
+    changed_profile = execution_profile(model_id="doubao-model-v2")
+    first_service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=first_profile,
+    )
+    changed_service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=changed_profile,
+    )
+
+    first = await first_service.submit(request(), "request-frozen")
+    replay = await changed_service.submit(request(), "request-frozen")
+    changed = await changed_service.submit(request(), "request-new-profile")
+
+    assert replay.replayed is True
+    assert replay.snapshot.execution_profile == first.snapshot.execution_profile == first_profile
+    assert replay.snapshot.execution_profile_hash == first_profile.canonical_hash
+    assert changed.snapshot.execution_profile == changed_profile
+    assert changed.snapshot.execution_profile_hash == changed_profile.canonical_hash
+    assert first.snapshot.request_hash == changed.snapshot.request_hash
+    assert first.snapshot.execution_profile_hash != changed.snapshot.execution_profile_hash
+
+
+def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> None:
+    profile = execution_profile()
+    reconstructed = PipelineExecutionProfile.from_mapping(profile.to_mapping())
+
+    assert reconstructed == profile
+    assert reconstructed.canonical_json == profile.canonical_json
+    assert reconstructed.canonical_hash == profile.canonical_hash
+    assert profile.canonical_hash.startswith("sha256:")
+    assert PipelineExecutionProfile.from_doubao_policy(profile.to_doubao_policy()) == profile
+    with pytest.raises(FrozenInstanceError):
+        profile.model_id = "mutated"  # type: ignore[misc]
+
+    mapping = profile.to_mapping()
+    mapping["unknown"] = True
+    with pytest.raises(PipelineRunValidationError, match="unsupported fields"):
+        PipelineExecutionProfile.from_mapping(mapping)
+
+    with pytest.raises(PipelineRunValidationError, match="canonical JSON"):
+        replace(profile, request_parameters_json='{ "temperature": 0 }')
+
+
+def test_execution_profile_rejects_open_or_unclosed_embedded_json() -> None:
+    profile = execution_profile()
+    with pytest.raises(PipelineRunValidationError, match="response_schema_json.*closed"):
+        replace(profile, response_schema_json='{"type":"object"}')
+    with pytest.raises(PipelineRunValidationError, match="request_parameters_json.*closed"):
+        replace(
+            profile,
+            request_parameters_json=(
+                '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v1",'
+                '"max_output_tokens":4096,"temperature":0,"unknown":1,"video_fps":1}'
+            ),
+        )
+    with pytest.raises(PipelineRunValidationError, match="parse_policy_json.*closed"):
+        replace(profile, parse_policy_json='{"minimum_confidence":"0.80"}')
+
+
+def test_execution_profile_rejects_unregistered_or_object_shaped_schema_tampering() -> None:
+    profile = execution_profile()
+    with pytest.raises(PipelineRunValidationError, match="registered Doubao policy"):
+        replace(profile, vlm_stage_strategy_version="toy-stage-strategy")
+    with pytest.raises(PipelineRunValidationError, match="registered Doubao policy"):
+        replace(profile, kernel_parser_strategy_version="toy-parser-strategy")
+    with pytest.raises(PipelineRunValidationError, match="properties require a closed object"):
+        replace(
+            profile,
+            response_schema_json=(
+                '{"additionalProperties":false,"properties":{"child":'
+                '{"additionalProperties":false,"properties":{}}},"type":"object"}'
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -393,6 +498,26 @@ async def test_repeated_enqueue_claims_once_and_does_not_repeat_external_call() 
 
 
 @pytest.mark.asyncio
+async def test_legacy_unresolved_profile_never_claims_or_executes_vlm() -> None:
+    stage = FakeStage()
+    command_store = FakeCommandClaimStore(PipelineCommand("command-vlm", "vlm", "pending"))
+    runner = PipelineStageRunner(
+        PipelineStageRegistry.from_ports(("vlm", stage)),
+        command_store,
+    )
+    legacy_snapshot = replace(
+        _snapshot(command_store.command),
+        execution_profile=PipelineExecutionProfile.legacy_unresolved(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="legacy-unresolved.*VLM"):
+        await runner.claim_and_execute(legacy_snapshot, lease_id="lease-legacy")
+
+    assert command_store.claims == 0
+    assert stage.commands == []
+
+
+@pytest.mark.asyncio
 async def test_claim_then_worker_crash_is_not_blindly_executed_by_reenqueue() -> None:
     stage = FakeStage()
     command_store = FakeCommandClaimStore()
@@ -459,6 +584,24 @@ async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> N
         PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)
     ]
     assert command_store.command.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_legacy_unresolved_profile_never_reconciles_vlm() -> None:
+    command_store = FakeCommandClaimStore(
+        PipelineCommand("command-vlm", "vlm", "indeterminate", None, 2)
+    )
+    stage = FakeReconcileStage()
+    reconciler = PipelineStageReconciler.from_ports(command_store, ("vlm", stage))
+    legacy_snapshot = replace(
+        _snapshot(command_store.command),
+        execution_profile=PipelineExecutionProfile.legacy_unresolved(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="legacy-unresolved.*VLM"):
+        await reconciler.reconcile(legacy_snapshot)
+
+    assert stage.commands == []
 
 
 class SuccessStage:
@@ -620,6 +763,11 @@ async def test_bounded_worker_passes_strict_context_and_acks_terminal_run() -> N
     assert len(stage.contexts) == 1
     assert stage.contexts[0].run_id == store.snapshot.run_id
     assert stage.contexts[0].request == store.snapshot.request
+    assert stage.contexts[0].execution_profile == store.snapshot.execution_profile
+    assert (
+        stage.contexts[0].execution_profile_hash
+        == store.snapshot.execution_profile_hash
+    )
     assert scheduler.acknowledged == [scheduler.lease]
     assert scheduler.requeued == []
 

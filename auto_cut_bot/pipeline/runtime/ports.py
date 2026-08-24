@@ -7,6 +7,7 @@ from typing import Protocol
 from .models import (
     OutboxLease,
     PipelineCommand,
+    PipelineExecutionProfile,
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineStageContext,
@@ -25,6 +26,7 @@ class PipelineRunStore(Protocol):
         idempotency_key: str,
         request: PipelineRunRequest,
         request_hash: str,
+        execution_profile: PipelineExecutionProfile,
     ) -> RunClaim: ...
 
     async def read_run(self, run_id: str) -> PipelineRunSnapshot | None: ...

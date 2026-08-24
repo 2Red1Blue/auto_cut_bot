@@ -2,6 +2,9 @@ from pathlib import Path
 
 MIGRATION = Path("packages/autocut-kernel/migrations/0005_pipeline_http_run_control.sql")
 WORKER_MIGRATION = Path("packages/autocut-kernel/migrations/0007_pipeline_stage_worker.sql")
+EXECUTION_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0008_pipeline_execution_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -39,3 +42,24 @@ def test_pipeline_worker_migration_closes_ordered_blocking_and_heartbeat_states(
     assert "blocker.ordinal < NEW.ordinal" in sql
     assert "blocker.state IN ('denied', 'failed')" in sql
     assert "DEFERRABLE INITIALLY DEFERRED" in sql
+
+
+def test_execution_profile_migration_is_immutable_closed_and_legacy_fail_closed() -> None:
+    sql = EXECUTION_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN execution_profile jsonb NOT NULL DEFAULT" in sql
+    assert "ADD COLUMN execution_profile_hash text NOT NULL DEFAULT" in sql
+    assert '"kind":"legacy_unresolved"' in sql
+    assert "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE" in sql
+    assert "WHERE state IN ('accepted', 'running')" in sql
+    assert "0008 refuses legacy accepted/running pipeline runs" in sql
+    assert "pipeline_runs_execution_profile_closed_check" in sql
+    assert ") IS TRUE);" in sql
+    assert "kernel_parser_strategy_version" in sql
+    assert "- ARRAY['kind', 'schema_version']::text[] = '{}'::jsonb" in sql
+    assert "execution_profile ?& ARRAY[" in sql
+    assert "(execution_profile -> 'request_parameters') - ARRAY[" in sql
+    assert "(execution_profile -> 'parse_policy') - ARRAY[" in sql
+    assert "NEW.execution_profile_hash" in sql
+    assert "OLD.execution_profile_hash" in sql
+    assert "distinct from request_hash" in sql

@@ -80,6 +80,10 @@ class PipelineStageRunner:
         pending = next((item for item in snapshot.commands if item.status == "pending"), None)
         if pending is None:
             return None
+        if pending.stage == "vlm" and snapshot.execution_profile.is_legacy_unresolved:
+            raise PipelineRunValidationError(
+                "legacy-unresolved execution profile cannot execute VLM"
+            )
         command = await self._command_store.claim_next_pending(
             snapshot.run_id,
             expected_version=pending.version,
@@ -96,7 +100,12 @@ class PipelineStageRunner:
             raise PipelineRunValidationError(
                 "claimed command must bind the expected version and lease"
             )
-        context = PipelineStageContext(snapshot.run_id, snapshot.request, command)
+        context = PipelineStageContext(
+            snapshot.run_id,
+            snapshot.request,
+            command,
+            snapshot.execution_profile,
+        )
         stop = asyncio.Event()
         version = [command.version]
         heartbeat_error: list[BaseException] = []
@@ -201,7 +210,12 @@ class PipelineStageReconciler:
                 "reconcile command must bind the indeterminate version"
             )
         result = await self._require(command.stage).reconcile(
-            PipelineStageContext(snapshot.run_id, snapshot.request, command)
+            PipelineStageContext(
+                snapshot.run_id,
+                snapshot.request,
+                command,
+                snapshot.execution_profile,
+            )
         )
         if result is None:
             return None
