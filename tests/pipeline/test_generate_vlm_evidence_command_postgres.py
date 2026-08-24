@@ -37,7 +37,7 @@ from autocut_kernel.store import (
     PostgresRuntimeStore,
     StoreValidationError,
 )
-from autocut_kernel.store.models import canonical_recipe_scope
+from autocut_kernel.store.models import canonical_payload_hash, canonical_recipe_scope
 from autocut_kernel.vlm import (
     GENERATION_RETRY_STRATEGY_VERSION,
     GenerationRetryPolicy,
@@ -427,6 +427,9 @@ def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> Non
     child_result = GenerateVlmEvidenceCommand(store, provider).execute(request)
 
     persisted = store.read_committed_vlm_generation_child(job, request.idempotency_key)
+    persisted_observations = store.read_committed_vlm_observation_set(
+        job, request.idempotency_key
+    )
 
     assert child_result.attempt is not None
     assert persisted.request_hash == request.request_hash
@@ -435,6 +438,12 @@ def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> Non
     assert persisted.window_manifest_set_sha256 == request.manifest_set.canonical_hash
     assert persisted.source_manifest_sha256 == request.source_manifest_sha256
     assert persisted.source_provenance_sha256 == request.source_provenance_sha256
+    assert persisted_observations.source_child == persisted
+    assert persisted_observations.observation_set == child_result.observation_set
+    assert (
+        persisted_observations.reference.content_hash
+        == canonical_payload_hash(persisted_observations.payload_json)
+    )
     assert child_result.outcome.receipt_id is not None
     assert child_result.outcome.artifact_set_id is not None
     batch = FinalizeVlmBatchCommand(store).execute(

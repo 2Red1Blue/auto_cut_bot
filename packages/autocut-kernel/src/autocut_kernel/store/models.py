@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID
 
+from ..vlm.models import VlmObservationSet
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
@@ -232,6 +233,27 @@ class VlmRequestRecordReference:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class VlmObservationSetReference:
+    """Exact immutable identity of one committed VLM observation set."""
+
+    scope: ArtifactScope
+    logical_id: str
+    revision: int
+    content_hash: str
+    artifact_type: Literal["vlm_observation_set"] = "vlm_observation_set"
+
+    def __post_init__(self) -> None:
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+        if self.artifact_type != "vlm_observation_set":
+            raise StoreValidationError(
+                "VLM observation-set reference has an invalid artifact_type"
+            )
+
+
 _VLM_REQUEST_IDENTITY_FIELDS = frozenset(
     {
         "frame_pts_index_set_sha256",
@@ -452,6 +474,54 @@ class PersistedVlmGenerationChild:
             "window_manifest_set_sha256": self.window_manifest_set_sha256,
             "window_manifest_sha256": self.window_manifest_sha256,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedVlmObservationSet:
+    """Strictly decoded observation evidence bound to one committed child."""
+
+    reference: VlmObservationSetReference
+    payload_json: str
+    observation_set: VlmObservationSet
+    source_child: PersistedVlmGenerationChild
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not VlmObservationSetReference:  # noqa: E721
+            raise StoreValidationError("VLM observation-set reference is invalid")
+        if type(self.observation_set) is not VlmObservationSet:  # noqa: E721
+            raise StoreValidationError("VLM observation-set value is invalid")
+        if type(self.source_child) is not PersistedVlmGenerationChild:  # noqa: E721
+            raise StoreValidationError("VLM observation source child is invalid")
+        if self.reference.scope != canonical_recipe_scope(self.source_child.source_job):
+            raise StoreValidationError("VLM observation set has a non-canonical Job scope")
+        expected_logical_id = (
+            f"evidence_{self.source_child.window_manifest_sha256[7:39]}"
+        )
+        if self.reference.logical_id != expected_logical_id:
+            raise StoreValidationError("VLM observation logical identity is invalid")
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError(
+                "VLM observation payload does not match its artifact hash"
+            )
+        decoded_payload_json = json.dumps(
+            self.observation_set.to_mapping(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if canonical_payload_hash(decoded_payload_json) != self.reference.content_hash:
+            raise StoreValidationError(
+                "decoded VLM observation set does not match its artifact hash"
+            )
+        if (
+            self.observation_set.request_identity_sha256
+            != self.source_child.request_identity_sha256
+            or self.observation_set.window_manifest_sha256
+            != self.source_child.window_manifest_sha256
+        ):
+            raise StoreValidationError(
+                "VLM observation set does not match its committed request provenance"
+            )
 
 
 @dataclass(frozen=True, slots=True)

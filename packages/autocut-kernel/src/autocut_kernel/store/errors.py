@@ -41,6 +41,14 @@ class JobProfileMismatchError(RuntimeStoreError):
     """A durable Job exists, but belongs to a different runtime profile."""
 
 
+class VlmObservationUnavailableError(RuntimeStoreError):
+    """No exact committed VLM observation set is available for a child Command."""
+
+
+class VlmObservationIntegrityError(RuntimeStoreError):
+    """A committed VLM observation set violates its immutable provenance contract."""
+
+
 class RecipeUnavailableError(RuntimeStoreError):
     """The exact persisted Recipe identity is not available to this Job."""
 

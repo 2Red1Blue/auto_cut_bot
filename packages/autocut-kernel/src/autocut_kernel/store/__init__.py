@@ -19,6 +19,8 @@ from .errors import (
     StaleHeadError,
     StoreConcurrencyError,
     StoreValidationError,
+    VlmObservationIntegrityError,
+    VlmObservationUnavailableError,
 )
 from .models import (
     ArtifactMember,
@@ -38,9 +40,11 @@ from .models import (
     PersistedRecipe,
     PersistedSemanticResolutionProof,
     PersistedVlmGenerationChild,
+    PersistedVlmObservationSet,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    VlmObservationSetReference,
     VlmRequestRecordReference,
     WholeSeriesSourceManifestReference,
 )
@@ -75,6 +79,7 @@ __all__ = [
     "PersistedRecipe",
     "PersistedSemanticResolutionProof",
     "PersistedVlmGenerationChild",
+    "PersistedVlmObservationSet",
     "PersistedWholeSeriesSourceManifest",
     "RecipeIntegrityError",
     "RecipeReference",
@@ -86,6 +91,9 @@ __all__ = [
     "StaleHeadError",
     "StoreConcurrencyError",
     "StoreValidationError",
+    "VlmObservationIntegrityError",
+    "VlmObservationSetReference",
+    "VlmObservationUnavailableError",
     "WholeSeriesSourceManifestReference",
     "VlmRequestRecordReference",
 ]

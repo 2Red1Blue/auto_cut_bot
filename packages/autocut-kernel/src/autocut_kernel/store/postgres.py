@@ -16,7 +16,11 @@ from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
-from ..vlm import GENERATION_PROVIDER_LEASE_SECONDS
+from ..vlm import (
+    GENERATION_PROVIDER_LEASE_SECONDS,
+    VlmValidationError,
+    decode_vlm_observation_set,
+)
 from .errors import (
     BlobIntegrityError,
     CommandStateError,
@@ -36,6 +40,8 @@ from .errors import (
     StaleHeadError,
     StoreConcurrencyError,
     StoreValidationError,
+    VlmObservationIntegrityError,
+    VlmObservationUnavailableError,
 )
 from .models import (
     ArtifactMember,
@@ -53,9 +59,11 @@ from .models import (
     PersistedRecipe,
     PersistedSemanticResolutionProof,
     PersistedVlmGenerationChild,
+    PersistedVlmObservationSet,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    VlmObservationSetReference,
     VlmRequestRecordReference,
     WholeSeriesSourceManifestReference,
     canonical_payload_hash,
@@ -89,6 +97,32 @@ _Result = TypeVar("_Result")
 def _text(value: object) -> str:
     """Normalize PostgreSQL text values returned in either wire format."""
     return value.decode() if isinstance(value, bytes) else str(value)
+
+
+def _strict_json_object(value: str, field_name: str) -> dict[str, object]:
+    """Parse one finite JSON object and reject duplicate keys at every depth."""
+
+    def closed_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, member in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = member
+        return result
+
+    try:
+        parsed: object = json.loads(
+            value,
+            object_pairs_hook=closed_pairs,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError(f"{field_name} must contain strict JSON") from error
+    if type(parsed) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must contain a JSON object")
+    return cast(dict[str, object], parsed)
 
 
 def _source_manifest_blob_refs(payload_json: str) -> tuple[BlobRef, ...]:
@@ -1514,6 +1548,85 @@ class PostgresRuntimeStore:
                 source_provenance_sha256=source_provenance_sha256,
                 request_identity_sha256=request_identity_sha256,
             )
+
+        return self._transaction(operation)
+
+    def read_committed_vlm_observation_set(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> PersistedVlmObservationSet:
+        """Read and independently decode one exact committed observation set.
+
+        The request record is proved first.  The second immutable read is pinned
+        to that child's exact ArtifactSet id, so downstream stages never consume
+        an uncommitted head or a caller-supplied VLM payload.
+        """
+
+        child = self.read_committed_vlm_generation_child(job, idempotency_key)
+
+        def operation(cursor: DbCursor) -> PersistedVlmObservationSet:
+            cursor.execute(
+                """
+                SELECT artifact.logical_id, artifact.revision,
+                       artifact.namespace, artifact.scope_kind,
+                       artifact.scope_key, artifact.content_hash,
+                       artifact.payload_json::text
+                  FROM runtime.artifact_set_members AS member
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = member.artifact_set_id
+                 WHERE member.artifact_set_id = %s
+                   AND artifact.artifact_type = 'vlm_observation_set'
+                 ORDER BY member.ordinal
+                """,
+                (child.artifact_set_id,),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if len(rows) != 1:
+                raise VlmObservationUnavailableError(
+                    "committed VLM child does not contain one exact observation set"
+                )
+            (
+                logical_id,
+                revision,
+                namespace,
+                scope_kind,
+                scope_key,
+                content_hash,
+                payload_json,
+            ) = rows[0]
+            serialized = _text(payload_json)
+            reference = VlmObservationSetReference(
+                scope=ArtifactScope(
+                    _text(namespace),
+                    _text(scope_kind),
+                    _text(scope_key),
+                ),
+                logical_id=_text(logical_id),
+                revision=int(_text(revision)),
+                content_hash=_text(content_hash),
+            )
+            try:
+                if canonical_payload_hash(serialized) != reference.content_hash:
+                    raise StoreValidationError(
+                        "VLM observation payload hash is invalid"
+                    )
+                decoded = decode_vlm_observation_set(
+                    _strict_json_object(serialized, "VLM observation set")
+                )
+                return PersistedVlmObservationSet(
+                    reference=reference,
+                    payload_json=serialized,
+                    observation_set=decoded,
+                    source_child=child,
+                )
+            except (StoreValidationError, VlmValidationError) as error:
+                raise VlmObservationIntegrityError(
+                    "committed VLM observation set failed independent verification"
+                ) from error
 
         return self._transaction(operation)
 

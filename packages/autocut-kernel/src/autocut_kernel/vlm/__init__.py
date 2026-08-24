@@ -1,5 +1,6 @@
 """Provider-independent, fail-closed VLM evidence contracts."""
 
+from .decoder import decode_vlm_observation_set
 from .models import (
     MappedSourceInterval,
     VlmContractError,
@@ -69,5 +70,6 @@ __all__ = [
     "WindowManifestSet",
     "WindowProxyBlobRef",
     "parse_vlm_response",
+    "decode_vlm_observation_set",
     "select_core_owner",
 ]
