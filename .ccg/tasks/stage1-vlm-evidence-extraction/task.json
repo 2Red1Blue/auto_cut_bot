@@ -5,8 +5,8 @@
   "complexity": "L+",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "planning",
-  "nextAction": "按 design.md 扩展现有 Kernel root evidence、窗口 VLM、SemanticChain 投影与 Exact A/V compiler，不创建平行流水线",
+  "currentPhase": "implementation",
+  "nextAction": "先并行交付完整 root evidence 与 Window/VLM 纯契约，再顺序接入 Store、Command、SemanticChain 与 Exact A/V compiler",
   "createdAt": "2026-08-23T18:16:03Z",
   "branch": "feat/v213-contract-codegen"
 }
