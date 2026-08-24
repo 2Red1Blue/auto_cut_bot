@@ -153,6 +153,35 @@ class _Producer:
         )
 
 
+class _BusyOnceProducer(_Producer):
+    def prepare(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+        source_bytes: bytes,
+    ) -> ProducedTimedMediaEvidence:
+        if self.calls == 0:
+            self.calls += 1
+            raise TimedMediaEvidenceProducerError(
+                "TIMED_SPEECH_BUSY", "admission capacity is full", outcome="failed"
+            )
+        return super().prepare(request, source_bytes)
+
+
+class _UnknownResultProducer(_Producer):
+    def prepare(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+        source_bytes: bytes,
+    ) -> ProducedTimedMediaEvidence:
+        del request, source_bytes
+        self.calls += 1
+        raise TimedMediaEvidenceProducerError(
+            "TIMED_SPEECH_RESULT_UNKNOWN",
+            "transport ended after request admission",
+            outcome="failed",
+        )
+
+
 def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
     manifest, observation = _manifest_and_observation()
     observation_set = VlmObservationSet(
@@ -262,6 +291,10 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     assert replay.outcome.state == "succeeded"
     assert producer.calls == 1
     assert len(store.successes) == 1
+    assert {item.artifact_type for item in store.successes[0].artifacts} == {
+        "candidate_timed_evidence_index",
+        "root_media_evidence_bundle",
+    }
 
 
 def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
@@ -295,10 +328,25 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
         if b'"window_assessment"' in content
     ]
     assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "unknown"
-    assert {item.artifact_type for item in store.successes[0].artifacts} == {
-        "candidate_timed_evidence_index",
-        "root_media_evidence_bundle",
-    }
+
+
+def test_command_retries_busy_once_but_never_retries_unknown_result() -> None:
+    busy_store = _Store()
+    busy = _BusyOnceProducer(_bundle())
+    busy_result = PrepareTimedMediaEvidenceCommand(busy_store, busy).execute(_request(busy_store))
+
+    assert busy_result.outcome.state == "succeeded"
+    assert busy.calls == 2
+
+    unknown_store = _Store()
+    unknown = _UnknownResultProducer(_bundle())
+    unknown_result = PrepareTimedMediaEvidenceCommand(unknown_store, unknown).execute(
+        _request(unknown_store)
+    )
+
+    assert unknown_result.outcome.state == "failed"
+    assert unknown_result.outcome.failure_code == "TIMED_SPEECH_RESULT_UNKNOWN"
+    assert unknown.calls == 1
 
 
 def test_command_rejects_producer_that_replaces_committed_physical_detector() -> None:

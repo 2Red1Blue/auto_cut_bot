@@ -48,6 +48,7 @@ from ..vlm import VlmObservationSet, WindowManifest
 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
 TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION = "timed-media-evidence-batch-v1"
+TIMED_SPEECH_BUSY_RETRY_COUNT = 1
 
 
 class TimedMediaEvidenceCommandError(ValueError):
@@ -428,7 +429,18 @@ class PrepareTimedMediaEvidenceCommand:
             return PrepareTimedMediaEvidenceResult(claimed)
         try:
             source_bytes = self._store.read_immutable_blob(request.job, request.source_blob)
-            produced = self._producer.prepare(request, source_bytes)
+            busy_attempts = 0
+            while True:
+                try:
+                    produced = self._producer.prepare(request, source_bytes)
+                    break
+                except TimedMediaEvidenceProducerError as error:
+                    if (
+                        error.code != "TIMED_SPEECH_BUSY"
+                        or busy_attempts >= TIMED_SPEECH_BUSY_RETRY_COUNT
+                    ):
+                        raise
+                    busy_attempts += 1
             self._validate_produced(request, produced)
             plans, candidates = self._close_candidates(request, produced)
             artifacts = self._persist_artifacts(request, produced, plans, candidates)

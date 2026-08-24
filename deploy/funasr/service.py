@@ -412,6 +412,37 @@ class Service:
             str(p), model=self.model.vad_model, kwargs=copy.deepcopy(self.model.vad_kwargs)
         )
 
+    async def admit(self) -> None:
+        async with self.admission_lock:
+            if self.admitted >= self.queue_capacity:
+                raise web.HTTPServiceUnavailable(text="inference queue full")
+            self.admitted += 1
+
+    async def release(self) -> None:
+        async with self.admission_lock:
+            self.admitted -= 1
+
+    def fatal(self, code: int) -> None:
+        self.ready = False
+        self._fatal_exit(code)
+        raise RuntimeError("fatal exit returned")
+
+    async def run_inference(self, path: Path) -> tuple[object, object]:
+        async with self.lock:
+            task = asyncio.create_task(asyncio.to_thread(self.infer, path))
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), self.timeout)
+            except asyncio.CancelledError:
+                try:
+                    await asyncio.shield(task)
+                except Exception:
+                    self.fatal(71)
+                raise
+            except TimeoutError:
+                self.fatal(70)
+            except Exception:
+                self.fatal(71)
+
     def validate_manifest_identity(self, manifest: dict[str, object]) -> None:
         if self.measured_profile is None:
             raise web.HTTPServiceUnavailable()
@@ -441,12 +472,80 @@ class Service:
             ),
         }:
             raise web.HTTPConflict(text="measured timing policy drift")
+        word = (
+            "complete"
+            if self.measured_profile["word_timing_capability"] == "required"
+            else "not_applicable"
+        )
+        if manifest.get("transcript_capability") != {
+            "profile": "sensevoice_word_utterance_v1",
+            "segment": "complete",
+            "segment_semantics": "utterance_gap_protected_range",
+            "sentence": "not_applicable",
+            "word": word,
+            "word_timing": self.measured_profile["word_timing_capability"],
+        }:
+            raise web.HTTPConflict(text="measured transcript capability drift")
         expected = manifest.get("expected_producers")
         if expected != [
             {**identity, "timing_error_bound_tick": identity["timing_error_bound_tick"]}
             for identity in self.identities
         ]:
             raise web.HTTPConflict(text="measured producer identity drift")
+
+    @staticmethod
+    def validate_manifest_schema(manifest: object) -> dict[str, object]:
+        fields = {
+            "schema_version",
+            "source",
+            "container",
+            "audio_clock",
+            "requested_range",
+            "profile",
+            "expected_producers",
+            "timed_speech_policy_sha256",
+            "response_limits",
+            "timing_policy",
+            "transcript_capability",
+        }
+        if type(manifest) is not dict or set(manifest) != fields:
+            raise web.HTTPBadRequest(text="manifest schema is not closed")
+        value = cast(dict[str, object], manifest)
+        source = value["source"]
+        container = value["container"]
+        clock = value["audio_clock"]
+        requested = value["requested_range"]
+        response_limits = value["response_limits"]
+        if (
+            type(source) is not dict
+            or set(source) != {"source_id", "source_sha256"}
+            or type(container) is not dict
+            or container != {"media_type": "video/mp4", "safe_suffix": ".mp4"}
+            or type(clock) is not dict
+            or set(clock) != {"clock_id", "time_base", "origin_tick", "duration_tick"}
+            or type(requested) is not dict
+            or set(requested) != {"in_tick", "out_tick"}
+            or type(response_limits) is not dict
+            or set(response_limits) != {"max_response_bytes"}
+        ):
+            raise web.HTTPBadRequest(text="manifest member schema is not closed")
+        time_base = clock["time_base"]
+        integer_values = (
+            clock["origin_tick"],
+            clock["duration_tick"],
+            requested["in_tick"],
+            requested["out_tick"],
+            response_limits["max_response_bytes"],
+        )
+        if (
+            type(time_base) is not dict
+            or set(time_base) != {"numerator", "denominator"}
+            or any(type(item) is not int for item in (*integer_values, *time_base.values()))
+            or clock["duration_tick"] <= 0
+            or response_limits["max_response_bytes"] <= 0
+        ):
+            raise web.HTTPBadRequest(text="manifest clock/bounds are invalid")
+        return value
 
     async def evidence(self, req: web.Request) -> web.Response:
         if not self.ready:
@@ -455,8 +554,13 @@ class Service:
         if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
             raise web.HTTPUnauthorized(text="unauthorized")
         try:
-            m = json.loads(base64.b64decode(req.headers["X-Timed-Speech-Manifest"], validate=True))
+            decoded = json.loads(
+                base64.b64decode(req.headers["X-Timed-Speech-Manifest"], validate=True)
+            )
+            m = self.validate_manifest_schema(decoded)
         except Exception as e:
+            if isinstance(e, web.HTTPException):
+                raise
             raise web.HTTPBadRequest(text="bad manifest") from e
         if sha(canon(m)) != req.headers.get("X-Timed-Speech-Request-SHA256"):
             raise web.HTTPBadRequest(text="identity")
@@ -465,28 +569,24 @@ class Service:
         c = m["audio_clock"]
         if rr != {"in_tick": c["origin_tick"], "out_tick": c["origin_tick"] + c["duration_tick"]}:
             raise web.HTTPBadRequest(text="full source only")
-        with tempfile.TemporaryDirectory(prefix="funasr-request-") as d:
-            p = Path(d) / "source.mp4"
-            h = hashlib.sha256()
-            size = 0
-            with p.open("xb") as f:
-                async for chunk in req.content.iter_chunked(1 << 20):
-                    size += len(chunk)
-                    if size > self.max_request:
-                        raise web.HTTPRequestEntityTooLarge(
-                            max_size=self.max_request, actual_size=size
-                        )
-                    h.update(chunk)
-                    f.write(chunk)
-            if "sha256:" + h.hexdigest() != m["source"]["source_sha256"]:
-                raise web.HTTPBadRequest(text="source hash")
-            async with self.lock:
-                try:
-                    a, v = await asyncio.wait_for(
-                        asyncio.shield(asyncio.to_thread(self.infer, p)), self.timeout
-                    )
-                except TimeoutError:
-                    os._exit(70)
+        await self.admit()
+        try:
+            with tempfile.TemporaryDirectory(prefix="funasr-request-") as d:
+                p = Path(d) / "source.mp4"
+                h = hashlib.sha256()
+                size = 0
+                with p.open("xb") as f:
+                    async for chunk in req.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > self.max_request:
+                            raise web.HTTPRequestEntityTooLarge(
+                                max_size=self.max_request, actual_size=size
+                            )
+                        h.update(chunk)
+                        f.write(chunk)
+                if "sha256:" + h.hexdigest() != m["source"]["source_sha256"]:
+                    raise web.HTTPBadRequest(text="source hash")
+                a, v = await self.run_inference(p)
             state, vsegs = vad(
                 v, c["time_base"], rr, m["timing_policy"]["vad_merge_gap_milliseconds"]
             )
@@ -551,33 +651,50 @@ class Service:
             if len(raw) > min(self.max_response, m["response_limits"]["max_response_bytes"]):
                 raise web.HTTPInternalServerError(text="response bound")
             return web.Response(body=raw, content_type="application/json")
+        finally:
+            await self.release()
+
+
+SERVICE_KEY = web.AppKey("service", Service)
 
 
 async def startup(app: web.Application) -> None:
-    await app["service"].load()
+    await app[SERVICE_KEY].load()
 
 
-def main() -> None:
-    s = Service()
+async def live(_: web.Request) -> web.Response:
+    return web.json_response({"status": "live"})
+
+
+async def ready(request: web.Request) -> web.Response:
+    service = request.app[SERVICE_KEY]
+    return web.json_response(
+        {
+            "status": "ready" if service.ready else "loading",
+            "profile_identity_sha256": service.measured,
+        },
+        status=200 if service.ready else 503,
+    )
+
+
+def create_app(service: Service | None = None) -> web.Application:
+    s = service or Service()
     app = web.Application(client_max_size=s.max_request)
-    app["service"] = s
+    app[SERVICE_KEY] = s
     app.add_routes(
         [
-            web.get("/health/live", lambda _: web.json_response({"status": "live"})),
-            web.get(
-                "/health/ready",
-                lambda _: web.json_response(
-                    {
-                        "status": "ready" if s.ready else "loading",
-                        "profile_identity_sha256": s.measured,
-                    },
-                    status=200 if s.ready else 503,
-                ),
-            ),
+            web.get("/health/live", live),
+            web.get("/health/ready", ready),
             web.post("/v1/timed-speech-evidence", s.evidence),
         ]
     )
     app.on_startup.append(startup)
+    return app
+
+
+def main() -> None:
+    s = Service()
+    app = create_app(s)
     web.run_app(app, host="127.0.0.1", port=int(os.environ.get("FUNASR_PORT", "8765")))
 
 

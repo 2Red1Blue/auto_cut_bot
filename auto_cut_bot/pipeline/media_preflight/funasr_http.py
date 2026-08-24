@@ -88,11 +88,17 @@ class _HttpxTransport:
                     raw.extend(chunk)
             return response.status_code, bytes(raw)
         except httpx.TimeoutException as e:
-            raise LocalMediaToolError("timed speech service timed out") from e
+            raise LocalMediaToolError(
+                "timed speech result is unknown after timeout",
+                code="TIMED_SPEECH_RESULT_UNKNOWN",
+            ) from e
         except LocalMediaToolError:
             raise
         except (httpx.HTTPError, OSError) as e:
-            raise LocalMediaToolError("timed speech invocation failed") from e
+            raise LocalMediaToolError(
+                "timed speech result is unknown after transport failure",
+                code="TIMED_SPEECH_RESULT_UNKNOWN",
+            ) from e
 
 
 def _obj(v: object, fields: set[str], name: str) -> dict[str, object]:
@@ -166,6 +172,10 @@ class FunASRHttpTimedSpeechEvidencePort:
         if len(raw) > r.max_response_bytes:
             raise LocalMediaToolError("response exceeded byte bound")
         if status != 200:
+            if status == 503:
+                raise LocalMediaToolError(
+                    f"timed speech service busy ({_sha(raw)})", code="TIMED_SPEECH_BUSY"
+                )
             raise LocalMediaToolError(f"timed speech HTTP {status} ({_sha(raw)})")
         try:
             p = json.loads(raw.decode())
@@ -208,13 +218,36 @@ class FunASRHttpTimedSpeechEvidencePort:
             or p["request_identity_sha256"] != r.identity_sha256
         ):
             raise LocalMediaSourceError("request identity drift")
-        if p["source"] != {"source_id": r.source_id, "source_sha256": r.source_sha256} or p[
-            "container"
-        ] != {"media_type": "video/mp4", "safe_suffix": ".mp4"}:
+        source = _obj(p["source"], {"source_id", "source_sha256"}, "source")
+        container = _obj(p["container"], {"media_type", "safe_suffix"}, "container")
+        if source != {"source_id": r.source_id, "source_sha256": r.source_sha256} or container != {
+            "media_type": "video/mp4",
+            "safe_suffix": ".mp4",
+        }:
             raise LocalMediaSourceError("source identity drift")
+        audio_clock = _obj(
+            p["audio_clock"],
+            {"clock_id", "time_base", "origin_tick", "duration_tick"},
+            "audio_clock",
+        )
+        time_base = _obj(audio_clock["time_base"], {"numerator", "denominator"}, "time_base")
+        strict_clock = {
+            "clock_id": _text(audio_clock["clock_id"], "audio_clock.clock_id"),
+            "time_base": {
+                "numerator": _integer(time_base["numerator"], "time_base.numerator"),
+                "denominator": _integer(time_base["denominator"], "time_base.denominator"),
+            },
+            "origin_tick": _integer(audio_clock["origin_tick"], "audio_clock.origin_tick"),
+            "duration_tick": _integer(audio_clock["duration_tick"], "audio_clock.duration_tick"),
+        }
+        requested_range = _obj(p["requested_range"], {"in_tick", "out_tick"}, "requested_range")
+        strict_range = {
+            "in_tick": _integer(requested_range["in_tick"], "requested_range.in_tick"),
+            "out_tick": _integer(requested_range["out_tick"], "requested_range.out_tick"),
+        }
         if (
-            p["audio_clock"] != r.to_mapping()["audio_clock"]
-            or p["requested_range"] != r.to_mapping()["requested_range"]
+            strict_clock != r.to_mapping()["audio_clock"]
+            or strict_range != r.to_mapping()["requested_range"]
             or p["timed_speech_policy_sha256"] != r.policy_sha256
         ):
             raise LocalMediaSourceError("clock/range/policy drift")
@@ -290,6 +323,12 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @staticmethod
     def _coverage(v: object, r: TimedSpeechEvidenceRequest) -> Coverage:
+        raw = _obj(
+            v,
+            {"source_id", "source_sha256", "clock_id", "time_base", "in_tick", "out_tick", "outcome"},
+            "coverage",
+        )
+        time_base = _obj(raw["time_base"], {"numerator", "denominator"}, "coverage.time_base")
         expected = {
             "source_id": r.source_id,
             "source_sha256": r.source_sha256,
@@ -302,7 +341,21 @@ class FunASRHttpTimedSpeechEvidencePort:
             "out_tick": r.requested_out_tick,
             "outcome": "complete",
         }
-        if v != expected:
+        strict = {
+            "source_id": _text(raw["source_id"], "coverage.source_id"),
+            "source_sha256": _text(raw["source_sha256"], "coverage.source_sha256"),
+            "clock_id": _text(raw["clock_id"], "coverage.clock_id"),
+            "time_base": {
+                "numerator": _integer(time_base["numerator"], "coverage.time_base.numerator"),
+                "denominator": _integer(
+                    time_base["denominator"], "coverage.time_base.denominator"
+                ),
+            },
+            "in_tick": _integer(raw["in_tick"], "coverage.in_tick"),
+            "out_tick": _integer(raw["out_tick"], "coverage.out_tick"),
+            "outcome": _text(raw["outcome"], "coverage.outcome"),
+        }
+        if strict != expected:
             raise LocalMediaEvidenceError("coverage must be exact and complete")
         return Coverage(
             r.source_id,
@@ -399,11 +452,7 @@ class FunASRHttpTimedSpeechEvidencePort:
         if (
             r.word_timing_capability == "required"
             and outcome is TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE
-            and (
-                not words
-                or tuple(y for s in sentences for y in s.word_ids)
-                != tuple(w.word_id for w in words)
-            )
+            and not words
         ):
             raise LocalMediaEvidenceError("required word timing is missing")
         return TranscriptSet(
@@ -511,11 +560,14 @@ class FunASRHttpTimedSpeechEvidencePort:
             x = _obj(bounds[e.producer_kind], {"early_tick", "late_tick", "time_base"}, "bound")
             early = _integer(x["early_tick"], "bound.early_tick")
             late = _integer(x["late_tick"], "bound.late_tick")
+            bound_time_base = _obj(x["time_base"], {"numerator", "denominator"}, "bound.time_base")
             if (
                 not 0 < early <= e.timing_error_bound_tick
                 or not 0 < late <= e.timing_error_bound_tick
-                or x["time_base"]
-                != {"numerator": r.time_base.numerator, "denominator": r.time_base.denominator}
+                or _integer(bound_time_base["numerator"], "bound.time_base.numerator")
+                != r.time_base.numerator
+                or _integer(bound_time_base["denominator"], "bound.time_base.denominator")
+                != r.time_base.denominator
             ):
                 raise LocalMediaEvidenceError("invalid timing error bound")
             result.append(TimedSpeechTimingErrorBound(e.producer_kind, early, late, r.time_base))
