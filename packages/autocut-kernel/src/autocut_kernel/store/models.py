@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID
 
-from ..vlm.models import VlmObservationSet
+from ..vlm.models import VlmObservationSet, VlmRequestIdentity
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
@@ -192,6 +192,7 @@ class PersistedWholeSeriesSourceManifest:
     receipt_id: UUID
     artifact_set_id: UUID
     command_slot_id: UUID
+    source_job: Job | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         proxy_blobs = tuple(self.proxy_blobs)
@@ -210,6 +211,51 @@ class PersistedWholeSeriesSourceManifest:
                 "payload_json does not match source manifest content_hash"
             )
         object.__setattr__(self, "proxy_blobs", proxy_blobs)
+        if self.source_job is not None:
+            if type(self.source_job) is not Job:  # noqa: E721
+                raise StoreValidationError("source manifest source_job must be a Job")
+            if self.reference.scope != canonical_recipe_scope(self.source_job):
+                raise StoreValidationError(
+                    "source manifest source_job does not match its artifact scope"
+                )
+
+    def provenance_mapping(self) -> dict[str, object]:
+        """Return the source-preparation owner identity used by VLM children."""
+
+        reference = self.reference
+        return {
+            "artifact_reference": {
+                "artifact_type": reference.artifact_type,
+                "content_hash": reference.content_hash,
+                "logical_id": reference.logical_id,
+                "revision": reference.revision,
+                "scope": {
+                    "key": reference.scope.key,
+                    "kind": reference.scope.kind,
+                    "namespace": reference.scope.namespace,
+                },
+            },
+            "artifact_set_id": str(self.artifact_set_id),
+            "command_slot_id": str(self.command_slot_id),
+            "kernel_job_id": str(self.job_id),
+            "receipt_id": str(self.receipt_id),
+            "source_job": {
+                "job_key": self.reference.scope.key,
+                "profile": self.source_profile,
+            },
+        }
+
+    @property
+    def source_profile(self) -> JobProfile:
+        """The exact durable profile is filled by the committed reader result."""
+
+        if self.source_job is None:
+            raise StoreValidationError("source manifest profile is unavailable")
+        return self.source_job.profile
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_payload_hash(json.dumps(self.provenance_mapping()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +300,7 @@ class VlmObservationSetReference:
             )
 
 
-_VLM_REQUEST_IDENTITY_FIELDS = frozenset(
+VLM_REQUEST_IDENTITY_FIELDS = frozenset(
     {
         "frame_pts_index_set_sha256",
         "frame_samples_sha256",
@@ -408,7 +454,7 @@ class PersistedVlmGenerationChild:
         if type(identity_value) is not dict:  # noqa: E721
             raise StoreValidationError("VLM request identity does not match its closed schema")
         identity = cast(dict[str, object], identity_value)
-        if frozenset(identity) != _VLM_REQUEST_IDENTITY_FIELDS:
+        if frozenset(identity) != VLM_REQUEST_IDENTITY_FIELDS:
             raise StoreValidationError("VLM request identity does not match its closed schema")
         identity_json = json.dumps(
             identity,
@@ -669,6 +715,166 @@ class BlobRef:
         if type(self.byte_length) is not int or self.byte_length < 0:  # noqa: E721
             raise StoreValidationError("blob.byte_length must be a non-negative integer")
         _text(self.media_type, "blob.media_type")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedArtifactMemberReference:
+    """Complete identity of one member in one succeeded committed ArtifactSet."""
+
+    receipt_id: UUID
+    artifact_set_id: UUID
+    member_ordinal: int
+    scope: ArtifactScope
+    artifact_type: str
+    logical_id: str
+    revision: int
+    content_hash: str
+
+    def __post_init__(self) -> None:
+        for field_name, value in (
+            ("receipt_id", self.receipt_id),
+            ("artifact_set_id", self.artifact_set_id),
+        ):
+            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise StoreValidationError(f"{field_name} must be a UUID")
+        if type(self.member_ordinal) is not int or self.member_ordinal < 0:  # noqa: E721
+            raise StoreValidationError("member_ordinal must be a non-negative integer")
+        if type(self.scope) is not ArtifactScope:  # noqa: E721
+            raise StoreValidationError("committed member scope must be an ArtifactScope")
+        _text(self.artifact_type, "artifact_type")
+        _text(self.logical_id, "logical_id")
+        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
+            raise StoreValidationError("revision must be a positive integer")
+        _sha256(self.content_hash, "content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedVlmInputReference:
+    """Exact three-member VLM set and every immutable BlobRef it owns."""
+
+    request_record: CommittedArtifactMemberReference
+    response_record: CommittedArtifactMemberReference
+    observation_set: CommittedArtifactMemberReference
+    proxy_blob: BlobRef
+    request_payload: BlobRef
+    raw_response: BlobRef
+
+    def __post_init__(self) -> None:
+        members = (self.request_record, self.response_record, self.observation_set)
+        if any(type(item) is not CommittedArtifactMemberReference for item in members):  # noqa: E721
+            raise StoreValidationError(
+                "committed VLM members must be exact member references"
+            )
+        if any(type(item) is not BlobRef for item in (self.proxy_blob, self.request_payload, self.raw_response)):  # noqa: E721
+            raise StoreValidationError("committed VLM blobs must be exact BlobRefs")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedSemanticInputsRequest:
+    """Closed Stage 1-3 request; no path, dictionary, head, or hash-only input."""
+
+    job: Job
+    source_manifest: CommittedArtifactMemberReference
+    source_proxy_blobs: tuple[BlobRef, ...]
+    vlm_inputs: tuple[CommittedVlmInputReference, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.job) is not Job:  # noqa: E721
+            raise StoreValidationError("semantic input job must be a Job")
+        if type(self.source_manifest) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError(
+                "semantic source manifest must be an exact member reference"
+            )
+        source_blobs = tuple(self.source_proxy_blobs)
+        vlm_inputs = tuple(self.vlm_inputs)
+        if not source_blobs or any(type(item) is not BlobRef for item in source_blobs):  # noqa: E721
+            raise StoreValidationError(
+                "semantic source_proxy_blobs must contain exact BlobRefs"
+            )
+        if not vlm_inputs or any(type(item) is not CommittedVlmInputReference for item in vlm_inputs):  # noqa: E721
+            raise StoreValidationError(
+                "semantic vlm_inputs must contain exact committed VLM references"
+            )
+        if len(source_blobs) != len(set(source_blobs)):
+            raise StoreValidationError("semantic source proxy BlobRefs must be unique")
+        set_ids = tuple(item.observation_set.artifact_set_id for item in vlm_inputs)
+        if len(set_ids) != len(set(set_ids)):
+            raise StoreValidationError("semantic VLM ArtifactSets must be unique")
+        object.__setattr__(self, "source_proxy_blobs", source_blobs)
+        object.__setattr__(self, "vlm_inputs", vlm_inputs)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceWindowIdentity:
+    """Owner-bound Source/Window projection safe for Stage 1-3 semantics."""
+
+    episode_index: int
+    source_id: str
+    source_sha256: str
+    source_clock_id: str
+    window_manifest_sha256: str
+    window_manifest_set_sha256: str
+    proxy_blob: BlobRef
+
+    def __post_init__(self) -> None:
+        if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
+            raise StoreValidationError("source window episode_index must be non-negative")
+        _text(self.source_id, "source window source_id")
+        _text(self.source_clock_id, "source window source_clock_id")
+        for field_name in (
+            "source_sha256",
+            "window_manifest_sha256",
+            "window_manifest_set_sha256",
+        ):
+            _sha256(getattr(self, field_name), f"source window {field_name}")
+        if type(self.proxy_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("source window proxy_blob must be a BlobRef")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedVlmSemanticInput:
+    """One exact VLM observation set joined to its committed Source window."""
+
+    source_window: SourceWindowIdentity
+    request_identity: VlmRequestIdentity
+    observations: PersistedVlmObservationSet
+    response_record: CommittedArtifactMemberReference
+    raw_response: BlobRef
+
+    def __post_init__(self) -> None:
+        if type(self.source_window) is not SourceWindowIdentity:  # noqa: E721
+            raise StoreValidationError("VLM semantic source_window is invalid")
+        if type(self.request_identity) is not VlmRequestIdentity:  # noqa: E721
+            raise StoreValidationError("VLM semantic request_identity is invalid")
+        if type(self.observations) is not PersistedVlmObservationSet:  # noqa: E721
+            raise StoreValidationError("VLM semantic observations are invalid")
+        if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError("VLM semantic response_record is invalid")
+        if type(self.raw_response) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("VLM semantic raw_response is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedSemanticInputs:
+    """Exact committed Source/Window/Doubao inputs consumed by Stage 1-3."""
+
+    source_manifest: PersistedWholeSeriesSourceManifest
+    inputs: tuple[CommittedVlmSemanticInput, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.source_manifest) is not PersistedWholeSeriesSourceManifest:  # noqa: E721
+            raise StoreValidationError("semantic source_manifest is invalid")
+        inputs = tuple(self.inputs)
+        if not inputs or any(type(item) is not CommittedVlmSemanticInput for item in inputs):  # noqa: E721
+            raise StoreValidationError("semantic inputs must contain committed VLM inputs")
+        episode_indexes = tuple(item.source_window.episode_index for item in inputs)
+        if episode_indexes != tuple(sorted(episode_indexes)) or len(episode_indexes) != len(
+            set(episode_indexes)
+        ):
+            raise StoreValidationError(
+                "semantic inputs must have unique canonical episode order"
+            )
+        object.__setattr__(self, "inputs", inputs)
 
 
 @dataclass(frozen=True, slots=True)

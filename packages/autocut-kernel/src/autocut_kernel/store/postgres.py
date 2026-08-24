@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
@@ -18,6 +19,7 @@ from psycopg import DatabaseError, InterfaceError
 
 from ..vlm import (
     GENERATION_PROVIDER_LEASE_SECONDS,
+    VlmRequestIdentity,
     VlmValidationError,
     decode_vlm_observation_set,
 )
@@ -35,6 +37,8 @@ from .errors import (
     RecipeIntegrityError,
     RecipeUnavailableError,
     RuntimeStoreError,
+    SemanticInputIntegrityError,
+    SemanticInputUnavailableError,
     SemanticResolutionProofIntegrityError,
     SemanticResolutionProofUnavailableError,
     StaleHeadError,
@@ -44,6 +48,7 @@ from .errors import (
     VlmObservationUnavailableError,
 )
 from .models import (
+    VLM_REQUEST_IDENTITY_FIELDS,
     ArtifactMember,
     ArtifactScope,
     BlobRef,
@@ -51,6 +56,10 @@ from .models import (
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedSemanticInputs,
+    CommittedSemanticInputsRequest,
+    CommittedVlmSemanticInput,
     GenerationAttempt,
     Job,
     MediaEvidenceReference,
@@ -63,6 +72,7 @@ from .models import (
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SemanticResolutionProofReference,
+    SourceWindowIdentity,
     VlmObservationSetReference,
     VlmRequestRecordReference,
     WholeSeriesSourceManifestReference,
@@ -214,6 +224,262 @@ def _vlm_request_record_projection(
         )
     except (KeyError, TypeError, ValueError) as error:
         raise StoreValidationError("VLM request record projection is invalid") from error
+
+
+@dataclass(frozen=True, slots=True)
+class _CommittedSet:
+    job_id: UUID
+    command_slot_id: UUID
+    command_name: str
+    set_hash: str
+    members: tuple[tuple[int, ArtifactMember], ...]
+
+
+def _closed_mapping(
+    value: object,
+    fields: frozenset[str],
+    field_name: str,
+) -> dict[str, object]:
+    if type(value) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must be an object")
+    result = cast(dict[str, object], value)
+    if frozenset(result) != fields:
+        raise StoreValidationError(f"{field_name} does not match its closed schema")
+    return result
+
+
+def _required_text(value: object, field_name: str) -> str:
+    if type(value) is not str or not value.strip():  # noqa: E721
+        raise StoreValidationError(f"{field_name} must be non-empty text")
+    return value
+
+
+def _blob_ref(value: object, field_name: str) -> BlobRef:
+    mapping = _closed_mapping(
+        value,
+        frozenset({"object_id", "content_hash", "byte_length", "media_type"}),
+        field_name,
+    )
+    try:
+        content_hash = _required_text(mapping["content_hash"], f"{field_name}.content_hash")
+        byte_length = mapping["byte_length"]
+        media_type = _required_text(mapping["media_type"], f"{field_name}.media_type")
+        if type(byte_length) is not int:  # noqa: E721
+            raise StoreValidationError(f"{field_name}.byte_length must be an integer")
+        return BlobRef(
+            UUID(_required_text(mapping["object_id"], f"{field_name}.object_id")),
+            content_hash,
+            byte_length,
+            media_type,
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError(f"{field_name} is invalid") from error
+
+
+def _decode_request_identity(value: object) -> VlmRequestIdentity:
+    mapping = _closed_mapping(value, VLM_REQUEST_IDENTITY_FIELDS, "request_identity")
+    try:
+        return VlmRequestIdentity(
+            window_manifest_sha256=_required_text(
+                mapping["window_manifest_sha256"],
+                "request_identity.window_manifest_sha256",
+            ),
+            source_id=_required_text(mapping["source_id"], "request_identity.source_id"),
+            source_clock_id=_required_text(
+                mapping["source_clock_id"], "request_identity.source_clock_id"
+            ),
+            source_sha256=_required_text(
+                mapping["source_sha256"], "request_identity.source_sha256"
+            ),
+            frame_samples_sha256=_required_text(
+                mapping["frame_samples_sha256"],
+                "request_identity.frame_samples_sha256",
+            ),
+            frame_pts_index_set_sha256=_required_text(
+                mapping["frame_pts_index_set_sha256"],
+                "request_identity.frame_pts_index_set_sha256",
+            ),
+            window_manifest_set_sha256=_required_text(
+                mapping["window_manifest_set_sha256"],
+                "request_identity.window_manifest_set_sha256",
+            ),
+            proxy_blob_ref_sha256=_required_text(
+                mapping["proxy_blob_ref_sha256"],
+                "request_identity.proxy_blob_ref_sha256",
+            ),
+            preprocess_policy_sha256=_required_text(
+                mapping["preprocess_policy_sha256"],
+                "request_identity.preprocess_policy_sha256",
+            ),
+            window_sampling_policy_sha256=_required_text(
+                mapping["window_sampling_policy_sha256"],
+                "request_identity.window_sampling_policy_sha256",
+            ),
+            prompt_template_sha256=_required_text(
+                mapping["prompt_template_sha256"],
+                "request_identity.prompt_template_sha256",
+            ),
+            prompt_version=_required_text(
+                mapping["prompt_version"], "request_identity.prompt_version"
+            ),
+            response_schema_sha256=_required_text(
+                mapping["response_schema_sha256"],
+                "request_identity.response_schema_sha256",
+            ),
+            model_id=_required_text(mapping["model_id"], "request_identity.model_id"),
+            provider_id=_required_text(
+                mapping["provider_id"], "request_identity.provider_id"
+            ),
+            request_parameters_sha256=_required_text(
+                mapping["request_parameters_sha256"],
+                "request_identity.request_parameters_sha256",
+            ),
+            request_payload_sha256=_required_text(
+                mapping["request_payload_sha256"],
+                "request_identity.request_payload_sha256",
+            ),
+            parse_policy_sha256=_required_text(
+                mapping["parse_policy_sha256"],
+                "request_identity.parse_policy_sha256",
+            ),
+        )
+    except VlmValidationError as error:
+        raise StoreValidationError("request_identity is invalid") from error
+
+
+def _source_window_identities(
+    payload_json: str,
+    proxy_blobs: tuple[BlobRef, ...],
+) -> tuple[SourceWindowIdentity, ...]:
+    root = _strict_json_object(payload_json, "whole-series source manifest")
+    _closed_mapping(
+        root,
+        frozenset({"census", "census_sha256", "completion_policy", "episodes"}),
+        "whole-series source manifest",
+    )
+    census = _closed_mapping(
+        root["census"],
+        frozenset({"authorization_id", "completion_policy", "series_id", "sources"}),
+        "source census",
+    )
+    sources_value = census["sources"]
+    episodes_value = root["episodes"]
+    if type(sources_value) is not list or type(episodes_value) is not list:  # noqa: E721
+        raise StoreValidationError("source census and episodes must be arrays")
+    sources = cast(list[object], sources_value)
+    episodes = cast(list[object], episodes_value)
+    if not episodes or len(sources) != len(episodes) or len(episodes) != len(proxy_blobs):
+        raise StoreValidationError(
+            "source census, episodes, and exact proxy BlobRefs must be one-to-one"
+        )
+    census_json = json.dumps(census, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if root["census_sha256"] != canonical_payload_hash(census_json):
+        raise StoreValidationError("source census hash is invalid")
+    if (
+        root["completion_policy"] != "all_or_nothing"
+        or census["completion_policy"] != root["completion_policy"]
+    ):
+        raise StoreValidationError("source completion policy is invalid")
+    results: list[SourceWindowIdentity] = []
+    for episode_index, (source_value, episode_value, durable_blob) in enumerate(
+        zip(sources, episodes, proxy_blobs, strict=True)
+    ):
+        source = _closed_mapping(
+            source_value,
+            frozenset({"relative_path", "source_id", "content_sha256", "byte_size"}),
+            f"source[{episode_index}]",
+        )
+        episode = _closed_mapping(
+            episode_value,
+            frozenset({"media_probe", "proxy_blob", "window_manifest", "window_manifest_set"}),
+            f"episode[{episode_index}]",
+        )
+        media_probe = episode["media_probe"]
+        if type(media_probe) is not dict or cast(dict[str, object], media_probe).get("source") != source:  # noqa: E721
+            raise StoreValidationError("source episode media owner is inconsistent")
+        declared_blob = _blob_ref(episode["proxy_blob"], f"episode[{episode_index}].proxy_blob")
+        if declared_blob != durable_blob:
+            raise StoreValidationError("source episode proxy BlobRef is not exact")
+        manifest = _closed_mapping(
+            episode["window_manifest"],
+            frozenset(
+                {
+                    "core_range",
+                    "frame_samples",
+                    "frame_pts_index_set_sha256",
+                    "preprocess_policy_sha256",
+                    "proxy_blob_ref",
+                    "source_clock_id",
+                    "source_id",
+                    "source_range",
+                    "source_sha256",
+                    "source_time_base",
+                    "stream_index",
+                    "timeline_map",
+                    "window_sampling_policy_sha256",
+                }
+            ),
+            f"episode[{episode_index}].window_manifest",
+        )
+        manifest_set = _closed_mapping(
+            episode["window_manifest_set"],
+            frozenset(
+                {
+                    "declared_source_range",
+                    "frame_pts_index_set_sha256",
+                    "manifest_hashes",
+                    "source_clock_id",
+                    "source_id",
+                    "source_sha256",
+                    "source_time_base",
+                    "stream_index",
+                }
+            ),
+            f"episode[{episode_index}].window_manifest_set",
+        )
+        manifest_hash = canonical_payload_hash(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        )
+        manifest_set_hash = canonical_payload_hash(
+            json.dumps(manifest_set, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        )
+        if manifest_set["manifest_hashes"] != [manifest_hash]:
+            raise StoreValidationError("source WindowManifestSet membership is invalid")
+        if _blob_ref(manifest["proxy_blob_ref"], "window_manifest.proxy_blob_ref") != durable_blob:
+            raise StoreValidationError("source window proxy BlobRef is not exact")
+        source_id = _required_text(source["source_id"], "source.source_id")
+        source_sha256 = _required_text(source["content_sha256"], "source.content_sha256")
+        source_clock_id = _required_text(
+            manifest["source_clock_id"], "window_manifest.source_clock_id"
+        )
+        for field_name, expected in (
+            ("source_id", source_id),
+            ("source_sha256", source_sha256),
+            ("source_clock_id", source_clock_id),
+        ):
+            if manifest.get(field_name) != expected or manifest_set.get(field_name) != expected:
+                raise StoreValidationError("source/window owner identity is inconsistent")
+        for field_name in (
+            "stream_index",
+            "source_time_base",
+            "frame_pts_index_set_sha256",
+        ):
+            if manifest.get(field_name) != manifest_set.get(field_name):
+                raise StoreValidationError("source/window clock identity is inconsistent")
+        results.append(
+            SourceWindowIdentity(
+                episode_index,
+                source_id,
+                source_sha256,
+                source_clock_id,
+                manifest_hash,
+                manifest_set_hash,
+                durable_blob,
+            )
+        )
+    if len({item.window_manifest_sha256 for item in results}) != len(results):
+        raise StoreValidationError("source windows must have unique immutable identities")
+    return tuple(results)
 
 
 class PostgresRuntimeStore:
@@ -1343,6 +1609,396 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    def read_committed_semantic_inputs(
+        self,
+        request: CommittedSemanticInputsRequest,
+    ) -> CommittedSemanticInputs:
+        """Read exact committed Source/Window/VLM inputs without head lookup.
+
+        Every member is resolved through its Job, profile, Receipt, ArtifactSet,
+        ordinal, full artifact identity, and exact BlobRefs.  Only the Source
+        owner projection and VLM semantic observations are returned; no
+        Transcript or VAD artifact is queried by this reader.
+        """
+
+        if type(request) is not CommittedSemanticInputsRequest:  # noqa: E721
+            raise StoreValidationError(
+                "request must be a CommittedSemanticInputsRequest"
+            )
+
+        def operation(cursor: DbCursor) -> CommittedSemanticInputs:
+            source_set = self._read_exact_committed_set(
+                cursor,
+                request.job,
+                request.source_manifest,
+            )
+            if (
+                source_set.command_name != "PrepareWholeSeriesSourcesCommand"
+                or len(source_set.members) != 1
+                or request.source_manifest.member_ordinal != 0
+                or request.source_manifest.artifact_type
+                != "whole_series_source_manifest"
+                or request.source_manifest.logical_id
+                != "whole_series_source_manifest"
+                or request.source_manifest.scope != canonical_recipe_scope(request.job)
+            ):
+                raise SemanticInputUnavailableError(
+                    "exact committed whole-series source member is unavailable"
+                )
+            source_artifact = source_set.members[0][1]
+            try:
+                declared_blobs = _source_manifest_blob_refs(source_artifact.payload_json)
+                if declared_blobs != request.source_proxy_blobs:
+                    raise StoreValidationError(
+                        "source manifest proxy BlobRefs do not match the exact request"
+                    )
+                durable_blobs = tuple(
+                    self._claimed_blob_ref(
+                        cursor,
+                        source_set.job_id,
+                        blob,
+                        field_name=f"semantic source proxy[{position}]",
+                    )
+                    for position, blob in enumerate(declared_blobs)
+                )
+                source_manifest = PersistedWholeSeriesSourceManifest(
+                    reference=WholeSeriesSourceManifestReference(
+                        source_artifact.scope,
+                        source_artifact.logical_id,
+                        source_artifact.revision,
+                        source_artifact.content_hash,
+                    ),
+                    payload_json=source_artifact.payload_json,
+                    proxy_blobs=durable_blobs,
+                    job_id=source_set.job_id,
+                    receipt_id=request.source_manifest.receipt_id,
+                    artifact_set_id=request.source_manifest.artifact_set_id,
+                    command_slot_id=source_set.command_slot_id,
+                    source_job=request.job,
+                )
+                source_windows = _source_window_identities(
+                    source_artifact.payload_json,
+                    durable_blobs,
+                )
+            except (BlobIntegrityError, StoreValidationError) as error:
+                raise SemanticInputIntegrityError(
+                    "committed Source/Window input failed exact verification"
+                ) from error
+
+            semantic_inputs: list[CommittedVlmSemanticInput] = []
+            for vlm_reference in request.vlm_inputs:
+                member_refs = (
+                    vlm_reference.request_record,
+                    vlm_reference.response_record,
+                    vlm_reference.observation_set,
+                )
+                set_ids = {item.artifact_set_id for item in member_refs}
+                receipt_ids = {item.receipt_id for item in member_refs}
+                if len(set_ids) != 1 or len(receipt_ids) != 1:
+                    raise SemanticInputUnavailableError(
+                        "VLM members do not share one exact Receipt/ArtifactSet"
+                    )
+                vlm_set = self._read_exact_committed_set(
+                    cursor,
+                    request.job,
+                    vlm_reference.request_record,
+                )
+                expected_refs = (
+                    (0, "vlm_request_record", vlm_reference.request_record),
+                    (1, "vlm_response_record", vlm_reference.response_record),
+                    (2, "vlm_observation_set", vlm_reference.observation_set),
+                )
+                if vlm_set.command_name != "GenerateVlmEvidenceCommand" or len(
+                    vlm_set.members
+                ) != 3:
+                    raise SemanticInputUnavailableError(
+                        "exact committed VLM ArtifactSet is unavailable"
+                    )
+                if any(
+                    member.scope != canonical_recipe_scope(request.job)
+                    or member.revision != vlm_set.members[0][1].revision
+                    for _ordinal, member in vlm_set.members
+                ):
+                    raise SemanticInputIntegrityError(
+                        "committed VLM members do not share one Job scope/revision"
+                    )
+                for ordinal, artifact_type, reference in expected_refs:
+                    if (
+                        reference.member_ordinal != ordinal
+                        or reference.artifact_type != artifact_type
+                        or not self._member_matches_reference(
+                            vlm_set.members[ordinal], reference
+                        )
+                    ):
+                        raise SemanticInputUnavailableError(
+                            "exact committed VLM member identity is unavailable"
+                        )
+                request_artifact = vlm_set.members[0][1]
+                response_artifact = vlm_set.members[1][1]
+                observation_artifact = vlm_set.members[2][1]
+                try:
+                    cursor.execute(
+                        """
+                        SELECT attempt.attempt_id, slot.idempotency_key,
+                               slot.request_hash, attempt.provider_id,
+                               attempt.provider_idempotency_key,
+                               request_blob.object_id, request_blob.content_hash,
+                               request_blob.byte_length, request_blob.media_type,
+                               response_blob.object_id, response_blob.content_hash,
+                               response_blob.byte_length, response_blob.media_type,
+                               attempt.provider_request_id
+                          FROM runtime.generation_attempts AS attempt
+                          JOIN runtime.command_slots AS slot
+                            ON slot.command_slot_id = attempt.command_slot_id
+                           AND slot.job_id = attempt.job_id
+                          JOIN storage.blob_objects AS request_blob
+                            ON request_blob.object_id = attempt.request_payload_object_id
+                          JOIN storage.blob_objects AS response_blob
+                            ON response_blob.object_id = attempt.raw_response_object_id
+                         WHERE attempt.job_id = %s
+                           AND attempt.command_slot_id = %s
+                           AND attempt.state = 'committed'
+                           AND attempt.receipt_id = %s
+                           AND attempt.artifact_set_id = %s
+                        """,
+                        (
+                            vlm_set.job_id,
+                            vlm_set.command_slot_id,
+                            vlm_reference.request_record.receipt_id,
+                            vlm_reference.request_record.artifact_set_id,
+                        ),
+                    )
+                    attempt_rows: list[tuple[object, ...]] = []
+                    while (attempt_row := cursor.fetchone()) is not None:
+                        attempt_rows.append(attempt_row)
+                    if len(attempt_rows) != 1:
+                        raise StoreValidationError(
+                            "VLM ArtifactSet does not bind one committed attempt"
+                        )
+                    (
+                        attempt_id,
+                        idempotency_key,
+                        request_hash,
+                        attempt_provider_id,
+                        provider_idempotency_key,
+                        request_object_id,
+                        request_blob_hash,
+                        request_byte_length,
+                        request_media_type,
+                        response_object_id,
+                        response_blob_hash,
+                        response_byte_length,
+                        response_media_type,
+                        provider_request_id,
+                    ) = attempt_rows[0]
+                    request_payload = BlobRef(
+                        UUID(str(request_object_id)),
+                        _text(request_blob_hash),
+                        int(_text(request_byte_length)),
+                        _text(request_media_type),
+                    )
+                    raw_response = BlobRef(
+                        UUID(str(response_object_id)),
+                        _text(response_blob_hash),
+                        int(_text(response_byte_length)),
+                        _text(response_media_type),
+                    )
+                    if (
+                        request_payload != vlm_reference.request_payload
+                        or raw_response != vlm_reference.raw_response
+                    ):
+                        raise StoreValidationError(
+                            "VLM request/raw-response BlobRefs are not exact"
+                        )
+                    self._claimed_blob_ref(
+                        cursor,
+                        vlm_set.job_id,
+                        request_payload,
+                        field_name="semantic VLM request payload",
+                    )
+                    self._claimed_blob_ref(
+                        cursor,
+                        vlm_set.job_id,
+                        raw_response,
+                        field_name="semantic VLM raw response",
+                    )
+                    request_payload_json = _strict_json_object(
+                        request_artifact.payload_json,
+                        "VLM request record",
+                    )
+                    response_payload = _strict_json_object(
+                        response_artifact.payload_json,
+                        "VLM response record",
+                    )
+                    request_identity = _decode_request_identity(
+                        request_payload_json["request_identity"]
+                    )
+                    (
+                        episode_index,
+                        window_manifest_sha256,
+                        window_manifest_set_sha256,
+                        source_manifest_sha256,
+                        source_provenance_sha256,
+                        request_identity_sha256,
+                    ) = _vlm_request_record_projection(request_artifact.payload_json)
+                    child = PersistedVlmGenerationChild(
+                        reference=VlmRequestRecordReference(
+                            request_artifact.scope,
+                            request_artifact.logical_id,
+                            request_artifact.revision,
+                            request_artifact.content_hash,
+                        ),
+                        payload_json=request_artifact.payload_json,
+                        source_job=request.job,
+                        kernel_job_id=vlm_set.job_id,
+                        command_slot_id=vlm_set.command_slot_id,
+                        idempotency_key=_text(idempotency_key),
+                        request_hash=_text(request_hash),
+                        attempt_id=UUID(str(attempt_id)),
+                        provider_idempotency_key=_text(provider_idempotency_key),
+                        request_payload=request_payload,
+                        receipt_id=vlm_reference.request_record.receipt_id,
+                        artifact_set_id=vlm_reference.request_record.artifact_set_id,
+                        episode_index=episode_index,
+                        window_manifest_sha256=window_manifest_sha256,
+                        window_manifest_set_sha256=window_manifest_set_sha256,
+                        source_manifest_sha256=source_manifest_sha256,
+                        source_provenance_sha256=source_provenance_sha256,
+                        request_identity_sha256=request_identity_sha256,
+                    )
+                    decoded = decode_vlm_observation_set(
+                        _strict_json_object(
+                            observation_artifact.payload_json,
+                            "VLM observation set",
+                        )
+                    )
+                    observations = PersistedVlmObservationSet(
+                        reference=VlmObservationSetReference(
+                            observation_artifact.scope,
+                            observation_artifact.logical_id,
+                            observation_artifact.revision,
+                            observation_artifact.content_hash,
+                        ),
+                        payload_json=observation_artifact.payload_json,
+                        observation_set=decoded,
+                        source_child=child,
+                    )
+                    response = _closed_mapping(
+                        response_payload,
+                        frozenset(
+                            {
+                                "attempt_id",
+                                "provider_request_id",
+                                "raw_response_blob",
+                                "raw_response_sha256",
+                            }
+                        ),
+                        "VLM response record",
+                    )
+                    if (
+                        response["attempt_id"] != str(child.attempt_id)
+                        or response["provider_request_id"]
+                        != (
+                            None
+                            if provider_request_id is None
+                            else _text(provider_request_id)
+                        )
+                        or _blob_ref(
+                            response["raw_response_blob"],
+                            "VLM response raw_response_blob",
+                        )
+                        != raw_response
+                        or response["raw_response_sha256"]
+                        != decoded.raw_response_sha256
+                        or raw_response.content_hash != decoded.raw_response_sha256
+                        or _blob_ref(
+                            request_payload_json["proxy_blob"],
+                            "VLM request proxy_blob",
+                        )
+                        != vlm_reference.proxy_blob
+                    ):
+                        raise StoreValidationError(
+                            "VLM response/request blobs are internally inconsistent"
+                        )
+                    self._claimed_blob_ref(
+                        cursor,
+                        vlm_set.job_id,
+                        vlm_reference.proxy_blob,
+                        field_name="semantic VLM proxy",
+                    )
+                    if not 0 <= episode_index < len(source_windows):
+                        raise StoreValidationError(
+                            "VLM episode_index has no committed Source owner"
+                        )
+                    source_window = source_windows[episode_index]
+                    if (
+                        child.source_manifest_sha256
+                        != source_manifest.reference.content_hash
+                        or child.source_provenance_sha256
+                        != source_manifest.canonical_hash
+                        or child.window_manifest_sha256
+                        != source_window.window_manifest_sha256
+                        or child.window_manifest_set_sha256
+                        != source_window.window_manifest_set_sha256
+                        or vlm_reference.proxy_blob != source_window.proxy_blob
+                        or request_identity.source_id != source_window.source_id
+                        or request_identity.source_sha256
+                        != source_window.source_sha256
+                        or request_identity.source_clock_id
+                        != source_window.source_clock_id
+                        or request_identity.window_manifest_sha256
+                        != source_window.window_manifest_sha256
+                        or request_identity.window_manifest_set_sha256
+                        != source_window.window_manifest_set_sha256
+                        or request_identity.request_payload_sha256
+                        != request_payload.content_hash
+                        or request_identity.provider_id
+                        != _text(attempt_provider_id)
+                        or request_identity.proxy_blob_ref_sha256
+                        != canonical_payload_hash(
+                            json.dumps(
+                                {
+                                    "byte_length": source_window.proxy_blob.byte_length,
+                                    "content_hash": source_window.proxy_blob.content_hash,
+                                    "media_type": source_window.proxy_blob.media_type,
+                                    "object_id": str(source_window.proxy_blob.object_id),
+                                }
+                            )
+                        )
+                    ):
+                        raise StoreValidationError(
+                            "VLM input does not match its committed Source/Window owner"
+                        )
+                    semantic_inputs.append(
+                        CommittedVlmSemanticInput(
+                            source_window=source_window,
+                            request_identity=request_identity,
+                            observations=observations,
+                            response_record=vlm_reference.response_record,
+                            raw_response=raw_response,
+                        )
+                    )
+                except (
+                    BlobIntegrityError,
+                    StoreValidationError,
+                    TypeError,
+                    ValueError,
+                    VlmValidationError,
+                ) as error:
+                    raise SemanticInputIntegrityError(
+                        "committed VLM input failed member/blob/owner verification"
+                    ) from error
+            semantic_inputs.sort(key=lambda item: item.source_window.episode_index)
+            if tuple(item.source_window.episode_index for item in semantic_inputs) != tuple(
+                range(len(source_windows))
+            ):
+                raise SemanticInputIntegrityError(
+                    "committed Source windows and VLM inputs are not one-to-one"
+                )
+            return CommittedSemanticInputs(source_manifest, tuple(semantic_inputs))
+
+        return self._transaction(operation)
+
     def read_committed_vlm_generation_child(
         self,
         job: Job,
@@ -1746,6 +2402,7 @@ class PostgresRuntimeStore:
                 UUID(str(receipt_id)),
                 artifact_set_id,
                 slot_id,
+                job,
             )
 
         return self._transaction(operation)
@@ -2173,6 +2830,161 @@ class PostgresRuntimeStore:
     # ------------------------------------------------------------------
     # internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _member_matches_reference(
+        member: tuple[int, ArtifactMember],
+        reference: CommittedArtifactMemberReference,
+    ) -> bool:
+        ordinal, artifact = member
+        return (
+            ordinal == reference.member_ordinal
+            and artifact.scope == reference.scope
+            and artifact.artifact_type == reference.artifact_type
+            and artifact.logical_id == reference.logical_id
+            and artifact.revision == reference.revision
+            and artifact.content_hash == reference.content_hash
+        )
+
+    def _read_exact_committed_set(
+        self,
+        cursor: DbCursor,
+        job: Job,
+        reference: CommittedArtifactMemberReference,
+    ) -> _CommittedSet:
+        cursor.execute(
+            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+            (job.job_key,),
+        )
+        job_row = cursor.fetchone()
+        if job_row is None:
+            raise SemanticInputUnavailableError(
+                "exact committed semantic input Job is unavailable"
+            )
+        job_id, profile = job_row
+        durable_job_id = UUID(str(job_id))
+        if _text(profile) != job.profile:
+            raise JobProfileMismatchError("job_key belongs to a different profile")
+        cursor.execute(
+            """
+            SELECT slot.command_slot_id, slot.command_name, artifact_set.set_hash,
+                   artifact_set.member_count
+              FROM runtime.command_receipts AS receipt
+              JOIN runtime.command_slots AS slot
+                ON slot.command_slot_id = receipt.command_slot_id
+               AND slot.job_id = %s
+              JOIN runtime.artifact_sets AS artifact_set
+                ON artifact_set.artifact_set_id = receipt.result_artifact_set_id
+               AND artifact_set.command_slot_id = slot.command_slot_id
+               AND artifact_set.job_id = slot.job_id
+             WHERE receipt.receipt_id = %s
+               AND receipt.result_artifact_set_id = %s
+               AND receipt.outcome = 'succeeded'
+               AND slot.state = 'succeeded'
+            """,
+            (
+                durable_job_id,
+                reference.receipt_id,
+                reference.artifact_set_id,
+            ),
+        )
+        set_rows: list[tuple[object, ...]] = []
+        while (row := cursor.fetchone()) is not None:
+            set_rows.append(row)
+        if len(set_rows) != 1:
+            raise SemanticInputUnavailableError(
+                "exact committed semantic Receipt/ArtifactSet is unavailable"
+            )
+        command_slot_id, command_name, set_hash, member_count = set_rows[0]
+        slot_id = UUID(str(command_slot_id))
+        cursor.execute(
+            """
+            SELECT member.ordinal, artifact.artifact_type, artifact.logical_id,
+                   artifact.revision, artifact.namespace, artifact.scope_kind,
+                   artifact.scope_key, artifact.content_hash,
+                   artifact.payload_json::text
+              FROM runtime.artifact_set_members AS member
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = member.artifact_set_id
+               AND artifact.job_id = %s
+             WHERE member.artifact_set_id = %s
+             ORDER BY member.ordinal
+            """,
+            (durable_job_id, reference.artifact_set_id),
+        )
+        members: list[tuple[int, ArtifactMember]] = []
+        while (row := cursor.fetchone()) is not None:
+            (
+                ordinal,
+                artifact_type,
+                logical_id,
+                revision,
+                namespace,
+                scope_kind,
+                scope_key,
+                content_hash,
+                payload_json,
+            ) = row
+            serialized = _text(payload_json)
+            try:
+                if canonical_payload_hash(serialized) != _text(content_hash):
+                    raise StoreValidationError(
+                        "committed semantic member payload hash is invalid"
+                    )
+                members.append(
+                    (
+                        int(_text(ordinal)),
+                        ArtifactMember(
+                            _text(artifact_type),
+                            _text(logical_id),
+                            int(_text(revision)),
+                            ArtifactScope(
+                                _text(namespace),
+                                _text(scope_kind),
+                                _text(scope_key),
+                            ),
+                            _text(content_hash),
+                            serialized,
+                        ),
+                    )
+                )
+            except (StoreValidationError, TypeError, ValueError) as error:
+                raise SemanticInputIntegrityError(
+                    "committed semantic member failed immutable verification"
+                ) from error
+        member_tuple = tuple(members)
+        if (
+            len(member_tuple) != int(_text(member_count))
+            or tuple(item[0] for item in member_tuple)
+            != tuple(range(len(member_tuple)))
+        ):
+            raise SemanticInputIntegrityError(
+                "committed semantic ArtifactSet membership is incomplete or duplicated"
+            )
+        try:
+            CommandSuccess(
+                slot_id,
+                _text(set_hash),
+                tuple(item[1] for item in member_tuple),
+            )
+        except StoreValidationError as error:
+            raise SemanticInputIntegrityError(
+                "committed semantic ArtifactSet hash is invalid"
+            ) from error
+        if reference.member_ordinal >= len(member_tuple) or not self._member_matches_reference(
+            member_tuple[reference.member_ordinal], reference
+        ):
+            raise SemanticInputUnavailableError(
+                "exact committed semantic member identity is unavailable"
+            )
+        return _CommittedSet(
+            durable_job_id,
+            slot_id,
+            _text(command_name),
+            _text(set_hash),
+            member_tuple,
+        )
 
     @staticmethod
     def _validate_uuid(value: object, field_name: str) -> None:

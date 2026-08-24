@@ -49,6 +49,14 @@ class VlmObservationIntegrityError(RuntimeStoreError):
     """A committed VLM observation set violates its immutable provenance contract."""
 
 
+class SemanticInputUnavailableError(RuntimeStoreError):
+    """An exact committed Source/Window/VLM input identity is unavailable."""
+
+
+class SemanticInputIntegrityError(RuntimeStoreError):
+    """Committed semantic inputs fail member, BlobRef, or owner-join validation."""
+
+
 class RecipeUnavailableError(RuntimeStoreError):
     """The exact persisted Recipe identity is not available to this Job."""
 
