@@ -14,6 +14,7 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineRunValidationError,
+    PipelineStageReconciler,
     PipelineStageRegistry,
     PipelineStageResult,
     PipelineStageRunner,
@@ -248,6 +249,7 @@ class FakeCommandClaimStore:
     def __init__(self, command: PipelineCommand | None = None) -> None:
         self.command = command or PipelineCommand("command-1", "source_prep", "pending")
         self.claims = 0
+        self.results: list[PipelineStageResult] = []
 
     async def claim_next_pending(
         self,
@@ -268,6 +270,59 @@ class FakeCommandClaimStore:
         )
         return self.command
 
+    async def record_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+        lease_id: str,
+    ) -> None:
+        del run_id
+        if (
+            self.command.status != "running"
+            or self.command.version != expected_version
+            or self.command.lease_id != lease_id
+        ):
+            raise StaleRunVersionError("pipeline_run_" + "a" * 32)
+        self.results.append(result)
+        self.command = replace(
+            self.command,
+            status=result.outcome,
+            receipt_id=result.receipt_id,
+            version=expected_version + 1,
+            lease_id=None,
+        )
+
+    async def read_indeterminate(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+    ) -> PipelineCommand | None:
+        del run_id
+        if self.command.status != "indeterminate" or self.command.version != expected_version:
+            return None
+        return self.command
+
+    async def record_reconciled_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+    ) -> None:
+        del run_id
+        if self.command.status != "indeterminate" or self.command.version != expected_version:
+            raise StaleRunVersionError("pipeline_run_" + "a" * 32)
+        self.results.append(result)
+        self.command = replace(
+            self.command,
+            status=result.outcome,
+            receipt_id=result.receipt_id,
+            version=expected_version + 1,
+        )
+
 
 @pytest.mark.asyncio
 async def test_fake_stage_uses_closed_registry_port_without_inventing_success() -> None:
@@ -286,6 +341,7 @@ async def test_fake_stage_uses_closed_registry_port_without_inventing_success() 
     assert stage.commands == [
         PipelineCommand("command-1", "source_prep", "running", None, 1, "lease-1")
     ]
+    assert command_store.results == [PipelineStageResult("command-1", "indeterminate")]
 
 
 @pytest.mark.asyncio
@@ -347,6 +403,39 @@ async def test_indeterminate_command_requires_reconciler_and_is_not_executed() -
 
     assert result is None
     assert stage.commands == []
+
+
+class FakeReconcileStage:
+    def __init__(self) -> None:
+        self.commands: list[PipelineCommand] = []
+        self.receipt_id = uuid4()
+
+    async def reconcile(self, command: PipelineCommand) -> PipelineStageResult:
+        self.commands.append(command)
+        return PipelineStageResult(command.command_id, "succeeded", self.receipt_id)
+
+
+@pytest.mark.asyncio
+async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> None:
+    command_store = FakeCommandClaimStore(
+        PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)
+    )
+    stage = FakeReconcileStage()
+    reconciler = PipelineStageReconciler.from_ports(
+        command_store,
+        ("source_prep", stage),
+    )
+
+    result = await reconciler.reconcile(
+        "pipeline_run_" + "a" * 32,
+        expected_version=2,
+    )
+
+    assert result == PipelineStageResult("command-1", "succeeded", stage.receipt_id)
+    assert stage.commands == [
+        PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)
+    ]
+    assert command_store.command.status == "succeeded"
 
 
 def test_request_decoder_is_closed_and_rejects_production() -> None:

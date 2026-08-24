@@ -69,8 +69,17 @@ class PipelineStagePort(Protocol):
     async def execute(self, command: PipelineCommand) -> PipelineStageResult: ...
 
 
+class PipelineStageReconcilePort(Protocol):
+    """Read-only recovery of one external call with an uncertain outcome."""
+
+    async def reconcile(
+        self,
+        command: PipelineCommand,
+    ) -> PipelineStageResult | None: ...
+
+
 class PipelineCommandClaimStore(Protocol):
-    """Atomically lease the next pending command for a durable worker."""
+    """Atomically lease a command and CAS-project its stage result."""
 
     async def claim_next_pending(
         self,
@@ -79,3 +88,35 @@ class PipelineCommandClaimStore(Protocol):
         expected_version: int,
         lease_id: str,
     ) -> PipelineCommand | None: ...
+
+    async def expire_running_lease(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        lease_id: str,
+    ) -> PipelineCommand: ...
+
+    async def record_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+        lease_id: str,
+    ) -> None: ...
+
+    async def read_indeterminate(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+    ) -> PipelineCommand | None: ...
+
+    async def record_reconciled_result(
+        self,
+        run_id: str,
+        *,
+        result: PipelineStageResult,
+        expected_version: int,
+    ) -> None: ...

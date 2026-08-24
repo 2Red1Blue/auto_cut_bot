@@ -30,6 +30,9 @@ from auto_cut_bot.pipeline.runtime import (
     validate_idempotency_key,
     validate_run_id,
 )
+from auto_cut_bot.pipeline.runtime.composition import (
+    compose_pipeline_run_service_from_environment,
+)
 from auto_cut_bot.utils.helpers import safe_filename
 from auto_cut_bot.utils.media_decode import (
     MAX_FILE_SIZE,
@@ -497,7 +500,11 @@ def create_app(
     app[_REQUEST_TIMEOUT_KEY] = request_timeout
     app[_SESSION_LOCKS_KEY] = {}  # per-user locks, keyed by session_key
     app[_PREPARE_AGENT_KEY] = prepare_agent
-    app[_PIPELINE_RUN_SERVICE_KEY] = pipeline_run_service
+    app[_PIPELINE_RUN_SERVICE_KEY] = (
+        pipeline_run_service
+        if pipeline_run_service is not None
+        else compose_pipeline_run_service_from_environment()
+    )
 
     @web.middleware
     async def auth_middleware(

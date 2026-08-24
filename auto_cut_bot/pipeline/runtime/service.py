@@ -71,7 +71,10 @@ class DurablePipelineRunService:
             snapshot.run_id != run_id
             or snapshot.version != expected_version + 1
             or snapshot.status not in ("accepted", "running")
-            or not any(command.status == "pending" for command in snapshot.commands)
+            or not any(
+                command.status in ("pending", "indeterminate")
+                for command in snapshot.commands
+            )
         ):
             raise PipelineRunValidationError("resume claim returned an invalid CAS projection")
         await self._scheduler.enqueue(snapshot.run_id)
@@ -82,7 +85,8 @@ class DurablePipelineRunService:
         run_ids: list[str] = []
         for snapshot in snapshots:
             if snapshot.status not in ("accepted", "running") or not any(
-                command.status in ("pending", "running") for command in snapshot.commands
+                command.status in ("pending", "running", "indeterminate")
+                for command in snapshot.commands
             ):
                 continue
             await self._scheduler.enqueue(snapshot.run_id)

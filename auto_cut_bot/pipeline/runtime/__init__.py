@@ -28,10 +28,12 @@ from .ports import (
     PipelineRunStore,
     PipelineSchedulerPort,
     PipelineStagePort,
+    PipelineStageReconcilePort,
     SourceAuthorizationPort,
 )
+from .postgres import PostgresPipelineRunStore, PostgresPipelineScheduler
 from .service import DurablePipelineRunService
-from .stages import PipelineStageRegistry, PipelineStageRunner
+from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
 
 __all__ = (
     "DurablePipelineRunService",
@@ -51,9 +53,13 @@ __all__ = (
     "PipelineSchedulerPort",
     "PipelineStageOutcome",
     "PipelineStagePort",
+    "PipelineStageReconcilePort",
+    "PipelineStageReconciler",
     "PipelineStageRegistry",
     "PipelineStageResult",
     "PipelineStageRunner",
+    "PostgresPipelineRunStore",
+    "PostgresPipelineScheduler",
     "ResumeNotAllowedError",
     "RunClaim",
     "SourceAuthorizationPort",

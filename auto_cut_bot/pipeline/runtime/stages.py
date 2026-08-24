@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .errors import PipelineRunValidationError
 from .models import PipelineCommand, PipelineStageResult, validate_run_id
-from .ports import PipelineCommandClaimStore, PipelineStagePort
+from .ports import PipelineCommandClaimStore, PipelineStagePort, PipelineStageReconcilePort
 
 
 class PipelineStageRegistry:
@@ -90,4 +90,86 @@ class PipelineStageRunner:
         result = await self._registry.require(command.stage).execute(command)
         if type(result) is not PipelineStageResult or result.command_id != command.command_id:  # noqa: E721
             raise PipelineRunValidationError("stage result does not bind the dispatched command")
+        await self._command_store.record_result(
+            run_id,
+            result=result,
+            expected_version=command.version,
+            lease_id=lease_id,
+        )
+        return result
+
+
+class PipelineStageReconciler:
+    """Resolve an indeterminate command without repeating its external action."""
+
+    def __init__(
+        self,
+        command_store: PipelineCommandClaimStore,
+        ports: tuple[tuple[str, PipelineStageReconcilePort], ...],
+    ) -> None:
+        if not ports:
+            raise PipelineRunValidationError("reconcile registry must not be empty")
+        names: set[str] = set()
+        for name, port in ports:
+            if type(name) is not str or not name.strip():  # noqa: E721
+                raise PipelineRunValidationError("reconcile stage name must be non-empty")
+            if name in names:
+                raise PipelineRunValidationError(f"duplicate reconcile stage name: {name}")
+            if not callable(getattr(port, "reconcile", None)):
+                raise PipelineRunValidationError(
+                    f"reconcile stage {name} does not implement reconcile"
+                )
+            names.add(name)
+        self._command_store = command_store
+        self._ports = ports
+
+    @classmethod
+    def from_ports(
+        cls,
+        command_store: PipelineCommandClaimStore,
+        *ports: tuple[str, PipelineStageReconcilePort],
+    ) -> PipelineStageReconciler:
+        return cls(command_store, ports)
+
+    def _require(self, name: str) -> PipelineStageReconcilePort:
+        for registered_name, port in self._ports:
+            if registered_name == name:
+                return port
+        raise PipelineRunValidationError(f"unregistered reconcile stage: {name}")
+
+    async def reconcile(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+    ) -> PipelineStageResult | None:
+        validate_run_id(run_id)
+        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        command = await self._command_store.read_indeterminate(
+            run_id,
+            expected_version=expected_version,
+        )
+        if command is None:
+            return None
+        if command.status != "indeterminate" or command.version != expected_version:
+            raise PipelineRunValidationError(
+                "reconcile command must bind the indeterminate version"
+            )
+        result = await self._require(command.stage).reconcile(command)
+        if result is None:
+            return None
+        if (
+            type(result) is not PipelineStageResult  # noqa: E721
+            or result.command_id != command.command_id
+            or result.outcome == "indeterminate"
+        ):
+            raise PipelineRunValidationError(
+                "reconcile result must be a terminal Receipt for the exact command"
+            )
+        await self._command_store.record_reconciled_result(
+            run_id,
+            result=result,
+            expected_version=expected_version,
+        )
         return result
