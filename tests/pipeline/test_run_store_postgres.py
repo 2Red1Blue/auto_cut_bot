@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -101,8 +102,23 @@ def _execution_profile(
 ) -> PipelineExecutionProfile:
     return frozen_execution_profile(
         model_id=model_id,
-        media_policy=media_preflight_policy(asr_model_revision=asr_model_revision),
+        media_policy=media_preflight_policy(
+            asr_model_revision=asr_model_revision,
+            timed_speech_service_sha256="sha256:" + "2" * 64,
+        ),
     )
+
+
+def _historical_execution_profile(
+    schema_version: str,
+) -> PipelineExecutionProfile:
+    mapping = _execution_profile().to_mapping()
+    mapping["schema_version"] = schema_version
+    del mapping["media_preflight_policy"]
+    del mapping["media_preflight_policy_hash"]
+    if schema_version == "pipeline-execution-profile-v1":
+        del mapping["generation_retry_policy"]
+    return PipelineExecutionProfile.from_mapping(mapping)
 
 
 def _force_terminal_command(cursor, command_id: str, outcome: str) -> str:
@@ -980,6 +996,193 @@ async def test_0008_aborts_on_old_active_runs_and_marks_only_terminal_history() 
     assert succeeded_history is not None and succeeded_history.status == "succeeded"
     assert succeeded_history.execution_profile.is_legacy_unresolved
     assert await store.list_reconstructible_runs() == ()
+
+
+@pytest.mark.asyncio
+async def test_0012_atomically_rejects_active_historical_profiles_then_replays() -> None:
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+            cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+            for migration in sorted(migration_root.glob("*.sql")):
+                if migration.name >= "0012_pipeline_media_preflight_profile.sql":
+                    break
+                cursor.execute(migration.read_text(encoding="utf-8"))
+
+    def factory():
+        return psycopg.connect(DSN)
+
+    store = PostgresPipelineRunStore(factory)
+    v1 = _historical_execution_profile("pipeline-execution-profile-v1")
+    v2 = _historical_execution_profile("pipeline-execution-profile-v2")
+    request = PipelineRunRequest("test", source_root="/migration-0012/source")
+
+    async def create_run(
+        label: str,
+        profile: PipelineExecutionProfile,
+    ) -> str:
+        run_id = f"pipeline_run_{uuid4().hex}"
+        claim = await store.claim_run(
+            run_id=run_id,
+            idempotency_key=f"migration-0012-{label}",
+            request=request,
+            request_hash=request.request_hash,
+            execution_profile=profile,
+        )
+        assert claim.replayed is False
+        return run_id
+
+    terminal_v1_id = await create_run("terminal-v1", v1)
+    terminal_v2_id = await create_run("terminal-v2", v2)
+    active_v1_id = await create_run("active-v1", v1)
+    active_v2_id = await create_run("active-v2", v2)
+
+    async def fail_next(run_id: str, lease_id: str) -> None:
+        command = await store.claim_next_pending(
+            run_id,
+            expected_version=0,
+            lease_id=lease_id,
+        )
+        assert command is not None
+        await store.record_result(
+            run_id,
+            result=PipelineStageResult(command.command_id, "failed", uuid4()),
+            expected_version=command.version,
+            lease_id=lease_id,
+        )
+
+    await fail_next(terminal_v1_id, "terminal-v1")
+    await fail_next(terminal_v2_id, "terminal-v2")
+    active_v2_command = await store.claim_next_pending(
+        active_v2_id,
+        expected_version=0,
+        lease_id="active-v2",
+    )
+    assert active_v2_command is not None
+
+    profile_migration = (
+        migration_root / "0012_pipeline_media_preflight_profile.sql"
+    ).read_text(encoding="utf-8")
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(
+                psycopg.DatabaseError,
+                match="refuses accepted/running pipeline runs",
+            ):
+                cursor.execute(profile_migration)
+            connection.rollback()
+            cursor.execute(
+                """
+                SELECT state, execution_profile ->> 'schema_version'
+                  FROM runtime.pipeline_runs
+                 WHERE run_id = ANY(%s)
+                 ORDER BY run_id
+                """,
+                ([active_v1_id, active_v2_id],),
+            )
+            active_rows = cursor.fetchall()
+            assert {str(row[0]) for row in active_rows} == {"accepted", "running"}
+            assert {str(row[1]) for row in active_rows} == {
+                "pipeline-execution-profile-v1",
+                "pipeline-execution-profile-v2",
+            }
+            cursor.execute(
+                """
+                SELECT pg_get_constraintdef(oid)
+                  FROM pg_constraint
+                 WHERE conrelid = 'runtime.pipeline_runs'::regclass
+                   AND conname = 'pipeline_runs_execution_profile_closed_check'
+                """
+            )
+            old_constraint = cursor.fetchone()
+            assert old_constraint is not None
+            assert "word_timing_capability" not in str(old_constraint[0])
+
+    await fail_next(active_v1_id, "active-v1")
+    await store.record_result(
+        active_v2_id,
+        result=PipelineStageResult(
+            active_v2_command.command_id,
+            "failed",
+            uuid4(),
+        ),
+        expected_version=active_v2_command.version,
+        lease_id="active-v2",
+    )
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(profile_migration)
+            cursor.execute(profile_migration)
+
+            malformed_v3 = _execution_profile().to_mapping()
+            media_policy = malformed_v3["media_preflight_policy"]
+            assert isinstance(media_policy, dict)
+            media_policy["word_timing_capability"] = "sentence_only"
+            with pytest.raises(
+                psycopg.errors.CheckViolation,
+                match="pipeline_runs_execution_profile_closed_check",
+            ):
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.pipeline_runs
+                        (run_id, idempotency_key, request_hash, profile,
+                         source_kind, source_value, execution_profile,
+                         execution_profile_hash, state, version)
+                    VALUES (%s, %s, %s, 'test', 'root', %s, %s::jsonb, %s,
+                            'accepted', 0)
+                    """,
+                    (
+                        f"pipeline_run_{uuid4().hex}",
+                        "migration-0012-malformed-v3",
+                        request.request_hash,
+                        request.source_root,
+                        json.dumps(malformed_v3),
+                        _execution_profile().canonical_hash,
+                    ),
+                )
+
+    for run_id, expected_profile in (
+        (terminal_v1_id, v1),
+        (terminal_v2_id, v2),
+        (active_v1_id, v1),
+        (active_v2_id, v2),
+    ):
+        history = await store.read_run(run_id)
+        assert history is not None
+        assert history.status == "failed"
+        assert history.execution_profile == expected_profile
+
+    v3_run_id = await create_run("active-v3", _execution_profile())
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                ALTER TABLE runtime.pipeline_runs
+                DISABLE TRIGGER runtime_pipeline_run_transition_guard
+                """
+            )
+            try:
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_runs
+                       SET execution_profile_hash = %s
+                     WHERE run_id = %s
+                    """,
+                    ("sha256:" + "0" * 64, v3_run_id),
+                )
+            finally:
+                cursor.execute(
+                    """
+                    ALTER TABLE runtime.pipeline_runs
+                    ENABLE TRIGGER runtime_pipeline_run_transition_guard
+                    """
+                )
+    with pytest.raises(PipelineRunValidationError, match="hash does not bind"):
+        await store.read_run(v3_run_id)
 
 
 def _agent() -> MagicMock:
