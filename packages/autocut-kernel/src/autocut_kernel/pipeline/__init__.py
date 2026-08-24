@@ -1,5 +1,11 @@
 """Durable local pipeline command adapters."""
 
+from .generate_vlm_evidence_command import (
+    GenerateVlmEvidenceCommand,
+    GenerateVlmEvidenceRequest,
+    GenerateVlmEvidenceResult,
+    GenerationStore,
+)
 from .local_media_command import LocalMediaCommand, LocalMediaCommandRequest
 from .render_local import (
     LocalRenderOrchestrator,
@@ -22,8 +28,18 @@ from .semantic_chain_command import (
     SemanticChainCommandRequest,
     SemanticChainCommandResult,
 )
+from .vlm_semantic_adapter import (
+    VlmCandidateCatalog,
+    VlmCandidateCatalogEntry,
+    VlmSemanticAdapterResult,
+    adapt_vlm_observations,
+)
 
 __all__ = [
+    "GenerateVlmEvidenceCommand",
+    "GenerateVlmEvidenceRequest",
+    "GenerateVlmEvidenceResult",
+    "GenerationStore",
     "LocalMediaCommand",
     "LocalMediaCommandRequest",
     "FixtureBeatResolver",
@@ -34,6 +50,10 @@ __all__ = [
     "SemanticChainCommand",
     "SemanticChainCommandRequest",
     "SemanticChainCommandResult",
+    "VlmCandidateCatalog",
+    "VlmCandidateCatalogEntry",
+    "VlmSemanticAdapterResult",
+    "adapt_vlm_observations",
     "LocalRenderOrchestrator",
     "PersistedRenderLocalRequest",
     "RenderLocalDenied",

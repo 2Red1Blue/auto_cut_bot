@@ -11,6 +11,16 @@ from .models import (
     VlmValidationError,
 )
 from .parser import VlmResponseIndeterminate, VlmResponseRejected, parse_vlm_response
+from .provider_port import (
+    ProviderCompleted,
+    ProviderDispatchRequest,
+    ProviderFailed,
+    ProviderIndeterminate,
+    ProviderPending,
+    ProviderReconcileQuery,
+    ProviderResult,
+    VlmProviderPort,
+)
 from .window import (
     ProxyTimelineMap,
     ProxyTimelineSegment,
@@ -25,6 +35,13 @@ __all__ = [
     "MappedSourceInterval",
     "ProxyTimelineMap",
     "ProxyTimelineSegment",
+    "ProviderCompleted",
+    "ProviderDispatchRequest",
+    "ProviderFailed",
+    "ProviderIndeterminate",
+    "ProviderPending",
+    "ProviderReconcileQuery",
+    "ProviderResult",
     "VlmContractError",
     "VlmObservation",
     "VlmObservationKind",
@@ -33,6 +50,7 @@ __all__ = [
     "VlmRequestIdentity",
     "VlmResponseIndeterminate",
     "VlmResponseRejected",
+    "VlmProviderPort",
     "VlmValidationError",
     "WindowFrameSample",
     "WindowManifest",

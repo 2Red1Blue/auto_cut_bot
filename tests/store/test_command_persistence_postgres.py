@@ -1369,6 +1369,13 @@ def test_blob_bytes_are_verified_immutable_and_claimable_by_multiple_jobs() -> N
         media_type="application/json",
     )
     assert second == first
+    assert store.read_immutable_blob(Job("blob-job-a", "test"), first) == content
+    assert store.read_immutable_blob(Job("blob-job-b", "test"), second) == content
+    with pytest.raises(BlobIntegrityError, match="does not match durable"):
+        store.read_immutable_blob(
+            Job("blob-job-a", "test"),
+            type(first)(first.object_id, first.content_hash, first.byte_length + 1, first.media_type),
+        )
 
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:

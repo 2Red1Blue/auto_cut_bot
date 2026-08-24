@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "先并行交付完整 root evidence 与 Window/VLM 纯契约，再顺序接入 Store、Command、SemanticChain 与 Exact A/V compiler",
+  "nextAction": "接入现役非 legacy VLM provider 与窗口代理实现，并用真实视频完成端到端验收",
   "createdAt": "2026-08-23T18:16:03Z",
   "branch": "feat/v213-contract-codegen"
 }

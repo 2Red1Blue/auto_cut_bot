@@ -342,6 +342,46 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    def read_immutable_blob(self, job: Job, reference: BlobRef) -> bytes:
+        """Read exact bytes only through a matching per-Job immutable claim."""
+
+        if type(reference) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("reference must be an exact BlobRef")
+
+        def operation(cursor: DbCursor) -> bytes:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise BlobIntegrityError("blob Job does not exist")
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            durable = self._claimed_blob_ref(
+                cursor,
+                UUID(str(job_id)),
+                reference,
+                field_name="immutable",
+            )
+            cursor.execute(
+                "SELECT content_bytes FROM storage.blob_objects WHERE object_id = %s",
+                (durable.object_id,),
+            )
+            row = cursor.fetchone()
+            if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+                raise BlobIntegrityError("immutable blob bytes are unavailable")
+            content = row[0].tobytes() if isinstance(row[0], memoryview) else bytes(row[0])
+            if (
+                len(content) != durable.byte_length
+                or "sha256:" + hashlib.sha256(content).hexdigest() != durable.content_hash
+            ):
+                raise BlobIntegrityError("immutable blob bytes fail exact integrity validation")
+            return content
+
+        return self._transaction(operation)
+
     # ------------------------------------------------------------------
     # durable provider generation attempts
     # ------------------------------------------------------------------
@@ -565,6 +605,7 @@ class PostgresRuntimeStore:
         expected_version: int,
         failure_code: str,
         failure_detail_json: str,
+        provider_request_id: str | None = None,
     ) -> GenerationAttempt:
         """Persist an exact terminal provider failure without creating a command receipt."""
 
@@ -576,6 +617,11 @@ class PostgresRuntimeStore:
             raise StoreValidationError("generation failure_detail_json must contain JSON") from error
         if not isinstance(detail, dict):
             raise StoreValidationError("generation failure_detail_json must contain a JSON object")
+        if provider_request_id is not None and (
+            type(provider_request_id) is not str  # noqa: E721
+            or not provider_request_id.strip()
+        ):
+            raise StoreValidationError("provider_request_id must be non-empty when present")
 
         def operation(cursor: DbCursor) -> GenerationAttempt:
             attempt, _, _, _ = self._locked_attempt_aggregate(cursor, attempt_id)
@@ -585,14 +631,25 @@ class PostgresRuntimeStore:
                 ("reserved", "dispatched", "responded", "indeterminate", "reconciled"),
                 "fail",
             )
+            effective_request_id = self._exact_provider_request_id(
+                attempt.provider_request_id,
+                provider_request_id,
+            )
             cursor.execute(
                 """
                 UPDATE runtime.generation_attempts
                    SET state = 'failed', failure_code = %s, failure_detail = %s::jsonb,
-                       version = version + 1, completed_at = transaction_timestamp()
+                       provider_request_id = %s, version = version + 1,
+                       completed_at = transaction_timestamp()
                  WHERE attempt_id = %s AND version = %s
                 """,
-                (failure_code, failure_detail_json, attempt_id, expected_version),
+                (
+                    failure_code,
+                    failure_detail_json,
+                    effective_request_id,
+                    attempt_id,
+                    expected_version,
+                ),
             )
             return self._read_generation_attempt_by_id(cursor, attempt_id, for_update=False)
 
@@ -660,6 +717,48 @@ class PostgresRuntimeStore:
                 cursor, attempt_id, for_update=False
             )
         )
+
+    def read_generation_attempt_for_slot(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+    ) -> GenerationAttempt | None:
+        """Resolve at most one attempt through the exact Job and command slot."""
+
+        self._validate_uuid(command_slot_id, "command_slot_id")
+
+        def operation(cursor: DbCursor) -> GenerationAttempt | None:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                return None
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            cursor.execute(
+                """
+                SELECT attempt.attempt_id
+                  FROM runtime.generation_attempts AS attempt
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = attempt.command_slot_id
+                   AND slot.job_id = attempt.job_id
+                 WHERE attempt.job_id = %s AND attempt.command_slot_id = %s
+                """,
+                (UUID(str(job_id)), command_slot_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._read_generation_attempt_by_id(
+                cursor,
+                UUID(str(row[0])),
+                for_update=False,
+            )
+
+        return self._transaction(operation)
 
     # ------------------------------------------------------------------
     # read_outcome
