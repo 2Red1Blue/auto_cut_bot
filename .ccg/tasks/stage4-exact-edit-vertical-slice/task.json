@@ -1,0 +1,12 @@
+{
+  "id": "stage4-exact-edit-vertical-slice",
+  "title": "实现 Stage 4 精确 A/V 剪辑垂直切片",
+  "status": "in_progress",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "实现并验证共同 presentation timeline 的 A/V 映射证书",
+  "createdAt": "2026-08-25T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
