@@ -63,6 +63,7 @@ class EvidenceCompleteness(str, Enum):
 
 class TranscriptSourceOutcome(str, Enum):
     TRANSCRIPT_AVAILABLE = "transcript_available"
+    NO_LEXICAL_CONTENT = "no_lexical_content"
     NO_SPEECH = "no_speech"
     NOT_APPLICABLE = "not_applicable"
     INDETERMINATE = "indeterminate"
@@ -212,9 +213,7 @@ class CoverageDiagnostic(CanonicalEvidence):
             raise MediaValidationError("diagnostic range must satisfy in_tick < out_tick")
         _require_text(self.code, "diagnostic.code")
         _require_text(self.detail, "diagnostic.detail")
-        sha256_prefixed(
-            self.producer_evidence_sha256, "diagnostic.producer_evidence_sha256"
-        )
+        sha256_prefixed(self.producer_evidence_sha256, "diagnostic.producer_evidence_sha256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,9 +441,7 @@ class ShotBoundarySet(CanonicalEvidence):
 
     def __post_init__(self) -> None:
         _require_text(self.shot_boundary_set_id, "shot_boundary_set_id")
-        sha256_prefixed(
-            self.frame_pts_index_set_sha256, "shot.frame_pts_index_set_sha256"
-        )
+        sha256_prefixed(self.frame_pts_index_set_sha256, "shot.frame_pts_index_set_sha256")
         points = _tuple(self.points, "shot.points")
         _validate_video_boundary_points(
             context=self.context,
@@ -465,9 +462,7 @@ class SceneBoundarySet(CanonicalEvidence):
 
     def __post_init__(self) -> None:
         _require_text(self.scene_boundary_set_id, "scene_boundary_set_id")
-        sha256_prefixed(
-            self.frame_pts_index_set_sha256, "scene.frame_pts_index_set_sha256"
-        )
+        sha256_prefixed(self.frame_pts_index_set_sha256, "scene.frame_pts_index_set_sha256")
         points = _tuple(self.points, "scene.points")
         _validate_video_boundary_points(
             context=self.context,
@@ -528,7 +523,9 @@ class AudioSampleBoundarySet(CanonicalEvidence):
                 or point.clock_id != self.context.clock_id
                 or point.time_base != self.context.time_base
             ):
-                raise MediaValidationError("audio boundary source/clock/time base does not match its set")
+                raise MediaValidationError(
+                    "audio boundary source/clock/time base does not match its set"
+                )
             if point.tick < self.context.origin_tick or point.tick > self.context.end_tick:
                 raise MediaValidationError("audio boundary is outside its declared source clock")
             ticks.append(point.tick)
@@ -542,7 +539,9 @@ class AudioSampleBoundarySet(CanonicalEvidence):
                 or ticks[0] != self.context.origin_tick
                 or ticks[-1] != self.context.end_tick
             ):
-                raise MediaValidationError("complete audio boundaries require clock endpoint sentinels")
+                raise MediaValidationError(
+                    "complete audio boundaries require clock endpoint sentinels"
+                )
         elif self.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
             if self.coverage.outcome is not CoverageOutcome.COMPLETE or points:
                 raise MediaValidationError("not_applicable audio must be complete and empty")
@@ -759,9 +758,7 @@ class TranscriptSet(CanonicalEvidence):
         word_by_id = {item.word_id: item for item in words}
         sentence_by_id = {item.sentence_id: item for item in sentences}
         word_positions = {item.word_id: position for position, item in enumerate(words)}
-        sentence_positions = {
-            item.sentence_id: position for position, item in enumerate(sentences)
-        }
+        sentence_positions = {item.sentence_id: position for position, item in enumerate(sentences)}
         for sentence in sentences:
             if (
                 tuple(sorted(sentence.word_ids, key=lambda item: word_positions.get(item, -1)))
@@ -770,8 +767,14 @@ class TranscriptSet(CanonicalEvidence):
                 raise MediaValidationError("sentence word references must be in timeline order")
             for word_id in sentence.word_ids:
                 word = word_by_id.get(word_id)
-                if word is None or word.in_tick < sentence.in_tick or word.out_tick > sentence.out_tick:
-                    raise MediaValidationError("sentence word references must exist within the sentence")
+                if (
+                    word is None
+                    or word.in_tick < sentence.in_tick
+                    or word.out_tick > sentence.out_tick
+                ):
+                    raise MediaValidationError(
+                        "sentence word references must exist within the sentence"
+                    )
         for segment in segments:
             if (
                 tuple(
@@ -791,14 +794,6 @@ class TranscriptSet(CanonicalEvidence):
                         "segment sentence references must exist within the segment"
                     )
         records_present = bool(segments or words or sentences)
-        all_complete = all(
-            value is EvidenceCompleteness.COMPLETE
-            for value in (
-                self.completeness.segment,
-                self.completeness.word,
-                self.completeness.sentence,
-            )
-        )
         all_not_applicable = all(
             value is EvidenceCompleteness.NOT_APPLICABLE
             for value in (
@@ -808,23 +803,37 @@ class TranscriptSet(CanonicalEvidence):
             )
         )
         if self.coverage.outcome is CoverageOutcome.FAILED and records_present:
-            raise MediaValidationError("failed transcript coverage cannot contain successful records")
+            raise MediaValidationError(
+                "failed transcript coverage cannot contain successful records"
+            )
         if self.source_outcome is TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE:
-            if (
-                not segments
-                or not words
-                or not sentences
-                or (self.coverage.outcome is CoverageOutcome.COMPLETE and not all_complete)
+            if not segments:
+                raise MediaValidationError("available transcript requires timed segments")
+            for component, completeness, records in (
+                ("segment", self.completeness.segment, segments),
+                ("word", self.completeness.word, words),
+                ("sentence", self.completeness.sentence, sentences),
             ):
-                raise MediaValidationError("complete transcript content requires complete records")
-        elif self.source_outcome is TranscriptSourceOutcome.NO_SPEECH:
+                if completeness is EvidenceCompleteness.COMPLETE and not records:
+                    raise MediaValidationError(f"complete transcript {component} requires records")
+                if completeness is EvidenceCompleteness.NOT_APPLICABLE and records:
+                    raise MediaValidationError(
+                        f"not_applicable transcript {component} must be empty"
+                    )
+        elif self.source_outcome in {
+            TranscriptSourceOutcome.NO_SPEECH,
+            TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
+        }:
             if (
                 self.coverage.outcome is not CoverageOutcome.COMPLETE
                 or records_present
-                or not all_complete
+                or self.completeness.segment is not EvidenceCompleteness.COMPLETE
+                or self.completeness.sentence is not EvidenceCompleteness.COMPLETE
+                or self.completeness.word
+                not in {EvidenceCompleteness.COMPLETE, EvidenceCompleteness.NOT_APPLICABLE}
             ):
                 raise MediaValidationError(
-                    "no_speech transcript must have complete coverage, no records, and complete proof"
+                    "empty lexical transcript requires capability-complete proof"
                 )
         elif self.source_outcome is TranscriptSourceOutcome.NOT_APPLICABLE:
             if (
@@ -851,7 +860,7 @@ class SpeechActivitySegment(CanonicalEvidence):
     time_base: TimeBase
     in_tick: int
     out_tick: int
-    confidence_ppm: int
+    confidence_ppm: int | None
 
     def __post_init__(self) -> None:
         _require_text(self.speech_segment_id, "speech_segment_id")
@@ -864,9 +873,10 @@ class SpeechActivitySegment(CanonicalEvidence):
             out_tick=self.out_tick,
             field_name="speech",
         )
-        confidence = require_pts(self.confidence_ppm, "speech.confidence_ppm")
-        if not 0 <= confidence <= 1_000_000:
-            raise MediaValidationError("speech.confidence_ppm must be between 0 and 1000000")
+        if self.confidence_ppm is not None:
+            confidence = require_pts(self.confidence_ppm, "speech.confidence_ppm")
+            if not 0 <= confidence <= 1_000_000:
+                raise MediaValidationError("speech.confidence_ppm must be null or valid ppm")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1043,13 +1053,17 @@ class SubtitleCueSet(CanonicalEvidence):
         required_modes = _tuple(self.required_modes, "subtitle.required_modes")
         successful_modes = _tuple(self.successful_modes, "subtitle.successful_modes")
         modes_order = {mode: position for position, mode in enumerate(SubtitleDetectionMode)}
-        for name, modes in (("required_modes", required_modes), ("successful_modes", successful_modes)):
+        for name, modes in (
+            ("required_modes", required_modes),
+            ("successful_modes", successful_modes),
+        ):
             _require_instances(modes, SubtitleDetectionMode, f"subtitle.{name}")
             if not modes:
                 raise MediaValidationError(f"subtitle.{name} must contain closed detection modes")
-            if len(modes) != len(set(modes)) or tuple(
-                sorted(modes, key=lambda mode: modes_order[mode])
-            ) != modes:
+            if (
+                len(modes) != len(set(modes))
+                or tuple(sorted(modes, key=lambda mode: modes_order[mode])) != modes
+            ):
                 raise MediaValidationError(f"subtitle.{name} must be sorted and deduplicated")
         if not set(successful_modes).issubset(required_modes):
             raise MediaValidationError("successful subtitle modes must be required modes")
@@ -1064,9 +1078,8 @@ class SubtitleCueSet(CanonicalEvidence):
         )
         if any(cue.detection_mode not in successful_modes for cue in cues):
             raise MediaValidationError("subtitle cue mode must have a successful detector outcome")
-        if (
-            self.coverage.outcome is CoverageOutcome.COMPLETE
-            and set(successful_modes) != set(required_modes)
+        if self.coverage.outcome is CoverageOutcome.COMPLETE and set(successful_modes) != set(
+            required_modes
         ):
             raise MediaValidationError(
                 "complete subtitle coverage requires every required detector"
@@ -1113,9 +1126,7 @@ class RootMediaEvidenceBundle(CanonicalEvidence):
         _require_text(self.source_id, "root.source_id")
         sha256_prefixed(self.source_sha256, "root.source_sha256")
         sha256_prefixed(self.source_manifest_sha256, "root.source_manifest_sha256")
-        sha256_prefixed(
-            self.root_input_manifest_sha256, "root.root_input_manifest_sha256"
-        )
+        sha256_prefixed(self.root_input_manifest_sha256, "root.root_input_manifest_sha256")
         sets = (
             self.frame_pts_index,
             self.shot_boundaries,
@@ -1211,18 +1222,20 @@ class RootMediaEvidenceBundle(CanonicalEvidence):
                 "audio-dependent evidence cannot be not_applicable when audio exists"
             )
 
-        transcript_no_speech = (
-            self.transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH
+        transcript_no_speech = self.transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH
+        transcript_no_lexical = (
+            self.transcript.source_outcome is TranscriptSourceOutcome.NO_LEXICAL_CONTENT
         )
-        vad_none_detected = (
-            self.speech_activity.source_outcome is SpeechSourceOutcome.NONE_DETECTED
-        )
+        vad_none_detected = self.speech_activity.source_outcome is SpeechSourceOutcome.NONE_DETECTED
         if transcript_no_speech != vad_none_detected:
-            raise MediaValidationError(
-                "transcript no_speech and VAD none_detected must agree"
-            )
+            raise MediaValidationError("transcript no_speech and VAD none_detected must agree")
         if transcript_no_speech and self.speech_activity.segments:
             raise MediaValidationError("speech segments cannot accompany transcript no_speech")
+        if transcript_no_lexical and (
+            self.speech_activity.source_outcome is not SpeechSourceOutcome.SPEECH_DETECTED
+            or not self.speech_activity.segments
+        ):
+            raise MediaValidationError("no_lexical_content requires VAD protected ranges")
 
 
 __all__ = [

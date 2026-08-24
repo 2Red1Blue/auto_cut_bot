@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import urlparse
 
 from autocut_kernel.media import (
     AdaptiveEvidenceWindowPolicy,
@@ -17,9 +18,7 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
 
-ProducerKind = Literal[
-    "frame", "audio", "asr", "vad", "shot", "scene", "visual", "subtitle"
-]
+ProducerKind = Literal["frame", "audio", "asr", "vad", "shot", "scene", "visual", "subtitle"]
 _PRODUCER_KINDS: tuple[ProducerKind, ...] = (
     "frame",
     "audio",
@@ -82,6 +81,29 @@ def _ppm(value: object, name: str, *, allow_zero: bool = True) -> int:
     return value
 
 
+def validate_timed_speech_endpoint(value: object) -> str:
+    endpoint = _text(value, "timed_speech_endpoint_url")
+    try:
+        parsed = urlparse(endpoint)
+        port = parsed.port
+    except ValueError as error:
+        raise LocalMediaPolicyError("timed speech endpoint port is invalid") from error
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or not 1 <= port <= 65_535
+        or parsed.path != "/v1/timed-speech-evidence"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise LocalMediaPolicyError("timed speech endpoint must be exact loopback HTTP path")
+    return endpoint
+
+
 @dataclass(frozen=True, slots=True)
 class ProducerCalibrationIdentity:
     """Frozen external calibration and detector identity for one producer."""
@@ -134,10 +156,21 @@ class LocalMediaPreflightPolicy:
 
     policy_id: str
     policy_version: str
-    whisper_model_name: str
-    whisper_model_path: Path
-    whisper_model_sha256: str
-    whisper_language: str
+    timed_speech_endpoint_url: str
+    timed_speech_provider_id: str
+    timed_speech_provider_version: str
+    funasr_version: str
+    torch_version: str
+    speech_device: str
+    word_timing_capability: Literal["required", "sentence_only"]
+    asr_model_id: str
+    asr_model_revision: str
+    asr_model_sha256: str
+    vad_model_id: str
+    vad_model_revision: str
+    vad_model_sha256: str
+    timed_speech_policy_sha256: str
+    timed_speech_calibration_sha256: str
     initial_left_expansion_milliseconds: int
     initial_right_expansion_milliseconds: int
     expansion_step_milliseconds: int
@@ -152,9 +185,10 @@ class LocalMediaPreflightPolicy:
     max_stderr_bytes: int
     probe_timeout_seconds: int
     analysis_timeout_seconds: int
-    whisper_timeout_seconds: int
-    vad_noise_db: int
-    vad_min_silence_milliseconds: int
+    timed_speech_timeout_seconds: int
+    timed_speech_max_response_bytes: int
+    utterance_gap_milliseconds: int
+    vad_merge_gap_milliseconds: int
     black_luma_max: int
     white_luma_min: int
     frozen_change_ppm_max: int
@@ -169,14 +203,33 @@ class LocalMediaPreflightPolicy:
     def __post_init__(self) -> None:
         _text(self.policy_id, "policy_id")
         _text(self.policy_version, "policy_version")
-        _text(self.whisper_model_name, "whisper_model_name")
-        _text(self.whisper_language, "whisper_language")
-        if not self.whisper_model_path.is_absolute():
-            raise LocalMediaPolicyError("whisper_model_path must be absolute")
-        try:
-            sha256_prefixed(self.whisper_model_sha256, "whisper_model_sha256")
-        except ValueError as error:
-            raise LocalMediaPolicyError(str(error)) from error
+        for name in (
+            "timed_speech_provider_id",
+            "timed_speech_provider_version",
+            "funasr_version",
+            "torch_version",
+            "speech_device",
+            "asr_model_id",
+            "asr_model_revision",
+            "vad_model_id",
+            "vad_model_revision",
+        ):
+            _text(getattr(self, name), name)
+        validate_timed_speech_endpoint(self.timed_speech_endpoint_url)
+        if self.speech_device not in {"cpu", "mps"}:
+            raise LocalMediaPolicyError("speech_device must be cpu or mps")
+        if self.word_timing_capability not in {"required", "sentence_only"}:
+            raise LocalMediaPolicyError("word_timing_capability is unsupported")
+        for name in (
+            "asr_model_sha256",
+            "vad_model_sha256",
+            "timed_speech_policy_sha256",
+            "timed_speech_calibration_sha256",
+        ):
+            try:
+                sha256_prefixed(getattr(self, name), name)
+            except ValueError as error:
+                raise LocalMediaPolicyError(str(error)) from error
         for name in (
             "analysis_fps_numerator",
             "analysis_fps_denominator",
@@ -187,8 +240,10 @@ class LocalMediaPreflightPolicy:
             "max_stderr_bytes",
             "probe_timeout_seconds",
             "analysis_timeout_seconds",
-            "whisper_timeout_seconds",
-            "vad_min_silence_milliseconds",
+            "timed_speech_timeout_seconds",
+            "timed_speech_max_response_bytes",
+            "utterance_gap_milliseconds",
+            "vad_merge_gap_milliseconds",
             "initial_left_expansion_milliseconds",
             "initial_right_expansion_milliseconds",
             "expansion_step_milliseconds",
@@ -198,8 +253,6 @@ class LocalMediaPreflightPolicy:
         ):
             _positive(getattr(self, name), f"policy.{name}")
         _non_negative(self.max_expansion_count, "policy.max_expansion_count")
-        if not -100 <= self.vad_noise_db <= 0:
-            raise LocalMediaPolicyError("policy.vad_noise_db must be in [-100, 0]")
         if not 0 <= self.black_luma_max < self.white_luma_min <= 255:
             raise LocalMediaPolicyError("black/white luma thresholds are inconsistent")
         if not 1 <= self.subtitle_edge_delta_min <= 255:
@@ -249,10 +302,21 @@ class LocalMediaPreflightPolicy:
         expected = {
             "policy_id",
             "policy_version",
-            "whisper_model_name",
-            "whisper_model_path",
-            "whisper_model_sha256",
-            "whisper_language",
+            "timed_speech_endpoint_url",
+            "timed_speech_provider_id",
+            "timed_speech_provider_version",
+            "funasr_version",
+            "torch_version",
+            "speech_device",
+            "word_timing_capability",
+            "asr_model_id",
+            "asr_model_revision",
+            "asr_model_sha256",
+            "vad_model_id",
+            "vad_model_revision",
+            "vad_model_sha256",
+            "timed_speech_policy_sha256",
+            "timed_speech_calibration_sha256",
             "initial_left_expansion_milliseconds",
             "initial_right_expansion_milliseconds",
             "expansion_step_milliseconds",
@@ -267,9 +331,10 @@ class LocalMediaPreflightPolicy:
             "max_stderr_bytes",
             "probe_timeout_seconds",
             "analysis_timeout_seconds",
-            "whisper_timeout_seconds",
-            "vad_noise_db",
-            "vad_min_silence_milliseconds",
+            "timed_speech_timeout_seconds",
+            "timed_speech_max_response_bytes",
+            "utterance_gap_milliseconds",
+            "vad_merge_gap_milliseconds",
             "black_luma_max",
             "white_luma_min",
             "frozen_change_ppm_max",
@@ -315,16 +380,10 @@ class LocalMediaPreflightPolicy:
                     detector_sha256=raw["detector_sha256"],  # type: ignore[arg-type]
                     calibration_policy_sha256=raw["calibration_policy_sha256"],  # type: ignore[arg-type]
                     calibration_record_sha256=raw["calibration_record_sha256"],  # type: ignore[arg-type]
-                    timing_error_bound_microseconds=raw[
-                        "timing_error_bound_microseconds"
-                    ],  # type: ignore[arg-type]
+                    timing_error_bound_microseconds=raw["timing_error_bound_microseconds"],  # type: ignore[arg-type]
                 )
             )
         values_copy = dict(value)
-        model_path = values_copy["whisper_model_path"]
-        if type(model_path) is not str:  # noqa: E721
-            raise LocalMediaPolicyError("whisper_model_path must be text")
-        values_copy["whisper_model_path"] = Path(model_path)
         values_copy["calibrations"] = tuple(calibrations)
         return cls.from_calibrated_values(**values_copy)
 
@@ -334,6 +393,25 @@ class LocalMediaPreflightPolicy:
     def producer_policy_sha256(self, kind: ProducerKind) -> str:
         calibration = self.calibration(kind)
         return calibration.generation_policy_sha256
+
+    def timed_speech_detector_sha256(self, kind: Literal["asr", "vad"]) -> str:
+        return canonical_sha256(
+            {
+                "device": self.speech_device,
+                "funasr_version": self.funasr_version,
+                "model_id": self.asr_model_id if kind == "asr" else self.vad_model_id,
+                "model_revision": self.asr_model_revision
+                if kind == "asr"
+                else self.vad_model_revision,
+                "model_sha256": self.asr_model_sha256 if kind == "asr" else self.vad_model_sha256,
+                "producer_kind": kind,
+                "provider_id": self.timed_speech_provider_id,
+                "provider_version": self.timed_speech_provider_version,
+                "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
+                "torch_version": self.torch_version,
+                "word_timing_capability": self.word_timing_capability,
+            }
+        )
 
     @staticmethod
     def _milliseconds_to_tick(milliseconds: int, time_base: TimeBase) -> int:
@@ -391,19 +469,40 @@ class LocalMediaPreflightPolicy:
             "subtitle_edge_fraction_ppm_min": self.subtitle_edge_fraction_ppm_min,
             "subtitle_min_consecutive_samples": self.subtitle_min_consecutive_samples,
             "transition_change_ppm_min": self.transition_change_ppm_min,
-            "vad_min_silence_milliseconds": self.vad_min_silence_milliseconds,
-            "vad_noise_db": self.vad_noise_db,
-            "whisper_language": self.whisper_language,
-            "whisper_model_name": self.whisper_model_name,
-            "whisper_model_path": str(self.whisper_model_path),
-            "whisper_model_sha256": self.whisper_model_sha256,
-            "whisper_timeout_seconds": self.whisper_timeout_seconds,
+            "timed_speech_endpoint_url": self.timed_speech_endpoint_url,
+            "timed_speech_provider_id": self.timed_speech_provider_id,
+            "timed_speech_provider_version": self.timed_speech_provider_version,
+            "funasr_version": self.funasr_version,
+            "torch_version": self.torch_version,
+            "speech_device": self.speech_device,
+            "word_timing_capability": self.word_timing_capability,
+            "asr_model_id": self.asr_model_id,
+            "asr_model_revision": self.asr_model_revision,
+            "asr_model_sha256": self.asr_model_sha256,
+            "vad_model_id": self.vad_model_id,
+            "vad_model_revision": self.vad_model_revision,
+            "vad_model_sha256": self.vad_model_sha256,
+            "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
+            "timed_speech_calibration_sha256": self.timed_speech_calibration_sha256,
+            "timed_speech_timeout_seconds": self.timed_speech_timeout_seconds,
+            "timed_speech_max_response_bytes": self.timed_speech_max_response_bytes,
+            "utterance_gap_milliseconds": self.utterance_gap_milliseconds,
+            "vad_merge_gap_milliseconds": self.vad_merge_gap_milliseconds,
             "white_luma_min": self.white_luma_min,
         }
 
     @property
     def canonical_hash(self) -> str:
         return canonical_sha256(self.to_mapping())
+
+    # Unreachable compatibility surface for the removed local producers. The
+    # closed policy mapping deliberately contains none of these legacy fields.
+    whisper_model_path = Path("/removed/whisper.pt")
+    whisper_model_name = "removed"
+    whisper_language = "removed"
+    whisper_timeout_seconds = 1
+    vad_noise_db = -100
+    vad_min_silence_milliseconds = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,9 +630,7 @@ class LocalMediaPreflightResult:
 
     def provenance_mapping(self) -> dict[str, object]:
         return {
-            "producer_identities": [
-                item.to_mapping() for item in self.producer_identities
-            ],
+            "producer_identities": [item.to_mapping() for item in self.producer_identities],
             "schema_version": "local-media-producer-provenance-v1",
             "source_provenance_sha256": self.source_provenance_sha256,
             "tool_invocations": self.tool_trace.to_mapping(),

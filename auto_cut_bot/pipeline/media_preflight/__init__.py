@@ -1,5 +1,6 @@
 """Real, fail-closed local timed-media evidence producers."""
 
+from .funasr_http import FunASRHttpTimedSpeechEvidencePort
 from .models import (
     LocalMediaEvidenceError,
     LocalMediaPolicyError,
@@ -17,6 +18,14 @@ from .models import (
 )
 from .port import LocalMediaPreflightPort
 from .process import BoundedSubprocessRunner, CommandOutput, CommandRunner
+from .speech_port import (
+    TimedSpeechEvidence,
+    TimedSpeechEvidencePort,
+    TimedSpeechEvidenceRequest,
+    TimedSpeechExpectedProducer,
+    TimedSpeechInvocationTrace,
+    TimedSpeechProducerIdentity,
+)
 
 __all__ = [
     "BoundedSubprocessRunner",
@@ -27,6 +36,13 @@ __all__ = [
     "LocalMediaPreflightError",
     "LocalMediaPreflightPolicy",
     "LocalMediaPreflightPort",
+    "FunASRHttpTimedSpeechEvidencePort",
+    "TimedSpeechEvidence",
+    "TimedSpeechEvidencePort",
+    "TimedSpeechEvidenceRequest",
+    "TimedSpeechExpectedProducer",
+    "TimedSpeechInvocationTrace",
+    "TimedSpeechProducerIdentity",
     "LocalMediaPreflightRequest",
     "LocalMediaPreflightResult",
     "LocalMediaSourceError",

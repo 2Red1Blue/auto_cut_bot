@@ -1,0 +1,8 @@
+aiohttp==3.12.15
+funasr==1.4.3
+modelscope==1.29.2
+numpy==1.26.4
+scipy==1.15.3
+soundfile==0.13.1
+torch==2.7.1
+torchaudio==2.7.1

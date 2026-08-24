@@ -1,6 +1,6 @@
 """Production local producers for a complete root timed-media evidence bundle."""
 
-# pyright: reportMissingTypeStubs=false
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from autocut_kernel.media import (
     AudioSourceOutcome,
@@ -53,6 +53,7 @@ from autocut_kernel.media.types import canonical_sha256
 
 from auto_cut_bot.pipeline.detector_identity import local_detector_identity_sha256
 
+from .funasr_http import FunASRHttpTimedSpeechEvidencePort
 from .models import (
     LocalMediaEvidenceError,
     LocalMediaPreflightPolicy,
@@ -66,11 +67,15 @@ from .models import (
     ToolTrace,
 )
 from .process import BoundedSubprocessRunner, CommandOutput, CommandRunner
+from .speech_port import (
+    TimedSpeechEvidence,
+    TimedSpeechEvidencePort,
+    TimedSpeechEvidenceRequest,
+    TimedSpeechExpectedProducer,
+)
 
 _INTEGER = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
-_SILENCE = re.compile(
-    rb"silence_(?P<kind>start|end):\s*(?P<seconds>-?(?:\d+(?:\.\d*)?|\.\d+))"
-)
+_SILENCE = re.compile(rb"silence_(?P<kind>start|end):\s*(?P<seconds>-?(?:\d+(?:\.\d*)?|\.\d+))")
 _SHOWINFO = re.compile(
     rb"showinfo[^\r\n]*?\bn:\s*(?P<index>\d+)\s+pts:\s*-?\d+\s+pts_time:(?P<seconds>-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
 )
@@ -194,9 +199,7 @@ def _relative_seconds_tick(
 
 
 def _microseconds_tick(value: int, time_base: TimeBase) -> int:
-    return _ceil(
-        Fraction(value, 1_000_000) * time_base.denominator / time_base.numerator
-    )
+    return _ceil(Fraction(value, 1_000_000) * time_base.denominator / time_base.numerator)
 
 
 def _coverage(context: EvidenceContext) -> Coverage:
@@ -219,12 +222,13 @@ class LocalMediaPreflightPort:
         *,
         ffprobe_executable: str | None = None,
         ffmpeg_executable: str | None = None,
-        whisper_executable: str | None = None,
+        speech_port: TimedSpeechEvidencePort | None = None,
         runner: CommandRunner | None = None,
     ) -> None:
         self._ffprobe = self._resolve_executable(ffprobe_executable, "ffprobe")
         self._ffmpeg = self._resolve_executable(ffmpeg_executable, "ffmpeg")
-        self._whisper = self._resolve_executable(whisper_executable, "whisper")
+        self._speech_port = speech_port or FunASRHttpTimedSpeechEvidencePort()
+        self._whisper: Path  # legacy parser methods are unreachable compatibility code
         self._runner = runner or BoundedSubprocessRunner()
 
     @staticmethod
@@ -252,25 +256,17 @@ class LocalMediaPreflightPort:
             raise LocalMediaSourceError("source_path must be a direct regular-file materialization")
         initial_hash, _ = _sha_file(path)
         if initial_hash != request.source_sha256:
-            raise LocalMediaSourceError("materialized source hash does not match the committed Blob")
-        try:
-            model_path = request.policy.whisper_model_path.resolve(strict=True)
-        except OSError as error:
-            raise LocalMediaSourceError("calibrated Whisper model is unavailable") from error
-        model_hash, _ = _sha_file(model_path)
-        if model_hash != request.policy.whisper_model_sha256:
-            raise LocalMediaSourceError("Whisper model bytes do not match the calibrated identity")
-
+            raise LocalMediaSourceError(
+                "materialized source hash does not match the committed Blob"
+            )
         traces: list[ToolInvocationTrace] = []
         versions = {
             self._ffprobe: self._version(self._ffprobe, request.policy),
             self._ffmpeg: self._version(self._ffmpeg, request.policy),
-            self._whisper: self._version(self._whisper, request.policy),
         }
         measured_detectors = self._detector_identity_sha256s(
             request.policy,
             versions=versions,
-            model_sha256=model_hash,
         )
         measured_detectors["frame"] = request.frame_detector_sha256
         measured_detectors["audio"] = request.audio_detector_sha256
@@ -348,35 +344,15 @@ class LocalMediaPreflightPort:
                 subtitle_streams,
                 request,
             )
-        subtitle_cues = self._subtitle_set(
-            samples, embedded_cues, bool(subtitle_streams), request
-        )
+        subtitle_cues = self._subtitle_set(samples, embedded_cues, bool(subtitle_streams), request)
 
-        if (
-            request.audio_sample_boundaries.source_outcome
-            is AudioSourceOutcome.NOT_APPLICABLE
-        ):
+        if request.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
             transcript = self._not_applicable_transcript(request)
             speech_activity = self._not_applicable_speech(request)
         else:
-            vad_output, vad_trace = self._invoke(
-                "vad",
-                self._ffmpeg,
-                self._vad_argv(path, request.policy),
-                request,
-                versions,
-                timeout=request.policy.analysis_timeout_seconds,
-            )
-            traces.append(vad_trace)
-            speech_activity = self._speech(vad_output.stderr, request)
-            transcript, whisper_trace = self._transcript(path, request, versions)
-            traces.append(whisper_trace)
-            no_transcript = transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH
-            no_vad = speech_activity.source_outcome is SpeechSourceOutcome.NONE_DETECTED
-            if no_transcript != no_vad:
-                raise LocalMediaEvidenceError(
-                    "ASR and independent VAD disagree about whole-source speech presence"
-                )
+            timed = self._speech_port.produce(self._speech_request(path, request))
+            self._validate_timed_speech_evidence(timed, request)
+            transcript, speech_activity = timed.transcript, timed.speech_activity
 
         final_hash, _ = _sha_file(path)
         if final_hash != initial_hash:
@@ -424,32 +400,17 @@ class LocalMediaPreflightPort:
     ) -> dict[ProducerKind, str]:
         """Measure the exact local tool/model identities used by a deployment policy."""
 
-        try:
-            model_path = policy.whisper_model_path.resolve(strict=True)
-        except OSError as error:
-            raise LocalMediaSourceError("calibrated Whisper model is unavailable") from error
-        model_hash, _ = _sha_file(model_path)
-        if model_hash != policy.whisper_model_sha256:
-            raise LocalMediaSourceError(
-                "Whisper model bytes do not match the calibrated identity"
-            )
         versions = {
             self._ffprobe: self._version(self._ffprobe, policy),
             self._ffmpeg: self._version(self._ffmpeg, policy),
-            self._whisper: self._version(self._whisper, policy),
         }
-        return self._detector_identity_sha256s(
-            policy,
-            versions=versions,
-            model_sha256=model_hash,
-        )
+        return self._detector_identity_sha256s(policy, versions=versions)
 
     def _detector_identity_sha256s(
         self,
         policy: LocalMediaPreflightPolicy,
         *,
         versions: dict[Path, str],
-        model_sha256: str,
     ) -> dict[ProducerKind, str]:
         tools = {
             "ffmpeg": {
@@ -460,22 +421,18 @@ class LocalMediaPreflightPort:
                 "executable_sha256": _sha_file(self._ffprobe)[0],
                 "version_evidence_sha256": versions[self._ffprobe],
             },
-            "whisper": {
-                "executable_sha256": _sha_file(self._whisper)[0],
-                "version_evidence_sha256": versions[self._whisper],
-            },
         }
         tool_kinds: dict[ProducerKind, tuple[str, ...]] = {
             "frame": ("ffprobe",),
             "audio": ("ffprobe",),
-            "asr": ("whisper",),
-            "vad": ("ffmpeg",),
             "shot": ("ffmpeg",),
             "scene": ("ffmpeg",),
             "visual": ("ffmpeg",),
             "subtitle": ("ffmpeg", "ffprobe"),
         }
         result: dict[ProducerKind, str] = {}
+        result["asr"] = policy.timed_speech_detector_sha256("asr")
+        result["vad"] = policy.timed_speech_detector_sha256("vad")
         for kind, names in tool_kinds.items():
             result[kind] = local_detector_identity_sha256(
                 producer_kind=kind,
@@ -488,7 +445,7 @@ class LocalMediaPreflightPort:
                     )
                     for name in names
                 ),
-                model_sha256=model_sha256 if kind == "asr" else None,
+                model_sha256=None,
             )
         return result
 
@@ -522,15 +479,14 @@ class LocalMediaPreflightPort:
             calibration = request.policy.calibration(kind)
             if (
                 calibration.producer_id != context.producer_id
-                or calibration.generation_policy_sha256
-                != context.generation_policy_sha256
+                or calibration.generation_policy_sha256 != context.generation_policy_sha256
             ):
                 raise LocalMediaEvidenceError(
                     f"{kind} calibration does not bind the committed physical producer policy"
                 )
 
     def _version(self, executable: Path, policy: LocalMediaPreflightPolicy) -> str:
-        flag = "--help" if executable == self._whisper else "-version"
+        flag = "-version"
         argv = [str(executable)]
         if executable == self._ffmpeg:
             argv.append("-nostdin")
@@ -568,9 +524,7 @@ class LocalMediaPreflightPort:
         )
         if output.returncode != 0:
             detail_hash = _sha_bytes(output.stderr)
-            raise LocalMediaToolError(
-                f"{producer_kind} producer exited non-zero ({detail_hash})"
-            )
+            raise LocalMediaToolError(f"{producer_kind} producer exited non-zero ({detail_hash})")
         normalized: list[str] = []
         for item in argv:
             if item == str(request.source_path):
@@ -585,8 +539,6 @@ class LocalMediaPreflightPort:
             if executable == self._ffprobe
             else "ffmpeg"
             if executable == self._ffmpeg
-            else "whisper"
-            if executable == self._whisper
             else None
         )
         if executable_name is None:  # pragma: no cover - closed constructor tools
@@ -700,8 +652,7 @@ class LocalMediaPreflightPort:
         ):
             raise LocalMediaSourceError("ffprobe video clock disagrees with committed frame PTS")
         audio_na = (
-            request.audio_sample_boundaries.source_outcome
-            is AudioSourceOutcome.NOT_APPLICABLE
+            request.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE
         )
         if audio_na != (len(audio) == 0) or len(audio) > 1:
             raise LocalMediaSourceError("ffprobe audio layout disagrees with committed boundaries")
@@ -766,19 +717,21 @@ class LocalMediaPreflightPort:
             changes.append(change)
             if mean <= policy.black_luma_max:
                 classification = VisualClassification.BLACK
-                confidence = (policy.black_luma_max - mean + 1) * 1_000_000 // (
-                    policy.black_luma_max + 1
+                confidence = (
+                    (policy.black_luma_max - mean + 1) * 1_000_000 // (policy.black_luma_max + 1)
                 )
             elif mean >= policy.white_luma_min:
                 classification = VisualClassification.WHITE
-                confidence = (mean - policy.white_luma_min + 1) * 1_000_000 // (
-                    256 - policy.white_luma_min
+                confidence = (
+                    (mean - policy.white_luma_min + 1) * 1_000_000 // (256 - policy.white_luma_min)
                 )
             elif prior is not None and change <= policy.frozen_change_ppm_max:
                 classification = VisualClassification.FROZEN
                 confidence = (
-                    policy.frozen_change_ppm_max - change + 1
-                ) * 1_000_000 // (policy.frozen_change_ppm_max + 1)
+                    (policy.frozen_change_ppm_max - change + 1)
+                    * 1_000_000
+                    // (policy.frozen_change_ppm_max + 1)
+                )
             elif prior is not None and change >= policy.transition_change_ppm_min:
                 classification = VisualClassification.TRANSITION
                 confidence = min(change, 1_000_000)
@@ -799,12 +752,13 @@ class LocalMediaPreflightPort:
                 offset = row * policy.analysis_width
                 for column in range(1, policy.analysis_width):
                     comparisons += 1
-                    if abs(frame[offset + column] - frame[offset + column - 1]) >= policy.subtitle_edge_delta_min:
+                    if (
+                        abs(frame[offset + column] - frame[offset + column - 1])
+                        >= policy.subtitle_edge_delta_min
+                    ):
                         edges += 1
             fraction_ppm = edges * 1_000_000 // comparisons
-            subtitle_presence.append(
-                fraction_ppm >= policy.subtitle_edge_fraction_ppm_min
-            )
+            subtitle_presence.append(fraction_ppm >= policy.subtitle_edge_fraction_ppm_min)
             prior = frame
         return _SampleAnalysis(
             tuple(sample_ticks),
@@ -883,7 +837,9 @@ class LocalMediaPreflightPort:
             policy_hash = request.policy.producer_policy_sha256(kind)
             if calibration.producer_id == "":  # pragma: no cover - model validation
                 raise LocalMediaEvidenceError("producer identity is empty")
-            points_by_kind[kind].sort(key=lambda item: (item.source_id, item.tick, item.boundary_id))
+            points_by_kind[kind].sort(
+                key=lambda item: (item.source_id, item.tick, item.boundary_id)
+            )
             if policy_hash == "":  # pragma: no cover - canonical hash is non-empty
                 raise LocalMediaEvidenceError("producer policy hash is empty")
         shot_context = replace(
@@ -1103,11 +1059,14 @@ class LocalMediaPreflightPort:
             if has_embedded_stream
             else (SubtitleDetectionMode.BURNED_IN,)
         )
-        cues = tuple(sorted((*embedded, *burned), key=lambda item: (item.in_tick, item.out_tick, item.subtitle_cue_id)))
+        cues = tuple(
+            sorted(
+                (*embedded, *burned),
+                key=lambda item: (item.in_tick, item.out_tick, item.subtitle_cue_id),
+            )
+        )
         outcome = (
-            SubtitleSourceOutcome.CUES_DETECTED
-            if cues
-            else SubtitleSourceOutcome.NONE_DETECTED
+            SubtitleSourceOutcome.CUES_DETECTED if cues else SubtitleSourceOutcome.NONE_DETECTED
         )
         return SubtitleCueSet(
             f"{request.episode_id}:subtitle-cues",
@@ -1171,9 +1130,7 @@ class LocalMediaPreflightPort:
             f"{request.episode_id}:speech-activity",
             context,
             _coverage(context),
-            SpeechSourceOutcome.SPEECH_DETECTED
-            if segments
-            else SpeechSourceOutcome.NONE_DETECTED,
+            SpeechSourceOutcome.SPEECH_DETECTED if segments else SpeechSourceOutcome.NONE_DETECTED,
             segments,
         )
 
@@ -1225,7 +1182,9 @@ class LocalMediaPreflightPort:
                     raise LocalMediaToolError("Whisper JSON exceeded its policy byte bound")
                 raw = result_path.read_bytes()
             except OSError as error:
-                raise LocalMediaToolError("Whisper did not materialize its required JSON") from error
+                raise LocalMediaToolError(
+                    "Whisper did not materialize its required JSON"
+                ) from error
             trace = replace(
                 trace,
                 stdout_sha256=_sha_bytes(output.stdout + raw),
@@ -1271,9 +1230,7 @@ class LocalMediaPreflightPort:
             start = _relative_seconds_tick(
                 item.get("start"), context, "whisper.segment.start", end=False
             )
-            end = _relative_seconds_tick(
-                item.get("end"), context, "whisper.segment.end", end=True
-            )
+            end = _relative_seconds_tick(item.get("end"), context, "whisper.segment.end", end=True)
             if start >= end:
                 raise LocalMediaEvidenceError("Whisper segment tick range is empty")
             raw_words = _objects(item.get("words"), "whisper.segment.words")
@@ -1291,9 +1248,7 @@ class LocalMediaPreflightPort:
                     raw_word.get("end"), context, "whisper.word.end", end=True
                 )
                 if not start <= word_start < word_end <= end:
-                    raise LocalMediaEvidenceError(
-                        "Whisper word tick is outside its exact segment"
-                    )
+                    raise LocalMediaEvidenceError("Whisper word tick is outside its exact segment")
                 word_id = f"{request.episode_id}:word:{len(words):08d}"
                 word_ids.append(word_id)
                 words.append(
@@ -1320,9 +1275,7 @@ class LocalMediaPreflightPort:
                 ):
                     closes_sentence = True
                 if closes_sentence:
-                    sentence_id = (
-                        f"{request.episode_id}:sentence:{len(sentences):08d}"
-                    )
+                    sentence_id = f"{request.episode_id}:sentence:{len(sentences):08d}"
                     sentences.append(
                         TranscriptSentence(
                             sentence_id,
@@ -1341,13 +1294,9 @@ class LocalMediaPreflightPort:
                     pending_start = None
                     pending_end = None
             segment_id = f"{request.episode_id}:segment:{segment_position:08d}"
-            raw_segment_records.append(
-                (segment_id, start, end, text.strip(), tuple(word_ids))
-            )
+            raw_segment_records.append((segment_id, start, end, text.strip(), tuple(word_ids)))
         if pending_word_ids:
-            raise LocalMediaEvidenceError(
-                "Whisper transcript ends with an unclosed sentence tail"
-            )
+            raise LocalMediaEvidenceError("Whisper transcript ends with an unclosed sentence tail")
         segments: list[TranscriptSegment] = []
         for segment_id, start, end, text, _word_ids in raw_segment_records:
             contained_sentence_ids = tuple(
@@ -1419,6 +1368,79 @@ class LocalMediaPreflightPort:
             SpeechSourceOutcome.NOT_APPLICABLE,
             (),
         )
+
+    @staticmethod
+    def _speech_request(
+        path: Path, request: LocalMediaPreflightRequest
+    ) -> TimedSpeechEvidenceRequest:
+        policy = request.policy
+        context = request.audio_sample_boundaries.context
+        expected = []
+        for kind in cast(tuple[Literal["asr", "vad"], ...], ("asr", "vad")):
+            c = policy.calibration(kind)
+            expected.append(
+                TimedSpeechExpectedProducer(
+                    kind,
+                    c.producer_id,
+                    c.producer_version,
+                    c.generation_policy_sha256,
+                    c.detector_sha256,
+                    c.calibration_policy_sha256,
+                    c.calibration_record_sha256,
+                    _microseconds_tick(c.timing_error_bound_microseconds, context.time_base),
+                    policy.asr_model_id if kind == "asr" else policy.vad_model_id,
+                    policy.asr_model_revision if kind == "asr" else policy.vad_model_revision,
+                    policy.asr_model_sha256 if kind == "asr" else policy.vad_model_sha256,
+                )
+            )
+        return TimedSpeechEvidenceRequest(
+            path,
+            request.source_id,
+            request.source_sha256,
+            context.clock_id,
+            context.time_base,
+            context.origin_tick,
+            context.duration_tick,
+            context.origin_tick,
+            context.end_tick,
+            policy.timed_speech_endpoint_url,
+            policy.timed_speech_provider_id,
+            policy.timed_speech_provider_version,
+            policy.funasr_version,
+            policy.torch_version,
+            cast(Literal["cpu", "mps"], policy.speech_device),
+            policy.word_timing_capability,
+            policy.timed_speech_policy_sha256,
+            policy.timed_speech_calibration_sha256,
+            cast(tuple[TimedSpeechExpectedProducer, TimedSpeechExpectedProducer], tuple(expected)),
+            policy.timed_speech_timeout_seconds,
+            policy.timed_speech_max_response_bytes,
+            policy.utterance_gap_milliseconds,
+            policy.vad_merge_gap_milliseconds,
+        )
+
+    @staticmethod
+    def _validate_timed_speech_evidence(
+        evidence: TimedSpeechEvidence, request: LocalMediaPreflightRequest
+    ) -> None:
+        context = request.audio_sample_boundaries.context
+        for actual in (evidence.transcript.context, evidence.speech_activity.context):
+            if (
+                actual.source_id,
+                actual.source_sha256,
+                actual.clock_id,
+                actual.time_base,
+                actual.origin_tick,
+                actual.duration_tick,
+            ) != (
+                request.source_id,
+                request.source_sha256,
+                context.clock_id,
+                context.time_base,
+                context.origin_tick,
+                context.duration_tick,
+            ):
+                raise LocalMediaSourceError("timed speech evidence source clock drift")
 
     @staticmethod
     def _producer_identity(
