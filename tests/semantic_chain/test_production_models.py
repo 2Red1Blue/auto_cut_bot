@@ -490,6 +490,21 @@ def test_fake_source_authorization_and_all_stage2_continue_paths_fail_closed() -
         )
 
 
+@pytest.mark.parametrize(
+    "attack",
+    ("distinct_candidates_same_source", "wrong_proposal_count", "job_policy_version_mismatch"),
+)
+def test_stage2_policy_mismatch_vectors_cannot_reach_portfolio_continue(attack: str) -> None:
+    with pytest.raises(ProductionModelError, match="full JobPolicy"):
+        PortfolioCompiler.compile(
+            portfolio_id=f"portfolio_{attack}",
+            proposal_set_ref=_artifact(f"proposal_set_{attack}"),
+            proposal_set=object(),  # type: ignore[arg-type]
+            job_policy_ref=_artifact(f"job_policy_{attack}"),
+            job_policy=object(),  # type: ignore[arg-type]
+        )
+
+
 def _physical() -> tuple[PhysicalRequirement, ...]:
     return _canon(
         PhysicalRequirement("dialogue_integrity", "complete"),
@@ -651,6 +666,7 @@ def test_metadata_only_or_fake_owner_closure_cannot_mint_semantic_continue() -> 
         EvidenceClosureMember("fact", _artifact("attacker"), "fact_001", HASH_A),
         EvidenceClosureMember("event", _artifact("attacker"), "event_001", HASH_A),
         EvidenceClosureMember("vlm_observation", _artifact("attacker"), "observation_001", HASH_A),
+        EvidenceClosureMember("character_state", _artifact("attacker"), "character_001", HASH_A),
         metadata,
         EvidenceClosureMember(
             "dependency_closure", _artifact("attacker"), "dependency_001", HASH_A

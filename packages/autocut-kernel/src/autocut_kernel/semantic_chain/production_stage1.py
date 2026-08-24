@@ -1086,6 +1086,8 @@ class DependencyClosureEvaluator:
             raise ProductionModelError("dependency policy ref does not bind policy payload")
         evidence_ids = {item.diagnostic_id for item in evidence_diagnostics.items}
         conflict_ids = {item.diagnostic_id for item in conflict_diagnostics.items}
+        evidence_by_id = {item.diagnostic_id: item for item in evidence_diagnostics.items}
+        conflict_by_id = {item.diagnostic_id: item for item in conflict_diagnostics.items}
         node_ids = tuple(item.node_id for item in graph.nodes)
         graph_refs = {item: _graph_node_ref(graph_ref, item) for item in node_ids}
         arcs = tuple(
@@ -1128,10 +1130,23 @@ class DependencyClosureEvaluator:
                 if row.resolution_status is CoverageResolution.CONFLICTED
                 else evidence_ids
             )
+            expected_diagnostics = (
+                conflict_by_id
+                if row.resolution_status is CoverageResolution.CONFLICTED
+                else evidence_by_id
+            )
             if any(item.artifact_ref != expected_owner for item in row.diagnostic_refs):
                 raise ProductionModelError("coverage diagnostic has the wrong authoritative owner")
             if not diagnostic_ids <= expected_ids:
                 raise ProductionModelError("coverage diagnostic does not resolve exactly")
+            if any(
+                jcs_key(row.unit_ref)
+                not in {jcs_key(ref) for ref in expected_diagnostics[item].affected_refs}
+                for item in diagnostic_ids
+            ):
+                raise ProductionModelError(
+                    "coverage diagnostic does not identify its exact affected unit"
+                )
             seed_id = row.taint_seed_refs[0].object_id
             roots = row.graph_node_refs or (row.unit_ref,)
             for root in row.graph_node_refs:

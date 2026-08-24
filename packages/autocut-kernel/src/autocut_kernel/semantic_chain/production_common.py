@@ -303,9 +303,11 @@ class PendingBusinessSet(CanonicalModel):
             )
 
     def require_member(self, artifact_type: str, value: CanonicalModel) -> ArtifactRef:
+        """Match model content only; Store/CAS must separately prove exact membership."""
+
         matches = tuple(item for item in self.members if item.artifact_type == artifact_type)
         if len(matches) != 1 or matches[0].artifact_ref.content_hash != value.canonical_hash:
-            raise ProductionModelError(f"pending {artifact_type} does not bind the exact payload")
+            raise ProductionModelError(f"pending {artifact_type} content hash mismatch")
         return matches[0].artifact_ref
 
     def to_mapping(self) -> dict[str, object]:

@@ -919,6 +919,7 @@ class EvidenceClosure(CanonicalModel):
             "fact",
             "event",
             "vlm_observation",
+            "character_state",
             "candidate_metadata",
             "dependency_closure",
         }
