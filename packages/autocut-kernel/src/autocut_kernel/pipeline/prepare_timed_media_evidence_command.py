@@ -12,7 +12,7 @@ import json
 import time
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Callable, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from ..media import (
@@ -411,12 +411,9 @@ class PrepareTimedMediaEvidenceCommand:
         self,
         store: TimedMediaEvidenceStore,
         producer: TimedMediaEvidenceProducerPort,
-        *,
-        busy_wait: Callable[[float], None] = time.sleep,
     ) -> None:
         self._store = store
         self._producer = producer
-        self._busy_wait = busy_wait
 
     def execute(
         self,
@@ -446,7 +443,7 @@ class PrepareTimedMediaEvidenceCommand:
                     ):
                         raise
                     busy_attempts += 1
-                    self._busy_wait(TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS)
+                    time.sleep(TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS)
             self._validate_produced(request, produced)
             plans, candidates = self._close_candidates(request, produced)
             artifacts = self._persist_artifacts(request, produced, plans, candidates)

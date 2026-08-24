@@ -5,6 +5,8 @@ import json
 from dataclasses import replace
 from uuid import UUID, uuid4
 
+import autocut_kernel.pipeline.prepare_timed_media_evidence_command as command_module
+import pytest
 from autocut_kernel.media import (
     AdaptiveEvidenceWindowPolicy,
     CalibrationBinding,
@@ -330,33 +332,29 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
     assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "unknown"
 
 
-def test_command_retries_busy_once_but_never_retries_unknown_result() -> None:
+def test_command_retries_busy_once_but_never_retries_unknown_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    monkeypatch.setattr(command_module.time, "sleep", waits.append)
     busy_store = _Store()
     busy = _BusyOnceProducer(_bundle())
-    busy_waits: list[float] = []
-    busy_result = PrepareTimedMediaEvidenceCommand(
-        busy_store,
-        busy,
-        busy_wait=busy_waits.append,
-    ).execute(_request(busy_store))
+    busy_result = PrepareTimedMediaEvidenceCommand(busy_store, busy).execute(_request(busy_store))
 
     assert busy_result.outcome.state == "succeeded"
     assert busy.calls == 2
-    assert busy_waits == [1]
+    assert waits == [1]
 
     unknown_store = _Store()
     unknown = _UnknownResultProducer(_bundle())
-    unknown_waits: list[float] = []
-    unknown_result = PrepareTimedMediaEvidenceCommand(
-        unknown_store,
-        unknown,
-        busy_wait=unknown_waits.append,
-    ).execute(_request(unknown_store))
+    unknown_result = PrepareTimedMediaEvidenceCommand(unknown_store, unknown).execute(
+        _request(unknown_store)
+    )
 
     assert unknown_result.outcome.state == "failed"
     assert unknown_result.outcome.failure_code == "TIMED_SPEECH_RESULT_UNKNOWN"
     assert unknown.calls == 1
-    assert unknown_waits == []
+    assert waits == [1]
 
 
 def test_command_rejects_producer_that_replaces_committed_physical_detector() -> None:
