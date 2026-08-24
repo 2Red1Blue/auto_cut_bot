@@ -333,20 +333,30 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
 def test_command_retries_busy_once_but_never_retries_unknown_result() -> None:
     busy_store = _Store()
     busy = _BusyOnceProducer(_bundle())
-    busy_result = PrepareTimedMediaEvidenceCommand(busy_store, busy).execute(_request(busy_store))
+    busy_waits: list[float] = []
+    busy_result = PrepareTimedMediaEvidenceCommand(
+        busy_store,
+        busy,
+        busy_wait=busy_waits.append,
+    ).execute(_request(busy_store))
 
     assert busy_result.outcome.state == "succeeded"
     assert busy.calls == 2
+    assert busy_waits == [1]
 
     unknown_store = _Store()
     unknown = _UnknownResultProducer(_bundle())
-    unknown_result = PrepareTimedMediaEvidenceCommand(unknown_store, unknown).execute(
-        _request(unknown_store)
-    )
+    unknown_waits: list[float] = []
+    unknown_result = PrepareTimedMediaEvidenceCommand(
+        unknown_store,
+        unknown,
+        busy_wait=unknown_waits.append,
+    ).execute(_request(unknown_store))
 
     assert unknown_result.outcome.state == "failed"
     assert unknown_result.outcome.failure_code == "TIMED_SPEECH_RESULT_UNKNOWN"
     assert unknown.calls == 1
+    assert unknown_waits == []
 
 
 def test_command_rejects_producer_that_replaces_committed_physical_detector() -> None:

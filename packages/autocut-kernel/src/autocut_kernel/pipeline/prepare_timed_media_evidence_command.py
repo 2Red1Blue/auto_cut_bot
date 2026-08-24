@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Literal, Protocol, cast
+from typing import Callable, Literal, Protocol, cast
 from uuid import UUID
 
 from ..media import (
@@ -49,6 +50,7 @@ PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
 TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION = "timed-media-evidence-batch-v1"
 TIMED_SPEECH_BUSY_RETRY_COUNT = 1
+TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS = 1
 
 
 class TimedMediaEvidenceCommandError(ValueError):
@@ -409,9 +411,12 @@ class PrepareTimedMediaEvidenceCommand:
         self,
         store: TimedMediaEvidenceStore,
         producer: TimedMediaEvidenceProducerPort,
+        *,
+        busy_wait: Callable[[float], None] = time.sleep,
     ) -> None:
         self._store = store
         self._producer = producer
+        self._busy_wait = busy_wait
 
     def execute(
         self,
@@ -441,6 +446,7 @@ class PrepareTimedMediaEvidenceCommand:
                     ):
                         raise
                     busy_attempts += 1
+                    self._busy_wait(TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS)
             self._validate_produced(request, produced)
             plans, candidates = self._close_candidates(request, produced)
             artifacts = self._persist_artifacts(request, produced, plans, candidates)
