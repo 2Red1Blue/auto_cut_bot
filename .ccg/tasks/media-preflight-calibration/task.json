@@ -1,0 +1,12 @@
+{
+  "id": "media-preflight-calibration",
+  "title": "实现真实时序媒体证据并接入 HTTP Pipeline",
+  "status": "in_progress",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "analysis",
+  "nextAction": "审计现有 Media 内核并形成最小安全实施计划",
+  "createdAt": "2026-08-24T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
