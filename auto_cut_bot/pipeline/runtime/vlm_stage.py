@@ -49,7 +49,7 @@ class VlmPipelineStore(
     """The shared Kernel Store capabilities required by this adapter."""
 
 
-def _vlm_kernel_idempotency_key(
+def vlm_kernel_idempotency_key(
     *,
     run_id: str,
     episode_index: int,
@@ -157,7 +157,7 @@ class VlmPipelineStage:
                     episode_index=episode_index,
                     job=job,
                     artifact_revision=_ARTIFACT_REVISION,
-                    idempotency_key=_vlm_kernel_idempotency_key(
+                    idempotency_key=vlm_kernel_idempotency_key(
                         run_id=context.run_id,
                         episode_index=episode_index,
                         source_bundle=source_bundle,
@@ -285,4 +285,5 @@ __all__ = (
     "VLM_EPISODE_SELECTION_STRATEGY_VERSION",
     "VlmPipelineStage",
     "VlmPipelineStore",
+    "vlm_kernel_idempotency_key",
 )
