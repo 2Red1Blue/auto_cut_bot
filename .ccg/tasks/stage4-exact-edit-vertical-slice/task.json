@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "实现并验证共同 presentation timeline 的 A/V 映射证书",
+  "nextAction": "实现 Stage4 command 对 committed SourceManifest/MediaEvidence/Policy 的绑定并生成非自证证书",
   "createdAt": "2026-08-25T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
