@@ -3,9 +3,9 @@
 from .calibration import (
     CalibrationAnchor,
     CalibrationAnchorMatch,
+    CalibrationMeasurementSummary,
     CalibrationObservation,
     CalibrationProducer,
-    CalibrationRecord,
     CalibrationRecordError,
     ProducerCalibrationMeasurement,
 )
@@ -96,9 +96,9 @@ from .types import (
 __all__ = [
     "CalibrationAnchor",
     "CalibrationAnchorMatch",
+    "CalibrationMeasurementSummary",
     "CalibrationObservation",
     "CalibrationProducer",
-    "CalibrationRecord",
     "CalibrationRecordError",
     "ProducerCalibrationMeasurement",
     "AudioBoundaryMethod",

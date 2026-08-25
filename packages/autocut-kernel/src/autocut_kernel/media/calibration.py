@@ -66,6 +66,7 @@ class CalibrationAnchor:
     anchor_id: str
     producer: CalibrationProducer
     producer_id: str
+    clock_id: str
     time_base: TimeBase
     expected_range: TickRange
 
@@ -73,6 +74,7 @@ class CalibrationAnchor:
         _text(self.anchor_id, "anchor.anchor_id")
         _producer(self.producer, "anchor.producer")
         _text(self.producer_id, "anchor.producer_id")
+        _text(self.clock_id, "anchor.clock_id")
         _time_base(self.time_base, "anchor.time_base")
         _range(self.expected_range, "anchor.expected_range")
 
@@ -85,6 +87,7 @@ class CalibrationObservation:
     producer: CalibrationProducer
     producer_id: str
     inference_kind: str
+    clock_id: str
     time_base: TimeBase
     observed_range: TickRange
 
@@ -94,6 +97,7 @@ class CalibrationObservation:
         _text(self.producer_id, "observation.producer_id")
         if self.inference_kind != _INFERENCE_KIND[producer]:
             raise CalibrationRecordError("observation.inference_kind is invalid for producer")
+        _text(self.clock_id, "observation.clock_id")
         _time_base(self.time_base, "observation.time_base")
         _range(self.observed_range, "observation.observed_range")
 
@@ -114,6 +118,8 @@ class CalibrationAnchorMatch:
             raise CalibrationRecordError("match producer must agree")
         if self.anchor.producer_id != self.observation.producer_id:
             raise CalibrationRecordError("match producer_id must agree")
+        if self.anchor.clock_id != self.observation.clock_id:
+            raise CalibrationRecordError("match clock_id must agree")
         if self.anchor.time_base != self.observation.time_base:
             raise CalibrationRecordError("match time_base must agree")
 
@@ -144,6 +150,7 @@ class ProducerCalibrationMeasurement:
     producer: CalibrationProducer
     producer_id: str
     inference_kind: str
+    clock_id: str
     time_base: TimeBase
     matches: tuple[CalibrationAnchorMatch, ...]
     accepted_bound_tick: int
@@ -153,6 +160,7 @@ class ProducerCalibrationMeasurement:
         producer_id = _text(self.producer_id, "measurement.producer_id")
         if self.inference_kind != _INFERENCE_KIND[producer]:
             raise CalibrationRecordError("measurement.inference_kind is invalid for producer")
+        clock_id = _text(self.clock_id, "measurement.clock_id")
         time_base = _time_base(self.time_base, "measurement.time_base")
         if type(self.matches) is not tuple or not self.matches:  # noqa: E721
             raise CalibrationRecordError("measurement.matches must be a non-empty tuple")
@@ -163,6 +171,8 @@ class ProducerCalibrationMeasurement:
                 raise CalibrationRecordError(f"measurement.matches[{position}] is invalid")
             if match.anchor.producer is not producer or match.anchor.producer_id != producer_id:
                 raise CalibrationRecordError("measurement match producer must agree")
+            if match.anchor.clock_id != clock_id:
+                raise CalibrationRecordError("measurement match clock_id must agree")
             if match.anchor.time_base != time_base:
                 raise CalibrationRecordError("measurement match time_base must agree")
             if match.anchor.anchor_id in anchor_ids or match.observation.observation_id in observation_ids:
@@ -187,7 +197,7 @@ class ProducerCalibrationMeasurement:
 
 
 @dataclass(frozen=True, slots=True)
-class CalibrationRecord:
+class CalibrationMeasurementSummary:
     """The two required non-zero native producer measurements for one validation run."""
 
     asr: ProducerCalibrationMeasurement
@@ -195,14 +205,16 @@ class CalibrationRecord:
 
     def __post_init__(self) -> None:
         if type(self.asr) is not ProducerCalibrationMeasurement:  # noqa: E721
-            raise CalibrationRecordError("record.asr must be an exact ProducerCalibrationMeasurement")
+            raise CalibrationRecordError("summary.asr must be an exact ProducerCalibrationMeasurement")
         if type(self.vad) is not ProducerCalibrationMeasurement:  # noqa: E721
-            raise CalibrationRecordError("record.vad must be an exact ProducerCalibrationMeasurement")
+            raise CalibrationRecordError("summary.vad must be an exact ProducerCalibrationMeasurement")
         if self.asr.producer is not CalibrationProducer.ASR:
-            raise CalibrationRecordError("record.asr must use the ASR producer")
+            raise CalibrationRecordError("summary.asr must use the ASR producer")
         if self.vad.producer is not CalibrationProducer.VAD:
-            raise CalibrationRecordError("record.vad must use the VAD producer")
+            raise CalibrationRecordError("summary.vad must use the VAD producer")
         if self.asr.producer_id == self.vad.producer_id:
-            raise CalibrationRecordError("record ASR and VAD producer_id values must be distinct")
+            raise CalibrationRecordError("summary ASR and VAD producer_id values must be distinct")
+        if self.asr.clock_id != self.vad.clock_id:
+            raise CalibrationRecordError("summary ASR and VAD clock_id values must agree")
         if self.asr.time_base != self.vad.time_base:
-            raise CalibrationRecordError("record ASR and VAD time_base values must agree")
+            raise CalibrationRecordError("summary ASR and VAD time_base values must agree")
