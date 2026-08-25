@@ -1,5 +1,14 @@
 """Closed media-domain primitives for source-native PTS processing."""
 
+from .calibration import (
+    CalibrationAnchor,
+    CalibrationAnchorMatch,
+    CalibrationObservation,
+    CalibrationProducer,
+    CalibrationRecord,
+    CalibrationRecordError,
+    ProducerCalibrationMeasurement,
+)
 from .root_evidence import (
     AudioBoundaryMethod,
     AudioSampleBoundary,
@@ -85,6 +94,13 @@ from .types import (
 )
 
 __all__ = [
+    "CalibrationAnchor",
+    "CalibrationAnchorMatch",
+    "CalibrationObservation",
+    "CalibrationProducer",
+    "CalibrationRecord",
+    "CalibrationRecordError",
+    "ProducerCalibrationMeasurement",
     "AudioBoundaryMethod",
     "AudioSampleBoundary",
     "AudioSampleBoundarySet",
