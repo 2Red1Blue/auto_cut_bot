@@ -92,15 +92,6 @@ app = typer.Typer(
 )
 
 
-def _register_authority_bootstrap_command() -> None:
-    """Keep the authority-only command out of the ordinary CLI import graph."""
-    from auto_cut_bot.cli.authority_bootstrap import register_authority_bootstrap_command
-
-    register_authority_bootstrap_command(app)
-
-
-_register_authority_bootstrap_command()
-
 console = Console()
 
 def version_callback(value: bool):
