@@ -369,7 +369,33 @@ def decode_source_manifest(
     payload_json: str,
     proxy_blobs: tuple[BlobIdentity, ...],
 ) -> DecodedSourceManifest:
-    """Strictly decode the canonical committed SourceManifest payload."""
+    """Strictly decode a V2 committed SourceManifest payload.
+
+    V2 consumers, including timed-media preflight, require the source-prep
+    presentation facts and both decoded frame-boundary sequences for every
+    episode.  Call :func:`decode_legacy_source_manifest` only at an explicit
+    legacy compatibility boundary.
+    """
+
+    decoded = decode_legacy_source_manifest(payload_json, proxy_blobs)
+    for episode in decoded.episodes:
+        probe = episode.media_probe
+        if (
+            probe.presentation_timeline_probe is None
+            or not probe.presentation_video_frame_boundaries
+            or not probe.presentation_audio_frame_boundaries
+        ):
+            raise SourceManifestDecodeError(
+                "V2 source manifest requires presentation timeline probe and decoded frame boundaries"
+            )
+    return decoded
+
+
+def decode_legacy_source_manifest(
+    payload_json: str,
+    proxy_blobs: tuple[BlobIdentity, ...],
+) -> DecodedSourceManifest:
+    """Strictly decode a legacy SourceManifest at an explicit legacy boundary."""
 
     try:
         raw: object = json.loads(
@@ -1283,6 +1309,7 @@ __all__ = [
     "SourceOperationPolicy",
     "SourceOperationPurpose",
     "SourcePurposeDeniedError",
+    "decode_legacy_source_manifest",
     "decode_source_manifest",
     "identity_frame_index",
 ]

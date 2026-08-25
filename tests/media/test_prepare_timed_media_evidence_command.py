@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import autocut_kernel.pipeline.prepare_timed_media_evidence_command as command_module
@@ -45,8 +46,10 @@ from autocut_kernel.pipeline import (
 )
 from autocut_kernel.registry import BootstrappedTimedSpeechProfile
 from autocut_kernel.registry.timed_speech import (
+    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
     TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
     TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
+    StoreAnchoredTimedSpeechProfileResolver,
 )
 from autocut_kernel.store import (
     ArtifactScope,
@@ -58,8 +61,10 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     Job,
     PersistedCommittedArtifactMember,
+    PersistedWholeSeriesSourceManifest,
+    WholeSeriesSourceManifestReference,
 )
-from autocut_kernel.store.models import MaterializationLimits
+from autocut_kernel.store.models import MaterializationLimits, canonical_payload_hash
 from test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
 from test_timed_evidence import _bindings, _manifest_and_candidate
 
@@ -82,6 +87,15 @@ class _Store:
         self.registry_members: dict[CommittedArtifactMemberReference, PersistedCommittedArtifactMember] = {}
         self.bootstrapped_reference: CommittedArtifactMemberReference | None = None
         self.bootstrapped_entry: TimedSpeechProfileRegistryEntry | None = None
+        self.source_manifest: PersistedWholeSeriesSourceManifest | None = None
+        self.source_decoded: object | None = None
+
+    def read_whole_series_source_manifest(
+        self, _: Job, artifact_set_id: UUID
+    ) -> PersistedWholeSeriesSourceManifest:
+        if self.source_manifest is None or self.source_manifest.artifact_set_id != artifact_set_id:
+            raise ValueError("source manifest is unavailable")
+        return self.source_manifest
 
     def read_committed_artifact_member(
         self,
@@ -164,6 +178,17 @@ class _Store:
                 self.outcomes[key] = outcome
                 return
         raise AssertionError("unknown command slot")
+
+
+def _decode_test_source_manifest(payload_json: str, _: tuple[object, ...]) -> object:
+    try:
+        return _TEST_SOURCE_MANIFESTS[payload_json]
+    except KeyError as error:
+        raise AssertionError("unexpected test source manifest payload") from error
+
+
+_TEST_SOURCE_MANIFESTS: dict[str, object] = {}
+command_module.decode_source_manifest = _decode_test_source_manifest  # type: ignore[assignment]
 
 
 class _Lease:
@@ -288,14 +313,51 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
     store.blobs[source_blob.object_id] = b"committed source"
     template = _bundle()
     _register_sentence_profile(store, template)
+    job = Job("real-run-001", "shadow")
+    payload_json = "{}"
+    reference = WholeSeriesSourceManifestReference(
+        ArtifactScope("pipeline", "job", job.job_key),
+        "whole_series_source_manifest",
+        1,
+        canonical_payload_hash(payload_json),
+    )
+    receipt_id, artifact_set_id, command_slot_id = uuid4(), uuid4(), uuid4()
+    store.source_manifest = PersistedWholeSeriesSourceManifest(
+        reference,
+        payload_json,
+        (source_blob,),
+        uuid4(),
+        receipt_id,
+        artifact_set_id,
+        command_slot_id,
+        job,
+    )
+    store.source_decoded = SimpleNamespace(
+        episodes=(
+            SimpleNamespace(
+                proxy_blob=source_blob,
+                manifest=manifest,
+                media_probe=SimpleNamespace(
+                    audio_sample_boundaries=template.audio_sample_boundaries,
+                    frame_detector_sha256=HASH_B,
+                    audio_detector_sha256=HASH_B,
+                    presentation_timeline_probe=_presentation_facts(template, source_blob, manifest),
+                ),
+            ),
+        )
+    )
+    _TEST_SOURCE_MANIFESTS[payload_json] = store.source_decoded
     return PrepareTimedMediaEvidenceRequest(
-        job=Job("real-run-001", "shadow"),
+        job=job,
         idempotency_key="media-preflight:episode:0",
         episode_index=0,
         artifact_scope=ArtifactScope("pipeline", "job", "real-run-001"),
         artifact_revision=1,
         source_blob=source_blob,
-        source_manifest_sha256=HASH_B,
+        source_manifest_reference=reference,
+        source_manifest_receipt_id=receipt_id,
+        source_manifest_artifact_set_id=artifact_set_id,
+        source_manifest_command_slot_id=command_slot_id,
         source_provenance_sha256=HASH_A,
         window_manifest=manifest,
         semantic_pack=semantic_pack,
@@ -319,7 +381,14 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             copy_chunk_bytes=128,
             staging_quota_bytes=1024,
         ),
-        presentation_timeline_probe=_presentation_facts(template, source_blob, manifest),
+    )
+
+
+def _command(store: _Store, producer: object) -> PrepareTimedMediaEvidenceCommand:
+    return PrepareTimedMediaEvidenceCommand(
+        store,
+        producer,  # type: ignore[arg-type]
+        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
     )
 
 
@@ -457,7 +526,7 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     store = _Store()
     request = _request(store)
     producer = _Producer(_bundle())
-    command = PrepareTimedMediaEvidenceCommand(store, producer)
+    command = _command(store, producer)
 
     first = command.execute(request)
     replay = command.execute(request)
@@ -493,7 +562,7 @@ def test_empty_candidate_pack_commits_explicit_empty_index() -> None:
     store = _Store()
     request = _request(store, with_candidates=False)
 
-    result = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
+    result = _command(store, _Producer(_bundle())).execute(request)
 
     assert result.outcome.state == "succeeded"
     assert result.candidate_count == 0
@@ -516,9 +585,7 @@ def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
     no_registry_store.bootstrapped_entry = None
     no_registry_producer = _Producer(_bundle())
 
-    no_registry = PrepareTimedMediaEvidenceCommand(
-        no_registry_store, no_registry_producer
-    ).execute(no_registry_request)
+    no_registry = _command(no_registry_store, no_registry_producer).execute(no_registry_request)
 
     assert no_registry.outcome.state == "denied"
     assert no_registry_producer.calls == 0
@@ -527,9 +594,7 @@ def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
     mismatch_store = _Store()
     mismatch_request = _request(mismatch_store)
     _register_sentence_profile(mismatch_store, _bundle(), vad_calibration_record_sha256=HASH_B)
-    mismatch = PrepareTimedMediaEvidenceCommand(
-        mismatch_store, _Producer(_bundle())
-    ).execute(mismatch_request)
+    mismatch = _command(mismatch_store, _Producer(_bundle())).execute(mismatch_request)
 
     assert mismatch.outcome.state == "denied"
     assert mismatch_store.successes == []
@@ -593,12 +658,35 @@ def test_probe_certificate_replays_exact_indexes_and_rejects_altered_identity() 
 
 def test_preflight_rejects_missing_source_presentation_facts() -> None:
     store = _Store()
+    request = _request(store)
+    assert store.source_decoded is not None
+    store.source_decoded.episodes[0].media_probe.presentation_timeline_probe = None
 
-    with pytest.raises(
-        command_module.TimedMediaEvidenceCommandError,
-        match="no synthetic map is permitted",
-    ):
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="presentation"):
+        _command(store, _Producer(_bundle())).execute(request)
+    with pytest.raises(TypeError, match="presentation_timeline_probe"):
         replace(_request(store), presentation_timeline_probe=None)
+
+
+def test_preflight_denies_mismatched_source_member_or_absent_episode_before_work() -> None:
+    store = _Store()
+    request = _request(store)
+    producer = _Producer(_bundle())
+
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="immutable handle"):
+        _command(store, producer).execute(
+            replace(request, source_manifest_receipt_id=uuid4())
+        )
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="episode is absent"):
+        _command(store, producer).execute(replace(request, episode_index=1))
+
+    assert producer.calls == 0
+    assert store.materializations == []
+
+
+def test_command_requires_an_explicit_store_anchored_resolver() -> None:
+    with pytest.raises(TypeError, match="authority_profile_resolver"):
+        PrepareTimedMediaEvidenceCommand(_Store(), _Producer(_bundle()))
 
 
 def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
@@ -619,9 +707,7 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
         (),
         (),
     )
-    command = PrepareTimedMediaEvidenceCommand(
-        store, _Producer(replace(template, transcript=transcript))
-    )
+    command = _command(store, _Producer(replace(template, transcript=transcript)))
     _register_sentence_profile(store, template, TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1)
 
     result = command.execute(request)
@@ -640,7 +726,7 @@ def test_command_retries_busy_once_but_never_retries_unknown_result(
     monkeypatch.setattr(command_module.time, "sleep", waits.append)
     busy_store = _Store()
     busy = _BusyOnceProducer(_bundle())
-    busy_result = PrepareTimedMediaEvidenceCommand(busy_store, busy).execute(_request(busy_store))
+    busy_result = _command(busy_store, busy).execute(_request(busy_store))
 
     assert busy_result.outcome.state == "succeeded"
     assert busy.calls == 2
@@ -648,7 +734,7 @@ def test_command_retries_busy_once_but_never_retries_unknown_result(
 
     unknown_store = _Store()
     unknown = _UnknownResultProducer(_bundle())
-    unknown_result = PrepareTimedMediaEvidenceCommand(unknown_store, unknown).execute(
+    unknown_result = _command(unknown_store, unknown).execute(
         _request(unknown_store)
     )
 
@@ -674,7 +760,7 @@ def test_declared_oversize_is_rejected_before_materialization_or_producer() -> N
     )
     producer = _Producer(_bundle())
 
-    result = PrepareTimedMediaEvidenceCommand(store, producer).execute(request)
+    result = _command(store, producer).execute(request)
 
     assert result.outcome.state == "denied"
     assert result.outcome.failure_code == "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED"
@@ -695,7 +781,7 @@ def test_service_ceiling_rejects_before_materialization_or_producer() -> None:
     )
     producer = _Producer(_bundle())
 
-    result = PrepareTimedMediaEvidenceCommand(store, producer).execute(request)
+    result = _command(store, producer).execute(request)
 
     assert result.outcome.state == "denied"
     assert result.outcome.failure_code == "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED"
@@ -820,7 +906,7 @@ def test_cancellation_releases_the_claim_owned_materialization() -> None:
     producer = _CancellingProducer(_bundle())
 
     with pytest.raises(KeyboardInterrupt):
-        PrepareTimedMediaEvidenceCommand(store, producer).execute(_request(store))
+        _command(store, producer).execute(_request(store))
 
     assert producer.calls == 1
     assert len(store.materializations) == 1
@@ -831,10 +917,10 @@ def test_command_rejects_producer_that_replaces_committed_physical_detector() ->
     store = _Store()
     request = replace(_request(store), frame_detector_sha256=HASH_A)
 
-    result = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
-
-    assert result.outcome.state == "denied"
-    assert result.outcome.failure_code == "TIMED_MEDIA_EVIDENCE_INVALID"
+    producer = _Producer(_bundle())
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="source episode"):
+        _command(store, producer).execute(request)
+    assert producer.calls == 0
 
 
 def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -> None:
@@ -842,7 +928,7 @@ def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -
     request = _request(store)
     producer = _Producer(_bundle(), fail=True)
 
-    result = PrepareTimedMediaEvidenceCommand(store, producer).execute(request)
+    result = _command(store, producer).execute(request)
 
     assert result.outcome.state == "denied"
     assert result.outcome.failure_code == "SUBTITLE_EVIDENCE_INDETERMINATE"
@@ -853,7 +939,7 @@ def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -
 def test_batch_receipt_is_committed_only_after_rereading_exact_child() -> None:
     store = _Store()
     request = _request(store)
-    child = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
+    child = _command(store, _Producer(_bundle())).execute(request)
     assert child.outcome.receipt_id is not None
     assert child.outcome.artifact_set_id is not None
     batch_request = FinalizeTimedMediaEvidenceBatchRequest(

@@ -38,12 +38,14 @@ from ..media import (
 from ..media.root_evidence import CanonicalEvidence
 from ..media.types import canonical_sha256
 from ..registry.timed_speech import (
-    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
     AuthorityRegistrySnapshot,
     BootstrappedTimedSpeechProfile,
     StoreAnchoredTimedSpeechProfileResolver,
-    TimedSpeechProfileResolver,
     TimedSpeechRegistryError,
+)
+from ..source_manifest import (
+    SourceManifestDecodeError,
+    decode_source_manifest,
 )
 from ..store import (
     ArtifactMember,
@@ -59,7 +61,9 @@ from ..store import (
 from ..store.models import (
     MaterializationError,
     MaterializationLimits,
+    PersistedWholeSeriesSourceManifest,
     VerifiedMaterializedBlob,
+    WholeSeriesSourceManifestReference,
     canonical_recipe_scope,
 )
 from ..vlm import VlmSemanticPack, WindowManifest
@@ -133,7 +137,7 @@ class TimedMediaEvidenceProducerPort(Protocol):
 
     def prepare(
         self,
-        request: PrepareTimedMediaEvidenceRequest,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
         source: VerifiedMaterializedBlob,
     ) -> ProducedTimedMediaEvidence: ...
 
@@ -145,6 +149,12 @@ class TimedMediaEvidenceStore(Protocol):
         self,
         snapshot: AuthorityRegistrySnapshot,
     ) -> BootstrappedTimedSpeechProfile: ...
+
+    def read_whole_series_source_manifest(
+        self,
+        job: Job,
+        artifact_set_id: UUID,
+    ) -> PersistedWholeSeriesSourceManifest: ...
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
 
@@ -179,7 +189,10 @@ class PrepareTimedMediaEvidenceRequest:
     artifact_scope: ArtifactScope
     artifact_revision: int
     source_blob: BlobRef
-    source_manifest_sha256: str
+    source_manifest_reference: WholeSeriesSourceManifestReference
+    source_manifest_receipt_id: UUID
+    source_manifest_artifact_set_id: UUID
+    source_manifest_command_slot_id: UUID
     source_provenance_sha256: str
     window_manifest: WindowManifest
     semantic_pack: VlmSemanticPack
@@ -190,7 +203,6 @@ class PrepareTimedMediaEvidenceRequest:
     adaptive_policy: AdaptiveEvidenceWindowPolicy
     producer_policy_sha256: str
     materialization_limits: MaterializationLimits
-    presentation_timeline_probe: PresentationTimelineProbe
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job or type(self.source_blob) is not BlobRef:  # noqa: E721
@@ -204,7 +216,6 @@ class PrepareTimedMediaEvidenceRequest:
         if type(self.artifact_revision) is not int or self.artifact_revision < 1:  # noqa: E721
             raise TimedMediaEvidenceCommandError("artifact_revision must be positive")
         for field_name in (
-            "source_manifest_sha256",
             "source_provenance_sha256",
             "producer_policy_sha256",
         ):
@@ -226,10 +237,17 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("adaptive_policy must be exact")
         if type(self.materialization_limits) is not MaterializationLimits:  # noqa: E721
             raise TimedMediaEvidenceCommandError("materialization_limits must be exact")
-        if type(self.presentation_timeline_probe) is not PresentationTimelineProbe:  # noqa: E721
-            raise TimedMediaEvidenceCommandError(
-                "preflight requires exact source-prep presentation map facts; no synthetic map is permitted"
-            )
+        if type(self.source_manifest_reference) is not WholeSeriesSourceManifestReference:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("source manifest reference must be exact")
+        if self.source_manifest_reference.scope != canonical_recipe_scope(self.job):
+            raise TimedMediaEvidenceCommandError("source manifest reference has a non-canonical Job scope")
+        for field_name in (
+            "source_manifest_receipt_id",
+            "source_manifest_artifact_set_id",
+            "source_manifest_command_slot_id",
+        ):
+            if not isinstance(getattr(self, field_name), UUID):
+                raise TimedMediaEvidenceCommandError(f"{field_name} must be a UUID")
         manifest = self.window_manifest
         if (
             manifest.source_sha256 != self.source_blob.content_hash
@@ -241,29 +259,14 @@ class PrepareTimedMediaEvidenceRequest:
         audio = self.audio_sample_boundaries.context
         if audio.source_id != manifest.source_id or audio.source_sha256 != manifest.source_sha256:
             raise TimedMediaEvidenceCommandError("audio boundaries do not bind the exact source")
-        facts = self.presentation_timeline_probe
-        if (
-            facts.source_id != manifest.source_id
-            or facts.source_sha256 != self.source_blob.content_hash
-            or facts.source_blob_content_hash != self.source_blob.content_hash
-            or facts.source_blob_byte_length != self.source_blob.byte_length
-            or facts.source_blob_media_type != self.source_blob.media_type
-            or facts.frame_pts_index_set_sha256 != self.frame_pts_index.canonical_hash
-            or facts.audio_sample_boundary_set_sha256 != self.audio_sample_boundaries.canonical_hash
-            or facts.video.clock_id != self.frame_pts_index.context.clock_id
-            or facts.video.time_base != self.frame_pts_index.context.time_base
-            or facts.video.origin_tick != self.frame_pts_index.context.origin_tick
-            or facts.video.end_tick != self.frame_pts_index.context.end_tick
-            or facts.audio.clock_id != self.audio_sample_boundaries.context.clock_id
-            or facts.audio.time_base != self.audio_sample_boundaries.context.time_base
-            or facts.audio.origin_tick != self.audio_sample_boundaries.context.origin_tick
-            or facts.audio.end_tick != self.audio_sample_boundaries.context.end_tick
-            or facts.window_manifest_sha256 != manifest.canonical_hash
-        ):
-            raise TimedMediaEvidenceCommandError("source-prep presentation facts do not close request identities")
-
     @property
-    def root_input_manifest_sha256(self) -> str:
+    def source_manifest_sha256(self) -> str:
+        return self.source_manifest_reference.content_hash
+
+    def root_input_manifest_sha256(self, presentation_timeline_probe: object) -> str:
+        canonical_hash = getattr(presentation_timeline_probe, "canonical_hash", None)
+        if type(canonical_hash) is not str:
+            raise TimedMediaEvidenceCommandError("committed presentation timeline probe is invalid")
         return canonical_sha256(
             {
                 "adaptive_policy_sha256": self.adaptive_policy.canonical_hash,
@@ -282,7 +285,7 @@ class PrepareTimedMediaEvidenceRequest:
                 "source_blob": _blob_mapping(self.source_blob),
                 "source_manifest_sha256": self.source_manifest_sha256,
                 "source_provenance_sha256": self.source_provenance_sha256,
-                "presentation_timeline_probe_sha256": self.presentation_timeline_probe.canonical_hash,
+                "presentation_timeline_probe_sha256": canonical_hash,
                 "audio_detector_sha256": self.audio_detector_sha256,
                 "strategy_version": TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION,
                 "window_manifest_sha256": self.window_manifest.canonical_hash,
@@ -302,14 +305,22 @@ class PrepareTimedMediaEvidenceRequest:
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
             "semantic_pack_sha256": self.semantic_pack.canonical_hash,
             "producer_policy_sha256": self.producer_policy_sha256,
-            "presentation_timeline_probe_sha256": self.presentation_timeline_probe.canonical_hash,
             "materialization_policy_sha256": self.materialization_limits.evidence_policy_sha256,
             "max_source_bytes": self.materialization_limits.max_source_bytes,
             "timed_speech_max_request_bytes": (
                 self.materialization_limits.timed_speech_max_request_bytes
             ),
             "effective_max_source_bytes": self.materialization_limits.effective_max_source_bytes,
-            "root_input_manifest_sha256": self.root_input_manifest_sha256,
+            "source_manifest_artifact_set_id": str(self.source_manifest_artifact_set_id),
+            "source_manifest_command_slot_id": str(self.source_manifest_command_slot_id),
+            "source_manifest_receipt_id": str(self.source_manifest_receipt_id),
+            "source_manifest_reference": {
+                "artifact_type": self.source_manifest_reference.artifact_type,
+                "content_hash": self.source_manifest_reference.content_hash,
+                "logical_id": self.source_manifest_reference.logical_id,
+                "revision": self.source_manifest_reference.revision,
+                "scope": _scope_mapping(self.source_manifest_reference.scope),
+            },
             "source_blob": _blob_mapping(self.source_blob),
             "source_manifest_sha256": self.source_manifest_sha256,
             "source_provenance_sha256": self.source_provenance_sha256,
@@ -321,6 +332,94 @@ class PrepareTimedMediaEvidenceRequest:
     def request_hash(self) -> str:
         return canonical_sha256(self.canonical_payload())
 
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPrepareTimedMediaEvidenceRequest:
+    """A request closed over the probe reread from the committed source manifest."""
+
+    request: PrepareTimedMediaEvidenceRequest
+    presentation_timeline_probe: PresentationTimelineProbe
+
+    @property
+    def job(self) -> Job:
+        return self.request.job
+
+    @property
+    def idempotency_key(self) -> str:
+        return self.request.idempotency_key
+
+    @property
+    def episode_index(self) -> int:
+        return self.request.episode_index
+
+    @property
+    def artifact_scope(self) -> ArtifactScope:
+        return self.request.artifact_scope
+
+    @property
+    def artifact_revision(self) -> int:
+        return self.request.artifact_revision
+
+    @property
+    def source_blob(self) -> BlobRef:
+        return self.request.source_blob
+
+    @property
+    def source_manifest_sha256(self) -> str:
+        return self.request.source_manifest_sha256
+
+    @property
+    def source_provenance_sha256(self) -> str:
+        return self.request.source_provenance_sha256
+
+    @property
+    def window_manifest(self) -> WindowManifest:
+        return self.request.window_manifest
+
+    @property
+    def semantic_pack(self) -> VlmSemanticPack:
+        return self.request.semantic_pack
+
+    @property
+    def frame_pts_index(self) -> FramePtsIndexSet:
+        return self.request.frame_pts_index
+
+    @property
+    def audio_sample_boundaries(self) -> AudioSampleBoundarySet:
+        return self.request.audio_sample_boundaries
+
+    @property
+    def frame_detector_sha256(self) -> str:
+        return self.request.frame_detector_sha256
+
+    @property
+    def audio_detector_sha256(self) -> str:
+        return self.request.audio_detector_sha256
+
+    @property
+    def adaptive_policy(self) -> AdaptiveEvidenceWindowPolicy:
+        return self.request.adaptive_policy
+
+    @property
+    def producer_policy_sha256(self) -> str:
+        return self.request.producer_policy_sha256
+
+    @property
+    def materialization_limits(self) -> MaterializationLimits:
+        return self.request.materialization_limits
+
+    @property
+    def root_input_manifest_sha256(self) -> str:
+        return self.request.root_input_manifest_sha256(self.presentation_timeline_probe)
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            **self.request.canonical_payload(),
+            "presentation_timeline_probe_sha256": getattr(
+                self.presentation_timeline_probe, "canonical_hash"
+            ),
+            "root_input_manifest_sha256": self.root_input_manifest_sha256,
+        }
 
 @dataclass(frozen=True, slots=True)
 class PrepareTimedMediaEvidenceResult:
@@ -479,20 +578,21 @@ class PrepareTimedMediaEvidenceCommand:
         self,
         store: TimedMediaEvidenceStore,
         producer: TimedMediaEvidenceProducerPort,
-        authority_profile_resolver: TimedSpeechProfileResolver | None = None,
+        authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver,
     ) -> None:
+        if type(authority_profile_resolver) is not StoreAnchoredTimedSpeechProfileResolver:  # noqa: E721
+            raise TimedMediaEvidenceCommandError(
+                "timed-media evidence requires an explicit store-anchored timed speech resolver"
+            )
         self._store = store
         self._producer = producer
-        self._authority_profile_resolver = (
-            StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT)
-            if authority_profile_resolver is None
-            else authority_profile_resolver
-        )
+        self._authority_profile_resolver = authority_profile_resolver
 
     def execute(
         self,
         request: PrepareTimedMediaEvidenceRequest,
     ) -> PrepareTimedMediaEvidenceResult:
+        resolved_request = self._resolve_committed_source_episode(request)
         claimed = self._store.claim_command(
             CommandClaim(
                 request.job,
@@ -502,7 +602,7 @@ class PrepareTimedMediaEvidenceCommand:
                     {
                         "authority_registry_set_sha256": self._authority_profile_resolver.snapshot.registry_set_sha256,
                         "authority_profile_key": self._authority_profile_resolver.snapshot.enabled_profile.value,
-                        "request": request.canonical_payload(),
+                        "request": resolved_request.canonical_payload(),
                     }
                 ),
             )
@@ -513,22 +613,22 @@ class PrepareTimedMediaEvidenceCommand:
         try:
             resolved_profile = self._read_timed_speech_profile_registry()
             if (
-                request.source_blob.byte_length
-                > request.materialization_limits.effective_max_source_bytes
+                resolved_request.source_blob.byte_length
+                > resolved_request.materialization_limits.effective_max_source_bytes
             ):
                 raise TimedMediaEvidenceProducerError(
                     "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
                     "committed source exceeds the frozen effective source-byte limit",
                 )
             source = self._store.materialize_immutable_blob(
-                request.job,
-                request.source_blob,
-                request.materialization_limits,
+                resolved_request.job,
+                resolved_request.source_blob,
+                resolved_request.materialization_limits,
             )
             busy_attempts = 0
             while True:
                 try:
-                    produced = self._producer.prepare(request, source)
+                    produced = self._producer.prepare(resolved_request, source)
                     break
                 except TimedMediaEvidenceProducerError as error:
                     if (
@@ -538,10 +638,10 @@ class PrepareTimedMediaEvidenceCommand:
                         raise
                     busy_attempts += 1
                     time.sleep(TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS)
-            self._validate_produced(request, produced)
-            plans, candidates = self._close_candidates(request, produced)
+            self._validate_produced(resolved_request, produced)
+            plans, candidates = self._close_candidates(resolved_request, produced)
             artifacts = self._persist_artifacts(
-                request, produced, plans, candidates, resolved_profile
+                resolved_request, produced, plans, candidates, resolved_profile
             )
             source.close()
             source = None
@@ -578,6 +678,75 @@ class PrepareTimedMediaEvidenceCommand:
             if source is not None:
                 source.close()
 
+    def _resolve_committed_source_episode(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+    ) -> ResolvedPrepareTimedMediaEvidenceRequest:
+        """Reread the immutable source member before claiming detector work."""
+
+        try:
+            persisted = self._store.read_whole_series_source_manifest(
+                request.job,
+                request.source_manifest_artifact_set_id,
+            )
+            if (
+                persisted.reference != request.source_manifest_reference
+                or persisted.receipt_id != request.source_manifest_receipt_id
+                or persisted.artifact_set_id != request.source_manifest_artifact_set_id
+                or persisted.command_slot_id != request.source_manifest_command_slot_id
+                or persisted.source_job != request.job
+            ):
+                raise TimedMediaEvidenceCommandError(
+                    "committed source manifest member does not match the requested immutable handle"
+                )
+            decoded = decode_source_manifest(persisted.payload_json, persisted.proxy_blobs)
+            episode = decoded.episodes[request.episode_index]
+            probe = episode.media_probe.presentation_timeline_probe
+            if probe is None:
+                raise TimedMediaEvidenceCommandError(
+                    "V2 preflight requires persisted source presentation timeline facts"
+                )
+            if (
+                episode.proxy_blob.object_id != request.source_blob.object_id
+                or episode.proxy_blob.content_hash != request.source_blob.content_hash
+                or episode.proxy_blob.byte_length != request.source_blob.byte_length
+                or episode.proxy_blob.media_type != request.source_blob.media_type
+                or episode.manifest != request.window_manifest
+                or episode.manifest.frame_pts_index_set != request.frame_pts_index
+                or episode.media_probe.audio_sample_boundaries != request.audio_sample_boundaries
+                or episode.media_probe.frame_detector_sha256 != request.frame_detector_sha256
+                or episode.media_probe.audio_detector_sha256 != request.audio_detector_sha256
+            ):
+                raise TimedMediaEvidenceCommandError(
+                    "requested source episode facts do not match the committed source manifest"
+                )
+            facts = probe
+            if (
+                facts.source_id != request.window_manifest.source_id
+                or facts.source_sha256 != request.source_blob.content_hash
+                or facts.source_blob_content_hash != request.source_blob.content_hash
+                or facts.source_blob_byte_length != request.source_blob.byte_length
+                or facts.source_blob_media_type != request.source_blob.media_type
+                or facts.frame_pts_index_set_sha256 != request.frame_pts_index.canonical_hash
+                or facts.audio_sample_boundary_set_sha256
+                != request.audio_sample_boundaries.canonical_hash
+                or facts.window_manifest_sha256 != request.window_manifest.canonical_hash
+            ):
+                raise TimedMediaEvidenceCommandError(
+                    "persisted source presentation facts do not close request identities"
+                )
+            return ResolvedPrepareTimedMediaEvidenceRequest(request, facts)
+        except IndexError as error:
+            raise TimedMediaEvidenceCommandError(
+                "requested source episode is absent from the committed source manifest"
+            ) from error
+        except TimedMediaEvidenceCommandError:
+            raise
+        except (SourceManifestDecodeError, StoreValidationError, ValueError, TypeError) as error:
+            raise TimedMediaEvidenceCommandError(
+                "committed source manifest is unavailable or invalid for V2 preflight"
+            ) from error
+
     def _read_timed_speech_profile_registry(
         self,
     ) -> BootstrappedTimedSpeechProfile:
@@ -592,7 +761,7 @@ class PrepareTimedMediaEvidenceCommand:
 
     @staticmethod
     def _validate_produced(
-        request: PrepareTimedMediaEvidenceRequest,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
         produced: ProducedTimedMediaEvidence,
     ) -> None:
         if type(produced) is not ProducedTimedMediaEvidence:  # noqa: E721
@@ -655,7 +824,7 @@ class PrepareTimedMediaEvidenceCommand:
 
     @staticmethod
     def _close_candidates(
-        request: PrepareTimedMediaEvidenceRequest,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
         produced: ProducedTimedMediaEvidence,
     ) -> tuple[tuple[CandidateEvidenceWindowPlan, ...], tuple[CandidateTimedEvidenceSet, ...]]:
         root = produced.root_bundle
@@ -710,7 +879,7 @@ class PrepareTimedMediaEvidenceCommand:
 
     def _persist_artifacts(
         self,
-        request: PrepareTimedMediaEvidenceRequest,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
         produced: ProducedTimedMediaEvidence,
         plans: tuple[CandidateEvidenceWindowPlan, ...],
         candidates: tuple[CandidateTimedEvidenceSet, ...],
@@ -948,7 +1117,7 @@ def _physical(tick: int, context: object) -> Fraction:
 
 
 def _artifact(
-    request: PrepareTimedMediaEvidenceRequest | _BatchArtifactRequest,
+    request: ResolvedPrepareTimedMediaEvidenceRequest | _BatchArtifactRequest,
     artifact_type: str,
     logical_id: str,
     payload: object,

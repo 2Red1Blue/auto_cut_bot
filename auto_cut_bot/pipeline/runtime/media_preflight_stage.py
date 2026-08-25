@@ -21,6 +21,9 @@ from autocut_kernel.pipeline import (
     TimedMediaEvidenceProducerError,
     TimedMediaEvidenceStore,
 )
+from autocut_kernel.pipeline.prepare_timed_media_evidence_command import (
+    ResolvedPrepareTimedMediaEvidenceRequest,
+)
 from autocut_kernel.registry import (
     StoreAnchoredTimedSpeechProfileResolver,
 )
@@ -90,7 +93,7 @@ class _ClaimOwnedLocalProducer:
 
     def prepare(
         self,
-        request: PrepareTimedMediaEvidenceRequest,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
         source: VerifiedMaterializedBlob,
     ) -> ProducedTimedMediaEvidence:
         if source.reference != request.source_blob:
@@ -303,7 +306,10 @@ class MediaPreflightPipelineStage:
                     artifact_scope=canonical_recipe_scope(job),
                     artifact_revision=_ARTIFACT_REVISION,
                     source_blob=episode.proxy_blob,
-                    source_manifest_sha256=source_bundle.artifact_reference.content_hash,
+                    source_manifest_reference=source_bundle.artifact_reference,
+                    source_manifest_receipt_id=source_bundle.receipt_id,
+                    source_manifest_artifact_set_id=source_bundle.artifact_set_id,
+                    source_manifest_command_slot_id=source_bundle.command_slot_id,
                     source_provenance_sha256=source_bundle.canonical_hash,
                     window_manifest=episode.manifest,
                     semantic_pack=persisted.semantic_pack,
