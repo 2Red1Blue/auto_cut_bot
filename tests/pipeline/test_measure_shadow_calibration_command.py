@@ -1,25 +1,41 @@
 from __future__ import annotations
 
+import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import UUID, uuid4
 
-import pytest
 from autocut_kernel.media import (
+    SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE,
+    SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA,
     CalibrationAnchor,
     CalibrationAnchorMatch,
+    CalibrationMeasurementSummary,
     CalibrationObservation,
     CalibrationProducer,
+    ProducerCalibrationMeasurement,
+    ShadowCalibrationAsrObservation,
+    ShadowCalibrationAudioClock,
+    ShadowCalibrationContainer,
+    ShadowCalibrationInvocation,
+    ShadowCalibrationPolicies,
+    ShadowCalibrationProducerIdentity,
+    ShadowCalibrationProjection,
+    ShadowCalibrationRawBlob,
+    ShadowCalibrationRawContext,
+    ShadowCalibrationRequestMapping,
+    ShadowCalibrationSource,
+    ShadowCalibrationSourceByteLimits,
+    ShadowCalibrationTranscriptCapability,
+    ShadowCalibrationWordGapSegment,
+    TickRange,
     TimeBase,
 )
-from autocut_kernel.media.types import TickRange
 from autocut_kernel.pipeline import (
     MeasureShadowCalibrationCommand,
     MeasureShadowCalibrationRequest,
     ShadowCalibrationCorpusMember,
-    ShadowCalibrationCoverage,
     ShadowCalibrationInputs,
-    ShadowCalibrationNativeResponseMediaType,
     ShadowCalibrationPortResult,
 )
 from autocut_kernel.store import (
@@ -31,83 +47,292 @@ from autocut_kernel.store import (
     Job,
 )
 
-HASH_A = "sha256:" + "a" * 64
-HASH_B = "sha256:" + "b" * 64
-HASH_C = "sha256:" + "c" * 64
-HASH_D = "sha256:" + "d" * 64
-HASH_E = "sha256:" + "e" * 64
-HASH_F = "sha256:" + "f" * 64
+
+def _sha(number: int) -> str:
+    return f"sha256:{number:064x}"
+
+
 TIME_BASE = TimeBase(1, 1_000)
-CLOCK_ID = "shadow-source-audio-clock"
+CLOCK = ShadowCalibrationAudioClock("shadow-source-audio-clock", TIME_BASE, 0, 1_000)
+SOURCE = ShadowCalibrationSource(
+    "corpus-0001",
+    _sha(1),
+    _sha(10),
+    "0f02e85b-d8c6-4d1b-a86b-3dc0f64d2f34",
+    _sha(1),
+    4_096,
+    "video/mp4",
+)
+SOURCE_LIMITS = ShadowCalibrationSourceByteLimits(8_192, 4_096, 4_096)
+CONTAINER = ShadowCalibrationContainer("video/mp4", ".mp4")
+POLICIES = ShadowCalibrationPolicies(_sha(2), _sha(3), _sha(4), 100, 50)
+CAPABILITY = ShadowCalibrationTranscriptCapability(
+    "sensevoice_word_guard_v1",
+    "complete",
+    "utterance_gap_protected_range",
+    "not_applicable",
+    "complete",
+    "required",
+)
+ASR_IDENTITY = ShadowCalibrationProducerIdentity(
+    CalibrationProducer.ASR,
+    "sensevoice-shadow",
+    "1.0.0",
+    _sha(5),
+    _sha(6),
+    _sha(7),
+    "iic/SenseVoiceSmall",
+    "main",
+    _sha(8),
+    "sensevoice-word-timestamp",
+    _sha(9),
+)
+VAD_IDENTITY = ShadowCalibrationProducerIdentity(
+    CalibrationProducer.VAD,
+    "fsmn-shadow",
+    "1.0.0",
+    _sha(5),
+    _sha(6),
+    _sha(7),
+    "iic/fsmn-vad",
+    "main",
+    _sha(11),
+    "fsmn-vad-direct",
+    _sha(9),
+)
+NATIVE_IDENTITY = _sha(12)
 
 
 def _inputs() -> ShadowCalibrationInputs:
     return ShadowCalibrationInputs(
-        HASH_A,
-        HASH_B,
-        HASH_C,
-        HASH_D,
-        HASH_E,
-        HASH_F,
-        HASH_A,
-        HASH_B,
-        "sensevoice-shadow",
-        "fsmn-shadow",
-        CLOCK_ID,
+        _sha(20),
+        _sha(21),
+        _sha(22),
+        NATIVE_IDENTITY,
+        POLICIES.word_gap_policy_sha256,
+        POLICIES.vad_merge_policy_sha256,
+        _sha(23),
+        _sha(24),
+        ASR_IDENTITY.producer_id,
+        VAD_IDENTITY.producer_id,
+        CLOCK.clock_id,
         TIME_BASE,
     )
 
 
-def _anchor(
-    producer: CalibrationProducer,
-    producer_id: str,
-    start: int,
-    end: int,
-) -> CalibrationAnchor:
-    return CalibrationAnchor(f"{producer.value}-anchor", producer, producer_id, CLOCK_ID, TIME_BASE, TickRange(start, end))
-
-
-def _request() -> MeasureShadowCalibrationRequest:
-    inputs = _inputs()
-    return MeasureShadowCalibrationRequest(
-        inputs,
+def _anchors() -> tuple[tuple[CalibrationAnchor, ...], tuple[CalibrationAnchor, ...]]:
+    return (
         (
-            ShadowCalibrationCorpusMember(
-                HASH_D,
-                HASH_E,
-                (_anchor(CalibrationProducer.ASR, inputs.asr_producer_id, 10, 20),),
-                (_anchor(CalibrationProducer.VAD, inputs.vad_producer_id, 30, 40),),
+            CalibrationAnchor(
+                "asr-anchor-0",
+                CalibrationProducer.ASR,
+                ASR_IDENTITY.producer_id,
+                CLOCK.clock_id,
+                TIME_BASE,
+                TickRange(101, 220),
+            ),
+            CalibrationAnchor(
+                "asr-anchor-1",
+                CalibrationProducer.ASR,
+                ASR_IDENTITY.producer_id,
+                CLOCK.clock_id,
+                TIME_BASE,
+                TickRange(400, 561),
+            ),
+        ),
+        (
+            CalibrationAnchor(
+                "vad-anchor-0",
+                CalibrationProducer.VAD,
+                VAD_IDENTITY.producer_id,
+                CLOCK.clock_id,
+                TIME_BASE,
+                TickRange(81, 600),
             ),
         ),
     )
 
 
-def _match(anchor: CalibrationAnchor, start: int, end: int) -> CalibrationAnchorMatch:
-    inference = "sensevoice-word-timestamp" if anchor.producer is CalibrationProducer.ASR else "fsmn-vad-direct"
-    return CalibrationAnchorMatch(
-        anchor,
-        CalibrationObservation(
-            f"{anchor.anchor_id}-observation",
-            anchor.producer,
-            anchor.producer_id,
-            inference,
-            anchor.clock_id,
-            anchor.time_base,
-            TickRange(start, end),
+def _context() -> ShadowCalibrationRawContext:
+    asr, vad = _anchors()
+    return ShadowCalibrationRawContext(
+        SOURCE,
+        SOURCE_LIMITS,
+        CONTAINER,
+        CLOCK,
+        POLICIES,
+        NATIVE_IDENTITY,
+        CAPABILITY,
+        ASR_IDENTITY,
+        VAD_IDENTITY,
+        asr,
+        vad,
+    )
+
+
+def _invocation() -> ShadowCalibrationInvocation:
+    mapping = ShadowCalibrationRequestMapping(
+        SOURCE,
+        SOURCE_LIMITS,
+        CONTAINER,
+        CLOCK,
+        CLOCK.full_range,
+        NATIVE_IDENTITY,
+        32_768,
+        CAPABILITY,
+        POLICIES.timed_speech_policy_sha256,
+        POLICIES.word_gap_policy_sha256,
+        POLICIES.vad_merge_policy_sha256,
+        POLICIES.word_gap_ms,
+        POLICIES.vad_merge_gap_ms,
+        (ASR_IDENTITY, VAD_IDENTITY),
+    )
+    return ShadowCalibrationInvocation(
+        SOURCE.corpus_member_reference_sha256, mapping.sha256, mapping, mapping.sha256
+    )
+
+
+def _request() -> MeasureShadowCalibrationRequest:
+    return MeasureShadowCalibrationRequest(
+        _inputs(),
+        (
+            ShadowCalibrationCorpusMember(
+                SOURCE.corpus_member_reference_sha256, _sha(25), _context(), _invocation()
+            ),
         ),
     )
 
 
-def _complete_result(request: MeasureShadowCalibrationRequest) -> ShadowCalibrationPortResult:
-    member = request.corpus_members[0]
+def _observation(
+    identifier: str, producer: CalibrationProducer, producer_id: str, kind: str, interval: TickRange
+) -> CalibrationObservation:
+    return CalibrationObservation(
+        identifier, producer, producer_id, kind, CLOCK.clock_id, TIME_BASE, interval
+    )
+
+
+def _measurement(
+    producer: CalibrationProducer,
+    producer_id: str,
+    kind: str,
+    anchors: tuple[CalibrationAnchor, ...],
+    observations: tuple[CalibrationObservation, ...],
+) -> ProducerCalibrationMeasurement:
+    matches = tuple(
+        CalibrationAnchorMatch(anchor, observation)
+        for anchor, observation in zip(anchors, observations, strict=True)
+    )
+    return ProducerCalibrationMeasurement(
+        producer,
+        producer_id,
+        kind,
+        CLOCK.clock_id,
+        TIME_BASE,
+        matches,
+        max(match.absolute_tick for match in matches),
+    )
+
+
+def _projection() -> ShadowCalibrationProjection:
+    asr_anchors, vad_anchors = _anchors()
+    asr = (
+        ShadowCalibrationAsrObservation(
+            _observation(
+                "asr-word-00000000",
+                CalibrationProducer.ASR,
+                ASR_IDENTITY.producer_id,
+                "sensevoice-word-timestamp",
+                TickRange(100, 220),
+            ),
+            "a",
+        ),
+        ShadowCalibrationAsrObservation(
+            _observation(
+                "asr-word-00000001",
+                CalibrationProducer.ASR,
+                ASR_IDENTITY.producer_id,
+                "sensevoice-word-timestamp",
+                TickRange(400, 560),
+            ),
+            "b",
+        ),
+    )
+    vad = (
+        _observation(
+            "vad-segment-00000000",
+            CalibrationProducer.VAD,
+            VAD_IDENTITY.producer_id,
+            "fsmn-vad-direct",
+            TickRange(80, 600),
+        ),
+    )
+    return ShadowCalibrationProjection(
+        NATIVE_IDENTITY,
+        _invocation().request_identity_sha256,
+        asr,
+        (
+            ShadowCalibrationWordGapSegment("asr-segment-00000000", "a", TickRange(100, 220)),
+            ShadowCalibrationWordGapSegment("asr-segment-00000001", "b", TickRange(400, 560)),
+        ),
+        vad,
+        CalibrationMeasurementSummary(
+            _measurement(
+                CalibrationProducer.ASR,
+                ASR_IDENTITY.producer_id,
+                "sensevoice-word-timestamp",
+                asr_anchors,
+                tuple(item.observation for item in asr),
+            ),
+            _measurement(
+                CalibrationProducer.VAD,
+                VAD_IDENTITY.producer_id,
+                "fsmn-vad-direct",
+                vad_anchors,
+                vad,
+            ),
+        ),
+    )
+
+
+def _raw() -> bytes:
+    invocation = _invocation()
+    response = {
+        "schema_version": SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA,
+        "request_identity_sha256": invocation.request_identity_sha256,
+        "source": SOURCE.to_response_mapping(),
+        "audio_clock": CLOCK.to_mapping(),
+        "requested_range": {"in_tick": 0, "out_tick": 1_000},
+        "timed_speech_policy_sha256": POLICIES.timed_speech_policy_sha256,
+        "word_gap_policy_sha256": POLICIES.word_gap_policy_sha256,
+        "vad_merge_policy_sha256": POLICIES.vad_merge_policy_sha256,
+        "native_profile_identity_sha256": NATIVE_IDENTITY,
+        "producer_identities": [ASR_IDENTITY.to_mapping(), VAD_IDENTITY.to_mapping()],
+        "asr_native_output": [
+            {"text": "ab", "words": ["a", "b"], "timestamp": [[100, 220], [400, 560]]}
+        ],
+        "vad_native_output": [{"value": [[80, 260], [300, 600]]}],
+    }
+    return json.dumps(response, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _blob(raw: bytes | None = None) -> ShadowCalibrationRawBlob:
+    material = _raw() if raw is None else raw
+    return ShadowCalibrationRawBlob(
+        material,
+        SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE,
+        len(material),
+        "sha256:" + hashlib.sha256(material).hexdigest(),
+    )
+
+
+def _result(
+    *,
+    invocation: ShadowCalibrationInvocation | None = None,
+    raw_blob: ShadowCalibrationRawBlob | None = None,
+    projection: ShadowCalibrationProjection | None = None,
+) -> ShadowCalibrationPortResult:
     return ShadowCalibrationPortResult(
-        member.corpus_member_reference_sha256,
-        b'{"native":"response"}',
-        ShadowCalibrationNativeResponseMediaType.JSON,
-        request.shadow_inputs.native_port_identity_sha256,
-        ShadowCalibrationCoverage.COMPLETE,
-        (_match(member.asr_anchors[0], 9, 20),),
-        (_match(member.vad_anchors[0], 31, 40),),
+        invocation or _invocation(), raw_blob or _blob(), projection or _projection()
     )
 
 
@@ -127,12 +352,7 @@ class _Store:
         return CommandOutcome(self.slot_id, "running", is_fresh_claim=True)
 
     def put_immutable_blob(
-        self,
-        job: Job,
-        *,
-        content: bytes,
-        content_hash: str,
-        media_type: str,
+        self, job: Job, *, content: bytes, content_hash: str, media_type: str
     ) -> BlobRef:
         blob = BlobRef(uuid4(), content_hash, len(content), media_type)
         self.blobs.append(blob)
@@ -155,134 +375,120 @@ class _Port:
     calls: int = 0
 
     def measure(
-        self,
-        request: MeasureShadowCalibrationRequest,
-        member: ShadowCalibrationCorpusMember,
+        self, request: MeasureShadowCalibrationRequest, member: ShadowCalibrationCorpusMember
     ) -> ShadowCalibrationPortResult:
         self.calls += 1
         return self.result
 
 
-def test_success_commits_exactly_two_ordered_non_authority_measurement_artifacts() -> None:
-    request = _request()
-    store = _Store()
-    port = _Port(_complete_result(request))
+def _execute(result: ShadowCalibrationPortResult) -> tuple[CommandOutcome, _Store, _Port]:
+    request, store, port = _request(), _Store(), _Port(result)
+    return MeasureShadowCalibrationCommand(store, port).execute(request), store, port
+
+
+def test_decoder_verified_raw_evidence_commits_exactly_two_ordered_non_authority_artifacts() -> (
+    None
+):
+    request, store, port = _request(), _Store(), _Port(_result())
 
     outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
 
     assert outcome.state == "succeeded"
     assert port.calls == 1
-    assert not store.rejections
     assert len(store.blobs) == 1
     success = store.successes[0]
     assert [item.artifact_type for item in success.artifacts] == [
         "calibration_measurement_manifest",
         "calibration_measurement_results",
     ]
-    assert [item.logical_id for item in success.artifacts] == ["measurement-manifest", "measurement-results"]
-    assert all(item.revision == 1 for item in success.artifacts)
-    assert all(item.scope.namespace != "autocut_authority" for item in success.artifacts)
+    assert [item.logical_id for item in success.artifacts] == [
+        "measurement-manifest",
+        "measurement-results",
+    ]
+    assert all(
+        item.revision == 1 and item.scope.namespace != "autocut_authority"
+        for item in success.artifacts
+    )
     manifest, results = (json.loads(item.payload_json) for item in success.artifacts)
-    assert manifest["measurement_request_sha256"] == request.request_hash
-    assert manifest["native_response_blobs"][0]["native_response_blob"]["content_hash"] == store.blobs[0].content_hash
-    assert results["measurement_manifest_sha256"] == success.artifacts[0].content_hash
-    assert results["members"][0]["native_response_blob"]["content_hash"] == store.blobs[0].content_hash
-
-
-@pytest.mark.parametrize(
-    "coverage",
-    (ShadowCalibrationCoverage.PARTIAL, ShadowCalibrationCoverage.INDETERMINATE),
-)
-def test_partial_or_indeterminate_evidence_is_terminal_denial_without_partial_artifacts(
-    coverage: ShadowCalibrationCoverage,
-) -> None:
-    request = _request()
-    partial = _complete_result(request)
-    partial = ShadowCalibrationPortResult(
-        partial.corpus_member_reference_sha256,
-        partial.raw_native_response,
-        partial.raw_native_response_media_type,
-        partial.reported_native_identity_sha256,
-        coverage,
-        partial.asr_matches,
-        partial.vad_matches,
+    assert (
+        manifest["native_invocations"][0]["native_invocation"]["request_mapping_sha256"]
+        == _invocation().request_mapping_sha256
     )
-    store = _Store()
+    assert (
+        manifest["native_invocations"][0]["native_response_blob"]["content_hash"]
+        == store.blobs[0].content_hash
+    )
+    projection = results["members"][0]["projection"]
+    assert projection["asr_observations"][0]["text"] == "a"
+    assert projection["word_gap_segments"] == [
+        {
+            "observed_range": {"in_tick": 100, "out_tick": 220},
+            "segment_id": "asr-segment-00000000",
+            "text": "a",
+        },
+        {
+            "observed_range": {"in_tick": 400, "out_tick": 560},
+            "segment_id": "asr-segment-00000001",
+            "text": "b",
+        },
+    ]
 
-    outcome = MeasureShadowCalibrationCommand(store, _Port(partial)).execute(request)
+
+def test_altered_port_projection_is_denied_before_any_blob_or_artifact_set() -> None:
+    projection = _projection()
+    altered = replace(
+        projection,
+        word_gap_segments=(
+            ShadowCalibrationWordGapSegment("asr-segment-00000000", "ab", TickRange(100, 560)),
+        ),
+    )
+
+    outcome, store, _ = _execute(_result(projection=altered))
 
     assert outcome.state == "denied"
-    assert not store.successes
     assert store.rejections[0].failure_code == "SHADOW_CALIBRATION_INVALID"
+    assert not store.blobs and not store.successes
 
 
-def test_anchor_substitution_is_denied_without_partial_artifacts() -> None:
-    request = _request()
-    valid = _complete_result(request)
-    inputs = request.shadow_inputs
-    replacement_anchor = _anchor(CalibrationProducer.ASR, inputs.asr_producer_id, 11, 21)
-    substituted = ShadowCalibrationPortResult(
-        valid.corpus_member_reference_sha256,
-        valid.raw_native_response,
-        valid.raw_native_response_media_type,
-        valid.reported_native_identity_sha256,
-        ShadowCalibrationCoverage.COMPLETE,
-        (_match(replacement_anchor, 10, 21),),
-        valid.vad_matches,
-    )
-    store = _Store()
+def test_altered_raw_envelope_is_denied_before_any_blob_or_artifact_set() -> None:
+    payload = json.loads(_raw())
+    payload["asr_native_output"][0]["timestamp"][0] = [101, 220]
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
 
-    outcome = MeasureShadowCalibrationCommand(store, _Port(substituted)).execute(request)
+    outcome, store, _ = _execute(_result(raw_blob=_blob(raw)))
 
     assert outcome.state == "denied"
-    assert not store.successes
+    assert not store.blobs and not store.successes
 
 
-def test_native_identity_substitution_is_denied_before_raw_bytes_are_persisted() -> None:
-    request = _request()
-    valid = _complete_result(request)
-    substituted = ShadowCalibrationPortResult(
-        valid.corpus_member_reference_sha256,
-        valid.raw_native_response,
-        valid.raw_native_response_media_type,
-        HASH_A,
-        ShadowCalibrationCoverage.COMPLETE,
-        valid.asr_matches,
-        valid.vad_matches,
+def test_altered_port_invocation_is_denied_before_any_blob_or_artifact_set() -> None:
+    invocation = _invocation()
+    other_mapping = replace(invocation.request_mapping, max_response_bytes=32_769)
+    altered = ShadowCalibrationInvocation(
+        SOURCE.corpus_member_reference_sha256,
+        other_mapping.sha256,
+        other_mapping,
+        other_mapping.sha256,
     )
-    store = _Store()
 
-    outcome = MeasureShadowCalibrationCommand(store, _Port(substituted)).execute(request)
+    outcome, store, _ = _execute(_result(invocation=altered))
 
     assert outcome.state == "denied"
-    assert not store.successes
-    assert not store.blobs
+    assert not store.blobs and not store.successes
 
 
-class _UnexpectedPort:
-    def measure(
-        self,
-        request: MeasureShadowCalibrationRequest,
-        member: ShadowCalibrationCorpusMember,
-    ) -> ShadowCalibrationPortResult:
-        raise ValueError("sensitive native exception")
+def test_old_generic_raw_response_is_not_accepted_as_calibration_evidence() -> None:
+    generic = b'{"native":"response"}'
 
+    outcome, store, _ = _execute(_result(raw_blob=_blob(generic)))
 
-def test_unexpected_port_value_error_is_fixed_terminal_failure_without_sensitive_detail() -> None:
-    store = _Store()
-
-    outcome = MeasureShadowCalibrationCommand(store, _UnexpectedPort()).execute(_request())
-
-    assert outcome.state == "failed"
-    rejection = store.rejections[0]
-    assert rejection.failure_code == "SHADOW_CALIBRATION_MEASUREMENT_FAILED"
-    assert "sensitive" not in rejection.failure_detail_json
+    assert outcome.state == "denied"
+    assert store.rejections[0].failure_code == "SHADOW_CALIBRATION_INVALID"
+    assert not store.blobs and not store.successes
 
 
 def test_replay_returns_terminal_outcome_without_second_port_call_or_artifact_set() -> None:
-    request = _request()
-    store = _Store()
-    port = _Port(_complete_result(request))
+    request, store, port = _request(), _Store(), _Port(_result())
     command = MeasureShadowCalibrationCommand(store, port)
 
     first = command.execute(request)
