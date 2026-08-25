@@ -151,6 +151,16 @@ def test_post_claim_deterministic_validation_error_is_terminal_denial(
     assert store.commits == []
 
 
+@pytest.mark.parametrize("state", ("denied", "running"))
+def test_non_successful_bootstrap_replay_does_not_require_success_anchor(state: str) -> None:
+    store = _BootstrapStore()
+    store.outcome = CommandOutcome(uuid4(), state, is_fresh_claim=False)
+
+    result = BootstrapTimedSpeechProfileRegistryCommand(store).execute(_request())
+
+    assert result is store.outcome
+
+
 def test_verified_authority_context_only_bootstraps_its_exact_profile() -> None:
     context = VerifiedTimedSpeechAuthorityContext(_request().snapshot, _request().entry)
 

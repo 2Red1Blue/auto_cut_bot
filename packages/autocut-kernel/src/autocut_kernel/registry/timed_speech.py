@@ -277,7 +277,8 @@ class BootstrapTimedSpeechProfileRegistryCommand:
         if not claimed.is_fresh_claim:
             # Exact-reader validation makes replay fail closed if the durable
             # anchor has been removed or altered after the Receipt was written.
-            self._store.read_bootstrapped_timed_speech_profile(request.snapshot)
+            if claimed.state == "succeeded":
+                self._store.read_bootstrapped_timed_speech_profile(request.snapshot)
             return claimed
         try:
             artifact = request.artifact()
