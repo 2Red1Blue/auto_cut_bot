@@ -707,9 +707,9 @@ def test_audio_boundaries_reject_empty_frames_and_preserve_discontinuous_frames(
 
 def test_presentation_track_preserves_nonzero_vfr_tails_and_declared_gap() -> None:
     frames = (
-        source_probe._DecodedFrame(1_000, 1_010),
-        source_probe._DecodedFrame(1_010, 1_050),
-        source_probe._DecodedFrame(1_080, 1_087),
+        source_probe.DecodedFrame(1_000, 1_010),
+        source_probe.DecodedFrame(1_010, 1_050),
+        source_probe.DecodedFrame(1_080, 1_087),
     )
     track = source_probe._presentation_track(
         MediaKind.VIDEO,
@@ -736,8 +736,8 @@ def test_presentation_track_preserves_nonzero_vfr_tails_and_declared_gap() -> No
         1,
         TimeBase(1, 1_000),
         (
-            source_probe._DecodedFrame(1_000, 1_040),
-            source_probe._DecodedFrame(1_040, 1_095),
+            source_probe.DecodedFrame(1_000, 1_040),
+            source_probe.DecodedFrame(1_040, 1_095),
         ),
         "sha256:" + "b" * 64,
     )
@@ -1028,6 +1028,40 @@ def test_terminal_replay_rejects_rehashed_video_pts_equal_to_stream_end(
         first.outcome.artifact_set_id,
         tampered_prepared.to_mapping(),
     )
+
+    with pytest.raises(SourceManifestDecodeError):
+        command.execute(request)
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg and ffprobe are required",
+)
+def test_terminal_replay_rejects_rehashed_presentation_frame_boundary_tamper(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "videos"
+    root.mkdir()
+    _make_nonzero_media(root / "episode.mp4")
+    store = Store()
+    job = Job("presentation-boundary-tamper", "test")
+    request = PrepareWholeSeriesSourcesRequest(
+        job,
+        "prepare-v1",
+        ArtifactScope("pipeline", "job", job.job_key),
+        1,
+        _source_root(root.resolve()),
+    )
+    command = PrepareWholeSeriesSourcesCommand(
+        store,
+        builder=IdentitySourceWindowBuilder(sample_count=1),
+    )
+    first = command.execute(request)
+    assert first.outcome.artifact_set_id is not None
+    payload = json.loads(store.manifests[first.outcome.artifact_set_id].payload_json)
+    boundary = payload["episodes"][0]["media_probe"]["decoded_video_frame_boundaries"][0]
+    boundary["end_tick"] += 1
+    _install_recomputed_manifest_payload(store, first.outcome.artifact_set_id, payload)
 
     with pytest.raises(SourceManifestDecodeError):
         command.execute(request)

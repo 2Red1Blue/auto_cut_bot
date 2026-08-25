@@ -116,7 +116,7 @@ class SourceMediaToolError(RuntimeError):
 
 
 def _decoded_stream_range(
-    frames: tuple[_DecodedFrame, ...],
+    frames: tuple[DecodedFrame, ...],
     field_name: str,
 ) -> TickRange:
     if not frames:
@@ -131,6 +131,15 @@ def _presentation_stream_mapping(stream: dict[str, Any]) -> dict[str, object]:
         "start_pts": stream.get("start_pts"),
         "time_base": stream.get("time_base"),
     }
+
+
+def _frame_boundaries_mapping(
+    frames: tuple[DecodedFrame, ...],
+) -> list[dict[str, int]]:
+    return [
+        {"end_tick": frame.end_tick, "start_tick": frame.start_tick}
+        for frame in frames
+    ]
 
 
 def _presentation_interval(
@@ -152,12 +161,12 @@ def _presentation_track(
     media_kind: MediaKind,
     stream_index: int,
     time_base: TimeBase,
-    frames: tuple[_DecodedFrame, ...],
+    frames: tuple[DecodedFrame, ...],
     index_sha256: str,
 ) -> PresentationTrack:
     stream_range = _decoded_stream_range(frames, media_kind.value)
     segments: list[PresentationTrackSegment] = []
-    continuous: list[_DecodedFrame] = [frames[0]]
+    continuous: list[DecodedFrame] = [frames[0]]
     for frame in frames[1:]:
         previous = continuous[-1]
         if frame.start_tick == previous.end_tick:
@@ -228,7 +237,7 @@ def _presentation_track(
 
 
 @dataclass(frozen=True, slots=True)
-class _DecodedFrame:
+class DecodedFrame:
     start_tick: int
     end_tick: int
 
@@ -240,10 +249,10 @@ class PresentationTimelineProbeDraft:
     execution: PresentationProbeExecution
     video_stream_index: int
     video_time_base: TimeBase
-    video_frames: tuple[_DecodedFrame, ...]
+    video_frames: tuple[DecodedFrame, ...]
     audio_stream_index: int
     audio_time_base: TimeBase
-    audio_frames: tuple[_DecodedFrame, ...]
+    audio_frames: tuple[DecodedFrame, ...]
 
     def bind(
         self,
@@ -309,6 +318,8 @@ class SourceMediaProbe:
     frame_detector_sha256: str
     audio_detector_sha256: str
     presentation_timeline_probe: PresentationTimelineProbe | None = None
+    presentation_video_frame_boundaries: tuple[DecodedFrame, ...] = ()
+    presentation_audio_frame_boundaries: tuple[DecodedFrame, ...] = ()
     _presentation_timeline_draft: PresentationTimelineProbeDraft | None = field(
         default=None,
         repr=False,
@@ -339,6 +350,15 @@ class SourceMediaProbe:
             source_proxy_timeline_map_sha256=source_proxy_timeline_map_sha256,
             window_manifest_sha256=window_manifest_sha256,
         )
+        if (
+            self.presentation_video_frame_boundaries
+            != self._presentation_timeline_draft.video_frames
+            or self.presentation_audio_frame_boundaries
+            != self._presentation_timeline_draft.audio_frames
+        ):
+            raise SourceMediaEvidenceError(
+                "presentation frame boundaries do not close over the decoded probe"
+            )
         return replace(self, presentation_timeline_probe=facts)
 
     def to_mapping(self) -> dict[str, object]:
@@ -370,6 +390,19 @@ class SourceMediaProbe:
         }
         if self.presentation_timeline_probe is not None:
             result["presentation_timeline_probe"] = self.presentation_timeline_probe.to_mapping()
+            if (
+                not self.presentation_video_frame_boundaries
+                or not self.presentation_audio_frame_boundaries
+            ):
+                raise SourceMediaEvidenceError(
+                    "bound presentation timeline facts require decoded frame boundary evidence"
+                )
+            result["decoded_video_frame_boundaries"] = _frame_boundaries_mapping(
+                self.presentation_video_frame_boundaries
+            )
+            result["decoded_audio_frame_boundaries"] = _frame_boundaries_mapping(
+                self.presentation_audio_frame_boundaries
+            )
         elif self._presentation_timeline_draft is not None:
             raise SourceMediaEvidenceError(
                 "unbound presentation timeline facts cannot enter a source manifest"
@@ -507,6 +540,8 @@ class FFprobeSourceMediaPort:
                 tools=tool,
             ),
             _presentation_timeline_draft=draft,
+            presentation_video_frame_boundaries=video_frames,
+            presentation_audio_frame_boundaries=audio_frames,
         )
 
     def _tool_identity(self) -> tuple[str, str]:
@@ -544,7 +579,7 @@ class FFprobeSourceMediaPort:
         path: Path,
         source: SeriesSource,
         stream: dict[str, Any],
-    ) -> tuple[AudioSampleBoundarySet, tuple[_DecodedFrame, ...]]:
+    ) -> tuple[AudioSampleBoundarySet, tuple[DecodedFrame, ...]]:
         stream_index = _integer(stream.get("index"), "audio.index")
         time_base = _time_base(stream.get("time_base"), "audio.time_base")
         start = _integer(stream.get("start_pts"), "audio.start_pts")
@@ -614,7 +649,7 @@ class FFprobeSourceMediaPort:
         expected_media_kind: str,
         stream_index: int,
         field_name: str,
-    ) -> tuple[_DecodedFrame, ...]:
+    ) -> tuple[DecodedFrame, ...]:
         frames = self._json(
             [
                 self._executable,
@@ -634,7 +669,7 @@ class FFprobeSourceMediaPort:
         decoded_frames = _objects(frames.get("frames"), f"{field_name}.frames")
         if not decoded_frames:
             raise SourceMediaEvidenceError(f"decoded {field_name} frame evidence must not be empty")
-        result: list[_DecodedFrame] = []
+        result: list[DecodedFrame] = []
         previous_start: int | None = None
         previous_end: int | None = None
         for position, frame in enumerate(decoded_frames):
@@ -667,7 +702,7 @@ class FFprobeSourceMediaPort:
                 )
             if previous_end is not None and frame_start < previous_end:
                 raise SourceMediaEvidenceError(f"decoded {field_name} frame boundaries overlap")
-            result.append(_DecodedFrame(frame_start, frame_end))
+            result.append(DecodedFrame(frame_start, frame_end))
             previous_start, previous_end = frame_start, frame_end
         return tuple(result)
 

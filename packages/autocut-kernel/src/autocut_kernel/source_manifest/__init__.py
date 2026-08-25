@@ -237,6 +237,8 @@ class DecodedMediaProbe:
     frame_detector_sha256: str
     audio_detector_sha256: str
     presentation_timeline_probe: PresentationTimelineProbe | None = None
+    presentation_video_frame_boundaries: tuple[tuple[int, int], ...] = ()
+    presentation_audio_frame_boundaries: tuple[tuple[int, int], ...] = ()
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.frame_detector_sha256, "frame_detector_sha256")
@@ -271,6 +273,12 @@ class DecodedMediaProbe:
         }
         if self.presentation_timeline_probe is not None:
             result["presentation_timeline_probe"] = self.presentation_timeline_probe.to_mapping()
+            result["decoded_video_frame_boundaries"] = _frame_boundaries_mapping(
+                self.presentation_video_frame_boundaries
+            )
+            result["decoded_audio_frame_boundaries"] = _frame_boundaries_mapping(
+                self.presentation_audio_frame_boundaries
+            )
         return result
 
 
@@ -499,14 +507,20 @@ def _decode_probe(
         value,
         {
             "audio_sample_boundaries",
+            "decoded_audio_frame_boundaries",
             "decoded_video_frame_pts",
+            "decoded_video_frame_boundaries",
             "ffprobe",
             "source",
             "video_stream",
             "presentation_timeline_probe",
         },
         "media_probe",
-        optional={"presentation_timeline_probe"},
+        optional={
+            "presentation_timeline_probe",
+            "decoded_video_frame_boundaries",
+            "decoded_audio_frame_boundaries",
+        },
     )
     if raw["source"] != source.to_mapping():
         raise ValueError("media probe source identity is inconsistent")
@@ -591,6 +605,15 @@ def _decode_probe(
         )
     ):
         raise ValueError("audio evidence is not bound to the episode source clock")
+    has_presentation_facts = "presentation_timeline_probe" in raw
+    has_boundaries = {
+        "decoded_video_frame_boundaries",
+        "decoded_audio_frame_boundaries",
+    } <= set(raw)
+    if has_presentation_facts != has_boundaries:
+        raise ValueError(
+            "presentation timeline facts require complete decoded frame boundary evidence"
+        )
     result = DecodedMediaProbe(
         source,
         video_probe,
@@ -598,11 +621,19 @@ def _decode_probe(
         audio,
         _text_value(tool["frame_detector_sha256"], "ffprobe.frame_detector_sha256"),
         _text_value(tool["audio_detector_sha256"], "ffprobe.audio_detector_sha256"),
-        (
-            _decode_presentation_timeline_probe(raw["presentation_timeline_probe"])
-            if "presentation_timeline_probe" in raw
-            else None
-        ),
+        _decode_presentation_timeline_probe(raw["presentation_timeline_probe"])
+        if has_presentation_facts
+        else None,
+        _decode_frame_boundaries(
+            raw["decoded_video_frame_boundaries"], "decoded_video_frame_boundaries"
+        )
+        if has_presentation_facts
+        else (),
+        _decode_frame_boundaries(
+            raw["decoded_audio_frame_boundaries"], "decoded_audio_frame_boundaries"
+        )
+        if has_presentation_facts
+        else (),
     )
     if result.to_mapping() != raw:
         raise ValueError("media probe is not canonical")
@@ -1005,6 +1036,101 @@ def _decode_tick_range(value: object, field_name: str) -> TickRange:
     )
 
 
+def _decode_frame_boundaries(value: object, field_name: str) -> tuple[tuple[int, int], ...]:
+    boundaries = tuple(
+        (
+            _int_value(raw["start_tick"], f"{field_name}.start_tick"),
+            _int_value(raw["end_tick"], f"{field_name}.end_tick"),
+        )
+        for raw in (
+            _closed_mapping(item, {"end_tick", "start_tick"}, field_name)
+            for item in _array(value, field_name)
+        )
+    )
+    if not boundaries:
+        raise ValueError(f"{field_name} must not be empty")
+    previous_start: int | None = None
+    previous_end: int | None = None
+    for start, end in boundaries:
+        if start >= end:
+            raise ValueError(f"{field_name} must contain non-empty boundaries")
+        if previous_start is not None and start <= previous_start:
+            raise ValueError(f"{field_name} starts must be strictly ordered")
+        if previous_end is not None and start < previous_end:
+            raise ValueError(f"{field_name} boundaries must not overlap")
+        previous_start, previous_end = start, end
+    return boundaries
+
+
+def _frame_boundaries_mapping(
+    boundaries: tuple[tuple[int, int], ...],
+) -> list[dict[str, int]]:
+    return [
+        {"end_tick": end, "start_tick": start}
+        for start, end in boundaries
+    ]
+
+
+def _expected_presentation_segments(
+    boundaries: tuple[tuple[int, int], ...],
+) -> tuple[tuple[TickRange, PresentationSegmentContinuity, str], ...]:
+    runs: list[tuple[TickRange, PresentationSegmentContinuity, str]] = []
+    continuous: list[tuple[int, int]] = [boundaries[0]]
+    for boundary in boundaries[1:]:
+        previous = continuous[-1]
+        if boundary[0] == previous[1]:
+            continuous.append(boundary)
+            continue
+        run_range = TickRange(continuous[0][0], continuous[-1][1])
+        runs.append(
+            (
+                run_range,
+                PresentationSegmentContinuity.CONTINUOUS_DECODED,
+                canonical_sha256(
+                    {
+                        "boundaries": [
+                            {"end_tick": end, "start_tick": start}
+                            for start, end in continuous
+                        ],
+                        "kind": "decoded-continuous-run-v2",
+                    }
+                ),
+            )
+        )
+        gap_range = TickRange(previous[1], boundary[0])
+        runs.append(
+            (
+                gap_range,
+                PresentationSegmentContinuity.DECLARED_GAP,
+                canonical_sha256(
+                    {
+                        "after_start_tick": boundary[0],
+                        "before_end_tick": previous[1],
+                        "kind": "decoded-boundary-gap-v2",
+                    }
+                ),
+            )
+        )
+        continuous = [boundary]
+    run_range = TickRange(continuous[0][0], continuous[-1][1])
+    runs.append(
+        (
+            run_range,
+            PresentationSegmentContinuity.CONTINUOUS_DECODED,
+            canonical_sha256(
+                {
+                    "boundaries": [
+                        {"end_tick": end, "start_tick": start}
+                        for start, end in continuous
+                    ],
+                    "kind": "decoded-continuous-run-v2",
+                }
+            ),
+        )
+    )
+    return tuple(runs)
+
+
 def _optional_hash(value: object, field_name: str) -> str | None:
     if value is None:
         return None
@@ -1040,6 +1166,33 @@ def _validate_presentation_timeline_probe(
         or facts.window_manifest_sha256 != manifest.canonical_hash
     ):
         raise ValueError("presentation timeline facts do not close over source manifest evidence")
+    video_boundaries = probe.presentation_video_frame_boundaries
+    audio_boundaries = probe.presentation_audio_frame_boundaries
+    if (
+        tuple(start for start, _ in video_boundaries) != probe.video_probe.pts_index.ticks
+        or video_boundaries[0][0] != probe.video_range.start_pts
+        or video_boundaries[-1][1] != probe.video_range.end_pts
+        or set(point.tick for point in probe.audio_sample_boundaries.points)
+        != {tick for boundary in audio_boundaries for tick in boundary}
+        or audio_boundaries[0][0] != probe.audio_sample_boundaries.context.origin_tick
+        or audio_boundaries[-1][1] != probe.audio_sample_boundaries.context.end_tick
+    ):
+        raise ValueError("presentation frame boundaries do not close over decoded source indexes")
+    for track, boundaries in (
+        (facts.video, video_boundaries),
+        (facts.audio, audio_boundaries),
+    ):
+        expected_segments = _expected_presentation_segments(boundaries)
+        actual_segments = tuple(
+            (
+                segment.stream_tick_range,
+                segment.continuity,
+                segment.decoded_boundary_sequence_sha256,
+            )
+            for segment in track.segments
+        )
+        if actual_segments != expected_segments:
+            raise ValueError("presentation track segments do not prove decoded frame boundaries")
 
 
 def _decode_blob(value: object) -> DecodedBlobRef:

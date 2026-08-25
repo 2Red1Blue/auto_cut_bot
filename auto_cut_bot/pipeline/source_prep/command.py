@@ -49,6 +49,7 @@ from autocut_kernel.vlm.window import ProxyTimelineMap
 from .census import snapshot_series_sources
 from .models import AuthorizedSeriesSourceRoot, SeriesCensusError, SeriesSourceCensus
 from .probe import (
+    DecodedFrame,
     FFprobeSourceMediaPort,
     SourceMediaProbe,
 )
@@ -658,6 +659,14 @@ def _decode_prepared_sources(
                 episode.media_probe.frame_detector_sha256,
                 episode.media_probe.audio_detector_sha256,
                 episode.media_probe.presentation_timeline_probe,
+                tuple(
+                    DecodedFrame(start, end)
+                    for start, end in episode.media_probe.presentation_video_frame_boundaries
+                ),
+                tuple(
+                    DecodedFrame(start, end)
+                    for start, end in episode.media_probe.presentation_audio_frame_boundaries
+                ),
             ),
             proxy_blob,
             episode.manifest,
