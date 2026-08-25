@@ -11,7 +11,7 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fcntl import LOCK_EX, LOCK_UN, flock
@@ -68,6 +68,7 @@ from .errors import (
     StoreValidationError,
 )
 from .models import (
+    SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     VLM_BATCH_FINALIZER_COMMAND_NAME,
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,
     VLM_BATCH_IDEMPOTENCY_PREFIX,
@@ -98,6 +99,15 @@ from .models import (
     PersistedVlmSemanticPack,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
+    ShadowMeasurementAttempt,
+    ShadowMeasurementAttemptState,
+    ShadowMeasurementMember,
+    ShadowMeasurementMemberLease,
+    ShadowMeasurementMemberState,
+    ShadowMeasurementPlan,
+    ShadowMeasurementRecoveryLease,
+    ShadowMeasurementRetryAuthorization,
+    ShadowMeasurementStagedResponse,
     SourceWindowIdentity,
     VerifiedMaterializedBlob,
     VlmBatchRequestPolicy,
@@ -136,6 +146,7 @@ _MATERIALIZATION_RESERVATION_DIRECTORY = ".autocut-media-reservations"
 _MATERIALIZATION_RESERVATION_LOCK = ".autocut-media-reservations.lock"
 _MATERIALIZATION_QUOTA_CONFIGURATION = ".autocut-media-quota-bytes"
 _MATERIALIZATION_DIRECTORY_PREFIX = ".autocut-media-"
+SHADOW_MEASUREMENT_LEASE_SECONDS = 60
 
 
 def validate_materialization_staging_root(root: Path) -> Path:
@@ -445,6 +456,123 @@ def _strict_json_object(value: str, field_name: str) -> dict[str, object]:
     if type(parsed) is not dict:  # noqa: E721
         raise StoreValidationError(f"{field_name} must contain a JSON object")
     return cast(dict[str, object], parsed)
+
+
+def _canonical_db_json(value: str) -> str:
+    """Normalize PostgreSQL jsonb text before handing it to strict model records."""
+
+    return json.dumps(
+        _strict_json_object(value, "PostgreSQL JSON"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _shadow_blob_mapping(reference: BlobRef) -> dict[str, object]:
+    return {
+        "byte_length": reference.byte_length,
+        "content_hash": reference.content_hash,
+        "media_type": reference.media_type,
+        "object_id": str(reference.object_id),
+    }
+
+
+def _shadow_artifact(
+    scope: ArtifactScope, artifact_type: str, logical_id: str, payload: Mapping[str, object]
+) -> ArtifactMember:
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return ArtifactMember(
+        artifact_type=artifact_type,
+        logical_id=logical_id,
+        revision=1,
+        scope=scope,
+        content_hash=canonical_payload_hash(payload_json),
+        payload_json=payload_json,
+    )
+
+
+def _shadow_artifact_set_hash(artifacts: tuple[ArtifactMember, ...]) -> str:
+    canonical_members = [
+        {
+            "artifact_type": artifact.artifact_type,
+            "content_hash": artifact.content_hash,
+            "logical_id": artifact.logical_id,
+            "payload_json": json.loads(artifact.payload_json),
+            "revision": artifact.revision,
+            "scope": {
+                "key": artifact.scope.key,
+                "kind": artifact.scope.kind,
+                "namespace": artifact.scope.namespace,
+            },
+        }
+        for artifact in artifacts
+    ]
+    encoded = json.dumps(
+        canonical_members, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _shadow_member_bound_aggregate(
+    members: tuple[ShadowMeasurementMember, ...], producer: str
+) -> dict[str, object]:
+    """Rebuild the command's member-bound summary from the staged projections."""
+
+    measurements: list[dict[str, object]] = []
+    for member in members:
+        if member.projection_json is None:
+            raise CommandStateError("shadow aggregate requires staged projections")
+        projection = _strict_json_object(member.projection_json, "shadow staged projection")
+        summary = projection.get("summary")
+        if not isinstance(summary, dict):
+            raise StoreValidationError("shadow staged projection summary is invalid")
+        summary_mapping = cast(dict[str, object], summary)
+        measurement = summary_mapping.get(producer)
+        if not isinstance(measurement, dict):
+            raise StoreValidationError("shadow staged projection producer summary is invalid")
+        measurements.append(cast(dict[str, object], measurement))
+    first = measurements[0]
+    required = {
+        "absolute_maximum_tick",
+        "clock_id",
+        "early_maximum_tick",
+        "inference_kind",
+        "late_maximum_tick",
+        "matches",
+        "producer",
+        "producer_id",
+        "time_base",
+    }
+    if not required.issubset(first):
+        raise StoreValidationError("shadow staged producer summary is incomplete")
+    for measurement in measurements:
+        if not required.issubset(measurement) or any(
+            measurement[name] != first[name]
+            for name in ("clock_id", "inference_kind", "producer", "producer_id", "time_base")
+        ):
+            raise StoreValidationError("shadow staged producer summaries drift")
+        if not isinstance(measurement["matches"], list) or any(
+            type(measurement[name]) is not int
+            for name in ("absolute_maximum_tick", "early_maximum_tick", "late_maximum_tick")
+        ):
+            raise StoreValidationError("shadow staged producer measurements are invalid")
+    return {
+        "aggregation": "member-bound-calibration-statistics-v1",
+        "absolute_maximum_tick": max(cast(int, item["absolute_maximum_tick"]) for item in measurements),
+        "clock_id": first["clock_id"],
+        "corpus_member_count": len(members),
+        "corpus_member_references": [member.corpus_member_reference_sha256 for member in members],
+        "early_maximum_tick": max(cast(int, item["early_maximum_tick"]) for item in measurements),
+        "eligible_anchor_count": sum(len(cast(list[object], item["matches"])) for item in measurements),
+        "inference_kind": first["inference_kind"],
+        "invalid_or_indeterminate_member_count": 0,
+        "late_maximum_tick": max(cast(int, item["late_maximum_tick"]) for item in measurements),
+        "matched_anchor_count": sum(len(cast(list[object], item["matches"])) for item in measurements),
+        "producer": first["producer"],
+        "producer_id": first["producer_id"],
+        "time_base": first["time_base"],
+    }
 
 
 def _source_manifest_blob_refs(payload_json: str) -> tuple[BlobRef, ...]:
@@ -966,6 +1094,10 @@ class PostgresRuntimeStore:
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         """Claim a non-reserved command through the generic command boundary."""
 
+        if claim.command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise CommandStateError(
+                "MeasureShadowCalibrationCommand@2.1.3 requires the explicit shadow owner API"
+            )
         if (
             claim.command_name == VLM_BATCH_FINALIZER_COMMAND_NAME
             or claim.idempotency_key.startswith(VLM_BATCH_IDEMPOTENCY_PREFIX)
@@ -1050,6 +1182,376 @@ class PostgresRuntimeStore:
         return self._transaction(operation)
 
     # ------------------------------------------------------------------
+    # shadow calibration measurement recovery owner
+    # ------------------------------------------------------------------
+
+    def claim_or_read_shadow_measurement_attempt(
+        self, claim: CommandClaim, plan: ShadowMeasurementPlan
+    ) -> ShadowMeasurementAttempt:
+        """Reserve or reread the one closed native-measurement recovery aggregate."""
+
+        self._require_shadow_plan_claim(claim, plan)
+        outcome = self._claim_command(claim)
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementAttempt:
+            job_id, slot_state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, outcome.command_slot_id
+            )
+            if (
+                command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
+                or request_hash != plan.claim.request_hash
+                or slot_state not in ("running", "succeeded")
+            ):
+                raise CommandStateError("shadow measurement slot is not owned by the recovery protocol")
+            existing = self._read_shadow_attempt_by_slot(cursor, outcome.command_slot_id)
+            if existing is not None:
+                return existing
+            if slot_state != "running":
+                raise CommandStateError("succeeded shadow command is missing its immutable attempt")
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.shadow_calibration_measurement_attempts
+                    (attempt_id, command_slot_id, job_id, plan_hash, attempt_ordinal,
+                     state, version, plan_json)
+                VALUES (%s, %s, %s, %s, 1, 'prepared', 0, %s::jsonb)
+                """,
+                (attempt_id, outcome.command_slot_id, job_id, plan.claim.request_hash, plan.canonical_plan_json),
+            )
+            for member in plan.members:
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.shadow_calibration_measurement_members
+                        (attempt_id, corpus_member_reference_sha256, member_ordinal,
+                         expected_anchor_reference_sha256, invocation_json, context_json, state, version)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, 'pending', 0)
+                    """,
+                    (
+                        attempt_id,
+                        member.corpus_member_reference_sha256,
+                        member.member_ordinal,
+                        member.expected_anchor_reference_sha256,
+                        member.invocation_json,
+                        member.context_json,
+                    ),
+                )
+            created = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if created is None:
+                raise RuntimeStoreError("shadow measurement attempt vanished after reservation")
+            return created
+
+        return self._transaction(operation)
+
+    def acquire_shadow_measurement_member_lease(
+        self, attempt_id: UUID, member_reference_sha256: str, *, expected_version: int
+    ) -> ShadowMeasurementMemberLease | None:
+        """CAS-acquire the short lease that records native invocation may begin."""
+
+        self._validate_uuid(attempt_id, "shadow attempt_id")
+        self._validate_sha256(member_reference_sha256, "shadow member reference")
+        self._validate_nonnegative_version(expected_version, "shadow member expected_version")
+        token = str(uuid4())
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=SHADOW_MEASUREMENT_LEASE_SECONDS)
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementMemberLease | None:
+            attempt = self._locked_shadow_attempt(cursor, attempt_id)
+            if attempt.state not in ("prepared", "collecting") or attempt.outcome.state != "running":
+                return None
+            member = self._locked_shadow_member(cursor, attempt_id, member_reference_sha256)
+            if member is None or member.version != expected_version or member.state != "pending":
+                return None
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_members
+                   SET state = 'invoking', lease_token = %s, lease_expires_at = %s, version = version + 1
+                 WHERE attempt_id = %s AND corpus_member_reference_sha256 = %s
+                   AND state = 'pending' AND version = %s
+                """,
+                (token, expires_at, attempt_id, member_reference_sha256, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self._transition_shadow_attempt(cursor, attempt, "collecting")
+            current = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow attempt vanished after member lease")
+            leased = next(item for item in current.members if item.corpus_member_reference_sha256 == member_reference_sha256)
+            return ShadowMeasurementMemberLease(leased, current.version, token)
+
+        return self._transaction(operation)
+
+    def stage_shadow_measurement_member_response(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        lease_token: str,
+        staged: ShadowMeasurementStagedResponse,
+    ) -> ShadowMeasurementAttempt:
+        """Atomically claim exact raw bytes and attach them to the leased member."""
+
+        self._validate_uuid(attempt_id, "shadow attempt_id")
+        self._validate_sha256(member_reference_sha256, "shadow member reference")
+        self._validate_nonnegative_version(expected_version, "shadow member expected_version")
+        if type(staged) is not ShadowMeasurementStagedResponse:  # noqa: E721
+            raise StoreValidationError("shadow stage requires exact staged response")
+        if type(lease_token) is not str or not lease_token.strip():  # noqa: E721
+            raise StoreValidationError("shadow stage lease_token is required")
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementAttempt:
+            attempt = self._locked_shadow_attempt(cursor, attempt_id)
+            member = self._locked_shadow_member(cursor, attempt_id, member_reference_sha256)
+            if member is None:
+                raise StoreValidationError("shadow stage member is unknown")
+            if member.state == "staged":
+                if (
+                    member.raw_blob is None
+                    or member.raw_blob.content_hash != staged.content_hash
+                    or member.raw_blob.byte_length != len(staged.raw_bytes)
+                    or member.raw_blob.media_type != staged.media_type
+                    or member.projection_json != staged.projection_json
+                ):
+                    raise IdempotencyConflictError("shadow staged member cannot be substituted")
+                return attempt
+            if member.state != "invoking" or member.version != expected_version:
+                raise CommandStateError("shadow stage member is stale or not invoking")
+            self._require_shadow_member_lease(member, lease_token, "stage")
+            reference = self._put_shadow_blob(cursor, attempt.job, staged)
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_members
+                   SET state = 'staged', lease_token = NULL, lease_expires_at = NULL,
+                       raw_blob_object_id = %s, raw_content_hash = %s, raw_byte_length = %s,
+                       raw_media_type = %s, projection_json = %s::jsonb, version = version + 1
+                 WHERE attempt_id = %s AND corpus_member_reference_sha256 = %s
+                   AND state = 'invoking' AND version = %s AND lease_token = %s
+                   AND lease_expires_at > transaction_timestamp()
+                """,
+                (
+                    reference.object_id, reference.content_hash, reference.byte_length, reference.media_type,
+                    staged.projection_json, attempt_id, member_reference_sha256, expected_version, lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow stage lease was lost")
+            cursor.execute(
+                "SELECT count(*) FROM runtime.shadow_calibration_measurement_members WHERE attempt_id = %s AND state = 'staged'",
+                (attempt_id,),
+            )
+            all_staged = int(_text(cursor.fetchone()[0])) == len(attempt.members)  # type: ignore[index]
+            self._transition_shadow_attempt(cursor, attempt, "ready" if all_staged else "collecting")
+            current = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow attempt vanished after staging")
+            return current
+
+        return self._transaction(operation)
+
+    def acquire_shadow_measurement_recovery_lease(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> ShadowMeasurementRecoveryLease | None:
+        """CAS-acquire recovery only after the prior recovery lease expires."""
+
+        self._validate_uuid(attempt_id, "shadow attempt_id")
+        self._validate_nonnegative_version(expected_version, "shadow recovery expected_version")
+        token = str(uuid4())
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=SHADOW_MEASUREMENT_LEASE_SECONDS)
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementRecoveryLease | None:
+            attempt = self._locked_shadow_attempt(cursor, attempt_id)
+            if attempt.version != expected_version or attempt.outcome.state != "running":
+                return None
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_attempts
+                   SET recovery_lease_token = %s, recovery_lease_expires_at = %s, version = version + 1
+                 WHERE attempt_id = %s AND version = %s
+                   AND (recovery_lease_expires_at IS NULL
+                        OR recovery_lease_expires_at <= transaction_timestamp())
+                """,
+                (token, expires_at, attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            current = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow attempt vanished after recovery lease")
+            return ShadowMeasurementRecoveryLease(current, token)
+
+        return self._transaction(operation)
+
+    def mark_shadow_measurement_member_indeterminate(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        recovery_lease_token: str,
+        code: str = "NATIVE_OUTCOME_UNKNOWN",
+    ) -> ShadowMeasurementAttempt:
+        """Record an expired unstageable native invocation without terminalizing its command."""
+
+        self._validate_uuid(attempt_id, "shadow attempt_id")
+        self._validate_sha256(member_reference_sha256, "shadow member reference")
+        self._validate_nonnegative_version(expected_version, "shadow member expected_version")
+        if code != "NATIVE_OUTCOME_UNKNOWN":
+            raise StoreValidationError("shadow indeterminate code is unsupported")
+        if type(recovery_lease_token) is not str or not recovery_lease_token.strip():  # noqa: E721
+            raise StoreValidationError("shadow recovery lease_token is required")
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementAttempt:
+            attempt = self._locked_shadow_attempt(cursor, attempt_id)
+            self._require_shadow_recovery_lease(attempt, recovery_lease_token, "mark indeterminate")
+            member = self._locked_shadow_member(cursor, attempt_id, member_reference_sha256)
+            if member is None or member.version != expected_version or member.state != "invoking":
+                raise CommandStateError("shadow indeterminate member is stale or not invoking")
+            if member.lease_expires_at is None or member.lease_expires_at > datetime.now(timezone.utc):
+                raise CommandStateError("shadow member invocation lease has not expired")
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_members
+                   SET state = 'indeterminate', lease_token = NULL, lease_expires_at = NULL, version = version + 1
+                 WHERE attempt_id = %s AND corpus_member_reference_sha256 = %s
+                   AND state = 'invoking' AND version = %s AND lease_expires_at <= transaction_timestamp()
+                """,
+                (attempt_id, member_reference_sha256, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow indeterminate CAS was lost")
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_attempts
+                   SET state = 'indeterminate', version = version + 1
+                 WHERE attempt_id = %s AND version = %s AND recovery_lease_token = %s
+                   AND recovery_lease_expires_at > transaction_timestamp()
+                """,
+                (attempt_id, attempt.version, recovery_lease_token),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow indeterminate recovery lease was lost")
+            current = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow attempt vanished after indeterminate transition")
+            return current
+
+        return self._transaction(operation)
+
+    def reserve_shadow_measurement_successor(
+        self,
+        previous_attempt_id: UUID,
+        authorization: ShadowMeasurementRetryAuthorization,
+    ) -> ShadowMeasurementAttempt:
+        """Record the sole bounded successor after an authority retry decision."""
+
+        self._validate_uuid(previous_attempt_id, "shadow previous_attempt_id")
+        if type(authorization) is not ShadowMeasurementRetryAuthorization:  # noqa: E721
+            raise StoreValidationError("shadow successor requires exact retry authorization")
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementAttempt:
+            previous = self._locked_shadow_attempt(cursor, previous_attempt_id)
+            if previous.state != "indeterminate" or previous.outcome.state != "running":
+                raise CommandStateError("only a running indeterminate shadow attempt may have a successor")
+            if previous.plan_hash != authorization.predecessor_plan_hash:
+                raise StoreValidationError("shadow retry authorization plan hash does not match predecessor")
+            if any(member.state not in ("staged", "indeterminate") for member in previous.members):
+                raise CommandStateError("shadow successor requires every predecessor member to be staged or indeterminate")
+            if previous.recovery_lease_expires_at is not None and previous.recovery_lease_expires_at > datetime.now(timezone.utc):
+                raise CommandStateError("shadow successor is blocked by an active recovery lease")
+            successor_ordinal = previous.attempt_ordinal + 1
+            cursor.execute(
+                "SELECT attempt_id FROM runtime.shadow_calibration_measurement_attempts WHERE job_id = %s AND plan_hash = %s AND attempt_ordinal = %s FOR UPDATE",
+                (previous.outcome.job_id, previous.plan_hash, successor_ordinal),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                found = self._read_shadow_attempt_by_id(cursor, UUID(str(existing[0])))
+                if found is None:
+                    raise RuntimeStoreError("shadow successor vanished after replay read")
+                return found
+            slot_id = uuid4()
+            successor_key = f"shadow-calibration-successor:{previous.plan_hash.removeprefix('sha256:')}:{successor_ordinal}"
+            cursor.execute(
+                """
+                INSERT INTO runtime.command_slots
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
+                VALUES (%s, %s, %s, %s, %s, 'running')
+                """,
+                (slot_id, previous.outcome.job_id, successor_key, SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME, previous.plan_hash),
+            )
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.shadow_calibration_measurement_attempts
+                    (attempt_id, command_slot_id, job_id, plan_hash, attempt_ordinal, previous_attempt_id,
+                     state, version, plan_json, retry_decision_reference_sha256, retry_reason_code)
+                VALUES (%s, %s, %s, %s, %s, %s, 'prepared', 0, %s::jsonb, %s, 'NATIVE_OUTCOME_UNKNOWN')
+                """,
+                (
+                    attempt_id, slot_id, previous.outcome.job_id, previous.plan_hash, successor_ordinal,
+                    previous.attempt_id, previous.canonical_plan_json, authorization.decision_reference_sha256,
+                ),
+            )
+            for member in previous.members:
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.shadow_calibration_measurement_members
+                        (attempt_id, corpus_member_reference_sha256, member_ordinal,
+                         expected_anchor_reference_sha256, invocation_json, context_json, state, version)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, 'pending', 0)
+                    """,
+                    (attempt_id, member.corpus_member_reference_sha256, member.member_ordinal,
+                     member.expected_anchor_reference_sha256, member.invocation_json, member.context_json),
+                )
+            successor = self._read_shadow_attempt_by_id(cursor, attempt_id)
+            if successor is None:
+                raise RuntimeStoreError("shadow successor vanished after reservation")
+            return successor
+
+        return self._transaction(operation)
+
+    def finalize_shadow_measurement_success(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> CommandOutcome:
+        """Write the only two calibration artifacts/Receipt from durably staged rows."""
+
+        self._validate_uuid(attempt_id, "shadow attempt_id")
+        self._validate_nonnegative_version(expected_version, "shadow finalizer expected_version")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            attempt = self._locked_shadow_attempt(cursor, attempt_id)
+            if attempt.outcome.state != "running":
+                return self._replay_or_raise(
+                    cursor, attempt.command_slot_id, attempt.outcome.job_id, "succeeded", None  # type: ignore[arg-type]
+                )
+            if attempt.version != expected_version or attempt.state != "ready":
+                raise CommandStateError("shadow measurement finalizer requires the exact ready attempt")
+            if any(member.state != "staged" for member in attempt.members):
+                raise CommandStateError("shadow measurement finalizer requires every member staged")
+            artifacts = self._shadow_measurement_artifacts(attempt)
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_attempts
+                   SET state = 'committed', completed_at = transaction_timestamp(),
+                       recovery_lease_token = NULL, recovery_lease_expires_at = NULL, version = version + 1
+                 WHERE attempt_id = %s AND version = %s AND state = 'ready'
+                """,
+                (attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow measurement finalizer CAS was lost")
+            job_id = attempt.outcome.job_id
+            if job_id is None:
+                raise RuntimeStoreError("shadow finalizer lost its durable Job identity")
+            return self._write_success(
+                cursor,
+                CommandSuccess(attempt.command_slot_id, _shadow_artifact_set_hash(artifacts), artifacts),
+                job_id,
+            )
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
     # commit_command_success
     # ------------------------------------------------------------------
 
@@ -1073,6 +1575,10 @@ class PostgresRuntimeStore:
             if command_name == VLM_BATCH_FINALIZER_COMMAND_NAME:
                 raise CommandStateError(
                     "FinalizeVlmBatchCommand success requires the explicit VLM batch owner API"
+                )
+            if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+                raise CommandStateError(
+                    "MeasureShadowCalibrationCommand@2.1.3 success requires the shadow owner API"
                 )
             return self._write_success(cursor, success, job_id)
 
@@ -1250,6 +1756,10 @@ class PostgresRuntimeStore:
             if command_name == VLM_BATCH_FINALIZER_COMMAND_NAME:
                 raise CommandStateError(
                     "FinalizeVlmBatchCommand cannot use generic rejection"
+                )
+            if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+                raise CommandStateError(
+                    "MeasureShadowCalibrationCommand@2.1.3 cannot use generic rejection"
                 )
             return self._write_rejection(cursor, rejection, job_id)
 
@@ -4831,6 +5341,287 @@ class PostgresRuntimeStore:
                 f"{field_name} BlobRef does not match durable blob metadata"
             )
         return durable
+
+    @staticmethod
+    def _validate_nonnegative_version(value: int, field_name: str) -> None:
+        if type(value) is not int or value < 0:  # noqa: E721
+            raise StoreValidationError(f"{field_name} must be a non-negative integer")
+
+    @staticmethod
+    def _require_shadow_plan_claim(claim: CommandClaim, plan: ShadowMeasurementPlan) -> None:
+        if type(claim) is not CommandClaim or type(plan) is not ShadowMeasurementPlan:  # noqa: E721
+            raise StoreValidationError("shadow owner requires exact claim and plan")
+        if claim != plan.claim:
+            raise StoreValidationError("shadow owner claim does not equal its immutable plan claim")
+
+    def _read_shadow_attempt_by_slot(
+        self, cursor: DbCursor, command_slot_id: UUID
+    ) -> ShadowMeasurementAttempt | None:
+        cursor.execute(
+            "SELECT attempt_id FROM runtime.shadow_calibration_measurement_attempts WHERE command_slot_id = %s",
+            (command_slot_id,),
+        )
+        row = cursor.fetchone()
+        return None if row is None else self._read_shadow_attempt_by_id(cursor, UUID(str(row[0])))
+
+    def _read_shadow_attempt_by_id(
+        self, cursor: DbCursor, attempt_id: UUID
+    ) -> ShadowMeasurementAttempt | None:
+        cursor.execute(
+            """
+            SELECT attempt.command_slot_id, job.job_key, job.profile, attempt.plan_hash,
+                   attempt.plan_json::text, attempt.attempt_ordinal, attempt.previous_attempt_id,
+                   attempt.state, attempt.version, attempt.recovery_lease_expires_at
+              FROM runtime.shadow_calibration_measurement_attempts AS attempt
+              JOIN runtime.jobs AS job ON job.job_id = attempt.job_id
+             WHERE attempt.attempt_id = %s
+            """,
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        (
+            slot_id, job_key, profile, plan_hash, plan_json, ordinal, previous_id,
+            state, version, recovery_expires,
+        ) = row
+        job_id = self._slot_job_id(cursor, UUID(str(slot_id)))
+        outcome = self._read_outcome_by_slot(cursor, UUID(str(slot_id)), job_id)
+        cursor.execute(
+            """
+            SELECT corpus_member_reference_sha256, member_ordinal, invocation_json::text,
+                   context_json::text, expected_anchor_reference_sha256, state, version,
+                   raw_blob_object_id, raw_content_hash, raw_byte_length, raw_media_type,
+                   projection_json::text, lease_expires_at
+              FROM runtime.shadow_calibration_measurement_members
+             WHERE attempt_id = %s ORDER BY member_ordinal
+            """,
+            (attempt_id,),
+        )
+        members: list[ShadowMeasurementMember] = []
+        while (member_row := cursor.fetchone()) is not None:
+            (
+                reference, member_ordinal, invocation_json, context_json, anchor_reference,
+                member_state, member_version, blob_id, blob_hash, blob_length, blob_type,
+                projection_json, lease_expires,
+            ) = member_row
+            blob = (
+                None
+                if blob_id is None
+                else BlobRef(UUID(str(blob_id)), _text(blob_hash), int(_text(blob_length)), _text(blob_type))
+            )
+            members.append(
+                ShadowMeasurementMember(
+                    attempt_id, _text(reference), int(_text(member_ordinal)),
+                    _canonical_db_json(_text(invocation_json)), _canonical_db_json(_text(context_json)),
+                    _text(anchor_reference), cast(ShadowMeasurementMemberState, _text(member_state)), int(_text(member_version)),
+                    blob, None if projection_json is None else _canonical_db_json(_text(projection_json)),
+                    cast(datetime | None, lease_expires),
+                )
+            )
+        return ShadowMeasurementAttempt(
+            attempt_id, UUID(str(slot_id)), Job(_text(job_key), cast(JobProfile, _text(profile))),
+            _text(plan_hash), _canonical_db_json(_text(plan_json)), int(_text(ordinal)),
+            None if previous_id is None else UUID(str(previous_id)), cast(ShadowMeasurementAttemptState, _text(state)),
+            int(_text(version)), tuple(members), outcome, cast(datetime | None, recovery_expires),
+        )
+
+    def _locked_shadow_attempt(self, cursor: DbCursor, attempt_id: UUID) -> ShadowMeasurementAttempt:
+        cursor.execute(
+            "SELECT command_slot_id FROM runtime.shadow_calibration_measurement_attempts WHERE attempt_id = %s",
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("shadow attempt_id is unknown")
+        self._locked_job_then_slot(cursor, UUID(str(row[0])))
+        cursor.execute(
+            "SELECT attempt_id FROM runtime.shadow_calibration_measurement_attempts WHERE attempt_id = %s FOR UPDATE",
+            (attempt_id,),
+        )
+        if cursor.fetchone() is None:
+            raise RuntimeStoreError("shadow attempt vanished while locking")
+        attempt = self._read_shadow_attempt_by_id(cursor, attempt_id)
+        if attempt is None:
+            raise RuntimeStoreError("shadow attempt vanished while reading")
+        return attempt
+
+    @staticmethod
+    def _locked_shadow_member(
+        cursor: DbCursor, attempt_id: UUID, member_reference_sha256: str
+    ) -> ShadowMeasurementMember | None:
+        cursor.execute(
+            """
+            SELECT corpus_member_reference_sha256, member_ordinal, invocation_json::text,
+                   context_json::text, expected_anchor_reference_sha256, state, version,
+                   raw_blob_object_id, raw_content_hash, raw_byte_length, raw_media_type,
+                   projection_json::text, lease_expires_at
+              FROM runtime.shadow_calibration_measurement_members
+             WHERE attempt_id = %s AND corpus_member_reference_sha256 = %s FOR UPDATE
+            """,
+            (attempt_id, member_reference_sha256),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        (
+            reference, ordinal, invocation_json, context_json, anchor_reference, state, version,
+            blob_id, blob_hash, blob_length, blob_type, projection_json, lease_expires,
+        ) = row
+        blob = (
+            None if blob_id is None
+            else BlobRef(UUID(str(blob_id)), _text(blob_hash), int(_text(blob_length)), _text(blob_type))
+        )
+        return ShadowMeasurementMember(
+            attempt_id, _text(reference), int(_text(ordinal)), _canonical_db_json(_text(invocation_json)),
+            _canonical_db_json(_text(context_json)), _text(anchor_reference), cast(ShadowMeasurementMemberState, _text(state)),
+            int(_text(version)), blob,
+            None if projection_json is None else _canonical_db_json(_text(projection_json)),
+            cast(datetime | None, lease_expires),
+        )
+
+    def _transition_shadow_attempt(
+        self, cursor: DbCursor, attempt: ShadowMeasurementAttempt, state: str
+    ) -> None:
+        cursor.execute(
+            """
+            UPDATE runtime.shadow_calibration_measurement_attempts
+               SET state = %s, version = version + 1
+             WHERE attempt_id = %s AND version = %s
+            """,
+            (state, attempt.attempt_id, attempt.version),
+        )
+        if cursor.rowcount != 1:
+            raise CommandStateError("shadow attempt CAS was lost")
+
+    @staticmethod
+    def _require_shadow_member_lease(
+        member: ShadowMeasurementMember, lease_token: str, operation: str
+    ) -> None:
+        if member.lease_expires_at is None or member.lease_expires_at <= datetime.now(timezone.utc):
+            raise CommandStateError(f"shadow member lease expired before {operation}")
+        # The token is checked by the update predicate; it intentionally is not
+        # included in public snapshots after the operation completes.
+        if type(lease_token) is not str or not lease_token.strip():  # noqa: E721
+            raise StoreValidationError(f"shadow member lease_token is required to {operation}")
+
+    @staticmethod
+    def _require_shadow_recovery_lease(
+        attempt: ShadowMeasurementAttempt, lease_token: str, operation: str
+    ) -> None:
+        if attempt.recovery_lease_expires_at is None or attempt.recovery_lease_expires_at <= datetime.now(timezone.utc):
+            raise CommandStateError(f"shadow recovery lease expired before {operation}")
+        if type(lease_token) is not str or not lease_token.strip():  # noqa: E721
+            raise StoreValidationError(f"shadow recovery lease_token is required to {operation}")
+
+    def _put_shadow_blob(
+        self, cursor: DbCursor, job: Job, staged: ShadowMeasurementStagedResponse
+    ) -> BlobRef:
+        job_id = self._ensure_job(cursor, job)
+        object_id = uuid4()
+        cursor.execute(
+            """
+            INSERT INTO storage.blob_objects
+                (object_id, content_hash, byte_length, media_type, content_bytes)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (content_hash) DO NOTHING
+            RETURNING object_id, content_hash, byte_length, media_type
+            """,
+            (object_id, staged.content_hash, len(staged.raw_bytes), staged.media_type, staged.raw_bytes),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            cursor.execute(
+                """
+                SELECT object_id, content_hash, byte_length, media_type, content_bytes
+                  FROM storage.blob_objects WHERE content_hash = %s FOR UPDATE
+                """,
+                (staged.content_hash,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeStoreError("shadow blob vanished after deduplication conflict")
+            bytes_value = row[4]
+            if not isinstance(bytes_value, (bytes, bytearray, memoryview)):
+                raise BlobIntegrityError("shadow durable blob returned invalid bytes")
+            durable_bytes = bytes_value.tobytes() if isinstance(bytes_value, memoryview) else bytes(bytes_value)
+            if (
+                _text(row[1]) != staged.content_hash or int(_text(row[2])) != len(staged.raw_bytes)
+                or _text(row[3]) != staged.media_type or durable_bytes != staged.raw_bytes
+            ):
+                raise BlobIntegrityError("shadow staged bytes do not exactly match durable BlobRef")
+        reference = BlobRef(UUID(str(row[0])), _text(row[1]), int(_text(row[2])), _text(row[3]))
+        cursor.execute(
+            """
+            INSERT INTO storage.blob_claims (blob_claim_id, object_id, job_id)
+            VALUES (%s, %s, %s) ON CONFLICT (job_id, object_id) DO NOTHING
+            """,
+            (uuid4(), reference.object_id, job_id),
+        )
+        return reference
+
+    @staticmethod
+    def _slot_job_id(cursor: DbCursor, slot_id: UUID) -> UUID:
+        cursor.execute("SELECT job_id FROM runtime.command_slots WHERE command_slot_id = %s", (slot_id,))
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeStoreError("shadow command slot vanished")
+        return UUID(str(row[0]))
+
+    def _shadow_measurement_artifacts(
+        self, attempt: ShadowMeasurementAttempt
+    ) -> tuple[ArtifactMember, ArtifactMember]:
+        plan = _strict_json_object(attempt.canonical_plan_json, "shadow measurement plan")
+        inputs = cast(dict[str, object], plan["shadow_inputs"])
+        encoded_members = cast(list[object], plan["corpus_members"])
+        scope = ArtifactScope("autocut_calibration", "shadow_run", attempt.plan_hash.removeprefix("sha256:"))
+        native_invocations: list[dict[str, object]] = []
+        result_members: list[dict[str, object]] = []
+        for member, encoded in zip(attempt.members, encoded_members, strict=True):
+            if member.raw_blob is None or member.projection_json is None or not isinstance(encoded, dict):
+                raise CommandStateError("shadow finalizer lost staged member evidence")
+            invocation = _strict_json_object(member.invocation_json, "shadow staged invocation")
+            projection = _strict_json_object(member.projection_json, "shadow staged projection")
+            blob = _shadow_blob_mapping(member.raw_blob)
+            native_invocations.append({
+                "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
+                "native_invocation": invocation,
+                "native_response_blob": blob,
+            })
+            result_members.append({
+                "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
+                "expected_anchor_reference_sha256": member.expected_anchor_reference_sha256,
+                "native_invocation": invocation,
+                "native_response_blob": blob,
+                "native_response_sha256": member.raw_blob.content_hash,
+                "projection": projection,
+            })
+        manifest_payload: dict[str, object] = {
+            "alignment_policy_sha256": inputs["alignment_policy_sha256"],
+            "acceptance_policy_sha256": inputs["acceptance_policy_sha256"],
+            "calibration_corpus_set_sha256": inputs["calibration_corpus_set_sha256"],
+            "measurement_request_sha256": attempt.plan_hash,
+            "native_invocations": native_invocations,
+            "native_port_identity_sha256": inputs["native_port_identity_sha256"],
+            "registry_snapshot_sha256": inputs["registry_snapshot_sha256"],
+            "schema_version": "shadow-calibration-measurement-manifest-v2",
+            "shadow_profile_source_sha256": inputs["profile_source_sha256"],
+            "vad_merge_policy_sha256": inputs["vad_merge_policy_sha256"],
+            "word_gap_policy_sha256": inputs["word_gap_policy_sha256"],
+        }
+        manifest = _shadow_artifact(scope, "calibration_measurement_manifest", "measurement-manifest", manifest_payload)
+        result_payload: dict[str, object] = {
+            "measurement_manifest_sha256": manifest.content_hash,
+            "members": result_members,
+            "per_producer_measurements": {
+                "asr": _shadow_member_bound_aggregate(attempt.members, "asr"),
+                "vad": _shadow_member_bound_aggregate(attempt.members, "vad"),
+            },
+            "schema_version": "shadow-calibration-measurement-results-v2",
+        }
+        return manifest, _shadow_artifact(
+            scope, "calibration_measurement_results", "measurement-results", result_payload
+        )
 
     def _ensure_job(self, cursor: DbCursor, job: Job) -> UUID:
         """Insert-or-verify one Job row, never leaking a raw unique violation.

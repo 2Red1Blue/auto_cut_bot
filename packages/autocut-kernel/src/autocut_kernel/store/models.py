@@ -16,6 +16,12 @@ from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
 JobProfile = Literal["test", "shadow", "production", "authority"]
+SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME = "MeasureShadowCalibrationCommand@2.1.3"
+SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-calibration-measurement-v1"
+ShadowMeasurementAttemptState = Literal[
+    "prepared", "collecting", "ready", "indeterminate", "committed"
+]
+ShadowMeasurementMemberState = Literal["pending", "invoking", "staged", "indeterminate"]
 VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
@@ -1362,3 +1368,260 @@ class CommandOutcome:
     failure_code: str | None = None
     failure_detail_json: str | None = None
     job_id: UUID | None = field(default=None, compare=False)
+
+
+def _strict_canonical_json_object(value: str, field_name: str) -> dict[str, object]:
+    """Read the small closed JSON values persisted by the shadow owner."""
+
+    def reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, member in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = member
+        return result
+
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=reject_duplicate_pairs,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError(f"{field_name} must contain strict JSON") from error
+    if type(parsed) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must contain a JSON object")
+    canonical = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    if value != canonical:
+        raise StoreValidationError(f"{field_name} must be canonical JSON")
+    return cast(dict[str, object], parsed)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementMemberPlan:
+    """One immutable native invocation/context pair in a shadow attempt plan."""
+
+    corpus_member_reference_sha256: str
+    member_ordinal: int
+    invocation_json: str
+    context_json: str
+    expected_anchor_reference_sha256: str
+
+    def __post_init__(self) -> None:
+        _sha256(self.corpus_member_reference_sha256, "shadow member reference")
+        _sha256(self.expected_anchor_reference_sha256, "shadow member anchor reference")
+        if type(self.member_ordinal) is not int or self.member_ordinal < 0:  # noqa: E721
+            raise StoreValidationError("shadow member ordinal must be non-negative")
+        _strict_canonical_json_object(self.invocation_json, "shadow member invocation_json")
+        _strict_canonical_json_object(self.context_json, "shadow member context_json")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementPlan:
+    """Closed, canonical recovery input for exactly one shadow command claim."""
+
+    claim: CommandClaim
+    canonical_plan_json: str
+    members: tuple[ShadowMeasurementMemberPlan, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.claim) is not CommandClaim:  # noqa: E721
+            raise StoreValidationError("shadow measurement plan requires an exact CommandClaim")
+        if self.claim.command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise StoreValidationError("shadow measurement plan requires the exact measurement command")
+        if self.claim.job.profile != "shadow":
+            raise StoreValidationError("shadow measurement plan requires a shadow Job")
+        payload = _strict_canonical_json_object(
+            self.canonical_plan_json, "shadow measurement canonical_plan_json"
+        )
+        if canonical_payload_hash(self.canonical_plan_json) != self.claim.request_hash:
+            raise StoreValidationError("shadow measurement plan does not match claim request_hash")
+        if set(payload) != {
+            "command",
+            "corpus_members",
+            "measurement_protocol",
+            "shadow_inputs",
+        }:
+            raise StoreValidationError("shadow measurement plan shape is invalid")
+        if payload.get("command") != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise StoreValidationError("shadow measurement plan command is invalid")
+        if payload.get("measurement_protocol") != SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL:
+            raise StoreValidationError("shadow measurement plan protocol is invalid")
+        expected_key = self.claim.request_hash.removeprefix("sha256:")
+        if self.claim.job.job_key != expected_key or self.claim.idempotency_key != (
+            f"shadow-calibration:{expected_key}"
+        ):
+            raise StoreValidationError("shadow measurement plan claim identity is invalid")
+        members = tuple(self.members)
+        if not members or any(type(member) is not ShadowMeasurementMemberPlan for member in members):  # noqa: E721
+            raise StoreValidationError("shadow measurement plan requires exact member plans")
+        if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
+            raise StoreValidationError("shadow measurement member ordinals must be contiguous")
+        if len({member.corpus_member_reference_sha256 for member in members}) != len(members):
+            raise StoreValidationError("shadow measurement plan must not duplicate member references")
+        plan_members = payload.get("corpus_members")
+        if not isinstance(plan_members, list):
+            raise StoreValidationError("shadow measurement plan member set is invalid")
+        plan_member_values = cast(list[object], plan_members)
+        if len(plan_member_values) != len(members):
+            raise StoreValidationError("shadow measurement plan member set is invalid")
+        for member, encoded in zip(members, plan_member_values, strict=True):
+            if not isinstance(encoded, dict):
+                raise StoreValidationError("shadow measurement plan member shape is invalid")
+            encoded_member = cast(dict[str, object], encoded)
+            if set(encoded_member) != {
+                "corpus_member_reference_sha256",
+                "expected_anchor_reference_sha256",
+                "native_invocation",
+                "raw_context",
+            }:
+                raise StoreValidationError("shadow measurement plan member shape is invalid")
+            if (
+                encoded_member["corpus_member_reference_sha256"] != member.corpus_member_reference_sha256
+                or encoded_member["expected_anchor_reference_sha256"]
+                != member.expected_anchor_reference_sha256
+                or json.dumps(encoded_member["native_invocation"], ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                != member.invocation_json
+                or json.dumps(encoded_member["raw_context"], ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                != member.context_json
+            ):
+                raise StoreValidationError("shadow measurement member plan drifts from canonical plan")
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementMember:
+    attempt_id: UUID
+    corpus_member_reference_sha256: str
+    member_ordinal: int
+    invocation_json: str
+    context_json: str
+    expected_anchor_reference_sha256: str
+    state: ShadowMeasurementMemberState
+    version: int
+    raw_blob: BlobRef | None = None
+    projection_json: str | None = None
+    lease_expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _sha256(self.corpus_member_reference_sha256, "shadow member reference")
+        _sha256(self.expected_anchor_reference_sha256, "shadow member anchor reference")
+        if self.state not in ("pending", "invoking", "staged", "indeterminate"):
+            raise StoreValidationError("shadow member state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError("shadow member version must be non-negative")
+        _strict_canonical_json_object(self.invocation_json, "shadow member invocation_json")
+        _strict_canonical_json_object(self.context_json, "shadow member context_json")
+        if self.state == "staged":
+            if type(self.raw_blob) is not BlobRef or self.projection_json is None:  # noqa: E721
+                raise StoreValidationError("staged shadow member requires BlobRef and projection")
+            _strict_canonical_json_object(self.projection_json, "shadow member projection_json")
+        elif self.raw_blob is not None or self.projection_json is not None:
+            raise StoreValidationError("only staged shadow members may bind raw evidence")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementAttempt:
+    attempt_id: UUID
+    command_slot_id: UUID
+    job: Job
+    plan_hash: str
+    canonical_plan_json: str
+    attempt_ordinal: int
+    previous_attempt_id: UUID | None
+    state: ShadowMeasurementAttemptState
+    version: int
+    members: tuple[ShadowMeasurementMember, ...]
+    outcome: CommandOutcome
+    recovery_lease_expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("attempt_id", "command_slot_id"):
+            if not isinstance(getattr(self, field_name), UUID):
+                raise StoreValidationError(f"shadow attempt {field_name} must be a UUID")
+        if type(self.job) is not Job:  # noqa: E721
+            raise StoreValidationError("shadow attempt job must be exact")
+        _sha256(self.plan_hash, "shadow attempt plan_hash")
+        _strict_canonical_json_object(self.canonical_plan_json, "shadow attempt plan_json")
+        if type(self.attempt_ordinal) is not int or self.attempt_ordinal < 1:  # noqa: E721
+            raise StoreValidationError("shadow attempt ordinal must be positive")
+        if self.state not in ("prepared", "collecting", "ready", "indeterminate", "committed"):
+            raise StoreValidationError("shadow attempt state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError("shadow attempt version must be non-negative")
+        members = tuple(self.members)
+        if not members or any(type(member) is not ShadowMeasurementMember for member in members):  # noqa: E721
+            raise StoreValidationError("shadow attempt requires exact members")
+        if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
+            raise StoreValidationError("shadow attempt members must be ordered")
+        if any(member.attempt_id != self.attempt_id for member in members):
+            raise StoreValidationError("shadow attempt member identity drift")
+        if type(self.outcome) is not CommandOutcome:  # noqa: E721
+            raise StoreValidationError("shadow attempt outcome must be exact")
+        if self.outcome.command_slot_id != self.command_slot_id:
+            raise StoreValidationError("shadow attempt command outcome drift")
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementMemberLease:
+    member: ShadowMeasurementMember
+    attempt_version: int
+    lease_token: str
+
+    def __post_init__(self) -> None:
+        if type(self.member) is not ShadowMeasurementMember:  # noqa: E721
+            raise StoreValidationError("shadow member lease requires a member snapshot")
+        if self.member.state != "invoking":
+            raise StoreValidationError("shadow member lease requires invoking state")
+        if type(self.attempt_version) is not int or self.attempt_version < 0:  # noqa: E721
+            raise StoreValidationError("shadow member lease attempt_version is invalid")
+        _text(self.lease_token, "shadow member lease_token")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementRecoveryLease:
+    attempt: ShadowMeasurementAttempt
+    lease_token: str
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ShadowMeasurementAttempt:  # noqa: E721
+            raise StoreValidationError("shadow recovery lease requires an attempt snapshot")
+        _text(self.lease_token, "shadow recovery lease_token")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementStagedResponse:
+    """Exact bytes and decoder-derived canonical projection accepted by the Store owner."""
+
+    raw_bytes: bytes
+    content_hash: str
+    media_type: str
+    projection_json: str
+
+    def __post_init__(self) -> None:
+        if type(self.raw_bytes) is not bytes:  # noqa: E721
+            raise StoreValidationError("shadow staged raw_bytes must be immutable bytes")
+        _sha256(self.content_hash, "shadow staged content_hash")
+        _text(self.media_type, "shadow staged media_type")
+        _strict_canonical_json_object(self.projection_json, "shadow staged projection_json")
+        actual = "sha256:" + hashlib.sha256(self.raw_bytes).hexdigest()
+        if actual != self.content_hash:
+            raise StoreValidationError("shadow staged raw bytes do not match content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementRetryAuthorization:
+    """Bounded authority decision required before an unknown native call may be retried."""
+
+    decision_reference_sha256: str
+    predecessor_plan_hash: str
+    reason_code: Literal["NATIVE_OUTCOME_UNKNOWN"] = "NATIVE_OUTCOME_UNKNOWN"
+
+    def __post_init__(self) -> None:
+        _sha256(self.decision_reference_sha256, "shadow retry decision reference")
+        _sha256(self.predecessor_plan_hash, "shadow retry predecessor plan hash")
+        if self.reason_code != "NATIVE_OUTCOME_UNKNOWN":
+            raise StoreValidationError("shadow retry authorization reason is unsupported")
