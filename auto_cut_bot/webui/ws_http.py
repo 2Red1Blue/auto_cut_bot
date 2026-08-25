@@ -220,6 +220,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.bus.queue import MessageBus
     from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
     from auto_cut_bot.cron.service import CronService
+    from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
     from auto_cut_bot.triggers.local_store import LocalTriggerStore
     from auto_cut_bot.webui.settings_services import WebUISettingsServices
 
@@ -323,6 +324,7 @@ class GatewayHTTPHandler:
         mcp_runtime_status: Callable[[], Mapping[str, str]] | None = None,
         mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         skill_state_action: Callable[[set[str]], None] | None = None,
+        pipeline_highlight_read_service: PipelineHighlightReadService | None = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -346,6 +348,7 @@ class GatewayHTTPHandler:
         self.local_trigger_store = local_trigger_store
         self.cron_pending_job_ids = cron_pending_job_ids
         self.local_trigger_pending_ids = local_trigger_pending_ids
+        self.pipeline_highlight_read_service = pipeline_highlight_read_service
         self._log = log
         self._runtime_surface = runtime_surface
 
@@ -509,6 +512,11 @@ class GatewayHTTPHandler:
 
         # Session routes
         response = await self._dispatch_session_routes(request, got)
+        if response is not None:
+            return response
+
+        # Pipeline highlight evidence is a read-only, optionally composed view.
+        response = await self._dispatch_pipeline_highlight_routes(request, got)
         if response is not None:
             return response
 
@@ -699,6 +707,35 @@ class GatewayHTTPHandler:
             return self._handle_session_delete(request, m.group(1))
 
         return None
+
+    async def _dispatch_pipeline_highlight_routes(
+        self,
+        request: WsRequest,
+        got: str,
+    ) -> Response | None:
+        """Serve the narrow, exact committed-highlight projection when configured."""
+        if not got.startswith("/api/pipeline/runs/"):
+            return None
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if getattr(request, "method", "GET").upper() != "GET":
+            return None
+        match = re.fullmatch(
+            r"/api/pipeline/runs/([0-9a-f]{32})/highlights",
+            got,
+        )
+        if match is None:
+            return _http_error(404, "API route not found")
+        if self.pipeline_highlight_read_service is None:
+            return _http_error(503, "pipeline highlights unavailable")
+        try:
+            payload = (
+                await self.pipeline_highlight_read_service.get(match.group(1))
+            ).to_mapping()
+        except Exception:
+            self._log.warning("pipeline highlights request failed")
+            return _http_error(500, "pipeline highlights unavailable")
+        return _http_json_response(payload)
 
     async def _handle_session_context_get(self, request: WsRequest, key: str) -> Response:
         if not self.check_api_token(request):
