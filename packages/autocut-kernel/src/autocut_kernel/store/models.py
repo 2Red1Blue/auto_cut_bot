@@ -18,6 +18,9 @@ CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "faile
 JobProfile = Literal["test", "shadow", "production", "authority"]
 SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME = "MeasureShadowCalibrationCommand@2.1.3"
 SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-calibration-measurement-v1"
+SHADOW_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset(
+    {"SHADOW_CALIBRATION_INVALID", "SHADOW_CALIBRATION_NATIVE_REJECTED"}
+)
 ShadowMeasurementAttemptState = Literal[
     "prepared", "collecting", "ready", "indeterminate", "committed"
 ]
@@ -1613,6 +1616,51 @@ class ShadowMeasurementStagedResponse:
 
 
 @dataclass(frozen=True, slots=True)
+class ShadowMeasurementTerminalDenialRequest:
+    """A decoder-proven, no-evidence terminal denial for one invoking member.
+
+    This intentionally does not represent native unavailability or an unknown
+    invocation outcome.  Those states remain recoverable/indeterminate and
+    must not terminalize the command slot.
+    """
+
+    attempt_id: UUID
+    command_slot_id: UUID
+    job: Job
+    plan_hash: str
+    member_reference_sha256: str
+    expected_attempt_version: int
+    expected_member_version: int
+    member_lease_token: str
+    failure_code: str
+    failure_detail_json: str
+    command_name: str = SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
+
+    def __post_init__(self) -> None:
+        for field_name in ("attempt_id", "command_slot_id"):
+            if not isinstance(getattr(self, field_name), UUID):
+                raise StoreValidationError(f"shadow terminal denial {field_name} must be a UUID")
+        if type(self.job) is not Job or self.job.profile != "shadow":  # noqa: E721
+            raise StoreValidationError("shadow terminal denial requires an exact shadow Job")
+        _sha256(self.plan_hash, "shadow terminal denial plan_hash")
+        _sha256(self.member_reference_sha256, "shadow terminal denial member reference")
+        for field_name in ("expected_attempt_version", "expected_member_version"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:  # noqa: E721
+                raise StoreValidationError(
+                    f"shadow terminal denial {field_name} must be a non-negative integer"
+                )
+        _text(self.member_lease_token, "shadow terminal denial member_lease_token")
+        if self.command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise StoreValidationError("shadow terminal denial requires the exact measurement command")
+        if self.failure_code not in SHADOW_CALIBRATION_TERMINAL_DENIAL_CODES:
+            raise StoreValidationError("shadow terminal denial failure_code is not allowlisted")
+        _strict_canonical_json_object(
+            self.failure_detail_json, "shadow terminal denial failure_detail_json"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ShadowMeasurementRetryAuthorization:
     """Bounded authority decision required before an unknown native call may be retried."""
 
@@ -1625,3 +1673,23 @@ class ShadowMeasurementRetryAuthorization:
         _sha256(self.predecessor_plan_hash, "shadow retry predecessor plan hash")
         if self.reason_code != "NATIVE_OUTCOME_UNKNOWN":
             raise StoreValidationError("shadow retry authorization reason is unsupported")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowMeasurementTerminalDenialResult:
+    """The immutable denial Receipt and closed indeterminate attempt snapshot."""
+
+    attempt: ShadowMeasurementAttempt
+    outcome: CommandOutcome
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ShadowMeasurementAttempt:  # noqa: E721
+            raise StoreValidationError("shadow terminal denial result requires an exact attempt")
+        if type(self.outcome) is not CommandOutcome:  # noqa: E721
+            raise StoreValidationError("shadow terminal denial result requires an exact outcome")
+        if (
+            self.attempt.state != "indeterminate"
+            or self.outcome.state != "denied"
+            or self.attempt.outcome != self.outcome
+        ):
+            raise StoreValidationError("shadow terminal denial result is not a closed denial")

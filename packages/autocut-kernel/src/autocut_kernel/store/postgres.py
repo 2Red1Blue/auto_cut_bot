@@ -108,6 +108,8 @@ from .models import (
     ShadowMeasurementRecoveryLease,
     ShadowMeasurementRetryAuthorization,
     ShadowMeasurementStagedResponse,
+    ShadowMeasurementTerminalDenialRequest,
+    ShadowMeasurementTerminalDenialResult,
     SourceWindowIdentity,
     VerifiedMaterializedBlob,
     VlmBatchRequestPolicy,
@@ -1548,6 +1550,113 @@ class PostgresRuntimeStore:
                 CommandSuccess(attempt.command_slot_id, _shadow_artifact_set_hash(artifacts), artifacts),
                 job_id,
             )
+
+        return self._transaction(operation)
+
+    def commit_shadow_measurement_terminal_denial(
+        self, request: ShadowMeasurementTerminalDenialRequest
+    ) -> ShadowMeasurementTerminalDenialResult:
+        """Terminally deny one decoder-rejected native result without staging it.
+
+        The caller is responsible for obtaining definitive decoder/domain proof.
+        This Store boundary only accepts the two proof-bearing failure codes and
+        refuses to close an aggregate once any durable evidence exists or an
+        additional native invocation could still be outcome-unknown.
+        """
+
+        if type(request) is not ShadowMeasurementTerminalDenialRequest:  # noqa: E721
+            raise StoreValidationError("shadow terminal denial requires an exact request")
+
+        def operation(cursor: DbCursor) -> ShadowMeasurementTerminalDenialResult:
+            attempt = self._locked_shadow_attempt(cursor, request.attempt_id)
+            job_id, slot_state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, attempt.command_slot_id
+            )
+            if (
+                attempt.command_slot_id != request.command_slot_id
+                or attempt.job != request.job
+                or attempt.plan_hash != request.plan_hash
+                or request.command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
+                or command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
+                or request_hash != request.plan_hash
+                or attempt.job.profile != "shadow"
+            ):
+                raise CommandStateError("shadow terminal denial identity does not match its attempt")
+            if slot_state != "running":
+                outcome = self._replay_or_raise(
+                    cursor, attempt.command_slot_id, job_id, "denied", None
+                )
+                replay = self._read_shadow_attempt_by_id(cursor, attempt.attempt_id)
+                if replay is None:
+                    raise RuntimeStoreError("shadow terminal denial attempt vanished on replay")
+                return ShadowMeasurementTerminalDenialResult(replay, outcome)
+            if (
+                attempt.state != "collecting"
+                or attempt.version != request.expected_attempt_version
+                or attempt.outcome.state != "running"
+            ):
+                raise CommandStateError("shadow terminal denial requires the exact collecting attempt")
+            member = self._locked_shadow_member(
+                cursor, attempt.attempt_id, request.member_reference_sha256
+            )
+            if (
+                member is None
+                or member.state != "invoking"
+                or member.version != request.expected_member_version
+            ):
+                raise CommandStateError("shadow terminal denial requires the exact invoking member")
+            self._require_shadow_member_lease(member, request.member_lease_token, "terminal denial")
+            if any(
+                candidate.state != "pending"
+                for candidate in attempt.members
+                if candidate.corpus_member_reference_sha256 != member.corpus_member_reference_sha256
+            ):
+                raise CommandStateError(
+                    "shadow terminal denial is blocked by staged or outcome-unknown member evidence"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_members
+                   SET state = 'indeterminate', lease_token = NULL, lease_expires_at = NULL,
+                       version = version + 1
+                 WHERE attempt_id = %s AND corpus_member_reference_sha256 = %s
+                   AND state = 'invoking' AND version = %s AND lease_token = %s
+                   AND lease_expires_at > transaction_timestamp()
+                """,
+                (
+                    attempt.attempt_id,
+                    member.corpus_member_reference_sha256,
+                    request.expected_member_version,
+                    request.member_lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow terminal denial member lease was lost")
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_calibration_measurement_attempts
+                   SET state = 'indeterminate', recovery_lease_token = NULL,
+                       recovery_lease_expires_at = NULL, version = version + 1
+                 WHERE attempt_id = %s AND state = 'collecting' AND version = %s
+                """,
+                (attempt.attempt_id, request.expected_attempt_version),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow terminal denial attempt CAS was lost")
+            outcome = self._write_rejection(
+                cursor,
+                CommandRejection(
+                    attempt.command_slot_id,
+                    request.failure_code,
+                    request.failure_detail_json,
+                    "denied",
+                ),
+                job_id,
+            )
+            denied = self._read_shadow_attempt_by_id(cursor, attempt.attempt_id)
+            if denied is None:
+                raise RuntimeStoreError("shadow terminal denial attempt vanished after closure")
+            return ShadowMeasurementTerminalDenialResult(denied, outcome)
 
         return self._transaction(operation)
 

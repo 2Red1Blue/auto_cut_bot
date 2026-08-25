@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
+from uuid import uuid4
 
 import autocut_kernel.store.postgres as postgres_module
 import pytest
@@ -19,6 +21,7 @@ from autocut_kernel.store import (
     ShadowMeasurementPlan,
     ShadowMeasurementRetryAuthorization,
     ShadowMeasurementStagedResponse,
+    ShadowMeasurementTerminalDenialRequest,
     StoreValidationError,
 )
 from autocut_kernel.store.models import canonical_payload_hash
@@ -131,7 +134,38 @@ def _stage(store: PostgresRuntimeStore, attempt: object, index: int) -> object:
         members[index].corpus_member_reference_sha256,
         expected_version=lease.member.version,
         lease_token=lease.lease_token,
-        staged=ShadowMeasurementStagedResponse(raw, "sha256:" + hashlib.sha256(raw).hexdigest(), "application/json", _canonical(projection)),
+        staged=ShadowMeasurementStagedResponse(
+            raw,
+            "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "application/json",
+            _canonical(projection),
+        ),
+    )
+
+
+def _terminal_denial_request(
+    store: PostgresRuntimeStore, attempt: object, index: int = 0
+) -> ShadowMeasurementTerminalDenialRequest:
+    members = attempt.members  # type: ignore[union-attr]
+    lease = store.acquire_shadow_measurement_member_lease(
+        attempt.attempt_id,  # type: ignore[union-attr]
+        members[index].corpus_member_reference_sha256,
+        expected_version=members[index].version,
+    )
+    assert lease is not None
+    return ShadowMeasurementTerminalDenialRequest(
+        attempt_id=attempt.attempt_id,  # type: ignore[union-attr]
+        command_slot_id=attempt.command_slot_id,  # type: ignore[union-attr]
+        job=attempt.job,  # type: ignore[union-attr]
+        plan_hash=attempt.plan_hash,  # type: ignore[union-attr]
+        member_reference_sha256=lease.member.corpus_member_reference_sha256,
+        expected_attempt_version=lease.attempt_version,
+        expected_member_version=lease.member.version,
+        member_lease_token=lease.lease_token,
+        failure_code="SHADOW_CALIBRATION_INVALID",
+        failure_detail_json=_canonical(
+            {"reason": "decoder rejected raw evidence", "stage": "shadow_calibration"}
+        ),
     )
 
 
@@ -209,6 +243,77 @@ def test_recovery_lease_is_compare_and_swap(monkeypatch: pytest.MonkeyPatch) -> 
     first = store.acquire_shadow_measurement_recovery_lease(attempt.attempt_id, expected_version=attempt.version)
     assert first is not None
     assert store.acquire_shadow_measurement_recovery_lease(attempt.attempt_id, expected_version=attempt.version) is None
+
+
+def test_decoder_proven_invalid_response_terminally_denies_without_artifacts() -> None:
+    store, plan = _store(), _plan()
+    attempt = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    denial = _terminal_denial_request(store, attempt)
+
+    result = store.commit_shadow_measurement_terminal_denial(denial)
+    replay = store.commit_shadow_measurement_terminal_denial(denial)
+
+    assert result.outcome.state == replay.outcome.state == "denied"
+    assert result.outcome.receipt_id == replay.outcome.receipt_id
+    assert result.attempt.state == "indeterminate"
+    assert result.attempt.outcome == result.outcome
+    assert result.attempt.members[0].state == "indeterminate"
+    assert result.attempt.members[1].state == "pending"
+    with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM runtime.artifact_sets")
+        assert cursor.fetchone() == (0,)
+        cursor.execute(
+            "SELECT outcome, failure_code FROM runtime.command_receipts WHERE receipt_id = %s",
+            (result.outcome.receipt_id,),
+        )
+        assert cursor.fetchone() == ("denied", "SHADOW_CALIBRATION_INVALID")
+
+
+def test_terminal_denial_rejects_substitution_and_preserves_unknown_invocation() -> None:
+    store, plan = _store(), _plan()
+    attempt = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    denial = _terminal_denial_request(store, attempt)
+
+    with pytest.raises(CommandStateError):
+        store.commit_shadow_measurement_terminal_denial(
+            replace(denial, job=Job("another-shadow-job", "shadow"))
+        )
+    with pytest.raises(StoreValidationError):
+        replace(denial, command_name="AnotherShadowCommand")
+    with pytest.raises(CommandStateError):
+        store.commit_shadow_measurement_terminal_denial(
+            replace(denial, attempt_id=uuid4())
+        )
+    with pytest.raises(CommandStateError):
+        store.commit_shadow_measurement_terminal_denial(
+            replace(denial, plan_hash=_hash("another-plan"))
+        )
+    with pytest.raises(CommandStateError):
+        store.commit_shadow_measurement_terminal_denial(
+            replace(denial, expected_member_version=denial.expected_member_version + 1)
+        )
+    with pytest.raises(StoreValidationError):
+        replace(denial, failure_code="SHADOW_CALIBRATION_NATIVE_UNAVAILABLE")
+
+    still_running = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    assert still_running.outcome.state == "running"
+    assert still_running.state == "collecting"
+    assert still_running.members[0].state == "invoking"
+
+
+def test_terminal_denial_refuses_to_overwrite_staged_or_concurrent_evidence() -> None:
+    store, plan = _store(), _plan()
+    attempt = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    attempt = _stage(store, attempt, 0)
+    denial = _terminal_denial_request(store, attempt, 1)
+
+    with pytest.raises(CommandStateError, match="staged or outcome-unknown"):
+        store.commit_shadow_measurement_terminal_denial(denial)
+
+    preserved = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    assert preserved.outcome.state == "running"
+    assert preserved.members[0].state == "staged"
+    assert preserved.members[1].state == "invoking"
 
 
 def test_wrong_job_command_plan_and_generic_bypass_are_denied() -> None:
