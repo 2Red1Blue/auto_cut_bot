@@ -55,6 +55,8 @@ from .probe import (
 
 _COMMAND_NAME = "PrepareWholeSeriesSourcesCommand"
 _SHOWINFO_PTS = re.compile(rb"\bpts:\s*(-?(?:0|[1-9][0-9]*))\b")
+
+
 class FrameSampleEvidenceError(SeriesCensusError):
     """The sampled image does not bind the requested decoded frame PTS."""
 
@@ -150,9 +152,7 @@ class PersistedPreparedSources:
             "command_slot_id",
         ):
             if not isinstance(getattr(self, field_name), UUID):
-                raise SourceManifestDecodeError(
-                    f"persisted source {field_name} must be a UUID"
-                )
+                raise SourceManifestDecodeError(f"persisted source {field_name} must be a UUID")
         if type(self.artifact_reference) is not WholeSeriesSourceManifestReference:  # noqa: E721
             raise SourceManifestDecodeError("persisted source artifact reference is invalid")
         if self.artifact_reference.logical_id != "whole_series_source_manifest":
@@ -301,7 +301,13 @@ class IdentitySourceWindowBuilder:
             probe.video_range,
             (manifest,),
         )
-        return PreparedSourceEpisode(probe, blob, manifest, manifest_set)
+        bound_probe = probe.bind_presentation_timeline(
+            source_blob=blob,
+            frame_pts_index_set_sha256=frame_index.canonical_hash,
+            source_proxy_timeline_map_sha256=manifest.timeline_map.canonical_hash,
+            window_manifest_sha256=manifest.canonical_hash,
+        )
+        return PreparedSourceEpisode(bound_probe, blob, manifest, manifest_set)
 
     def _frame_sample(
         self,
@@ -387,15 +393,11 @@ class PrepareWholeSeriesSourcesCommand:
         self._store = store
         self._builder = builder or IdentitySourceWindowBuilder()
 
-    def execute(
-        self, request: PrepareWholeSeriesSourcesRequest
-    ) -> PrepareWholeSeriesSourcesResult:
+    def execute(self, request: PrepareWholeSeriesSourcesRequest) -> PrepareWholeSeriesSourcesResult:
         """Execute or safely resume one exact local, immutable preparation claim."""
         return self._execute_or_resume(request)
 
-    def resume(
-        self, request: PrepareWholeSeriesSourcesRequest
-    ) -> PrepareWholeSeriesSourcesResult:
+    def resume(self, request: PrepareWholeSeriesSourcesRequest) -> PrepareWholeSeriesSourcesResult:
         """Rebuild a running claim only after its recomputed request hash matches."""
         return self._execute_or_resume(request)
 
@@ -529,9 +531,7 @@ def read_persisted_prepared_sources_bundle(
             "prepared sources require an exact succeeded Kernel Receipt"
         )
     if outcome.artifact_set_id is None:
-        raise SourceManifestDecodeError(
-            "succeeded source preparation lost its ArtifactSet binding"
-        )
+        raise SourceManifestDecodeError("succeeded source preparation lost its ArtifactSet binding")
     persisted = store.read_whole_series_source_manifest(job, outcome.artifact_set_id)
     if (
         persisted.artifact_set_id != outcome.artifact_set_id
@@ -559,9 +559,7 @@ def _artifact(
     request: PrepareWholeSeriesSourcesRequest,
     payload: object,
 ) -> ArtifactMember:
-    payload_json = json.dumps(
-        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    )
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return ArtifactMember(
         "whole_series_source_manifest",
         "whole_series_source_manifest",
@@ -659,6 +657,7 @@ def _decode_prepared_sources(
                 episode.media_probe.audio_sample_boundaries,
                 episode.media_probe.frame_detector_sha256,
                 episode.media_probe.audio_detector_sha256,
+                episode.media_probe.presentation_timeline_probe,
             ),
             proxy_blob,
             episode.manifest,

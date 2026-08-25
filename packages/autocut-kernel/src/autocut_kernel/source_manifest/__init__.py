@@ -14,6 +14,7 @@ from ..media import (
     AudioSourceOutcome,
     Coverage,
     CoverageOutcome,
+    EvidenceCompleteness,
     EvidenceContext,
     FramePtsIndexSet,
     MediaKind,
@@ -22,6 +23,14 @@ from ..media import (
     TimeBase,
 )
 from ..media.ffprobe_port import ProbeResult
+from ..media.stage4_predecessor import (
+    PresentationProbeExecution,
+    PresentationSegmentContinuity,
+    PresentationTimelineProbe,
+    PresentationTrack,
+    PresentationTrackSegment,
+    RationalPresentationInterval,
+)
 from ..media.types import (
     ToolEvidence,
     VideoStreamEvidence,
@@ -115,9 +124,7 @@ class SourceOperationPolicy:
 
     def require_purpose(self, purpose: SourceOperationPurpose) -> None:
         if purpose not in _PURPOSE_REGISTRY or purpose not in self.authorized_purposes:
-            raise SourcePurposeDeniedError(
-                f"source operation purpose is not authorized: {purpose}"
-            )
+            raise SourcePurposeDeniedError(f"source operation purpose is not authorized: {purpose}")
 
 
 class BlobIdentity(Protocol):
@@ -229,6 +236,7 @@ class DecodedMediaProbe:
     audio_sample_boundaries: AudioSampleBoundarySet
     frame_detector_sha256: str
     audio_detector_sha256: str
+    presentation_timeline_probe: PresentationTimelineProbe | None = None
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.frame_detector_sha256, "frame_detector_sha256")
@@ -236,7 +244,7 @@ class DecodedMediaProbe:
 
     def to_mapping(self) -> dict[str, object]:
         stream = self.video_probe.video_stream
-        return {
+        result: dict[str, object] = {
             "audio_sample_boundaries": self.audio_sample_boundaries.to_mapping(),
             "decoded_video_frame_pts": list(self.video_probe.pts_index.ticks),
             "ffprobe": {
@@ -261,6 +269,9 @@ class DecodedMediaProbe:
                 "width": stream.width,
             },
         }
+        if self.presentation_timeline_probe is not None:
+            result["presentation_timeline_probe"] = self.presentation_timeline_probe.to_mapping()
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,15 +377,12 @@ def decode_source_manifest(
         )
         census = _decode_census(root["census"])
         if (
-            _text_value(root["census_sha256"], "census_sha256")
-            != census.canonical_hash
+            _text_value(root["census_sha256"], "census_sha256") != census.canonical_hash
             or root["completion_policy"] != census.completion_policy
         ):
             raise ValueError("source manifest census certificate is invalid")
         episodes_raw = _array(root["episodes"], "episodes")
-        if len(episodes_raw) != len(census.sources) or len(episodes_raw) != len(
-            proxy_blobs
-        ):
+        if len(episodes_raw) != len(census.sources) or len(episodes_raw) != len(proxy_blobs):
             raise ValueError("source manifest episode count is inconsistent")
         episodes = tuple(
             _decode_episode(raw_episode, source, blob)
@@ -479,6 +487,7 @@ def _decode_episode(
     probe = _decode_probe(raw["media_probe"], source)
     manifest = _decode_manifest(raw["window_manifest"], probe, decoded_durable_blob)
     manifest_set = _decode_manifest_set(raw["window_manifest_set"], manifest)
+    _validate_presentation_timeline_probe(probe, decoded_durable_blob, manifest)
     return DecodedSourceEpisode(probe, decoded_durable_blob, manifest, manifest_set)
 
 
@@ -494,8 +503,10 @@ def _decode_probe(
             "ffprobe",
             "source",
             "video_stream",
+            "presentation_timeline_probe",
         },
         "media_probe",
+        optional={"presentation_timeline_probe"},
     )
     if raw["source"] != source.to_mapping():
         raise ValueError("media probe source identity is inconsistent")
@@ -587,6 +598,11 @@ def _decode_probe(
         audio,
         _text_value(tool["frame_detector_sha256"], "ffprobe.frame_detector_sha256"),
         _text_value(tool["audio_detector_sha256"], "ffprobe.audio_detector_sha256"),
+        (
+            _decode_presentation_timeline_probe(raw["presentation_timeline_probe"])
+            if "presentation_timeline_probe" in raw
+            else None
+        ),
     )
     if result.to_mapping() != raw:
         raise ValueError("media probe is not canonical")
@@ -602,8 +618,15 @@ def _decode_audio_boundaries(value: object) -> AudioSampleBoundarySet:
     context_raw = _closed_mapping(
         raw["context"],
         {
-            "clock_id", "duration_tick", "generation_policy_sha256", "media_kind",
-            "origin_tick", "producer_id", "source_id", "source_sha256", "time_base",
+            "clock_id",
+            "duration_tick",
+            "generation_policy_sha256",
+            "media_kind",
+            "origin_tick",
+            "producer_id",
+            "source_id",
+            "source_sha256",
+            "time_base",
         },
         "audio context",
     )
@@ -616,11 +639,22 @@ def _decode_audio_boundaries(value: object) -> AudioSampleBoundarySet:
         _int_value(context_raw["origin_tick"], "audio.context.origin_tick"),
         _int_value(context_raw["duration_tick"], "audio.context.duration_tick"),
         _text_value(context_raw["producer_id"], "audio.context.producer_id"),
-        _text_value(context_raw["generation_policy_sha256"], "audio.context.generation_policy_sha256"),
+        _text_value(
+            context_raw["generation_policy_sha256"], "audio.context.generation_policy_sha256"
+        ),
     )
     coverage_raw = _closed_mapping(
         raw["coverage"],
-        {"clock_id", "diagnostics", "in_tick", "out_tick", "outcome", "source_id", "source_sha256", "time_base"},
+        {
+            "clock_id",
+            "diagnostics",
+            "in_tick",
+            "out_tick",
+            "outcome",
+            "source_id",
+            "source_sha256",
+            "time_base",
+        },
         "audio coverage",
     )
     if _array(coverage_raw["diagnostics"], "audio.coverage.diagnostics"):
@@ -647,7 +681,15 @@ def _decode_audio_boundaries(value: object) -> AudioSampleBoundarySet:
         for item in (
             _closed_mapping(
                 entry,
-                {"boundary_id", "clock_id", "method", "source_id", "source_sha256", "tick", "time_base"},
+                {
+                    "boundary_id",
+                    "clock_id",
+                    "method",
+                    "source_id",
+                    "source_sha256",
+                    "tick",
+                    "time_base",
+                },
                 "audio boundary",
             )
             for entry in _array(raw["points"], "audio.points")
@@ -673,10 +715,19 @@ def _decode_manifest(
     raw = _closed_mapping(
         value,
         {
-            "core_range", "frame_pts_index_set_sha256", "frame_samples",
-            "preprocess_policy_sha256", "proxy_blob_ref", "source_clock_id",
-            "source_id", "source_range", "source_sha256", "source_time_base",
-            "stream_index", "timeline_map", "window_sampling_policy_sha256",
+            "core_range",
+            "frame_pts_index_set_sha256",
+            "frame_samples",
+            "preprocess_policy_sha256",
+            "proxy_blob_ref",
+            "source_clock_id",
+            "source_id",
+            "source_range",
+            "source_sha256",
+            "source_time_base",
+            "stream_index",
+            "timeline_map",
+            "window_sampling_policy_sha256",
         },
         "window manifest",
     )
@@ -720,7 +771,16 @@ def _decode_manifest(
 def _decode_manifest_set(value: object, manifest: WindowManifest) -> WindowManifestSet:
     raw = _closed_mapping(
         value,
-        {"declared_source_range", "frame_pts_index_set_sha256", "manifest_hashes", "source_clock_id", "source_id", "source_sha256", "source_time_base", "stream_index"},
+        {
+            "declared_source_range",
+            "frame_pts_index_set_sha256",
+            "manifest_hashes",
+            "source_clock_id",
+            "source_id",
+            "source_sha256",
+            "source_time_base",
+            "stream_index",
+        },
         "window manifest set",
     )
     result = WindowManifestSet(
@@ -750,7 +810,9 @@ def _decode_timeline_map(value: object) -> ProxyTimelineMap:
             _int_value(item["max_source_error_pts"], "timeline.max_source_error_pts"),
         )
         for item in (
-            _closed_mapping(entry, {"max_source_error_pts", "proxy_range", "source_range"}, "timeline segment")
+            _closed_mapping(
+                entry, {"max_source_error_pts", "proxy_range", "source_range"}, "timeline segment"
+            )
             for entry in _array(raw["segments"], "timeline.segments")
         )
     )
@@ -765,8 +827,225 @@ def _decode_timeline_map(value: object) -> ProxyTimelineMap:
     return result
 
 
+def _decode_presentation_timeline_probe(value: object) -> PresentationTimelineProbe:
+    raw = _closed_mapping(
+        value,
+        {
+            "audio",
+            "audio_sample_boundary_set_sha256",
+            "facts_compiler_contract_sha256",
+            "facts_compiler_id",
+            "frame_pts_index_set_sha256",
+            "probe_execution",
+            "schema_version",
+            "source_blob_byte_length",
+            "source_blob_content_hash",
+            "source_blob_media_type",
+            "source_id",
+            "source_proxy_timeline_map_sha256",
+            "source_sha256",
+            "video",
+            "window_manifest_sha256",
+        },
+        "presentation timeline probe",
+    )
+    result = PresentationTimelineProbe(
+        schema_version=_text_value(raw["schema_version"], "presentation.schema_version"),
+        source_id=_text_value(raw["source_id"], "presentation.source_id"),
+        source_sha256=_text_value(raw["source_sha256"], "presentation.source_sha256"),
+        source_blob_content_hash=_text_value(
+            raw["source_blob_content_hash"], "presentation.source_blob_content_hash"
+        ),
+        source_blob_byte_length=_int_value(
+            raw["source_blob_byte_length"], "presentation.source_blob_byte_length"
+        ),
+        source_blob_media_type=_text_value(
+            raw["source_blob_media_type"], "presentation.source_blob_media_type"
+        ),
+        facts_compiler_id=_text_value(raw["facts_compiler_id"], "presentation.facts_compiler_id"),
+        facts_compiler_contract_sha256=_text_value(
+            raw["facts_compiler_contract_sha256"],
+            "presentation.facts_compiler_contract_sha256",
+        ),
+        probe_execution=_decode_presentation_probe_execution(raw["probe_execution"]),
+        video=_decode_presentation_track(raw["video"], "presentation.video"),
+        audio=_decode_presentation_track(raw["audio"], "presentation.audio"),
+        frame_pts_index_set_sha256=_text_value(
+            raw["frame_pts_index_set_sha256"], "presentation.frame_pts_index_set_sha256"
+        ),
+        audio_sample_boundary_set_sha256=_text_value(
+            raw["audio_sample_boundary_set_sha256"],
+            "presentation.audio_sample_boundary_set_sha256",
+        ),
+        source_proxy_timeline_map_sha256=_optional_hash(
+            raw["source_proxy_timeline_map_sha256"],
+            "presentation.source_proxy_timeline_map_sha256",
+        ),
+        window_manifest_sha256=_optional_hash(
+            raw["window_manifest_sha256"], "presentation.window_manifest_sha256"
+        ),
+    )
+    if result.to_mapping() != raw:
+        raise ValueError("presentation timeline probe is not canonical")
+    return result
+
+
+def _decode_presentation_probe_execution(value: object) -> PresentationProbeExecution:
+    raw = _closed_mapping(
+        value,
+        {
+            "executable_sha256",
+            "invocation_schema_sha256",
+            "normalized_output_sha256",
+            "probe_kind",
+            "source_input_sha256",
+            "version_output_sha256",
+        },
+        "presentation probe execution",
+    )
+    return PresentationProbeExecution(
+        _text_value(raw["probe_kind"], "presentation.execution.probe_kind"),
+        _text_value(
+            raw["invocation_schema_sha256"],
+            "presentation.execution.invocation_schema_sha256",
+        ),
+        _text_value(raw["executable_sha256"], "presentation.execution.executable_sha256"),
+        _text_value(
+            raw["version_output_sha256"],
+            "presentation.execution.version_output_sha256",
+        ),
+        _text_value(
+            raw["normalized_output_sha256"],
+            "presentation.execution.normalized_output_sha256",
+        ),
+        _text_value(raw["source_input_sha256"], "presentation.execution.source_input_sha256"),
+    )
+
+
+def _decode_presentation_track(value: object, field_name: str) -> PresentationTrack:
+    raw = _closed_mapping(
+        value,
+        {
+            "clock_id",
+            "coverage_outcome",
+            "end_tick",
+            "endpoint_proof",
+            "index_sha256",
+            "media_kind",
+            "origin_tick",
+            "segments",
+            "stream_index",
+            "time_base",
+        },
+        field_name,
+    )
+    segments = tuple(
+        _decode_presentation_segment(item, f"{field_name}.segments")
+        for item in _array(raw["segments"], f"{field_name}.segments")
+    )
+    return PresentationTrack(
+        MediaKind(_text_value(raw["media_kind"], f"{field_name}.media_kind")),
+        _int_value(raw["stream_index"], f"{field_name}.stream_index"),
+        _text_value(raw["clock_id"], f"{field_name}.clock_id"),
+        _decode_time_base(raw["time_base"], f"{field_name}.time_base"),
+        _int_value(raw["origin_tick"], f"{field_name}.origin_tick"),
+        _int_value(raw["end_tick"], f"{field_name}.end_tick"),
+        EvidenceCompleteness(
+            _text_value(raw["coverage_outcome"], f"{field_name}.coverage_outcome")
+        ),
+        _text_value(raw["endpoint_proof"], f"{field_name}.endpoint_proof"),
+        _text_value(raw["index_sha256"], f"{field_name}.index_sha256"),
+        segments,
+    )
+
+
+def _decode_presentation_segment(value: object, field_name: str) -> PresentationTrackSegment:
+    raw = _closed_mapping(
+        value,
+        {
+            "continuity",
+            "decoded_boundary_sequence_sha256",
+            "presentation_interval",
+            "stream_tick_range",
+        },
+        field_name,
+    )
+    tick_range = _decode_tick_range(raw["stream_tick_range"], f"{field_name}.stream_tick_range")
+    interval_raw = _closed_mapping(
+        raw["presentation_interval"],
+        {
+            "end_denominator",
+            "end_numerator",
+            "start_denominator",
+            "start_numerator",
+        },
+        f"{field_name}.presentation_interval",
+    )
+    return PresentationTrackSegment(
+        tick_range,
+        RationalPresentationInterval(
+            _int_value(interval_raw["start_numerator"], f"{field_name}.start_numerator"),
+            _int_value(interval_raw["start_denominator"], f"{field_name}.start_denominator"),
+            _int_value(interval_raw["end_numerator"], f"{field_name}.end_numerator"),
+            _int_value(interval_raw["end_denominator"], f"{field_name}.end_denominator"),
+        ),
+        _text_value(
+            raw["decoded_boundary_sequence_sha256"],
+            f"{field_name}.decoded_boundary_sequence_sha256",
+        ),
+        PresentationSegmentContinuity(_text_value(raw["continuity"], f"{field_name}.continuity")),
+    )
+
+
+def _decode_tick_range(value: object, field_name: str) -> TickRange:
+    raw = _closed_mapping(value, {"end_tick", "start_tick"}, field_name)
+    return TickRange(
+        _int_value(raw["start_tick"], f"{field_name}.start_tick"),
+        _int_value(raw["end_tick"], f"{field_name}.end_tick"),
+    )
+
+
+def _optional_hash(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _text_value(value, field_name)
+
+
+def _validate_presentation_timeline_probe(
+    probe: DecodedMediaProbe,
+    blob: DecodedBlobRef,
+    manifest: WindowManifest,
+) -> None:
+    facts = probe.presentation_timeline_probe
+    if facts is None:
+        return
+    if (
+        facts.source_id != probe.source.source_id
+        or facts.source_sha256 != probe.source.content_sha256
+        or facts.source_blob_content_hash != blob.content_hash
+        or facts.source_blob_byte_length != blob.byte_length
+        or facts.source_blob_media_type != blob.media_type
+        or facts.video.stream_index != probe.video_probe.video_stream.stream_index
+        or facts.video.time_base != probe.video_probe.video_stream.time_base
+        or facts.video.origin_tick != probe.video_range.start_pts
+        or facts.video.end_tick != probe.video_range.end_pts
+        or facts.frame_pts_index_set_sha256 != manifest.frame_pts_index_set.canonical_hash
+        or facts.audio_sample_boundary_set_sha256 != probe.audio_sample_boundaries.canonical_hash
+        or facts.audio.clock_id != probe.audio_sample_boundaries.context.clock_id
+        or facts.audio.clock_id != f"audio-stream-{facts.audio.stream_index}"
+        or facts.audio.time_base != probe.audio_sample_boundaries.context.time_base
+        or facts.audio.origin_tick != probe.audio_sample_boundaries.context.origin_tick
+        or facts.audio.end_tick != probe.audio_sample_boundaries.context.end_tick
+        or facts.source_proxy_timeline_map_sha256 != manifest.timeline_map.canonical_hash
+        or facts.window_manifest_sha256 != manifest.canonical_hash
+    ):
+        raise ValueError("presentation timeline facts do not close over source manifest evidence")
+
+
 def _decode_blob(value: object) -> DecodedBlobRef:
-    raw = _closed_mapping(value, {"byte_length", "content_hash", "media_type", "object_id"}, "proxy blob")
+    raw = _closed_mapping(
+        value, {"byte_length", "content_hash", "media_type", "object_id"}, "proxy blob"
+    )
     return DecodedBlobRef(
         UUID(_text_value(raw["object_id"], "proxy_blob.object_id")),
         _text_value(raw["content_hash"], "proxy_blob.content_hash"),
@@ -800,11 +1079,22 @@ def _decode_range(value: object, field_name: str) -> TickRange:
     )
 
 
-def _closed_mapping(value: object, keys: set[str], field_name: str) -> dict[str, object]:
+def _closed_mapping(
+    value: object,
+    keys: set[str],
+    field_name: str,
+    *,
+    optional: set[str] | None = None,
+) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} must be a closed object")
     mapping = cast(dict[object, object], value)
-    if set(mapping) != keys:
+    optional_keys = optional or set()
+    if (
+        not optional_keys <= keys
+        or not keys - optional_keys <= set(mapping)
+        or not set(mapping) <= keys
+    ):
         raise ValueError(f"{field_name} must be a closed object")
     return {str(key): item for key, item in mapping.items()}
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
-from autocut_kernel.media import PTSIndex
+from autocut_kernel.media import MediaKind, PTSIndex, TimeBase
 from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import GenerateVlmEvidenceRequest
 from autocut_kernel.store import (
@@ -47,6 +47,7 @@ from auto_cut_bot.pipeline.source_prep import (
     SourceOperationPurpose,
     SourcePurposeDeniedError,
 )
+from auto_cut_bot.pipeline.source_prep import probe as source_probe
 from auto_cut_bot.pipeline.source_prep.command import (
     FrameSampleEvidenceError,
     SourceManifestDecodeError,
@@ -108,8 +109,7 @@ class Store:
         member = success.artifacts[0]
         payload = json.loads(member.payload_json)
         proxy_blobs = tuple(
-            self.blob_refs[episode["proxy_blob"]["content_hash"]]
-            for episode in payload["episodes"]
+            self.blob_refs[episode["proxy_blob"]["content_hash"]] for episode in payload["episodes"]
         )
         assert outcome.artifact_set_id is not None
         assert outcome.receipt_id is not None
@@ -235,9 +235,7 @@ def _source_root(
 
 
 def test_source_operation_policy_is_canonical_hash_bound_and_default_deny() -> None:
-    policy = _source_policy(
-        authorized_purposes=("render_source", "semantic_analysis")
-    )
+    policy = _source_policy(authorized_purposes=("render_source", "semantic_analysis"))
 
     assert policy.authorized_purposes == ("semantic_analysis", "render_source")
     assert policy.policy_sha256 == canonical_sha256(policy.to_mapping())
@@ -366,6 +364,27 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
     assert episode.media_probe.audio_sample_boundaries.points[-1].tick == (
         episode.media_probe.audio_sample_boundaries.context.end_tick
     )
+    presentation = episode.media_probe.presentation_timeline_probe
+    assert presentation is not None
+    assert presentation.source_sha256 == episode.proxy_blob.content_hash
+    assert presentation.video.origin_tick == episode.media_probe.video_range.start_pts
+    assert presentation.video.end_tick == episode.media_probe.video_range.end_pts
+    assert presentation.audio.origin_tick == (
+        episode.media_probe.audio_sample_boundaries.context.origin_tick
+    )
+    assert presentation.audio.end_tick == (
+        episode.media_probe.audio_sample_boundaries.context.end_tick
+    )
+    assert presentation.video.index_sha256 == episode.manifest.frame_pts_index_set.canonical_hash
+    assert (
+        presentation.audio.index_sha256
+        == episode.media_probe.audio_sample_boundaries.canonical_hash
+    )
+    assert (
+        presentation.source_proxy_timeline_map_sha256
+        == episode.manifest.timeline_map.canonical_hash
+    )
+    assert presentation.window_manifest_sha256 == episode.manifest.canonical_hash
     assert all(
         episode.manifest.frame_pts_index_set.pts_index.contains(sample.source_pts)
         for sample in episode.manifest.frame_samples
@@ -665,15 +684,87 @@ class AudioFramesProbe(FFprobeSourceMediaPort):
         ],
     ],
 )
-def test_audio_boundaries_reject_empty_or_discontinuous_frames(
+def test_audio_boundaries_reject_empty_frames_and_preserve_discontinuous_frames(
     frames: list[dict[str, object]],
 ) -> None:
     source = SeriesSource("episode.mp4", "source-a", "sha256:" + "1" * 64, 1)
-    with pytest.raises(SourceMediaEvidenceError):
-        AudioFramesProbe(frames)._audio_boundaries(
+    port = AudioFramesProbe(frames)
+    if not frames:
+        with pytest.raises(SourceMediaEvidenceError):
+            port._audio_boundaries(
+                Path("unused.mp4"),
+                source,
+                {"index": 1, "time_base": "1/48000", "start_pts": 0, "duration_ts": 20},
+            )
+        return
+    boundaries = port._audio_boundaries(
+        Path("unused.mp4"),
+        source,
+        {"index": 1, "time_base": "1/48000", "start_pts": 0, "duration_ts": 20},
+    )
+    assert tuple(point.tick for point in boundaries.points) == (0, 8, 10, 20)
+
+
+def test_presentation_track_preserves_nonzero_vfr_tails_and_declared_gap() -> None:
+    frames = (
+        source_probe._DecodedFrame(1_000, 1_010),
+        source_probe._DecodedFrame(1_010, 1_050),
+        source_probe._DecodedFrame(1_080, 1_087),
+    )
+    track = source_probe._presentation_track(
+        MediaKind.VIDEO,
+        0,
+        TimeBase(1, 1_000),
+        frames,
+        "sha256:" + "a" * 64,
+    )
+
+    assert track.origin_tick == 1_000
+    assert track.end_tick == 1_087
+    assert [
+        (item.stream_tick_range.start_pts, item.stream_tick_range.end_pts)
+        for item in track.segments
+    ] == [
+        (1_000, 1_050),
+        (1_050, 1_080),
+        (1_080, 1_087),
+    ]
+    assert track.segments[1].continuity.value == "declared_gap"
+    assert track.segments[2].stream_tick_range.end_pts == 1_087
+    audio = source_probe._presentation_track(
+        MediaKind.AUDIO,
+        1,
+        TimeBase(1, 1_000),
+        (
+            source_probe._DecodedFrame(1_000, 1_040),
+            source_probe._DecodedFrame(1_040, 1_095),
+        ),
+        "sha256:" + "b" * 64,
+    )
+    assert audio.origin_tick == track.origin_tick == 1_000
+    assert audio.end_tick == 1_095
+    assert audio.end_tick != track.end_tick
+
+
+def test_decoded_frame_probe_rejects_unproved_final_frame_end() -> None:
+    port = FFprobeSourceMediaPort(executable="/usr/bin/true")
+    port._json = lambda _command: {  # type: ignore[method-assign]
+        "frames": [
+            {
+                "media_type": "video",
+                "stream_index": 0,
+                "best_effort_timestamp": 10,
+            }
+        ]
+    }
+
+    with pytest.raises(SourceMediaEvidenceError, match="end boundary"):
+        port._decoded_frames(
             Path("unused.mp4"),
-            source,
-            {"index": 1, "time_base": "1/48000", "start_pts": 0, "duration_ts": 20},
+            selector="v:0",
+            expected_media_kind="video",
+            stream_index=0,
+            field_name="video",
         )
 
 
@@ -721,9 +812,7 @@ def test_terminal_replay_rejects_tampered_manifest_certificate(tmp_path: Path) -
     assert first.outcome.artifact_set_id is not None
     persisted = store.manifests[first.outcome.artifact_set_id]
     payload = json.loads(persisted.payload_json)
-    payload["episodes"][0]["window_manifest_set"]["manifest_hashes"] = [
-        "sha256:" + "0" * 64
-    ]
+    payload["episodes"][0]["window_manifest_set"]["manifest_hashes"] = ["sha256:" + "0" * 64]
     serialized = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     store.manifests[first.outcome.artifact_set_id] = replace(
         persisted,
