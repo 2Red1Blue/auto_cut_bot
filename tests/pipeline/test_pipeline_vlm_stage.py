@@ -26,6 +26,8 @@ from autocut_kernel.store import (
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedVlmInputReference,
     GenerationAttempt,
     Job,
     PersistedVlmGenerationChild,
@@ -62,6 +64,7 @@ from auto_cut_bot.pipeline.runtime.source_prep_stage import (
 from auto_cut_bot.pipeline.runtime.vlm_stage import (
     VLM_EPISODE_SELECTION_STRATEGY_VERSION,
     VlmPipelineStage,
+    vlm_batch_kernel_idempotency_key,
     vlm_kernel_idempotency_key,
 )
 from auto_cut_bot.pipeline.source_prep import (
@@ -236,6 +239,9 @@ class KernelStore:
         outcome = CommandOutcome(uuid4(), "running", is_fresh_claim=True, job_id=uuid4())
         self.claims[key] = (claim, outcome)
         return outcome
+
+    def claim_vlm_batch_command(self, claim: CommandClaim) -> CommandOutcome:
+        return self.claim_command(claim)
 
     def put_immutable_blob(
         self,
@@ -541,6 +547,46 @@ class KernelStore:
             request_identity_sha256=payload["request_identity_sha256"],
         )
 
+    def read_committed_vlm_input_reference(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> CommittedVlmInputReference:
+        child = self.read_committed_vlm_generation_child(job, idempotency_key)
+        success = self.generation_successes[child.command_slot_id]
+        raw_response = self.attempts[child.command_slot_id].raw_response
+        assert raw_response is not None
+        references = tuple(
+            CommittedArtifactMemberReference(
+                receipt_id=child.receipt_id,
+                artifact_set_id=child.artifact_set_id,
+                member_ordinal=ordinal,
+                scope=artifact.scope,
+                artifact_type=artifact.artifact_type,
+                logical_id=artifact.logical_id,
+                revision=artifact.revision,
+                content_hash=artifact.content_hash,
+            )
+            for ordinal, artifact in enumerate(success.artifacts)
+        )
+        assert len(references) == 3
+        request_record = json.loads(success.artifacts[0].payload_json)
+        proxy_mapping = request_record["proxy_blob"]
+        proxy_blob = BlobRef(
+            UUID(proxy_mapping["object_id"]),
+            proxy_mapping["content_hash"],
+            proxy_mapping["byte_length"],
+            proxy_mapping["media_type"],
+        )
+        return CommittedVlmInputReference(
+            request_record=references[0],
+            response_record=references[1],
+            semantic_pack=references[2],
+            proxy_blob=proxy_blob,
+            request_payload=child.request_payload,
+            raw_response=raw_response,
+        )
+
     def commit_command_success(self, success: CommandSuccess) -> CommandOutcome:
         outcome = CommandOutcome(
             success.command_slot_id,
@@ -551,6 +597,9 @@ class KernelStore:
         )
         self._replace_outcome(success.command_slot_id, outcome)
         return outcome
+
+    def commit_vlm_batch_success(self, success: CommandSuccess) -> CommandOutcome:
+        return self.commit_command_success(success)
 
     def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome:
         outcome = CommandOutcome(
@@ -1033,11 +1082,16 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     assert len(provider.dispatch_calls) == 2
     assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == ("all-committed-episodes-sequential-v1")
     aggregate = next(
-        outcome
+        (claim, outcome)
         for claim, outcome in store.claims.values()
         if claim.command_name == "FinalizeVlmBatchCommand"
     )
-    assert result.receipt_id == aggregate.receipt_id
+    assert result.receipt_id == aggregate[1].receipt_id
+    assert aggregate[0].idempotency_key == vlm_batch_kernel_idempotency_key(
+        run_id=RUN_ID,
+        source_bundle=bundle,
+        execution_profile_hash=_context().execution_profile_hash,
+    )
 
 
 class CrashAfterAggregateReceipt:

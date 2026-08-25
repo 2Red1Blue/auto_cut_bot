@@ -9,18 +9,21 @@ from uuid import UUID
 
 from ..media.types import canonical_sha256, sha256_prefixed
 from ..store import (
+    VLM_BATCH_FINALIZER_COMMAND_NAME,
+    VLM_BATCH_FINALIZER_STRATEGY_VERSION,
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
     ArtifactMember,
     ArtifactScope,
     CommandClaim,
     CommandOutcome,
     CommandSuccess,
+    CommittedVlmInputReference,
     Job,
     PersistedVlmGenerationChild,
+    VlmSemanticPackSetChild,
 )
 from ..store.models import canonical_payload_hash, canonical_recipe_scope
 
-VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
-_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VlmBatchChildState = Literal["succeeded", "denied", "failed"]
 
 
@@ -91,6 +94,8 @@ class FinalizeVlmBatchRequest:
             raise ValueError("job must be an exact Job")
         if type(self.idempotency_key) is not str or not self.idempotency_key.strip():  # noqa: E721
             raise ValueError("idempotency_key must be non-empty")
+        if not self.idempotency_key.startswith(VLM_BATCH_IDEMPOTENCY_PREFIX):
+            raise ValueError("VLM batch idempotency_key must use the reserved namespace")
         if self.artifact_scope != canonical_recipe_scope(self.job):
             raise ValueError("artifact_scope must be the canonical Job scope")
         if type(self.artifact_revision) is not int or self.artifact_revision < 1:  # noqa: E721
@@ -155,9 +160,15 @@ class VlmBatchFinalizerStore(Protocol):
         idempotency_key: str,
     ) -> PersistedVlmGenerationChild: ...
 
-    def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
+    def read_committed_vlm_input_reference(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> CommittedVlmInputReference: ...
 
-    def commit_command_success(self, success: CommandSuccess) -> CommandOutcome: ...
+    def claim_vlm_batch_command(self, claim: CommandClaim) -> CommandOutcome: ...
+
+    def commit_vlm_batch_success(self, success: CommandSuccess) -> CommandOutcome: ...
 
 class FinalizeVlmBatchCommand:
     """Commit only after every declared child has an exact terminal Receipt."""
@@ -167,6 +178,7 @@ class FinalizeVlmBatchCommand:
 
     def execute(self, request: FinalizeVlmBatchRequest) -> FinalizeVlmBatchResult:
         persisted_children: list[PersistedVlmGenerationChild] = []
+        member_children: list[VlmSemanticPackSetChild] = []
         for child in request.children:
             persisted = self._store.read_committed_vlm_generation_child(
                 request.job,
@@ -174,8 +186,32 @@ class FinalizeVlmBatchCommand:
             )
             self._assert_exact_child(child, persisted)
             persisted_children.append(persisted)
+            reference = self._store.read_committed_vlm_input_reference(
+                request.job,
+                child.idempotency_key,
+            )
+            if (
+                reference.request_record.receipt_id != persisted.receipt_id
+                or reference.request_record.artifact_set_id != persisted.artifact_set_id
+                or reference.request_record.content_hash != persisted.reference.content_hash
+            ):
+                raise ValueError("VLM child member references do not match its committed outcome")
+            member_children.append(
+                VlmSemanticPackSetChild(
+                    episode_index=persisted.episode_index,
+                    idempotency_key=persisted.idempotency_key,
+                    request_hash=persisted.request_hash,
+                    request_record=reference.request_record,
+                    response_record=reference.response_record,
+                    semantic_pack=reference.semantic_pack,
+                )
+            )
         self._reject_duplicate_children(tuple(persisted_children))
-        verified_payload = self._verified_payload(request, tuple(persisted_children))
+        verified_payload = self._verified_payload(
+            request,
+            tuple(persisted_children),
+            tuple(member_children),
+        )
         verified_request_hash = canonical_sha256(
             {
                 "artifact_revision": request.artifact_revision,
@@ -192,11 +228,11 @@ class FinalizeVlmBatchCommand:
             }
         )
 
-        outcome = self._store.claim_command(
+        outcome = self._store.claim_vlm_batch_command(
             CommandClaim(
                 request.job,
                 request.idempotency_key,
-                _COMMAND_NAME,
+                VLM_BATCH_FINALIZER_COMMAND_NAME,
                 verified_request_hash,
             )
         )
@@ -213,8 +249,8 @@ class FinalizeVlmBatchCommand:
             sort_keys=True,
         )
         artifact = ArtifactMember(
-            "vlm_batch_evidence",
-            "vlm_batch_evidence",
+            "vlm_semantic_pack_set",
+            "vlm_semantic_pack_set",
             request.artifact_revision,
             request.artifact_scope,
             canonical_payload_hash(payload_json),
@@ -240,7 +276,7 @@ class FinalizeVlmBatchCommand:
             ),
             (artifact,),
         )
-        committed = self._store.commit_command_success(success)
+        committed = self._store.commit_vlm_batch_success(success)
         return FinalizeVlmBatchResult(committed, artifact)
 
     @staticmethod
@@ -283,6 +319,7 @@ class FinalizeVlmBatchCommand:
     def _verified_payload(
         request: FinalizeVlmBatchRequest,
         children: tuple[PersistedVlmGenerationChild, ...],
+        member_children: tuple[VlmSemanticPackSetChild, ...],
     ) -> dict[str, object]:
         if tuple(child.episode_index for child in children) != tuple(
             range(request.declared_episode_count)
@@ -294,9 +331,13 @@ class FinalizeVlmBatchCommand:
             for child in children
         ):
             raise ValueError("persisted VLM children do not bind the declared source")
+        policies = tuple(child.request_policy for child in children)
+        if not policies or any(policy != policies[0] for policy in policies[1:]):
+            raise ValueError("VLM batch children do not share one frozen request policy")
         return {
-            "children": [child.to_mapping() for child in children],
+            "children": [child.to_mapping() for child in member_children],
             "declared_episode_count": request.declared_episode_count,
+            "request_policy": policies[0].to_mapping(),
             "source_manifest_sha256": request.source_manifest_sha256,
             "source_provenance_sha256": request.source_provenance_sha256,
             "strategy_version": request.strategy_version,

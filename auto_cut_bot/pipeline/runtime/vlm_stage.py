@@ -21,7 +21,12 @@ from autocut_kernel.pipeline import (
     VlmBatchChildOutcome,
     VlmBatchFinalizerStore,
 )
-from autocut_kernel.store import ArtifactScope, CommandOutcome, Job
+from autocut_kernel.store import (
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
+    ArtifactScope,
+    CommandOutcome,
+    Job,
+)
 from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import VlmProviderPort
 
@@ -83,6 +88,33 @@ def vlm_kernel_idempotency_key(
         sort_keys=True,
     ).encode("utf-8")
     return "vlm:" + hashlib.sha256(encoded).hexdigest()
+
+
+def vlm_batch_kernel_idempotency_key(
+    *,
+    run_id: str,
+    source_bundle: PersistedPreparedSources,
+    execution_profile_hash: str,
+) -> str:
+    """Return the sole durable identity of one complete VLM semantic batch."""
+
+    validate_run_id(run_id)
+    if type(source_bundle) is not PersistedPreparedSources:  # noqa: E721
+        raise PipelineRunValidationError(
+            "VLM batch identity requires exact persisted source provenance"
+        )
+    encoded = json.dumps(
+        {
+            "execution_profile_sha256": execution_profile_hash,
+            "run_id": run_id,
+            "selection_strategy_version": VLM_EPISODE_SELECTION_STRATEGY_VERSION,
+            "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
+            "source_provenance_sha256": source_bundle.canonical_hash,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return VLM_BATCH_IDEMPOTENCY_PREFIX + hashlib.sha256(encoded).hexdigest()
 
 
 class VlmPipelineStage:
@@ -229,7 +261,11 @@ class VlmPipelineStage:
             )
         finalizer_request = FinalizeVlmBatchRequest(
             job=Job(context.run_id, context.request.profile),
-            idempotency_key=self._batch_idempotency_key(context, source_bundle),
+            idempotency_key=vlm_batch_kernel_idempotency_key(
+                run_id=context.run_id,
+                source_bundle=source_bundle,
+                execution_profile_hash=context.execution_profile_hash,
+            ),
             artifact_scope=canonical_recipe_scope(Job(context.run_id, context.request.profile)),
             artifact_revision=_ARTIFACT_REVISION,
             declared_episode_count=len(requests),
@@ -238,24 +274,6 @@ class VlmPipelineStage:
             children=tuple(children),
         )
         return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
-
-    @staticmethod
-    def _batch_idempotency_key(
-        context: PipelineStageContext,
-        source_bundle: PersistedPreparedSources,
-    ) -> str:
-        encoded = json.dumps(
-            {
-                "execution_profile_sha256": context.execution_profile_hash,
-                "run_id": context.run_id,
-                "selection_strategy_version": VLM_EPISODE_SELECTION_STRATEGY_VERSION,
-                "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
-                "source_provenance_sha256": source_bundle.canonical_hash,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return "vlm-batch:" + hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _project(
@@ -281,5 +299,6 @@ __all__ = (
     "VLM_EPISODE_SELECTION_STRATEGY_VERSION",
     "VlmPipelineStage",
     "VlmPipelineStore",
+    "vlm_batch_kernel_idempotency_key",
     "vlm_kernel_idempotency_key",
 )

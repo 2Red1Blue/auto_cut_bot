@@ -9,11 +9,15 @@ from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID
 
+from ..source_manifest import SourceOperationGrant
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
 JobProfile = Literal["test", "shadow", "production"]
+VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
+VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
+VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -521,6 +525,24 @@ class PersistedVlmGenerationChild:
             "window_manifest_sha256": self.window_manifest_sha256,
         }
 
+    @property
+    def request_policy(self) -> VlmBatchRequestPolicy:
+        payload = _strict_json_mapping(self.payload_json, "VLM request record")
+        identity = cast(dict[str, object], payload["request_identity"])
+        return VlmBatchRequestPolicy(
+            prompt_template_sha256=cast(str, identity["prompt_template_sha256"]),
+            prompt_version=cast(str, identity["prompt_version"]),
+            response_schema_sha256=cast(str, identity["response_schema_sha256"]),
+            preprocess_policy_sha256=cast(str, identity["preprocess_policy_sha256"]),
+            window_sampling_policy_sha256=cast(
+                str, identity["window_sampling_policy_sha256"]
+            ),
+            model_id=cast(str, identity["model_id"]),
+            provider_id=cast(str, identity["provider_id"]),
+            request_parameters_sha256=cast(str, identity["request_parameters_sha256"]),
+            parse_policy_sha256=cast(str, identity["parse_policy_sha256"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PersistedVlmSemanticPack:
@@ -700,6 +722,105 @@ class CommittedArtifactMemberReference:
             raise StoreValidationError("revision must be a positive integer")
         _sha256(self.content_hash, "content_hash")
 
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "artifact_set_id": str(self.artifact_set_id),
+            "artifact_type": self.artifact_type,
+            "content_hash": self.content_hash,
+            "logical_id": self.logical_id,
+            "member_ordinal": self.member_ordinal,
+            "receipt_id": str(self.receipt_id),
+            "revision": self.revision,
+            "scope": {
+                "key": self.scope.key,
+                "kind": self.scope.kind,
+                "namespace": self.scope.namespace,
+            },
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VlmBatchRequestPolicy:
+    """Frozen provider policy shared by every child in one semantic-pack set."""
+
+    prompt_template_sha256: str
+    prompt_version: str
+    response_schema_sha256: str
+    preprocess_policy_sha256: str
+    window_sampling_policy_sha256: str
+    model_id: str
+    provider_id: str
+    request_parameters_sha256: str
+    parse_policy_sha256: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "prompt_template_sha256",
+            "response_schema_sha256",
+            "preprocess_policy_sha256",
+            "window_sampling_policy_sha256",
+            "request_parameters_sha256",
+            "parse_policy_sha256",
+        ):
+            _sha256(getattr(self, field_name), f"VLM batch policy {field_name}")
+        for field_name in ("prompt_version", "model_id", "provider_id"):
+            _text(getattr(self, field_name), f"VLM batch policy {field_name}")
+
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            field_name: getattr(self, field_name)
+            for field_name in self.__dataclass_fields__
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VlmSemanticPackSetChild:
+    """Ordered exact member references for one committed VLM child."""
+
+    episode_index: int
+    idempotency_key: str
+    request_hash: str
+    request_record: CommittedArtifactMemberReference
+    response_record: CommittedArtifactMemberReference
+    semantic_pack: CommittedArtifactMemberReference
+
+    def __post_init__(self) -> None:
+        if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
+            raise StoreValidationError("VLM pack-set episode_index must be non-negative")
+        _text(self.idempotency_key, "VLM pack-set idempotency_key")
+        _sha256(self.request_hash, "VLM pack-set request_hash")
+        members = (self.request_record, self.response_record, self.semantic_pack)
+        if any(type(item) is not CommittedArtifactMemberReference for item in members):  # noqa: E721
+            raise StoreValidationError("VLM pack-set children require exact member references")
+        if tuple(item.member_ordinal for item in members) != (0, 1, 2):
+            raise StoreValidationError("VLM pack-set child member order is invalid")
+        if tuple(item.artifact_type for item in members) != (
+            "vlm_request_record",
+            "vlm_response_record",
+            "vlm_semantic_pack",
+        ):
+            raise StoreValidationError("VLM pack-set child member types are invalid")
+        if len({item.receipt_id for item in members}) != 1 or len(
+            {item.artifact_set_id for item in members}
+        ) != 1:
+            raise StoreValidationError("VLM pack-set child members must share a Receipt/ArtifactSet")
+        if len({item.scope for item in members}) != 1 or len(
+            {item.revision for item in members}
+        ) != 1:
+            raise StoreValidationError(
+                "VLM pack-set child members must share scope/revision"
+            )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "episode_index": self.episode_index,
+            "idempotency_key": self.idempotency_key,
+            "request_hash": self.request_hash,
+            "request_record": self.request_record.to_mapping(),
+            "response_record": self.response_record.to_mapping(),
+            "semantic_pack": self.semantic_pack.to_mapping(),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class CommittedVlmInputReference:
@@ -728,8 +849,7 @@ class CommittedSemanticInputsRequest:
 
     job: Job
     source_manifest: CommittedArtifactMemberReference
-    source_proxy_blobs: tuple[BlobRef, ...]
-    vlm_inputs: tuple[CommittedVlmInputReference, ...]
+    vlm_semantic_pack_set: CommittedArtifactMemberReference
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:  # noqa: E721
@@ -738,23 +858,16 @@ class CommittedSemanticInputsRequest:
             raise StoreValidationError(
                 "semantic source manifest must be an exact member reference"
             )
-        source_blobs = tuple(self.source_proxy_blobs)
-        vlm_inputs = tuple(self.vlm_inputs)
-        if not source_blobs or any(type(item) is not BlobRef for item in source_blobs):  # noqa: E721
+        if type(self.vlm_semantic_pack_set) is not CommittedArtifactMemberReference:  # noqa: E721
             raise StoreValidationError(
-                "semantic source_proxy_blobs must contain exact BlobRefs"
+                "semantic pack set must be an exact member reference"
             )
-        if not vlm_inputs or any(type(item) is not CommittedVlmInputReference for item in vlm_inputs):  # noqa: E721
-            raise StoreValidationError(
-                "semantic vlm_inputs must contain exact committed VLM references"
-            )
-        if len(source_blobs) != len(set(source_blobs)):
-            raise StoreValidationError("semantic source proxy BlobRefs must be unique")
-        set_ids = tuple(item.semantic_pack.artifact_set_id for item in vlm_inputs)
-        if len(set_ids) != len(set(set_ids)):
-            raise StoreValidationError("semantic VLM ArtifactSets must be unique")
-        object.__setattr__(self, "source_proxy_blobs", source_blobs)
-        object.__setattr__(self, "vlm_inputs", vlm_inputs)
+        if (
+            self.vlm_semantic_pack_set.artifact_type != "vlm_semantic_pack_set"
+            or self.vlm_semantic_pack_set.logical_id != "vlm_semantic_pack_set"
+            or self.vlm_semantic_pack_set.member_ordinal != 0
+        ):
+            raise StoreValidationError("semantic pack set member identity is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -762,15 +875,15 @@ class SourceWindowIdentity:
     """Owner-bound Source/Window projection safe for Stage 1-3 semantics."""
 
     episode_index: int
+    stream_index: int
+    core_start_pts: int
+    core_end_pts: int
+    window_manifest_sha256: str
     source_id: str
     source_sha256: str
     source_clock_id: str
-    window_manifest_sha256: str
     window_manifest_set_sha256: str
     proxy_blob: BlobRef
-    stream_index: int = 0
-    core_start_pts: int = 0
-    core_end_pts: int = 1
 
     def __post_init__(self) -> None:
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
@@ -797,10 +910,8 @@ class SourceWindowIdentity:
     @property
     def canonical_order_key(self) -> tuple[object, ...]:
         return (
-            self.source_id,
-            self.source_sha256,
+            self.episode_index,
             self.stream_index,
-            self.source_clock_id,
             self.core_start_pts,
             self.core_end_pts,
             self.window_manifest_sha256,
@@ -835,11 +946,14 @@ class CommittedSemanticInputs:
     """Exact committed Source/Window/Doubao inputs consumed by Stage 1-3."""
 
     source_manifest: PersistedWholeSeriesSourceManifest
+    source_grant: SourceOperationGrant
     inputs: tuple[CommittedVlmSemanticInput, ...]
 
     def __post_init__(self) -> None:
         if type(self.source_manifest) is not PersistedWholeSeriesSourceManifest:  # noqa: E721
             raise StoreValidationError("semantic source_manifest is invalid")
+        if type(self.source_grant) is not SourceOperationGrant:  # noqa: E721
+            raise StoreValidationError("semantic source_grant is invalid")
         inputs = tuple(self.inputs)
         if not inputs or any(type(item) is not CommittedVlmSemanticInput for item in inputs):  # noqa: E721
             raise StoreValidationError("semantic inputs must contain committed VLM inputs")

@@ -27,6 +27,7 @@ from autocut_kernel.pipeline import (
     VlmBatchChildOutcome,
 )
 from autocut_kernel.store import (
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
     CommandClaim,
     CommandRejection,
     CommandStateError,
@@ -482,7 +483,7 @@ def test_postgres_resolves_exact_child_references_and_batch_finalizer() -> None:
     batch = FinalizeVlmBatchCommand(store).execute(
         FinalizeVlmBatchRequest(
             job,
-            "vlm-independent-proof-batch",
+            VLM_BATCH_IDEMPOTENCY_PREFIX + "independent-proof",
             canonical_recipe_scope(job),
             1,
             1,
@@ -540,9 +541,10 @@ def test_postgres_reader_rejects_missing_and_duplicate_relabelled_child() -> Non
         result.outcome.artifact_set_id,
     )
     duplicate = replace(first, episode_index=1)
+    batch_key = VLM_BATCH_IDEMPOTENCY_PREFIX + "duplicate-proof"
     batch_request = FinalizeVlmBatchRequest(
         job,
-        "vlm-duplicate-proof-batch",
+        batch_key,
         canonical_recipe_scope(job),
         1,
         2,
@@ -553,7 +555,7 @@ def test_postgres_reader_rejects_missing_and_duplicate_relabelled_child() -> Non
 
     with pytest.raises(ValueError, match="exact persisted Kernel outcome|duplicate"):
         FinalizeVlmBatchCommand(store).execute(batch_request)
-    assert store.read_outcome(job, "vlm-duplicate-proof-batch") is None
+    assert store.read_outcome(job, batch_key) is None
 
 
 def test_indeterminate_dispatch_reconciles_same_attempt_without_redispatch() -> None:

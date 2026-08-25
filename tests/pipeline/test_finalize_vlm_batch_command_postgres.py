@@ -11,10 +11,13 @@ from autocut_kernel.pipeline import (
     VlmBatchChildOutcome,
 )
 from autocut_kernel.store import (
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
     BlobRef,
     CommandClaim,
     CommandOutcome,
     CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedVlmInputReference,
     Job,
     PersistedVlmGenerationChild,
     VlmRequestRecordReference,
@@ -31,6 +34,7 @@ class Store:
         self.claims: dict[str, tuple[CommandClaim, CommandOutcome]] = {}
         self.successes: list[CommandSuccess] = []
         self.children: dict[str, PersistedVlmGenerationChild] = {}
+        self.references: dict[str, CommittedVlmInputReference] = {}
         self.unreadable: set[str] = set()
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
@@ -43,6 +47,9 @@ class Store:
         self.claims[claim.idempotency_key] = (claim, outcome)
         return outcome
 
+    def claim_vlm_batch_command(self, claim: CommandClaim) -> CommandOutcome:
+        return self.claim_command(claim)
+
     def read_committed_vlm_generation_child(
         self,
         job: Job,
@@ -54,6 +61,14 @@ class Store:
         assert result.source_job == job
         return result
 
+    def read_committed_vlm_input_reference(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> CommittedVlmInputReference:
+        assert self.children[idempotency_key].source_job == job
+        return self.references[idempotency_key]
+
     def seed_child(
         self,
         job: Job,
@@ -61,7 +76,40 @@ class Store:
         *,
         unreadable: bool = False,
     ) -> None:
-        self.children[child.idempotency_key] = _persisted(job, child)
+        persisted = _persisted(job, child)
+        self.children[child.idempotency_key] = persisted
+        common = {
+            "receipt_id": persisted.receipt_id,
+            "artifact_set_id": persisted.artifact_set_id,
+            "scope": canonical_recipe_scope(job),
+            "revision": 1,
+        }
+        self.references[child.idempotency_key] = CommittedVlmInputReference(
+            request_record=CommittedArtifactMemberReference(
+                member_ordinal=0,
+                artifact_type="vlm_request_record",
+                logical_id=persisted.reference.logical_id,
+                content_hash=persisted.reference.content_hash,
+                **common,
+            ),
+            response_record=CommittedArtifactMemberReference(
+                member_ordinal=1,
+                artifact_type="vlm_response_record",
+                logical_id=f"vlm_response_{child.window_manifest_sha256[7:31]}",
+                content_hash=_hash("a"),
+                **common,
+            ),
+            semantic_pack=CommittedArtifactMemberReference(
+                member_ordinal=2,
+                artifact_type="vlm_semantic_pack",
+                logical_id=f"semantic_pack_{child.window_manifest_sha256[7:39]}",
+                content_hash=_hash("b"),
+                **common,
+            ),
+            proxy_blob=BlobRef(uuid4(), _hash("c"), 1, "video/mp4"),
+            request_payload=persisted.request_payload,
+            raw_response=BlobRef(uuid4(), _hash("d"), 1, "application/json"),
+        )
         if unreadable:
             self.unreadable.add(child.idempotency_key)
 
@@ -75,6 +123,9 @@ class Store:
         )
         self._replace(success.command_slot_id, outcome)
         return outcome
+
+    def commit_vlm_batch_success(self, success: CommandSuccess) -> CommandOutcome:
+        return self.commit_command_success(success)
 
     def _replace(self, slot_id: UUID, outcome: CommandOutcome) -> None:
         for key, (claim, current) in self.claims.items():
@@ -181,7 +232,7 @@ def _request(*children: VlmBatchChildOutcome) -> FinalizeVlmBatchRequest:
     job = Job("pipeline_run_" + "a" * 32, "test")
     return FinalizeVlmBatchRequest(
         job,
-        "vlm-batch-finalize",
+        VLM_BATCH_IDEMPOTENCY_PREFIX + "finalize",
         canonical_recipe_scope(job),
         1,
         max(len(children), 1),
@@ -208,7 +259,11 @@ def test_success_commits_nonempty_aggregate_artifact_and_replays_receipt() -> No
     assert first.outcome.state == "succeeded"
     assert first.outcome.receipt_id == replay.outcome.receipt_id
     assert first.artifact is not None
-    assert first.artifact.artifact_type == "vlm_batch_evidence"
+    assert first.artifact.artifact_type == "vlm_semantic_pack_set"
+    payload = json.loads(first.artifact.payload_json)
+    assert payload["children"][0]["request_record"]["member_ordinal"] == 0
+    assert payload["children"][0]["semantic_pack"]["artifact_type"] == "vlm_semantic_pack"
+    assert payload["request_policy"]["model_id"] == "doubao-model"
     assert len(store.successes) == 1
 
 
@@ -272,3 +327,36 @@ def test_duplicate_persisted_child_cannot_be_relabelled_as_another_episode() -> 
     with pytest.raises(ValueError, match="exact persisted Kernel outcome|duplicate"):
         FinalizeVlmBatchCommand(store).execute(request)
     assert store.claims == {}
+
+
+def test_mixed_frozen_request_policies_cannot_be_batched() -> None:
+    store = Store()
+    request = _request(_child(0), _child(1))
+    _seed_request(store, request)
+    second = store.children["vlm-child-1"]
+    payload = json.loads(second.payload_json)
+    payload["request_identity"]["model_id"] = "another-model"
+    identity_json = json.dumps(
+        payload["request_identity"], separators=(",", ":"), sort_keys=True
+    )
+    payload["request_identity_sha256"] = canonical_payload_hash(identity_json)
+    payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    store.children["vlm-child-1"] = replace(
+        second,
+        payload_json=payload_json,
+        request_identity_sha256=payload["request_identity_sha256"],
+        reference=replace(
+            second.reference,
+            content_hash=canonical_payload_hash(payload_json),
+        ),
+    )
+    store.references["vlm-child-1"] = replace(
+        store.references["vlm-child-1"],
+        request_record=replace(
+            store.references["vlm-child-1"].request_record,
+            content_hash=canonical_payload_hash(payload_json),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="frozen request policy"):
+        FinalizeVlmBatchCommand(store).execute(request)

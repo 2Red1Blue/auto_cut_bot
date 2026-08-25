@@ -30,7 +30,6 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedSemanticInputsRequest,
-    CommittedVlmInputReference,
     Job,
     PersistedVlmSemanticPack,
     SemanticInputUnavailableError,
@@ -56,18 +55,18 @@ from .source_prep_stage import (
     require_committed_source_operation,
     source_prep_kernel_idempotency_key,
 )
-from .vlm_stage import vlm_kernel_idempotency_key
+from .vlm_stage import vlm_batch_kernel_idempotency_key
 
 MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequential-v1"
 _ARTIFACT_REVISION = 1
 
 
 class MediaPreflightPipelineStore(SourcePrepStore, TimedMediaEvidenceStore, Protocol):
-    def read_committed_vlm_input_reference(
+    def read_committed_vlm_semantic_pack_set_reference(
         self,
         job: Job,
         idempotency_key: str,
-    ) -> CommittedVlmInputReference: ...
+    ) -> CommittedArtifactMemberReference: ...
 
     def read_committed_semantic_inputs(
         self,
@@ -228,22 +227,23 @@ class MediaPreflightPipelineStage:
             artifact_revision=_ARTIFACT_REVISION,
         )
         require_committed_source_operation(source_bundle, "render_source")
-        doubao_policy = context.execution_profile.to_doubao_policy()
-        vlm_references: list[CommittedVlmInputReference] = []
-        for episode_index, _episode in enumerate(source_bundle.prepared.episodes):
-            vlm_key = vlm_kernel_idempotency_key(
-                run_id=context.run_id,
-                episode_index=episode_index,
-                source_bundle=source_bundle,
-                policy=doubao_policy,
-                execution_profile_hash=context.execution_profile_hash,
+        require_committed_source_operation(source_bundle, "semantic_analysis")
+        vlm_batch_key = vlm_batch_kernel_idempotency_key(
+            run_id=context.run_id,
+            source_bundle=source_bundle,
+            execution_profile_hash=context.execution_profile_hash,
+        )
+        try:
+            vlm_semantic_pack_set = (
+                self._store.read_committed_vlm_semantic_pack_set_reference(
+                    job,
+                    vlm_batch_key,
+                )
             )
-            try:
-                vlm_references.append(self._store.read_committed_vlm_input_reference(job, vlm_key))
-            except SemanticInputUnavailableError as error:
-                raise PipelineRunValidationError(
-                    "media-preflight requires exact committed VLM references"
-                ) from error
+        except SemanticInputUnavailableError as error:
+            raise PipelineRunValidationError(
+                "media-preflight requires one exact committed VLM SemanticPackSet"
+            ) from error
         source_reference = source_bundle.artifact_reference
         committed = self._store.read_committed_semantic_inputs(
             CommittedSemanticInputsRequest(
@@ -258,10 +258,7 @@ class MediaPreflightPipelineStage:
                     revision=source_reference.revision,
                     content_hash=source_reference.content_hash,
                 ),
-                source_proxy_blobs=tuple(
-                    episode.proxy_blob for episode in source_bundle.prepared.episodes
-                ),
-                vlm_inputs=tuple(vlm_references),
+                vlm_semantic_pack_set=vlm_semantic_pack_set,
             )
         )
         inputs_by_window = {

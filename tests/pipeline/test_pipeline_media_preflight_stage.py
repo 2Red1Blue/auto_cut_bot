@@ -413,7 +413,7 @@ def _forge_semantic_pack_with_recomputed_member_and_set_hash() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "scenario",
-    ("valid", "forged-pack", "missing-render-grant"),
+    ("valid", "forged-pack", "missing-render-grant", "missing-semantic-grant"),
 )
 async def test_real_restart_reconcile_replays_original_receipt_without_detectors(
     tmp_path: Path,
@@ -484,7 +484,11 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
                     (
                         ("semantic_analysis",)
                         if scenario == "missing-render-grant"
-                        else ("semantic_analysis", "render_source")
+                        else (
+                            ("render_source",)
+                            if scenario == "missing-semantic-grant"
+                            else ("semantic_analysis", "render_source")
+                        )
                     ),
                 ),
             )
@@ -492,26 +496,37 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     ).execute(source_context)
     await project(source_context, source_result)
 
-    vlm_context = await claim_context()
     provider = _VisibleSemanticPackProvider()
-    vlm_result = await VlmPipelineStage(kernel_store, provider).execute(vlm_context)
-    await project(vlm_context, vlm_result)
-    assert provider.dispatch_calls == 1
+    if scenario != "missing-semantic-grant":
+        vlm_context = await claim_context()
+        vlm_result = await VlmPipelineStage(kernel_store, provider).execute(vlm_context)
+        await project(vlm_context, vlm_result)
+        assert provider.dispatch_calls == 1
 
     if scenario == "forged-pack":
         _forge_semantic_pack_with_recomputed_member_and_set_hash()
 
-    media_context = await claim_context()
+    if scenario == "missing-semantic-grant":
+        snapshot = await run_store.read_run(run_id)
+        assert snapshot is not None
+        media_context = PipelineStageContext(
+            run_id,
+            request,
+            snapshot.commands[2],
+            snapshot.execution_profile,
+        )
+    else:
+        media_context = await claim_context()
     speech = _SpeechPort()
     runner = _CountingRunner()
-    if scenario == "missing-render-grant":
+    if scenario in ("missing-render-grant", "missing-semantic-grant"):
 
         def unexpected_vlm_read(*_args: object, **_kwargs: object) -> object:
-            raise AssertionError("render authorization must precede every VLM read")
+            raise AssertionError("source authorization must precede every VLM read")
 
         monkeypatch.setattr(
             kernel_store,
-            "read_committed_vlm_input_reference",
+            "read_committed_vlm_semantic_pack_set_reference",
             unexpected_vlm_read,
         )
         monkeypatch.setattr(
@@ -523,10 +538,15 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
     )
-    if scenario == "missing-render-grant":
-        with pytest.raises(PipelineRunValidationError, match="render_source"):
+    if scenario in ("missing-render-grant", "missing-semantic-grant"):
+        missing_purpose = (
+            "render_source"
+            if scenario == "missing-render-grant"
+            else "semantic_analysis"
+        )
+        with pytest.raises(PipelineRunValidationError, match=missing_purpose):
             await first_stage.execute(media_context)
-        with pytest.raises(PipelineRunValidationError, match="render_source"):
+        with pytest.raises(PipelineRunValidationError, match=missing_purpose):
             await first_stage.reconcile(media_context)
         assert len(speech.requests) == 0
         assert runner.visual_calls == 0

@@ -23,16 +23,31 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.ffprobe_port import ProbeResult
 from autocut_kernel.media.types import ToolEvidence, VideoStreamEvidence, canonical_sha256
-from autocut_kernel.pipeline import GenerateVlmEvidenceCommand, GenerateVlmEvidenceRequest
-from autocut_kernel.source_manifest import SourceOperationPolicy, decode_source_manifest
+from autocut_kernel.pipeline import (
+    FinalizeVlmBatchCommand,
+    FinalizeVlmBatchRequest,
+    GenerateVlmEvidenceCommand,
+    GenerateVlmEvidenceRequest,
+    VlmBatchChildOutcome,
+)
+from autocut_kernel.source_manifest import (
+    SourceOperationPolicy,
+    SourceOperationPurpose,
+    SourcePurposeDeniedError,
+    decode_source_manifest,
+)
 from autocut_kernel.store import (
+    VLM_BATCH_FINALIZER_COMMAND_NAME,
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
     ArtifactMember,
+    ArtifactScope,
     BlobRef,
     CommandClaim,
+    CommandRejection,
+    CommandStateError,
     CommandSuccess,
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
-    CommittedVlmInputReference,
     Job,
     JobProfileMismatchError,
     PostgresRuntimeStore,
@@ -235,21 +250,34 @@ def _source_payload(
     manifest_set: WindowManifestSet,
     proxy_blob: BlobRef,
     probe: SourceMediaProbe,
+    *,
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
 ) -> str:
-    return _series_source_payload(((manifest, manifest_set, proxy_blob, probe),))
+    return _series_source_payload(
+        ((manifest, manifest_set, proxy_blob, probe),),
+        authorized_purposes=authorized_purposes,
+    )
 
 
 def _series_source_payload(
     episodes: tuple[
         tuple[WindowManifest, WindowManifestSet, BlobRef, SourceMediaProbe], ...
     ],
+    *,
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
 ) -> str:
     sources = [probe.source.to_mapping() for _manifest, _set, _blob, probe in episodes]
     policy = SourceOperationPolicy(
         authorization_id="fixture-authority",
         series_id="fixture-series",
         expected_source_count=len(sources),
-        authorized_purposes=("semantic_analysis", "render_source"),
+        authorized_purposes=authorized_purposes,
     )
     census = {
         "authorization_id": policy.authorization_id,
@@ -399,6 +427,22 @@ def _read_committed_artifact_payload(
     return dict(row[0])
 
 
+def _member_reference_from_mapping(value: object) -> CommittedArtifactMemberReference:
+    assert isinstance(value, dict)
+    scope = value["scope"]
+    assert isinstance(scope, dict)
+    return CommittedArtifactMemberReference(
+        receipt_id=UUID(str(value["receipt_id"])),
+        artifact_set_id=UUID(str(value["artifact_set_id"])),
+        member_ordinal=int(value["member_ordinal"]),
+        scope=ArtifactScope(str(scope["namespace"]), str(scope["kind"]), str(scope["key"])),
+        artifact_type=str(value["artifact_type"]),
+        logical_id=str(value["logical_id"]),
+        revision=int(value["revision"]),
+        content_hash=str(value["content_hash"]),
+    )
+
+
 def _rehash_source_grant(payload: dict[str, object], *, policy: bool = True) -> None:
     census = payload["census"]
     assert isinstance(census, dict)
@@ -448,6 +492,10 @@ def _seed_committed_inputs(
     *,
     source_revision: int = 1,
     source_manifest_sha256: str | None = None,
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
 ) -> tuple[CommittedSemanticInputsRequest, _Provider]:
     proxy = b"exact-source-proxy"
     proxy_blob = store.put_immutable_blob(
@@ -457,7 +505,13 @@ def _seed_committed_inputs(
         media_type="video/mp4",
     )
     manifest, manifest_set, probe = _window(proxy_blob)
-    source_payload = _source_payload(manifest, manifest_set, proxy_blob, probe)
+    source_payload = _source_payload(
+        manifest,
+        manifest_set,
+        proxy_blob,
+        probe,
+        authorized_purposes=authorized_purposes,
+    )
     source_member = ArtifactMember(
         "whole_series_source_manifest",
         "whole_series_source_manifest",
@@ -594,36 +648,43 @@ def _seed_committed_inputs(
     assert result.outcome.artifact_set_id is not None
     assert result.attempt is not None
     assert result.attempt.raw_response is not None
-    by_type = {member.artifact_type: member for member in result.artifacts}
-    vlm_reference = CommittedVlmInputReference(
-        request_record=_member_reference(
-            by_type["vlm_request_record"],
-            receipt_id=result.outcome.receipt_id,
-            artifact_set_id=result.outcome.artifact_set_id,
-            ordinal=0,
-        ),
-        response_record=_member_reference(
-            by_type["vlm_response_record"],
-            receipt_id=result.outcome.receipt_id,
-            artifact_set_id=result.outcome.artifact_set_id,
-            ordinal=1,
-        ),
-        semantic_pack=_member_reference(
-            by_type["vlm_semantic_pack"],
-            receipt_id=result.outcome.receipt_id,
-            artifact_set_id=result.outcome.artifact_set_id,
-            ordinal=2,
-        ),
-        proxy_blob=proxy_blob,
-        request_payload=result.attempt.request_payload,
-        raw_response=result.attempt.raw_response,
+    finalized = FinalizeVlmBatchCommand(store).execute(
+        FinalizeVlmBatchRequest(
+            job=job,
+            idempotency_key=VLM_BATCH_IDEMPOTENCY_PREFIX + "semantic-pack-set",
+            artifact_scope=canonical_recipe_scope(job),
+            artifact_revision=1,
+            declared_episode_count=1,
+            source_manifest_sha256=request.source_manifest_sha256,
+            source_provenance_sha256=source_provenance,
+            children=(
+                VlmBatchChildOutcome(
+                    episode_index=0,
+                    idempotency_key=request.idempotency_key,
+                    window_manifest_sha256=manifest.canonical_hash,
+                    source_manifest_sha256=request.source_manifest_sha256,
+                    source_provenance_sha256=source_provenance,
+                    request_hash=request.request_hash,
+                    state="succeeded",
+                    receipt_id=result.outcome.receipt_id,
+                    artifact_set_id=result.outcome.artifact_set_id,
+                ),
+            ),
+        )
     )
+    assert finalized.artifact is not None
+    assert finalized.outcome.receipt_id is not None
+    assert finalized.outcome.artifact_set_id is not None
     return (
         CommittedSemanticInputsRequest(
             job=job,
             source_manifest=source_reference,
-            source_proxy_blobs=(proxy_blob,),
-            vlm_inputs=(vlm_reference,),
+            vlm_semantic_pack_set=_member_reference(
+                finalized.artifact,
+                receipt_id=finalized.outcome.receipt_id,
+                artifact_set_id=finalized.outcome.artifact_set_id,
+                ordinal=0,
+            ),
         ),
         provider,
     )
@@ -693,7 +754,7 @@ def _seed_two_window_inputs(
         source_outcome.job_id,
         source_slot.command_slot_id,
     )
-    vlm_references: list[CommittedVlmInputReference] = []
+    child_outcomes: list[VlmBatchChildOutcome] = []
     for episode_index, (manifest, manifest_set, proxy_blob, _probe) in enumerate(windows):
         state_summary = (
             "角色持续进入画面。" if episode_index == 0 else second_state_summary
@@ -799,37 +860,43 @@ def _seed_two_window_inputs(
         assert result.outcome.artifact_set_id is not None
         assert result.attempt is not None
         assert result.attempt.raw_response is not None
-        by_type = {member.artifact_type: member for member in result.artifacts}
-        vlm_references.append(
-            CommittedVlmInputReference(
-                request_record=_member_reference(
-                    by_type["vlm_request_record"],
-                    receipt_id=result.outcome.receipt_id,
-                    artifact_set_id=result.outcome.artifact_set_id,
-                    ordinal=0,
-                ),
-                response_record=_member_reference(
-                    by_type["vlm_response_record"],
-                    receipt_id=result.outcome.receipt_id,
-                    artifact_set_id=result.outcome.artifact_set_id,
-                    ordinal=1,
-                ),
-                semantic_pack=_member_reference(
-                    by_type["vlm_semantic_pack"],
-                    receipt_id=result.outcome.receipt_id,
-                    artifact_set_id=result.outcome.artifact_set_id,
-                    ordinal=2,
-                ),
-                proxy_blob=proxy_blob,
-                request_payload=result.attempt.request_payload,
-                raw_response=result.attempt.raw_response,
+        child_outcomes.append(
+            VlmBatchChildOutcome(
+                episode_index=episode_index,
+                idempotency_key=generation_request.idempotency_key,
+                window_manifest_sha256=manifest.canonical_hash,
+                source_manifest_sha256=source_member.content_hash,
+                source_provenance_sha256=source_provenance,
+                request_hash=generation_request.request_hash,
+                state="succeeded",
+                receipt_id=result.outcome.receipt_id,
+                artifact_set_id=result.outcome.artifact_set_id,
             )
         )
+    finalized = FinalizeVlmBatchCommand(store).execute(
+        FinalizeVlmBatchRequest(
+            job=job,
+            idempotency_key=VLM_BATCH_IDEMPOTENCY_PREFIX + "semantic-pack-set",
+            artifact_scope=canonical_recipe_scope(job),
+            artifact_revision=1,
+            declared_episode_count=2,
+            source_manifest_sha256=source_member.content_hash,
+            source_provenance_sha256=source_provenance,
+            children=tuple(child_outcomes),
+        )
+    )
+    assert finalized.artifact is not None
+    assert finalized.outcome.receipt_id is not None
+    assert finalized.outcome.artifact_set_id is not None
     return CommittedSemanticInputsRequest(
         job=job,
         source_manifest=source_reference,
-        source_proxy_blobs=proxy_blobs,
-        vlm_inputs=tuple(vlm_references),
+        vlm_semantic_pack_set=_member_reference(
+            finalized.artifact,
+            receipt_id=finalized.outcome.receipt_id,
+            artifact_set_id=finalized.outcome.artifact_set_id,
+            ordinal=0,
+        ),
     )
 
 
@@ -848,12 +915,156 @@ def test_exact_reader_replays_owner_bound_source_window_and_vlm() -> None:
     assert first.inputs[0].source_window.window_manifest_sha256 == (
         first.inputs[0].request_identity.window_manifest_sha256
     )
-    assert first.inputs[0].semantic_pack.source_child.artifact_set_id == (
-        request.vlm_inputs[0].semantic_pack.artifact_set_id
-    )
+    assert first.inputs[0].semantic_pack.source_child.artifact_set_id is not None
+    first.source_grant.require_purpose("semantic_analysis")
     assert first.inputs[0].semantic_pack.semantic_pack.candidate_hypotheses == ()
     assert "transcript" not in first.inputs[0].semantic_pack.payload_json.lower()
     assert "vad" not in first.inputs[0].semantic_pack.payload_json.lower()
+
+
+def test_batch_owner_reader_resolves_the_exact_committed_pack_set_member() -> None:
+    assert DSN is not None
+    job = Job("semantic-pack-set-owner", "test")
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request, _provider = _seed_committed_inputs(store, job)
+
+    reference = store.read_committed_vlm_semantic_pack_set_reference(
+        job,
+        VLM_BATCH_IDEMPOTENCY_PREFIX + "semantic-pack-set",
+    )
+
+    assert reference == request.vlm_semantic_pack_set
+
+
+def test_batch_owner_reader_rejects_unregistered_strategy_after_self_rehash() -> None:
+    assert DSN is not None
+    job = Job("semantic-pack-set-strategy-tamper", "test")
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request, _provider = _seed_committed_inputs(store, job)
+    payload = _read_committed_artifact_payload(request.vlm_semantic_pack_set)
+    payload["strategy_version"] = "unregistered-finalizer-strategy"
+    _forge_committed_artifact_payload(request.vlm_semantic_pack_set, payload)
+
+    with pytest.raises(SemanticInputIntegrityError, match="immutable verification"):
+        store.read_committed_vlm_semantic_pack_set_reference(
+            job,
+            VLM_BATCH_IDEMPOTENCY_PREFIX + "semantic-pack-set",
+        )
+
+
+def test_batch_owner_reader_recomputes_the_finalizer_request_hash() -> None:
+    assert DSN is not None
+    job = Job("semantic-pack-set-request-tamper", "test")
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request, _provider = _seed_committed_inputs(store, job)
+    payload = _read_committed_artifact_payload(request.vlm_semantic_pack_set)
+    payload["source_provenance_sha256"] = "sha256:" + "f" * 64
+    _forge_committed_artifact_payload(request.vlm_semantic_pack_set, payload)
+
+    with pytest.raises(SemanticInputIntegrityError, match="request hash"):
+        store.read_committed_vlm_semantic_pack_set_reference(
+            job,
+            VLM_BATCH_IDEMPOTENCY_PREFIX + "semantic-pack-set",
+        )
+
+
+def test_batch_owner_reader_rejects_an_uncommitted_batch_identity() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+
+    with pytest.raises(
+        SemanticInputUnavailableError,
+        match="SemanticPackSet is unavailable",
+    ):
+        store.read_committed_vlm_semantic_pack_set_reference(
+            Job("missing-semantic-pack-set", "test"),
+            VLM_BATCH_IDEMPOTENCY_PREFIX + "missing",
+        )
+    with pytest.raises(StoreValidationError, match="reserved batch identity"):
+        store.read_committed_vlm_semantic_pack_set_reference(
+            Job("missing-semantic-pack-set", "test"),
+            "ordinary-command-key",
+        )
+
+
+def test_generic_command_apis_cannot_claim_or_complete_the_vlm_batch_owner() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    job = Job("reserved-vlm-batch-owner", "test")
+    request_hash = _digest_bytes(b"reserved-vlm-batch-owner")
+    claim = CommandClaim(
+        job,
+        VLM_BATCH_IDEMPOTENCY_PREFIX + "reserved-owner",
+        VLM_BATCH_FINALIZER_COMMAND_NAME,
+        request_hash,
+    )
+
+    with pytest.raises(CommandStateError, match="explicit VLM batch owner"):
+        store.claim_command(claim)
+
+    with pytest.raises(CommandStateError, match="explicit VLM batch owner"):
+        store.claim_command(
+            CommandClaim(
+                job,
+                claim.idempotency_key,
+                "ForgedOtherCommand",
+                request_hash,
+            )
+        )
+
+    outcome = store.claim_vlm_batch_command(claim)
+    with pytest.raises(CommandStateError, match="reserved vlm-batch identity"):
+        store.claim_vlm_batch_command(
+            CommandClaim(
+                job,
+                "non-canonical-batch-key",
+                VLM_BATCH_FINALIZER_COMMAND_NAME,
+                request_hash,
+            )
+        )
+    payload_json = "{}"
+    member = ArtifactMember(
+        "vlm_semantic_pack_set",
+        "vlm_semantic_pack_set",
+        1,
+        canonical_recipe_scope(job),
+        canonical_payload_hash(payload_json),
+        payload_json,
+    )
+    success = CommandSuccess(
+        outcome.command_slot_id,
+        _set_hash((member,)),
+        (member,),
+    )
+    with pytest.raises(CommandStateError, match="explicit VLM batch owner"):
+        store.commit_command_success(success)
+    with pytest.raises(CommandStateError, match="cannot use generic rejection"):
+        store.commit_command_rejection(
+            CommandRejection(
+                outcome.command_slot_id,
+                "FORGED_VLM_BATCH",
+                '{"reason":"generic API is forbidden"}',
+            )
+        )
+
+
+def test_semantic_authorization_is_checked_before_any_vlm_batch_read() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request, _provider = _seed_committed_inputs(
+        store,
+        Job("semantic-authorization-order", "test"),
+        authorized_purposes=("render_source",),
+    )
+    missing_batch = replace(
+        request.vlm_semantic_pack_set,
+        receipt_id=uuid4(),
+    )
+
+    with pytest.raises(SourcePurposeDeniedError, match="semantic_analysis"):
+        store.read_committed_semantic_inputs(
+            replace(request, vlm_semantic_pack_set=missing_batch)
+        )
 
 
 def test_source_reader_restart_rebuilds_exact_typed_operation_grant() -> None:
@@ -1018,6 +1229,34 @@ def test_source_and_semantic_readers_reject_rehashed_cross_source_identity_hash_
         store.read_committed_semantic_inputs(forged_request)
 
 
+def test_semantic_reader_requires_typed_semantic_analysis_grant() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request, _provider = _seed_committed_inputs(
+        store,
+        Job("source-grant-render-only", "test"),
+    )
+    payload = _read_committed_artifact_payload(request.source_manifest)
+    census = payload["census"]
+    assert isinstance(census, dict)
+    census["authorized_purposes"] = ["render_source"]
+    _rehash_source_grant(payload)
+    forged_source = _forge_committed_artifact_payload(request.source_manifest, payload)
+
+    persisted = store.read_whole_series_source_manifest(
+        request.job,
+        request.source_manifest.artifact_set_id,
+    )
+    assert decode_source_manifest(
+        persisted.payload_json,
+        persisted.proxy_blobs,
+    ).census.policy.authorized_purposes == ("render_source",)
+    with pytest.raises(SourcePurposeDeniedError, match="semantic_analysis"):
+        store.read_committed_semantic_inputs(
+            replace(request, source_manifest=forged_source)
+        )
+
+
 def test_exact_reader_rejects_self_consistent_persisted_pack_forged_from_raw() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
@@ -1026,7 +1265,7 @@ def test_exact_reader_rejects_self_consistent_persisted_pack_forged_from_raw() -
         Job("semantic-forged-pack", "test"),
     )
     committed = store.read_committed_semantic_inputs(request)
-    manifest, manifest_set, _probe = _window(request.source_proxy_blobs[0])
+    manifest, manifest_set, _probe = _window(committed.inputs[0].source_window.proxy_blob)
     altered_raw = json.loads(provider.response)
     altered_raw["window_summary"]["summary"] = "另一个可见动作。"
     altered_raw["facts"][0]["summary"] = "另一个可见动作。"
@@ -1047,16 +1286,24 @@ def test_exact_reader_rejects_self_consistent_persisted_pack_forged_from_raw() -
             max_total_text_characters=8_192,
         ),
     )
+    aggregate_payload = _read_committed_artifact_payload(
+        request.vlm_semantic_pack_set
+    )
+    children = aggregate_payload["children"]
+    assert isinstance(children, list) and isinstance(children[0], dict)
+    semantic_mapping = children[0]["semantic_pack"]
+    semantic_reference = _member_reference_from_mapping(semantic_mapping)
     forged_reference = _forge_committed_artifact_payload(
-        request.vlm_inputs[0].semantic_pack,
+        semantic_reference,
         forged_pack.to_mapping(),
     )
-    forged_request = replace(
-        request,
-        vlm_inputs=(
-            replace(request.vlm_inputs[0], semantic_pack=forged_reference),
-        ),
+    assert isinstance(semantic_mapping, dict)
+    semantic_mapping["content_hash"] = forged_reference.content_hash
+    forged_aggregate = _forge_committed_artifact_payload(
+        request.vlm_semantic_pack_set,
+        aggregate_payload,
     )
+    forged_request = replace(request, vlm_semantic_pack_set=forged_aggregate)
 
     with pytest.raises(SemanticInputIntegrityError, match="member/blob/owner"):
         store.read_committed_semantic_inputs(forged_request)
@@ -1144,7 +1391,7 @@ def test_exact_reader_accepts_verifiably_continuous_adjacent_packs() -> None:
     ],
     ids=("flag-mismatch", "state-mismatch"),
 )
-def test_exact_reader_rejects_inconsistent_adjacent_pack_continuity(
+def test_exact_reader_preserves_inconsistent_adjacent_pack_continuity(
     second_from_previous: bool,
     second_state_summary: str,
     match: str,
@@ -1158,25 +1405,30 @@ def test_exact_reader_rejects_inconsistent_adjacent_pack_continuity(
         second_state_summary=second_state_summary,
     )
 
-    with pytest.raises(SemanticInputIntegrityError, match=match):
-        store.read_committed_semantic_inputs(request)
+    committed = store.read_committed_semantic_inputs(request)
+
+    assert len(committed.inputs) == 2
+    assert (
+        committed.inputs[1].semantic_pack.semantic_pack.continuity.continues_from_previous
+        is second_from_previous
+    )
+    assert committed.inputs[1].semantic_pack.semantic_pack.facts[0].summary == second_state_summary
 
 
 @pytest.mark.parametrize(
     "tamper",
     [
-        "receipt",
-        "artifact_set",
-        "ordinal",
-        "vlm_v2_type",
-        "scope",
-        "revision",
-        "type",
-        "hash",
-        "proxy_length",
-        "proxy_media_type",
-        "request_length",
-        "raw_media_type",
+        "source_receipt",
+        "source_artifact_set",
+        "source_scope",
+        "source_revision",
+        "source_type",
+        "source_hash",
+        "aggregate_receipt",
+        "aggregate_artifact_set",
+        "aggregate_ordinal",
+        "aggregate_type",
+        "aggregate_hash",
     ],
 )
 def test_exact_reader_rejects_every_forged_member_or_blob_identity(tamper: str) -> None:
@@ -1184,40 +1436,41 @@ def test_exact_reader_rejects_every_forged_member_or_blob_identity(tamper: str) 
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request, _provider = _seed_committed_inputs(store, Job(f"semantic-tamper-{tamper}", "test"))
     source = request.source_manifest
-    vlm = request.vlm_inputs[0]
-    if tamper == "receipt":
+    aggregate = request.vlm_semantic_pack_set
+    if tamper == "source_receipt":
         source = replace(source, receipt_id=uuid4())
-    elif tamper == "artifact_set":
+    elif tamper == "source_artifact_set":
         source = replace(source, artifact_set_id=uuid4())
-    elif tamper == "ordinal":
-        vlm = replace(vlm, semantic_pack=replace(vlm.semantic_pack, member_ordinal=1))
-    elif tamper == "vlm_v2_type":
-        vlm = replace(
-            vlm,
-            semantic_pack=replace(
-                vlm.semantic_pack,
-                artifact_type="vlm_observation_set",
-            ),
-        )
-    elif tamper == "scope":
+    elif tamper == "source_scope":
         source = replace(source, scope=replace(source.scope, key="other-job"))
-    elif tamper == "revision":
+    elif tamper == "source_revision":
         source = replace(source, revision=2)
-    elif tamper == "type":
+    elif tamper == "source_type":
         source = replace(source, artifact_type="recipe")
-    elif tamper == "hash":
+    elif tamper == "source_hash":
         source = replace(source, content_hash="sha256:" + "0" * 64)
-    elif tamper == "proxy_length":
-        vlm = replace(vlm, proxy_blob=replace(vlm.proxy_blob, byte_length=999))
-    elif tamper == "proxy_media_type":
-        vlm = replace(vlm, proxy_blob=replace(vlm.proxy_blob, media_type="video/webm"))
-    elif tamper == "request_length":
-        vlm = replace(vlm, request_payload=replace(vlm.request_payload, byte_length=999))
+    elif tamper == "aggregate_receipt":
+        aggregate = replace(aggregate, receipt_id=uuid4())
+    elif tamper == "aggregate_artifact_set":
+        aggregate = replace(aggregate, artifact_set_id=uuid4())
+    elif tamper == "aggregate_ordinal":
+        aggregate = replace(aggregate, member_ordinal=1)
+    elif tamper == "aggregate_type":
+        aggregate = replace(aggregate, artifact_type="vlm_batch_evidence")
     else:
-        vlm = replace(vlm, raw_response=replace(vlm.raw_response, media_type="text/plain"))
-    forged = replace(request, source_manifest=source, vlm_inputs=(vlm,))
-
-    with pytest.raises((SemanticInputUnavailableError, SemanticInputIntegrityError)):
+        aggregate = replace(aggregate, content_hash="sha256:" + "0" * 64)
+    with pytest.raises(
+        (
+            StoreValidationError,
+            SemanticInputUnavailableError,
+            SemanticInputIntegrityError,
+        )
+    ):
+        forged = replace(
+            request,
+            source_manifest=source,
+            vlm_semantic_pack_set=aggregate,
+        )
         store.read_committed_semantic_inputs(forged)
 
 
@@ -1230,11 +1483,11 @@ def test_exact_reader_rejects_vlm_owner_join_to_another_source_manifest() -> Non
         source_manifest_sha256="sha256:" + "9" * 64,
     )
 
-    with pytest.raises(SemanticInputIntegrityError, match="source|owner"):
+    with pytest.raises(SemanticInputIntegrityError, match="Source|owner"):
         store.read_committed_semantic_inputs(request)
 
 
-def test_typed_request_rejects_missing_duplicate_and_wrong_profile_inputs() -> None:
+def test_typed_request_rejects_wrong_aggregate_identity_and_profile() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request, _provider = _seed_committed_inputs(
@@ -1242,10 +1495,14 @@ def test_typed_request_rejects_missing_duplicate_and_wrong_profile_inputs() -> N
         Job("semantic-request-closed", "test"),
     )
 
-    with pytest.raises(StoreValidationError, match="vlm_inputs"):
-        replace(request, vlm_inputs=())
-    with pytest.raises(StoreValidationError, match="unique"):
-        replace(request, vlm_inputs=(request.vlm_inputs[0], request.vlm_inputs[0]))
+    with pytest.raises(StoreValidationError, match="pack set member identity"):
+        replace(
+            request,
+            vlm_semantic_pack_set=replace(
+                request.vlm_semantic_pack_set,
+                logical_id="vlm_batch_evidence",
+            ),
+        )
     with pytest.raises(JobProfileMismatchError, match="profile"):
         store.read_committed_semantic_inputs(
             replace(request, job=Job(request.job.job_key, "production"))
@@ -1258,7 +1515,7 @@ def test_exact_reader_keeps_prior_source_revision_after_head_advance() -> None:
     job = Job("semantic-prior-revision", "test")
     first_request, _provider = _seed_committed_inputs(store, job)
     first = store.read_committed_semantic_inputs(first_request)
-    source_blob = first_request.source_proxy_blobs[0]
+    source_blob = first.inputs[0].source_window.proxy_blob
     manifest, manifest_set, probe = _window(source_blob)
     second_payload = _source_payload(manifest, manifest_set, source_blob, probe)
     second = ArtifactMember(

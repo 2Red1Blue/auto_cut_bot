@@ -21,6 +21,9 @@ from .errors import (
     StoreValidationError,
 )
 from .models import (
+    VLM_BATCH_FINALIZER_COMMAND_NAME,
+    VLM_BATCH_FINALIZER_STRATEGY_VERSION,
+    VLM_BATCH_IDEMPOTENCY_PREFIX,
     ArtifactMember,
     ArtifactScope,
     BlobRef,
@@ -46,8 +49,10 @@ from .models import (
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SourceWindowIdentity,
+    VlmBatchRequestPolicy,
     VlmRequestRecordReference,
     VlmSemanticPackReference,
+    VlmSemanticPackSetChild,
     WholeSeriesSourceManifestReference,
 )
 from .postgres import PostgresRuntimeStore
@@ -97,6 +102,11 @@ __all__ = [
     "StoreConcurrencyError",
     "StoreValidationError",
     "SourceWindowIdentity",
+    "VLM_BATCH_FINALIZER_COMMAND_NAME",
+    "VLM_BATCH_FINALIZER_STRATEGY_VERSION",
+    "VLM_BATCH_IDEMPOTENCY_PREFIX",
+    "VlmBatchRequestPolicy",
+    "VlmSemanticPackSetChild",
     "VlmSemanticPackReference",
     "WholeSeriesSourceManifestReference",
     "VlmRequestRecordReference",
