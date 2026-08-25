@@ -14,9 +14,8 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
-from tempfile import mkdtemp
-from threading import RLock
 from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
@@ -121,31 +120,182 @@ class DbConnection(Protocol):
 
 _Result = TypeVar("_Result")
 
-_MATERIALIZATION_QUOTA_LOCK = RLock()
-_MATERIALIZATION_QUOTA_USED: dict[Path, int] = {}
+_MATERIALIZATION_RESERVATION_DIRECTORY = ".autocut-media-reservations"
+_MATERIALIZATION_RESERVATION_LOCK = ".autocut-media-reservations.lock"
+_MATERIALIZATION_DIRECTORY_PREFIX = ".autocut-media-"
 
 
-def _reserve_materialization_quota(root: Path, byte_length: int, limit: int) -> None:
-    with _MATERIALIZATION_QUOTA_LOCK:
-        used = _MATERIALIZATION_QUOTA_USED.get(root, 0)
+@dataclass(slots=True)
+class _MaterializationQuotaLease:
+    """One filesystem-backed reservation, visible to every local worker process."""
+
+    root: Path
+    reservation_id: str
+    directory: Path
+    byte_length: int
+    _released: bool = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        try:
+            root_fd, lock_fd, reservations_fd = _open_materialization_ledger(self.root)
+            try:
+                flock(lock_fd, LOCK_EX)
+                try:
+                    os.unlink(f"{self.reservation_id}.lease", dir_fd=reservations_fd)
+                except FileNotFoundError:
+                    # Another worker may have safely reclaimed this entry only
+                    # after observing that our private directory was removed.
+                    pass
+                os.fsync(reservations_fd)
+            finally:
+                flock(lock_fd, LOCK_UN)
+                os.close(reservations_fd)
+                os.close(lock_fd)
+                os.close(root_fd)
+        except OSError as error:
+            self._released = False
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging cleanup failed",
+                outcome="failed",
+            ) from error
+
+
+def _open_materialization_ledger(root: Path) -> tuple[int, int, int]:
+    """Open only no-follow descriptors for the root lock and reservation directory."""
+
+    root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        try:
+            os.mkdir(_MATERIALIZATION_RESERVATION_DIRECTORY, 0o700, dir_fd=root_fd)
+        except FileExistsError:
+            pass
+        lock_fd = os.open(
+            _MATERIALIZATION_RESERVATION_LOCK,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_fd,
+        )
+        try:
+            reservations_fd = os.open(
+                _MATERIALIZATION_RESERVATION_DIRECTORY,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+        except Exception:
+            os.close(lock_fd)
+            raise
+    except Exception:
+        os.close(root_fd)
+        raise
+    return root_fd, lock_fd, reservations_fd
+
+
+def _reservation_bytes(reservations_fd: int, name: str) -> int:
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=reservations_fd)
+    try:
+        raw = os.read(descriptor, 64)
+        if os.read(descriptor, 1):
+            raise ValueError("reservation record is oversized")
+    finally:
+        os.close(descriptor)
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ValueError("reservation record is not ASCII") from error
+    if not text.endswith("\n") or not text[:-1].isdecimal():
+        raise ValueError("reservation record is malformed")
+    value = int(text[:-1])
+    if value <= 0:
+        raise ValueError("reservation record has an invalid byte length")
+    return value
+
+
+def _reserve_materialization_quota(
+    root: Path,
+    byte_length: int,
+    limit: int,
+) -> _MaterializationQuotaLease:
+    """Atomically reserve capacity and make a private owner directory.
+
+    Entries whose private directory is already absent are safe stale orphans:
+    they are removed while holding the cross-process lock.  Any surviving
+    entry remains charged, so a crashed process can never lead to overcommit.
+    """
+
+    reservation_id = uuid4().hex
+    directory_name = _MATERIALIZATION_DIRECTORY_PREFIX + reservation_id
+    root_fd, lock_fd, reservations_fd = _open_materialization_ledger(root)
+    directory_created = False
+    reservation_created = False
+    try:
+        flock(lock_fd, LOCK_EX)
+        used = 0
+        for name in os.listdir(reservations_fd):
+            if not name.endswith(".lease"):
+                raise OSError("materialization reservation directory has an unexpected entry")
+            entry_id = name.removesuffix(".lease")
+            if len(entry_id) != 32 or any(character not in "0123456789abcdef" for character in entry_id):
+                raise OSError("materialization reservation identifier is malformed")
+            try:
+                directory_stat = os.stat(
+                    _MATERIALIZATION_DIRECTORY_PREFIX + entry_id,
+                    dir_fd=root_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                os.unlink(name, dir_fd=reservations_fd)
+                continue
+            if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_mode & 0o077:
+                raise OSError("materialization reservation directory is unsafe")
+            used += _reservation_bytes(reservations_fd, name)
         if byte_length > limit or used + byte_length > limit:
             raise MaterializationError(
                 "MEDIA_MATERIALIZATION_CAPACITY_BUSY",
                 "private media staging capacity is unavailable",
                 outcome="failed",
             )
-        _MATERIALIZATION_QUOTA_USED[root] = used + byte_length
-
-
-def _release_materialization_quota(root: Path, byte_length: int) -> None:
-    with _MATERIALIZATION_QUOTA_LOCK:
-        remaining = _MATERIALIZATION_QUOTA_USED.get(root, 0) - byte_length
-        if remaining < 0:
-            raise RuntimeError("materialization quota lease was released more than once")
-        if remaining:
-            _MATERIALIZATION_QUOTA_USED[root] = remaining
-        else:
-            _MATERIALIZATION_QUOTA_USED.pop(root, None)
+        os.mkdir(directory_name, 0o700, dir_fd=root_fd)
+        directory_created = True
+        descriptor = os.open(
+            f"{reservation_id}.lease",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=reservations_fd,
+        )
+        reservation_created = True
+        try:
+            os.write(descriptor, f"{byte_length}\n".encode("ascii"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.fsync(reservations_fd)
+    except Exception:
+        if reservation_created:
+            try:
+                os.unlink(f"{reservation_id}.lease", dir_fd=reservations_fd)
+            except OSError:
+                pass
+        if directory_created:
+            try:
+                os.rmdir(directory_name, dir_fd=root_fd)
+            except OSError:
+                pass
+        raise
+    finally:
+        flock(lock_fd, LOCK_UN)
+        os.close(reservations_fd)
+        os.close(lock_fd)
+        os.close(root_fd)
+    return _MaterializationQuotaLease(
+        root=root,
+        reservation_id=reservation_id,
+        directory=root / directory_name,
+        byte_length=byte_length,
+    )
 
 
 @dataclass(slots=True)
@@ -153,7 +303,7 @@ class _VerifiedMaterializedBlob:
     reference: BlobRef
     path: Path
     _directory: Path
-    _root: Path
+    _quota_lease: _MaterializationQuotaLease
     _closed: bool = False
 
     def close(self) -> None:
@@ -176,7 +326,7 @@ class _VerifiedMaterializedBlob:
                 "private media staging cleanup failed",
                 outcome="failed",
             ) from error
-        _release_materialization_quota(self._root, self.reference.byte_length)
+        self._quota_lease.release()
 
 
 def _text(value: object) -> str:
@@ -1112,7 +1262,7 @@ class PostgresRuntimeStore:
             raise StoreValidationError("reference must be an exact BlobRef")
         if type(limits) is not MaterializationLimits:  # noqa: E721
             raise StoreValidationError("limits must be exact MaterializationLimits")
-        if reference.byte_length > limits.max_source_bytes:
+        if reference.byte_length > limits.effective_max_source_bytes:
             raise MaterializationError(
                 "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
                 "committed source exceeds the frozen source-byte limit",
@@ -1134,12 +1284,12 @@ class PostgresRuntimeStore:
                 outcome="failed",
             ) from error
 
-        _reserve_materialization_quota(root, durable.byte_length, limits.staging_quota_bytes)
-        directory: Path | None = None
+        quota_lease = _reserve_materialization_quota(
+            root, durable.byte_length, limits.staging_quota_bytes
+        )
+        directory: Path | None = quota_lease.directory
         descriptor: int | None = None
         try:
-            directory = Path(mkdtemp(prefix=".autocut-media-", dir=root))
-            os.chmod(directory, 0o700)
             directory_stat = os.stat(directory, follow_symlinks=False)
             if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_mode & 0o077:
                 raise OSError("private staging directory is unsafe")
@@ -1183,10 +1333,15 @@ class PostgresRuntimeStore:
             os.fchmod(descriptor, 0o400)
             os.close(descriptor)
             descriptor = None
-            return _VerifiedMaterializedBlob(durable, directory / "source.mp4", directory, root)
+            return _VerifiedMaterializedBlob(
+                durable,
+                directory / "source.mp4",
+                directory,
+                quota_lease,
+            )
         except BlobIntegrityError as error:
             if self._discard_partial_materialization(directory, descriptor):
-                _release_materialization_quota(root, durable.byte_length)
+                quota_lease.release()
             raise MaterializationError(
                 "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
                 "committed source BlobRef integrity verification failed",
@@ -1194,7 +1349,7 @@ class PostgresRuntimeStore:
             ) from error
         except Exception as error:
             if self._discard_partial_materialization(directory, descriptor):
-                _release_materialization_quota(root, durable.byte_length)
+                quota_lease.release()
             if isinstance(error, MaterializationError):
                 raise
             raise MaterializationError(

@@ -6,11 +6,13 @@ creates private substitute tables; it applies the real runtime migrations.
 
 import hashlib
 import json
+import multiprocessing
 import os
 import threading
 from pathlib import Path
 from uuid import UUID
 
+import autocut_kernel.store.postgres as postgres_module
 import pytest
 from autocut_kernel.store import (
     ArtifactMember,
@@ -42,6 +44,25 @@ DSN = os.environ.get("AUTOCUT_TEST_POSTGRES_DSN")
 pytestmark = pytest.mark.skipif(
     not DSN, reason="set AUTOCUT_TEST_POSTGRES_DSN to run disposable PostgreSQL tests"
 )
+
+
+def _hold_staging_reservation(
+    root: str,
+    ready: object,
+    release: object,
+    result: object,
+) -> None:
+    """Child-process probe for the filesystem-backed quota ledger."""
+
+    try:
+        lease = postgres_module._reserve_materialization_quota(Path(root), 6, 6)
+        ready.set()  # type: ignore[union-attr]
+        if not release.wait(10):  # type: ignore[union-attr]
+            raise TimeoutError("parent did not release the staging reservation")
+        lease.release()
+        result.put("released")  # type: ignore[union-attr]
+    except Exception as error:  # pragma: no cover - asserted by the parent process
+        result.put(f"error:{error}")  # type: ignore[union-attr]
 
 
 def _digest(value: str) -> str:
@@ -1337,6 +1358,7 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
 ) -> None:
     assert DSN is not None
     staging_root = tmp_path / "verified-media"
+    staging_root.mkdir(mode=0o700)
     store = PostgresRuntimeStore(
         lambda: psycopg.connect(DSN), materialization_staging_root=staging_root
     )
@@ -1348,7 +1370,39 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
         content_hash="sha256:" + hashlib.sha256(content).hexdigest(),
         media_type="video/mp4",
     )
-    limits = MaterializationLimits(16, 2, 16)
+    limits = MaterializationLimits(
+        max_source_bytes=16,
+        timed_speech_max_request_bytes=16,
+        copy_chunk_bytes=2,
+        staging_quota_bytes=16,
+    )
+    process_context = multiprocessing.get_context("spawn")
+    child_ready = process_context.Event()
+    child_release = process_context.Event()
+    child_result = process_context.Queue()
+    child = process_context.Process(
+        target=_hold_staging_reservation,
+        args=(str(staging_root), child_ready, child_release, child_result),
+    )
+    child.start()
+    assert child_ready.wait(10)
+    with pytest.raises(MaterializationError, match="capacity") as child_busy:
+        store.materialize_immutable_blob(
+            job,
+            reference,
+            MaterializationLimits(
+                max_source_bytes=16,
+                timed_speech_max_request_bytes=16,
+                copy_chunk_bytes=2,
+                staging_quota_bytes=6,
+            ),
+        )
+    assert child_busy.value.code == "MEDIA_MATERIALIZATION_CAPACITY_BUSY"
+    child_release.set()
+    child.join(10)
+    assert child.exitcode == 0
+    assert child_result.get(timeout=1) == "released"
+
     calls: list[tuple[int, int]] = []
     original_read = store._read_immutable_blob_chunk
 
@@ -1361,8 +1415,30 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
     assert lease.path.read_bytes() == content
     assert calls == [(0, 2), (2, 2), (4, 2), (6, 1)]
     assert lease.path.stat().st_mode & 0o777 == 0o400
+    competing_store = PostgresRuntimeStore(
+        lambda: psycopg.connect(DSN), materialization_staging_root=staging_root
+    )
+    with pytest.raises(MaterializationError, match="capacity") as busy:
+        competing_store.materialize_immutable_blob(
+            job,
+            reference,
+            MaterializationLimits(
+                max_source_bytes=16,
+                timed_speech_max_request_bytes=16,
+                copy_chunk_bytes=2,
+                staging_quota_bytes=6,
+            ),
+        )
+    assert busy.value.code == "MEDIA_MATERIALIZATION_CAPACITY_BUSY"
     lease.close()
-    assert not staging_root.exists() or list(staging_root.iterdir()) == []
+    reopened = competing_store.materialize_immutable_blob(job, reference, limits)
+    reopened.close()
+
+    orphan = staging_root / ".autocut-media-reservations" / ("a" * 32 + ".lease")
+    orphan.write_text("15\n", encoding="ascii")
+    stale_reclaimed = competing_store.materialize_immutable_blob(job, reference, limits)
+    stale_reclaimed.close()
+    assert not orphan.exists()
 
     with pytest.raises(MaterializationError, match="integrity") as foreign:
         store.materialize_immutable_blob(
@@ -1378,7 +1454,8 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
     with pytest.raises(MaterializationError, match="integrity") as corrupt:
         store.materialize_immutable_blob(job, reference, limits)
     assert corrupt.value.code == "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED"
-    assert list(staging_root.iterdir()) == []
+    reservations = staging_root / ".autocut-media-reservations"
+    assert list(reservations.iterdir()) == []
 
 
 def test_same_generation_request_reserves_once_even_concurrently() -> None:
