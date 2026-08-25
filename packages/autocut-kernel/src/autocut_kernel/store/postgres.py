@@ -3077,6 +3077,8 @@ class PostgresRuntimeStore:
             return CommittedSemanticInputs(
                 source_manifest,
                 source_grant,
+                request.vlm_semantic_pack_set,
+                aggregate_policy,
                 tuple(semantic_inputs),
             )
 

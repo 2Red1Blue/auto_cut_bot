@@ -80,6 +80,8 @@ def _committed_input_binding(inputs: CommittedSemanticInputs) -> str:
         {
             "source_grant_sha256": inputs.source_grant.canonical_hash,
             "source_manifest_provenance_sha256": inputs.source_manifest.canonical_hash,
+            "vlm_aggregate_policy": inputs.vlm_aggregate_policy.to_mapping(),
+            "vlm_semantic_pack_set": inputs.vlm_semantic_pack_set.to_mapping(),
             "vlm_members": members,
         }
     )

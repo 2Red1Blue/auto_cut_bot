@@ -22,6 +22,7 @@ from autocut_kernel.store import (
     PersistedVlmSemanticPack,
     PersistedWholeSeriesSourceManifest,
     SourceWindowIdentity,
+    VlmBatchRequestPolicy,
     VlmSemanticPackReference,
     WholeSeriesSourceManifestReference,
 )
@@ -60,7 +61,17 @@ def _decoded_store_projection(*, purpose: bool = True) -> CommittedSemanticInput
     object.__setattr__(persisted_pack, "semantic_pack", semantic_pack)
     object.__setattr__(persisted_pack, "source_child", child)
     object.__setattr__(persisted_pack, "reference", VlmSemanticPackReference(ArtifactScope("pipeline", "job", job.job_key), f"semantic_pack_{request_identity.window_manifest_sha256[7:39]}", 1, canonical_payload_hash(json.dumps(semantic_pack.to_mapping(), sort_keys=True))))
-    return CommittedSemanticInputs(persisted_source, grant, (CommittedVlmSemanticInput(source_window, request_identity, persisted_pack, response, blob),))
+    aggregate = CommittedArtifactMemberReference(
+        uuid4(), uuid4(), 0, ArtifactScope("pipeline", "job", job.job_key),
+        "vlm_semantic_pack_set", "vlm_semantic_pack_set", 1, HASH_A,
+    )
+    aggregate_policy = VlmBatchRequestPolicy(
+        HASH_A, "prompt-v1", HASH_A, HASH_A, HASH_A, "model", "provider", HASH_A, HASH_A
+    )
+    return CommittedSemanticInputs(
+        persisted_source, grant, aggregate, aggregate_policy,
+        (CommittedVlmSemanticInput(source_window, request_identity, persisted_pack, response, blob),),
+    )
 
 
 def _authority(inputs: CommittedSemanticInputs, *, window: str = "resolved", obligation: str = "resolved", purpose_hash: str = HASH_A):

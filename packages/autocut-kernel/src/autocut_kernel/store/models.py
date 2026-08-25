@@ -1069,6 +1069,8 @@ class CommittedSemanticInputs:
 
     source_manifest: PersistedWholeSeriesSourceManifest
     source_grant: SourceOperationGrant
+    vlm_semantic_pack_set: CommittedArtifactMemberReference
+    vlm_aggregate_policy: VlmBatchRequestPolicy
     inputs: tuple[CommittedVlmSemanticInput, ...]
 
     def __post_init__(self) -> None:
@@ -1076,6 +1078,16 @@ class CommittedSemanticInputs:
             raise StoreValidationError("semantic source_manifest is invalid")
         if type(self.source_grant) is not SourceOperationGrant:  # noqa: E721
             raise StoreValidationError("semantic source_grant is invalid")
+        if type(self.vlm_semantic_pack_set) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError("semantic VLM aggregate member is invalid")
+        if type(self.vlm_aggregate_policy) is not VlmBatchRequestPolicy:  # noqa: E721
+            raise StoreValidationError("semantic VLM aggregate policy is invalid")
+        if (
+            self.vlm_semantic_pack_set.artifact_type != "vlm_semantic_pack_set"
+            or self.vlm_semantic_pack_set.logical_id != "vlm_semantic_pack_set"
+            or self.vlm_semantic_pack_set.member_ordinal != 0
+        ):
+            raise StoreValidationError("semantic VLM aggregate member identity is invalid")
         inputs = tuple(self.inputs)
         if not inputs or any(type(item) is not CommittedVlmSemanticInput for item in inputs):  # noqa: E721
             raise StoreValidationError("semantic inputs must contain committed VLM inputs")
