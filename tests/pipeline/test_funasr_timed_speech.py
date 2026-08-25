@@ -94,6 +94,38 @@ def namespace(
     return runpy.run_path("deploy/funasr/service.py")
 
 
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_main_allows_only_loopback_or_container_bind_hosts(
+    monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    ns = namespace(monkeypatch)
+    service = object()
+    app = object()
+    calls: list[tuple[object, str, int]] = []
+
+    monkeypatch.setenv("FUNASR_BIND_HOST", host)
+    monkeypatch.setenv("FUNASR_PORT", "18765")
+    monkeypatch.setitem(ns["main"].__globals__, "Service", lambda: service)
+    monkeypatch.setitem(ns["main"].__globals__, "create_app", lambda value: app)
+    monkeypatch.setattr(
+        ns["web"], "run_app", lambda value, *, host, port: calls.append((value, host, port))
+    )
+
+    ns["main"]()
+
+    assert calls == [(app, host, 18765)]
+
+
+def test_main_rejects_other_bind_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    ns = namespace(monkeypatch)
+    monkeypatch.setenv("FUNASR_BIND_HOST", "192.0.2.1")
+    monkeypatch.setitem(ns["main"].__globals__, "Service", lambda: object())
+    monkeypatch.setitem(ns["main"].__globals__, "create_app", lambda _value: object())
+
+    with pytest.raises(RuntimeError, match="FUNASR_BIND_HOST"):
+        ns["main"]()
+
+
 class _Module:
     def __init__(self, device: str) -> None:
         self.device = device

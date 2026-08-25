@@ -1343,9 +1343,12 @@ def create_app(service: Service | None = None) -> web.Application:
 
 
 def main() -> None:
+    host = os.environ.get("FUNASR_BIND_HOST", "127.0.0.1")
+    if host not in {"127.0.0.1", "0.0.0.0"}:
+        raise RuntimeError("FUNASR_BIND_HOST must be 127.0.0.1 or 0.0.0.0")
     s = Service()
     app = create_app(s)
-    web.run_app(app, host="127.0.0.1", port=int(os.environ.get("FUNASR_PORT", "8765")))
+    web.run_app(app, host=host, port=int(os.environ.get("FUNASR_PORT", "8765")))
 
 
 if __name__ == "__main__":

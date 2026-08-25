@@ -1,0 +1,43 @@
+services:
+  funasr:
+    build:
+      context: ../..
+      dockerfile: deploy/funasr/Dockerfile
+    container_name: autocut-funasr
+    env_file:
+      - .env
+    environment:
+      FUNASR_BIND_HOST: "0.0.0.0"
+      FUNASR_PORT: "8765"
+      FUNASR_ASR_MODEL_PATH: /models/asr/${FUNASR_ASR_MODEL_REVISION:?set FUNASR_ASR_MODEL_REVISION}
+      FUNASR_VAD_MODEL_PATH: /models/vad/${FUNASR_VAD_MODEL_REVISION:?set FUNASR_VAD_MODEL_REVISION}
+      FUNASR_SINGLETON_LOCK_PATH: /tmp/autocut-funasr-service.lock
+    ports:
+      - 127.0.0.1:${FUNASR_HOST_PORT:-18765}:8765
+    volumes:
+      - type: bind
+        source: ${FUNASR_ASR_MODEL_DIR:?set FUNASR_ASR_MODEL_DIR}
+        target: /models/asr/${FUNASR_ASR_MODEL_REVISION:?set FUNASR_ASR_MODEL_REVISION}
+        read_only: true
+      - type: bind
+        source: ${FUNASR_VAD_MODEL_DIR:?set FUNASR_VAD_MODEL_DIR}
+        target: /models/vad/${FUNASR_VAD_MODEL_REVISION:?set FUNASR_VAD_MODEL_REVISION}
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health/ready', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s

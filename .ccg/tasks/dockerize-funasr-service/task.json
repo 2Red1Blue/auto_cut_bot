@@ -1,0 +1,10 @@
+{
+  "id": "dockerize-funasr-service",
+  "title": "将本地 SenseVoiceSmall 与 FSMN 服务部署为台式机 Docker Compose 服务",
+  "status": "in_progress",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "review",
+  "nextAction": "提交并在台式机完成真实镜像与模型 smoke"
+}

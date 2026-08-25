@@ -1,9 +1,46 @@
 # Standalone FunASR timed-speech service
 
-Run FunASR as one CPU process directly on the host. Podman is used only for the
-database in this deployment; it is not the production FunASR topology. The
-Dockerfile remains a lock-aligned reference artifact and has not passed the
-locked-model smoke described below.
+Run one FunASR CPU process that loads both SenseVoiceSmall and FSMN-VAD.  FSMN
+is not a second service: it is the VAD model owned by the same `AutoModel`.
+
+For a dedicated desktop, use `compose.yml`.  PostgreSQL remains independent;
+the root `docker-compose.yml` is the nanobot deployment and keeps its existing
+host port `8765`.  The FunASR Compose stack publishes only
+`127.0.0.1:18765` by default, so it cannot collide with or expose the gateway.
+
+## Desktop Docker deployment
+
+Install Docker/Compose on the desktop, copy the exact downloaded model snapshot
+directories there, and then:
+
+```sh
+cd deploy/funasr
+cp .env.example .env
+# Edit .env: set the two absolute snapshot paths, a random local token, and
+# the generated protected FUNASR_PROFILE_JSON.
+docker compose --env-file .env -f compose.yml up --build -d
+curl --fail http://127.0.0.1:18765/health/ready
+```
+
+To validate the tracked Compose file without creating a local `.env`, export
+the non-secret example values for that one command:
+
+```sh
+set -a; . .env.example; set +a
+docker compose -f compose.yml config
+```
+
+`compose.yml` mounts both model snapshots read-only and uses a read-only root
+filesystem with a private `/tmp`.  `FUNASR_BIND_HOST=0.0.0.0` exists only
+inside the container; Compose maps it back to host loopback.  The Pipeline must
+use the locked endpoint `http://127.0.0.1:18765/v1/timed-speech-evidence` when
+it runs on that same desktop.  Do not add the service to the root nanobot
+Compose file or map it to host `8765`.
+
+The generated `.env` contains a secret and the measured Profile; it is ignored
+by Git.  A Profile is produced by the protected calibration/profile flow and
+binds the exact image service bytes, model trees and dependency versions.  A
+placeholder or copied profile is expected to make startup fail closed.
 
 ## Runtime topology and admission
 
