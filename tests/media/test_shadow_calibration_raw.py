@@ -17,6 +17,7 @@ from autocut_kernel.media import (
     ProducerCalibrationMeasurement,
     ShadowCalibrationAsrObservation,
     ShadowCalibrationAudioClock,
+    ShadowCalibrationContainer,
     ShadowCalibrationInvocation,
     ShadowCalibrationPolicies,
     ShadowCalibrationProducerIdentity,
@@ -26,56 +27,84 @@ from autocut_kernel.media import (
     ShadowCalibrationRawEvidenceError,
     ShadowCalibrationRequestMapping,
     ShadowCalibrationSource,
+    ShadowCalibrationSourceByteLimits,
+    ShadowCalibrationTranscriptCapability,
+    ShadowCalibrationWordGapSegment,
     TickRange,
     TimeBase,
     decode_shadow_calibration_raw_response,
 )
-from autocut_kernel.media.types import canonical_sha256
 
 
 def _sha(number: int) -> str:
     return f"sha256:{number:064x}"
 
 
-SOURCE = ShadowCalibrationSource("corpus-0001", _sha(1))
-CLOCK = ShadowCalibrationAudioClock("audio-48k", TimeBase(1, 1_000), 0, 5_000)
+SOURCE = ShadowCalibrationSource(
+    "corpus-0001",
+    _sha(1),
+    _sha(10),
+    "0f02e85b-d8c6-4d1b-a86b-3dc0f64d2f34",
+    _sha(1),
+    4_096,
+    "video/mp4",
+)
+SOURCE_LIMITS = ShadowCalibrationSourceByteLimits(8_192, 4_096, 4_096)
+CONTAINER = ShadowCalibrationContainer("video/mp4", ".mp4")
+CLOCK = ShadowCalibrationAudioClock("audio-30k", TimeBase(1_001, 30_000), 300, 300)
 POLICIES = ShadowCalibrationPolicies(_sha(2), _sha(3), _sha(4), 100, 50)
+TRANSCRIPT_CAPABILITY = ShadowCalibrationTranscriptCapability(
+    "sensevoice_word_guard_v1",
+    "complete",
+    "utterance_gap_protected_range",
+    "not_applicable",
+    "complete",
+    "required",
+)
 ASR_IDENTITY = ShadowCalibrationProducerIdentity(
     CalibrationProducer.ASR,
     "sensevoice-asr",
-    "funasr-http-v1",
-    "SenseVoiceSmall",
-    "sensevoice-word-timestamp",
+    "1.0.0",
     _sha(5),
     _sha(6),
     _sha(7),
-    "cpu",
-    _sha(8),
+    "iic/SenseVoiceSmall",
+    "main",
+    _sha(9),
+    "sensevoice-word-timestamp",
+    _sha(11),
 )
 VAD_IDENTITY = ShadowCalibrationProducerIdentity(
     CalibrationProducer.VAD,
     "fsmn-vad",
-    "funasr-http-v1",
-    "FSMN-VAD",
-    "fsmn-vad-direct",
+    "1.0.0",
     _sha(5),
     _sha(6),
     _sha(7),
-    "cpu",
-    _sha(9),
+    "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+    "main",
+    _sha(12),
+    "fsmn-vad-direct",
+    _sha(11),
 )
-NATIVE_IDENTITY = canonical_sha256([ASR_IDENTITY.to_mapping(), VAD_IDENTITY.to_mapping()])
+NATIVE_IDENTITY = _sha(13)
 
 
 def _request_mapping() -> ShadowCalibrationRequestMapping:
     return ShadowCalibrationRequestMapping(
         SOURCE,
+        SOURCE_LIMITS,
+        CONTAINER,
         CLOCK,
-        TickRange(0, 5_000),
+        TickRange(300, 600),
+        NATIVE_IDENTITY,
+        32_768,
+        TRANSCRIPT_CAPABILITY,
         POLICIES.timed_speech_policy_sha256,
         POLICIES.word_gap_policy_sha256,
         POLICIES.vad_merge_policy_sha256,
-        "required",
+        POLICIES.word_gap_ms,
+        POLICIES.vad_merge_gap_ms,
         (ASR_IDENTITY, VAD_IDENTITY),
     )
 
@@ -85,9 +114,12 @@ def _context(
 ) -> ShadowCalibrationRawContext:
     return ShadowCalibrationRawContext(
         SOURCE,
+        SOURCE_LIMITS,
+        CONTAINER,
         CLOCK,
         POLICIES,
         NATIVE_IDENTITY,
+        TRANSCRIPT_CAPABILITY,
         ASR_IDENTITY,
         VAD_IDENTITY,
         asr_anchors
@@ -96,17 +128,17 @@ def _context(
                 "asr-anchor-0",
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(101, 220),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(303, 307),
             ),
             CalibrationAnchor(
                 "asr-anchor-1",
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(400, 560),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(311, 317),
             ),
         ),
         (
@@ -114,9 +146,9 @@ def _context(
                 "vad-anchor-0",
                 CalibrationProducer.VAD,
                 "fsmn-vad",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(80, 599),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(302, 317),
             ),
         ),
     )
@@ -125,7 +157,10 @@ def _context(
 def _invocation() -> ShadowCalibrationInvocation:
     request_mapping = _request_mapping()
     return ShadowCalibrationInvocation(
-        _sha(10), request_mapping.sha256, request_mapping, request_mapping.sha256
+        SOURCE.corpus_member_reference_sha256,
+        request_mapping.sha256,
+        request_mapping,
+        request_mapping.sha256,
     )
 
 
@@ -134,9 +169,9 @@ def _response() -> dict[str, object]:
     return {
         "schema_version": SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA,
         "request_identity_sha256": invocation.request_identity_sha256,
-        "source": SOURCE.to_mapping(),
+        "source": SOURCE.to_response_mapping(),
         "audio_clock": CLOCK.to_mapping(),
-        "requested_range": {"in_tick": 0, "out_tick": 5_000},
+        "requested_range": {"in_tick": 300, "out_tick": 600},
         "timed_speech_policy_sha256": POLICIES.timed_speech_policy_sha256,
         "word_gap_policy_sha256": POLICIES.word_gap_policy_sha256,
         "vad_merge_policy_sha256": POLICIES.vad_merge_policy_sha256,
@@ -171,8 +206,8 @@ def _measurement(
         producer,
         producer_id,
         "sensevoice-word-timestamp" if producer is CalibrationProducer.ASR else "fsmn-vad-direct",
-        "audio-48k",
-        TimeBase(1, 1_000),
+        "audio-30k",
+        TimeBase(1_001, 30_000),
         matches,
         max(match.absolute_tick for match in matches),
     )
@@ -186,9 +221,9 @@ def _projection(context: ShadowCalibrationRawContext) -> ShadowCalibrationProjec
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
                 "sensevoice-word-timestamp",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(100, 220),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(302, 307),
             ),
             "a",
         ),
@@ -198,9 +233,9 @@ def _projection(context: ShadowCalibrationRawContext) -> ShadowCalibrationProjec
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
                 "sensevoice-word-timestamp",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(400, 560),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(311, 317),
             ),
             "b",
         ),
@@ -211,9 +246,9 @@ def _projection(context: ShadowCalibrationRawContext) -> ShadowCalibrationProjec
             CalibrationProducer.VAD,
             "fsmn-vad",
             "fsmn-vad-direct",
-            "audio-48k",
-            TimeBase(1, 1_000),
-            TickRange(80, 600),
+            "audio-30k",
+            TimeBase(1_001, 30_000),
+            TickRange(302, 318),
         ),
     )
     summary = CalibrationMeasurementSummary(
@@ -226,7 +261,15 @@ def _projection(context: ShadowCalibrationRawContext) -> ShadowCalibrationProjec
         _measurement(CalibrationProducer.VAD, "fsmn-vad", context.vad_anchors, vad),
     )
     return ShadowCalibrationProjection(
-        NATIVE_IDENTITY, _invocation().request_identity_sha256, asr, vad, summary
+        NATIVE_IDENTITY,
+        _invocation().request_identity_sha256,
+        asr,
+        (
+            ShadowCalibrationWordGapSegment("asr-segment-00000000", "a", TickRange(302, 307)),
+            ShadowCalibrationWordGapSegment("asr-segment-00000001", "b", TickRange(311, 317)),
+        ),
+        vad,
+        summary,
     )
 
 
@@ -248,18 +291,19 @@ def _decode() -> DecodedShadowCalibrationRawResponse:
 def test_raw_response_derives_exact_projection_segments_matches_and_positive_summary() -> None:
     decoded = _decode()
 
-    assert decoded.projection.asr_observations[0].observation.observed_range == TickRange(100, 220)
+    assert decoded.projection.asr_observations[0].observation.observed_range == TickRange(302, 307)
     assert decoded.projection.vad_observations == (
         CalibrationObservation(
             "vad-segment-00000000",
             CalibrationProducer.VAD,
             "fsmn-vad",
             "fsmn-vad-direct",
-            "audio-48k",
-            TimeBase(1, 1_000),
-            TickRange(80, 600),
+            "audio-30k",
+            TimeBase(1_001, 30_000),
+            TickRange(302, 318),
         ),
     )
+    assert decoded.projection.word_gap_segments == decoded.word_gap_segments
     assert decoded.word_gap_segments[0].text == "a"
     assert decoded.word_gap_segments[1].text == "b"
     assert decoded.projection.summary.asr.accepted_bound_tick == 1
@@ -336,6 +380,48 @@ def test_rejects_unordered_vad_and_a_changed_merge_policy() -> None:
         decode_shadow_calibration_raw_response(*(_material()[:2] + (changed, projection)))
 
 
+def test_rejects_structured_identity_blob_provenance_and_word_gap_projection_drift() -> None:
+    blob, invocation, context, projection = _material()
+    response = _response()
+    identities = response["producer_identities"]
+    assert isinstance(identities, list)
+    identities[0] = {**ASR_IDENTITY.to_mapping(), "producer_version": "substituted"}
+    with pytest.raises(ShadowCalibrationRawEvidenceError):
+        decode_shadow_calibration_raw_response(
+            _blob(json.dumps(response, separators=(",", ":")).encode()),
+            invocation,
+            context,
+            projection,
+        )
+    response = _response()
+    identities = response["producer_identities"]
+    assert isinstance(identities, list)
+    identities[0] = {**ASR_IDENTITY.to_mapping(), "timing_error_bound_tick": 1}
+    with pytest.raises(ShadowCalibrationRawEvidenceError):
+        decode_shadow_calibration_raw_response(
+            _blob(json.dumps(response, separators=(",", ":")).encode()),
+            invocation,
+            context,
+            projection,
+        )
+    substituted_source = replace(SOURCE, blob_id="218b198e-6b87-4770-b0fa-91770b93b169")
+    with pytest.raises(ShadowCalibrationRawEvidenceError):
+        decode_shadow_calibration_raw_response(
+            blob, invocation, replace(context, source=substituted_source), projection
+        )
+    injected_segments = (
+        replace(projection.word_gap_segments[0], text="injected"),
+        projection.word_gap_segments[1],
+    )
+    with pytest.raises(ShadowCalibrationRawEvidenceError):
+        decode_shadow_calibration_raw_response(
+            blob,
+            invocation,
+            context,
+            replace(projection, word_gap_segments=injected_segments),
+        )
+
+
 def test_rejects_injected_projection_and_partial_or_zero_bound_alignment() -> None:
     blob, invocation, context, projection = _material()
     bad_asr = replace(projection.asr_observations[0], text="injected")
@@ -368,17 +454,17 @@ def test_rejects_injected_projection_and_partial_or_zero_bound_alignment() -> No
                 "asr-anchor-0",
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(100, 220),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(302, 307),
             ),
             CalibrationAnchor(
                 "asr-anchor-1",
                 CalibrationProducer.ASR,
                 "sensevoice-asr",
-                "audio-48k",
-                TimeBase(1, 1_000),
-                TickRange(400, 560),
+                "audio-30k",
+                TimeBase(1_001, 30_000),
+                TickRange(311, 317),
             ),
         )
     )

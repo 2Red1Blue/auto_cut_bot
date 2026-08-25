@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from typing import cast
 
@@ -23,6 +24,7 @@ from .calibration import (
 from .types import TickRange, TimeBase, canonical_sha256, sha256_prefixed
 
 SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
+SHADOW_CALIBRATION_RAW_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE = "application/vnd.autocut.funasr-native-response+json"
 SHADOW_CALIBRATION_RAW_EVIDENCE_INVALID = "SHADOW_CALIBRATION_RAW_EVIDENCE_INVALID"
 
@@ -140,13 +142,119 @@ class ShadowCalibrationRawBlob:
 class ShadowCalibrationSource:
     source_id: str
     source_sha256: str
+    corpus_member_reference_sha256: str
+    blob_id: str
+    blob_sha256: str
+    blob_byte_length: int
+    blob_media_type: str
 
     def __post_init__(self) -> None:
         _text(self.source_id, "source.source_id")
         _sha(self.source_sha256, "source.source_sha256")
+        _sha(self.corpus_member_reference_sha256, "source.corpus_member_reference_sha256")
+        try:
+            parsed = uuid.UUID(self.blob_id)
+        except (AttributeError, ValueError) as error:
+            raise _invalid("source.blob_id must be a canonical UUID") from error
+        if str(parsed) != self.blob_id:
+            raise _invalid("source.blob_id must be a canonical UUID")
+        if _sha(self.blob_sha256, "source.blob_sha256") != self.source_sha256:
+            raise _invalid("source blob hash must equal source bytes hash")
+        if _integer(self.blob_byte_length, "source.blob_byte_length") <= 0:
+            raise _invalid("source.blob_byte_length must be positive")
+        _text(self.blob_media_type, "source.blob_media_type")
 
     def to_mapping(self) -> dict[str, object]:
+        return {
+            "source_id": self.source_id,
+            "source_sha256": self.source_sha256,
+            "corpus_member_reference_sha256": self.corpus_member_reference_sha256,
+            "blob_id": self.blob_id,
+            "blob_sha256": self.blob_sha256,
+            "blob_byte_length": self.blob_byte_length,
+            "blob_media_type": self.blob_media_type,
+        }
+
+    def to_response_mapping(self) -> dict[str, object]:
         return {"source_id": self.source_id, "source_sha256": self.source_sha256}
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCalibrationSourceByteLimits:
+    kernel_max_source_bytes: int
+    service_max_request_bytes: int
+    effective_max_source_bytes: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.kernel_max_source_bytes,
+            self.service_max_request_bytes,
+            self.effective_max_source_bytes,
+        )
+        if any(_integer(value, "source byte limit") <= 0 for value in values):
+            raise _invalid("source byte limits must be positive")
+        if self.effective_max_source_bytes != min(
+            self.kernel_max_source_bytes, self.service_max_request_bytes
+        ):
+            raise _invalid("effective source byte limit is invalid")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "kernel_max_source_bytes": self.kernel_max_source_bytes,
+            "service_max_request_bytes": self.service_max_request_bytes,
+            "effective_max_source_bytes": self.effective_max_source_bytes,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCalibrationContainer:
+    media_type: str
+    safe_suffix: str
+
+    def __post_init__(self) -> None:
+        _text(self.media_type, "container.media_type")
+        if (
+            type(self.safe_suffix) is not str
+            or not self.safe_suffix.startswith(".")
+            or "/" in self.safe_suffix
+        ):  # noqa: E721
+            raise _invalid("container.safe_suffix is invalid")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {"media_type": self.media_type, "safe_suffix": self.safe_suffix}
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCalibrationTranscriptCapability:
+    profile: str
+    segment: str
+    segment_semantics: str
+    sentence: str
+    word: str
+    word_timing: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.profile != "sensevoice_word_guard_v1"
+            or self.segment != "complete"
+            or self.segment_semantics != "utterance_gap_protected_range"
+            or self.sentence != "not_applicable"
+            or self.word != "complete"
+            or self.word_timing != "required"
+        ):
+            raise _invalid(
+                "transcript capability is not the locked SenseVoice word-timing capability"
+            )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "profile": self.profile,
+            "segment": self.segment,
+            "segment_semantics": self.segment_semantics,
+            "sentence": self.sentence,
+            "word": self.word,
+            "word_timing": self.word_timing,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,47 +313,52 @@ class ShadowCalibrationProducerIdentity:
 
     producer: CalibrationProducer
     producer_id: str
-    provider: str
+    producer_version: str
+    generation_policy_sha256: str
+    detector_sha256: str
+    calibration_policy_sha256: str
     model_id: str
+    model_revision: str
+    model_sha256: str
     inference_kind: str
     service_sha256: str
-    funasr_sha256: str
-    torch_sha256: str
-    device: str
-    model_tree_sha256: str
 
     def __post_init__(self) -> None:
         if type(self.producer) is not CalibrationProducer:  # noqa: E721
             raise _invalid("producer identity producer is invalid")
         _text(self.producer_id, "producer_identity.producer_id")
-        if self.provider != "funasr-http-v1":
-            raise _invalid("producer_identity.provider is invalid")
-        expected_model = (
-            "SenseVoiceSmall" if self.producer is CalibrationProducer.ASR else "FSMN-VAD"
-        )
+        _text(self.producer_version, "producer_identity.producer_version")
+        for field_name in (
+            "generation_policy_sha256",
+            "detector_sha256",
+            "calibration_policy_sha256",
+            "model_sha256",
+            "service_sha256",
+        ):
+            _sha(getattr(self, field_name), f"producer_identity.{field_name}")
+        _text(self.model_id, "producer_identity.model_id")
+        _text(self.model_revision, "producer_identity.model_revision")
         expected_kind = (
             "sensevoice-word-timestamp"
             if self.producer is CalibrationProducer.ASR
             else "fsmn-vad-direct"
         )
-        if self.model_id != expected_model or self.inference_kind != expected_kind:
-            raise _invalid("producer identity model or inference kind is invalid")
-        for field_name in ("service_sha256", "funasr_sha256", "torch_sha256", "model_tree_sha256"):
-            _sha(getattr(self, field_name), f"producer_identity.{field_name}")
-        _text(self.device, "producer_identity.device")
+        if self.inference_kind != expected_kind:
+            raise _invalid("producer identity inference kind is invalid")
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "producer": self.producer.value,
+            "producer_kind": self.producer.value,
             "producer_id": self.producer_id,
-            "provider": self.provider,
+            "producer_version": self.producer_version,
+            "generation_policy_sha256": self.generation_policy_sha256,
+            "detector_sha256": self.detector_sha256,
+            "calibration_policy_sha256": self.calibration_policy_sha256,
             "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "model_sha256": self.model_sha256,
             "inference_kind": self.inference_kind,
             "service_sha256": self.service_sha256,
-            "funasr_sha256": self.funasr_sha256,
-            "torch_sha256": self.torch_sha256,
-            "device": self.device,
-            "model_tree_sha256": self.model_tree_sha256,
         }
 
 
@@ -254,18 +367,27 @@ class ShadowCalibrationRequestMapping:
     """Canonical, non-secret invocation material that derives the request hash."""
 
     source: ShadowCalibrationSource
+    source_byte_limits: ShadowCalibrationSourceByteLimits
+    container: ShadowCalibrationContainer
     audio_clock: ShadowCalibrationAudioClock
     requested_range: TickRange
+    native_profile_identity_sha256: str
+    max_response_bytes: int
+    transcript_capability: ShadowCalibrationTranscriptCapability
     timed_speech_policy_sha256: str
     word_gap_policy_sha256: str
     vad_merge_policy_sha256: str
-    transcript_capability: str
+    word_gap_ms: int
+    vad_merge_gap_ms: int
     producer_identities: tuple[ShadowCalibrationProducerIdentity, ShadowCalibrationProducerIdentity]
 
     def __post_init__(self) -> None:
         if (
             type(self.source) is not ShadowCalibrationSource
+            or type(self.source_byte_limits) is not ShadowCalibrationSourceByteLimits
+            or type(self.container) is not ShadowCalibrationContainer
             or type(self.audio_clock) is not ShadowCalibrationAudioClock
+            or type(self.transcript_capability) is not ShadowCalibrationTranscriptCapability
         ):  # noqa: E721
             raise _invalid("request mapping source and audio clock must be exact")
         if (
@@ -274,13 +396,19 @@ class ShadowCalibrationRequestMapping:
         ):  # noqa: E721
             raise _invalid("request mapping must request the complete audio range")
         for field_name in (
+            "native_profile_identity_sha256",
             "timed_speech_policy_sha256",
             "word_gap_policy_sha256",
             "vad_merge_policy_sha256",
         ):
             _sha(getattr(self, field_name), f"request_mapping.{field_name}")
-        if self.transcript_capability != "required":
-            raise _invalid("request mapping transcript capability must be required")
+        if _integer(self.max_response_bytes, "request_mapping.max_response_bytes") <= 0:
+            raise _invalid("request mapping response limit must be positive")
+        if (
+            _integer(self.word_gap_ms, "request_mapping.word_gap_ms") < 0
+            or _integer(self.vad_merge_gap_ms, "request_mapping.vad_merge_gap_ms") < 0
+        ):
+            raise _invalid("request mapping timing policy is invalid")
         if (
             type(self.producer_identities) is not tuple  # noqa: E721
             or len(self.producer_identities) != 2
@@ -297,17 +425,26 @@ class ShadowCalibrationRequestMapping:
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "source": self.source.to_mapping(),
+            "schema_version": SHADOW_CALIBRATION_RAW_REQUEST_SCHEMA,
+            "source": self.source.to_response_mapping(),
+            "source_byte_limits": self.source_byte_limits.to_mapping(),
+            "container": self.container.to_mapping(),
             "audio_clock": self.audio_clock.to_mapping(),
             "requested_range": {
                 "in_tick": self.requested_range.start_pts,
                 "out_tick": self.requested_range.end_pts,
             },
+            "expected_producers": [identity.to_mapping() for identity in self.producer_identities],
             "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
             "word_gap_policy_sha256": self.word_gap_policy_sha256,
             "vad_merge_policy_sha256": self.vad_merge_policy_sha256,
-            "transcript_capability": self.transcript_capability,
-            "producer_identities": [identity.to_mapping() for identity in self.producer_identities],
+            "native_profile_identity_sha256": self.native_profile_identity_sha256,
+            "response_limits": {"max_response_bytes": self.max_response_bytes},
+            "timing_policy": {
+                "utterance_gap_milliseconds": self.word_gap_ms,
+                "vad_merge_gap_milliseconds": self.vad_merge_gap_ms,
+            },
+            "transcript_capability": self.transcript_capability.to_mapping(),
         }
 
     @property
@@ -342,6 +479,12 @@ class ShadowCalibrationWordGapSegment:
     text: str
     observed_range: TickRange
 
+    def __post_init__(self) -> None:
+        _text(self.segment_id, "word-gap segment ID")
+        _text(self.text, "word-gap segment text")
+        if type(self.observed_range) is not TickRange:  # noqa: E721
+            raise _invalid("word-gap segment range must be an exact TickRange")
+
 
 @dataclass(frozen=True, slots=True)
 class ShadowCalibrationAsrObservation:
@@ -359,6 +502,7 @@ class ShadowCalibrationProjection:
     reported_native_identity_sha256: str
     native_request_identity_sha256: str
     asr_observations: tuple[ShadowCalibrationAsrObservation, ...]
+    word_gap_segments: tuple[ShadowCalibrationWordGapSegment, ...]
     vad_observations: tuple[CalibrationObservation, ...]
     summary: CalibrationMeasurementSummary
 
@@ -369,10 +513,16 @@ class ShadowCalibrationProjection:
             raise _invalid("projection ASR observations must be non-empty")
         if type(self.vad_observations) is not tuple or not self.vad_observations:  # noqa: E721
             raise _invalid("projection VAD observations must be non-empty")
+        if type(self.word_gap_segments) is not tuple or not self.word_gap_segments:  # noqa: E721
+            raise _invalid("projection word-gap segments must be non-empty")
         if any(type(item) is not ShadowCalibrationAsrObservation for item in self.asr_observations):  # noqa: E721
             raise _invalid("projection ASR observation is invalid")
         if any(type(item) is not CalibrationObservation for item in self.vad_observations):  # noqa: E721
             raise _invalid("projection VAD observation is invalid")
+        if any(
+            type(item) is not ShadowCalibrationWordGapSegment for item in self.word_gap_segments
+        ):  # noqa: E721
+            raise _invalid("projection word-gap segment is invalid")
         if type(self.summary) is not CalibrationMeasurementSummary:  # noqa: E721
             raise _invalid("projection summary is invalid")
 
@@ -380,9 +530,12 @@ class ShadowCalibrationProjection:
 @dataclass(frozen=True, slots=True)
 class ShadowCalibrationRawContext:
     source: ShadowCalibrationSource
+    source_byte_limits: ShadowCalibrationSourceByteLimits
+    container: ShadowCalibrationContainer
     audio_clock: ShadowCalibrationAudioClock
     policies: ShadowCalibrationPolicies
     native_profile_identity_sha256: str
+    transcript_capability: ShadowCalibrationTranscriptCapability
     asr_identity: ShadowCalibrationProducerIdentity
     vad_identity: ShadowCalibrationProducerIdentity
     asr_anchors: tuple[CalibrationAnchor, ...]
@@ -391,12 +544,16 @@ class ShadowCalibrationRawContext:
     def __post_init__(self) -> None:
         if (
             type(self.source) is not ShadowCalibrationSource
+            or type(self.source_byte_limits) is not ShadowCalibrationSourceByteLimits
+            or type(self.container) is not ShadowCalibrationContainer
             or type(self.audio_clock) is not ShadowCalibrationAudioClock
         ):  # noqa: E721
             raise _invalid("context source and audio clock must be exact")
         if type(self.policies) is not ShadowCalibrationPolicies:  # noqa: E721
             raise _invalid("context policies must be exact")
         _sha(self.native_profile_identity_sha256, "context.native_profile_identity_sha256")
+        if type(self.transcript_capability) is not ShadowCalibrationTranscriptCapability:  # noqa: E721
+            raise _invalid("context transcript capability must be exact")
         if (
             type(self.asr_identity) is not ShadowCalibrationProducerIdentity
             or type(self.vad_identity) is not ShadowCalibrationProducerIdentity
@@ -409,12 +566,6 @@ class ShadowCalibrationRawContext:
             raise _invalid("context producer identities are unordered")
         if self.asr_identity.producer_id == self.vad_identity.producer_id:
             raise _invalid("context producer IDs must differ")
-        if self.native_profile_identity_sha256 != canonical_sha256(
-            [identity.to_mapping() for identity in self.producer_identities]
-        ):
-            raise _invalid(
-                "context native profile identity does not match locked producer identities"
-            )
         for anchors, producer, producer_id, label in (
             (self.asr_anchors, CalibrationProducer.ASR, self.asr_identity.producer_id, "ASR"),
             (self.vad_anchors, CalibrationProducer.VAD, self.vad_identity.producer_id, "VAD"),
@@ -448,12 +599,12 @@ class DecodedShadowCalibrationRawResponse:
     word_gap_segments: tuple[ShadowCalibrationWordGapSegment, ...]
 
 
-def _decode_source(value: object) -> ShadowCalibrationSource:
+def _decode_source(value: object) -> dict[str, object]:
     mapping = _exact_object(value, frozenset({"source_id", "source_sha256"}), "response.source")
-    return ShadowCalibrationSource(
-        _text(mapping["source_id"], "response.source.source_id"),
-        _sha(mapping["source_sha256"], "response.source.source_sha256"),
-    )
+    return {
+        "source_id": _text(mapping["source_id"], "response.source.source_id"),
+        "source_sha256": _sha(mapping["source_sha256"], "response.source.source_sha256"),
+    }
 
 
 def _decode_clock(value: object) -> ShadowCalibrationAudioClock:
@@ -477,23 +628,24 @@ def _decode_identity(
         value,
         frozenset(
             {
-                "producer",
+                "producer_kind",
                 "producer_id",
-                "provider",
+                "producer_version",
+                "generation_policy_sha256",
+                "detector_sha256",
+                "calibration_policy_sha256",
                 "model_id",
+                "model_revision",
+                "model_sha256",
                 "inference_kind",
                 "service_sha256",
-                "funasr_sha256",
-                "torch_sha256",
-                "device",
-                "model_tree_sha256",
             }
         ),
         "response.producer_identity",
     )
     try:
         producer = CalibrationProducer(
-            _text(mapping["producer"], "response.producer_identity.producer")
+            _text(mapping["producer_kind"], "response.producer_identity.producer_kind")
         )
     except ValueError as error:
         raise _invalid("response producer is invalid") from error
@@ -502,14 +654,21 @@ def _decode_identity(
     return ShadowCalibrationProducerIdentity(
         producer,
         _text(mapping["producer_id"], "response.producer_identity.producer_id"),
-        _text(mapping["provider"], "response.producer_identity.provider"),
+        _text(mapping["producer_version"], "response.producer_identity.producer_version"),
+        _sha(
+            mapping["generation_policy_sha256"],
+            "response.producer_identity.generation_policy_sha256",
+        ),
+        _sha(mapping["detector_sha256"], "response.producer_identity.detector_sha256"),
+        _sha(
+            mapping["calibration_policy_sha256"],
+            "response.producer_identity.calibration_policy_sha256",
+        ),
         _text(mapping["model_id"], "response.producer_identity.model_id"),
+        _text(mapping["model_revision"], "response.producer_identity.model_revision"),
+        _sha(mapping["model_sha256"], "response.producer_identity.model_sha256"),
         _text(mapping["inference_kind"], "response.producer_identity.inference_kind"),
         _sha(mapping["service_sha256"], "response.producer_identity.service_sha256"),
-        _sha(mapping["funasr_sha256"], "response.producer_identity.funasr_sha256"),
-        _sha(mapping["torch_sha256"], "response.producer_identity.torch_sha256"),
-        _text(mapping["device"], "response.producer_identity.device"),
-        _sha(mapping["model_tree_sha256"], "response.producer_identity.model_tree_sha256"),
     )
 
 
@@ -717,8 +876,12 @@ def decode_shadow_calibration_raw_response(
     ):
         raise _invalid("response request identity drift")
     if (
-        _decode_source(response["source"]) != context.source
+        _decode_source(response["source"]) != context.source.to_response_mapping()
         or invocation.request_mapping.source != context.source
+        or invocation.corpus_member_reference_sha256
+        != context.source.corpus_member_reference_sha256
+        or invocation.request_mapping.source_byte_limits != context.source_byte_limits
+        or invocation.request_mapping.container != context.container
     ):
         raise _invalid("response source drift")
     clock = _decode_clock(response["audio_clock"])
@@ -727,6 +890,14 @@ def decode_shadow_calibration_raw_response(
         or invocation.request_mapping.audio_clock != context.audio_clock
     ):
         raise _invalid("response clock drift")
+    if (
+        invocation.request_mapping.native_profile_identity_sha256
+        != context.native_profile_identity_sha256
+        or invocation.request_mapping.transcript_capability != context.transcript_capability
+        or invocation.request_mapping.word_gap_ms != context.policies.word_gap_ms
+        or invocation.request_mapping.vad_merge_gap_ms != context.policies.vad_merge_gap_ms
+    ):
+        raise _invalid("response capability or timing-policy drift")
     requested_range = _tick_range(response["requested_range"], "response.requested_range")
     if (
         requested_range != context.audio_clock.full_range
@@ -784,6 +955,7 @@ def decode_shadow_calibration_raw_response(
             context.native_profile_identity_sha256,
             invocation.request_identity_sha256,
             asr_observations,
+            word_gap_segments,
             vad_observations,
             CalibrationMeasurementSummary(asr_measurement, vad_measurement),
         )
