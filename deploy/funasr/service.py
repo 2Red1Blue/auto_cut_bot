@@ -37,6 +37,10 @@ VAD_INFERENCE_KIND = "fsmn-vad-direct"
 SENSEVOICE_WORD_GUARD_PROFILE = "sensevoice_word_guard_v1"
 RESOURCE_PRESSURE_TEXT = "resource-pressure"
 CANONICAL_SINGLETON_LOCK_PATH = Path("/tmp").resolve(strict=True) / "autocut-funasr-service.lock"
+NORMAL_PROFILE_SCHEMA = "funasr-measured-profile-v1"
+SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-shadow-calibration-profile-v1"
+SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
+SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,14 @@ def canon(v: object) -> bytes:
 
 def sha(v: bytes) -> str:
     return "sha256:" + hashlib.sha256(v).hexdigest()
+
+
+def is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is not None
+        and value != "sha256:" + "0" * 64
+    )
 
 
 def tick(ms: int, tb: dict[str, int], end: bool) -> int:
@@ -522,7 +534,7 @@ class Service:
         v = Path(os.environ["FUNASR_VAD_MODEL_PATH"]).resolve(strict=True)
         if not a.is_dir() or not v.is_dir():
             raise RuntimeError("model paths must be directories")
-        expected_fields = {
+        normal_profile_fields = {
             "schema_version",
             "provider_id",
             "provider_version",
@@ -538,8 +550,37 @@ class Service:
             "vad_merge_gap_milliseconds",
             "producers",
         }
+        shadow_profile_fields = {
+            "schema_version",
+            "provider_id",
+            "provider_version",
+            "service_sha256",
+            "funasr_version",
+            "torch_version",
+            "device",
+            "word_timing_capability",
+            "max_request_bytes",
+            "native_port_identity_sha256",
+            "timed_speech_policy_sha256",
+            "word_gap_policy_sha256",
+            "vad_merge_policy_sha256",
+            "utterance_gap_milliseconds",
+            "vad_merge_gap_milliseconds",
+            "producers",
+        }
+        profile_schema = self.profile.get("schema_version")
+        if profile_schema == NORMAL_PROFILE_SCHEMA:
+            expected_fields = normal_profile_fields
+            calibration_profile = False
+        elif profile_schema == SHADOW_CALIBRATION_PROFILE_SCHEMA:
+            expected_fields = shadow_profile_fields
+            calibration_profile = True
+        else:
+            raise RuntimeError("profile schema is not supported")
         if set(self.profile) != expected_fields:
             raise RuntimeError("profile schema is not closed")
+        if not calibration_profile and not is_sha256(self.profile["profile_calibration_sha256"]):
+            raise RuntimeError("normal profile calibration identity is invalid")
         if self.profile["max_request_bytes"] != self.max_request:
             raise RuntimeError("FUNASR_MAX_REQUEST_BYTES does not match the measured profile")
         if self.profile["word_timing_capability"] != "required":
@@ -572,7 +613,7 @@ class Service:
                 VAD_INFERENCE_KIND,
             ),
         )
-        identity_fields = {
+        normal_identity_fields = {
             "producer_kind",
             "producer_id",
             "producer_version",
@@ -587,6 +628,11 @@ class Service:
             "service_sha256",
             "inference_kind",
         }
+        shadow_identity_fields = normal_identity_fields - {
+            "calibration_record_sha256",
+            "timing_error_bound_tick",
+        }
+        identity_fields = shadow_identity_fields if calibration_profile else normal_identity_fields
         identities = []
         for raw, (kind, model_id, revision, model_sha256, inference_kind) in zip(
             declared, measured_models, strict=True
@@ -605,10 +651,34 @@ class Service:
             actual["detector_sha256"] = detector_hash(actual, measured)
             if actual != raw:
                 raise RuntimeError(f"measured {kind} identity mismatch")
+            if not calibration_profile and (
+                not is_sha256(actual["calibration_record_sha256"])
+                or type(actual["timing_error_bound_tick"]) is not int
+                or actual["timing_error_bound_tick"] <= 0
+            ):
+                raise RuntimeError(f"measured {kind} calibration identity is invalid")
             identities.append(actual)
         for key, actual in measured.items():
             if key != "producers" and actual != self.profile[key]:
                 raise RuntimeError(f"measured profile identity mismatch {key}")
+        if calibration_profile:
+            measured_native_identity = sha(
+                canon(
+                    {
+                        **{
+                            key: value
+                            for key, value in measured.items()
+                            if key != "native_port_identity_sha256"
+                        },
+                        "producers": identities,
+                    }
+                )
+            )
+            if (
+                not is_sha256(self.profile["native_port_identity_sha256"])
+                or measured_native_identity != self.profile["native_port_identity_sha256"]
+            ):
+                raise RuntimeError("measured shadow native identity mismatch")
         await self.require_resources(self.startup_min_available)
         self.singleton.acquire()
         model_task = asyncio.create_task(
@@ -804,6 +874,270 @@ class Service:
             raise web.HTTPBadRequest(text="manifest clock/bounds are invalid")
         return value
 
+    def validate_shadow_calibration_manifest_identity(self, manifest: dict[str, object]) -> None:
+        if self.measured_profile is None:
+            raise web.HTTPServiceUnavailable()
+        if self.measured_profile["schema_version"] != SHADOW_CALIBRATION_PROFILE_SCHEMA:
+            raise web.HTTPConflict(text="shadow calibration profile is unavailable")
+        limits = cast(dict[str, int], manifest["source_byte_limits"])
+        if (
+            limits["service_max_request_bytes"] != self.max_request
+            or limits["effective_max_source_bytes"]
+            != min(limits["kernel_max_source_bytes"], limits["service_max_request_bytes"])
+        ):
+            raise web.HTTPConflict(text="measured source-byte policy drift")
+        if manifest["expected_producers"] != self.identities:
+            raise web.HTTPConflict(text="measured producer identity drift")
+        expected_policies = {
+            "timed_speech_policy_sha256": self.measured_profile["timed_speech_policy_sha256"],
+            "word_gap_policy_sha256": self.measured_profile["word_gap_policy_sha256"],
+            "vad_merge_policy_sha256": self.measured_profile["vad_merge_policy_sha256"],
+            "native_profile_identity_sha256": self.measured_profile[
+                "native_port_identity_sha256"
+            ],
+        }
+        if any(manifest[key] != value for key, value in expected_policies.items()):
+            raise web.HTTPConflict(text="measured shadow calibration identity drift")
+        if manifest["timing_policy"] != {
+            "utterance_gap_milliseconds": self.measured_profile["utterance_gap_milliseconds"],
+            "vad_merge_gap_milliseconds": self.measured_profile["vad_merge_gap_milliseconds"],
+        } or manifest["transcript_capability"] != {
+            "profile": SENSEVOICE_WORD_GUARD_PROFILE,
+            "segment": "complete",
+            "segment_semantics": "utterance_gap_protected_range",
+            "sentence": "not_applicable",
+            "word": "complete",
+            "word_timing": "required",
+        }:
+            raise web.HTTPConflict(text="measured shadow calibration policy drift")
+
+    @staticmethod
+    def validate_shadow_calibration_manifest_schema(manifest: object) -> dict[str, object]:
+        fields = {
+            "schema_version",
+            "source",
+            "source_byte_limits",
+            "container",
+            "audio_clock",
+            "requested_range",
+            "expected_producers",
+            "timed_speech_policy_sha256",
+            "word_gap_policy_sha256",
+            "vad_merge_policy_sha256",
+            "native_profile_identity_sha256",
+            "response_limits",
+            "timing_policy",
+            "transcript_capability",
+        }
+        if type(manifest) is not dict or set(manifest) != fields:
+            raise web.HTTPBadRequest(text="shadow calibration manifest schema is not closed")
+        value = cast(dict[str, object], manifest)
+        if value["schema_version"] != SHADOW_CALIBRATION_REQUEST_SCHEMA:
+            raise web.HTTPBadRequest(text="shadow calibration manifest schema is invalid")
+        source = value["source"]
+        source_byte_limits = value["source_byte_limits"]
+        container = value["container"]
+        clock = value["audio_clock"]
+        requested = value["requested_range"]
+        response_limits = value["response_limits"]
+        timing_policy = value["timing_policy"]
+        transcript_capability = value["transcript_capability"]
+        if (
+            type(source) is not dict
+            or set(source) != {"source_id", "source_sha256"}
+            or type(source["source_id"]) is not str
+            or not source["source_id"]
+            or not is_sha256(source["source_sha256"])
+            or type(source_byte_limits) is not dict
+            or set(source_byte_limits)
+            != {
+                "kernel_max_source_bytes",
+                "service_max_request_bytes",
+                "effective_max_source_bytes",
+            }
+            or type(container) is not dict
+            or container != {"media_type": "video/mp4", "safe_suffix": ".mp4"}
+            or type(clock) is not dict
+            or set(clock) != {"clock_id", "time_base", "origin_tick", "duration_tick"}
+            or type(clock["clock_id"]) is not str
+            or not clock["clock_id"]
+            or type(requested) is not dict
+            or set(requested) != {"in_tick", "out_tick"}
+            or type(response_limits) is not dict
+            or set(response_limits) != {"max_response_bytes"}
+            or type(timing_policy) is not dict
+            or set(timing_policy)
+            != {"utterance_gap_milliseconds", "vad_merge_gap_milliseconds"}
+            or type(transcript_capability) is not dict
+            or set(transcript_capability)
+            != {
+                "profile",
+                "segment",
+                "segment_semantics",
+                "sentence",
+                "word",
+                "word_timing",
+            }
+            or type(value["expected_producers"]) is not list
+            or len(value["expected_producers"]) != 2
+            or any(
+                not is_sha256(value[key])
+                for key in (
+                    "timed_speech_policy_sha256",
+                    "word_gap_policy_sha256",
+                    "vad_merge_policy_sha256",
+                    "native_profile_identity_sha256",
+                )
+            )
+        ):
+            raise web.HTTPBadRequest(text="shadow calibration manifest member schema is not closed")
+        time_base = clock["time_base"]
+        integer_values = (
+            clock["origin_tick"],
+            clock["duration_tick"],
+            requested["in_tick"],
+            requested["out_tick"],
+            response_limits["max_response_bytes"],
+            *cast(dict[str, object], source_byte_limits).values(),
+            *cast(dict[str, object], timing_policy).values(),
+        )
+        if (
+            type(time_base) is not dict
+            or set(time_base) != {"numerator", "denominator"}
+            or any(type(item) is not int for item in (*integer_values, *time_base.values()))
+            or clock["duration_tick"] <= 0
+            or requested["out_tick"] <= requested["in_tick"]
+            or response_limits["max_response_bytes"] <= 0
+            or any(item <= 0 for item in cast(dict[str, int], source_byte_limits).values())
+            or any(item < 0 for item in cast(dict[str, int], timing_policy).values())
+            or any(item <= 0 for item in cast(dict[str, int], time_base).values())
+        ):
+            raise web.HTTPBadRequest(text="shadow calibration manifest clock/bounds are invalid")
+        return value
+
+    @staticmethod
+    def validate_shadow_native_outputs(asr: object, vad_output: object) -> None:
+        if type(asr) is not list or len(asr) != 1 or type(asr[0]) is not dict:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration ASR output is invalid")
+        asr_item = cast(dict[str, object], asr[0])
+        if set(asr_item) != {"text", "words", "timestamp"}:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration ASR output is not closed")
+        text = asr_item["text"]
+        words = asr_item["words"]
+        timestamps = asr_item["timestamp"]
+        if (
+            type(text) is not str
+            or type(words) is not list
+            or type(timestamps) is not list
+            or not words
+            or len(words) != len(timestamps)
+        ):
+            raise web.HTTPUnprocessableEntity(text="shadow calibration ASR word timestamps are invalid")
+        prior_end = 0
+        for word, pair in zip(words, timestamps, strict=True):
+            if (
+                type(word) is not str
+                or not word.strip()
+                or type(pair) is not list
+                or len(pair) != 2
+                or type(pair[0]) is not int
+                or type(pair[1]) is not int
+                or pair[0] < 0
+                or pair[0] >= pair[1]
+                or prior_end > pair[0]
+            ):
+                raise web.HTTPUnprocessableEntity(
+                    text="shadow calibration ASR word timestamps are invalid"
+                )
+            prior_end = pair[1]
+        if type(vad_output) is not list or len(vad_output) != 1 or type(vad_output[0]) is not dict:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
+        vad_item = cast(dict[str, object], vad_output[0])
+        if set(vad_item) != {"value"} or type(vad_item["value"]) is not list or not vad_item["value"]:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
+        prior_start = -1
+        for pair in cast(list[object], vad_item["value"]):
+            if (
+                type(pair) is not list
+                or len(pair) != 2
+                or type(pair[0]) is not int
+                or type(pair[1]) is not int
+                or pair[0] < 0
+                or pair[0] >= pair[1]
+                or prior_start > pair[0]
+            ):
+                raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
+            prior_start = pair[0]
+
+    async def shadow_calibration_raw(self, req: web.Request) -> web.Response:
+        if not self.ready:
+            raise web.HTTPServiceUnavailable()
+        supplied = req.headers.get("Authorization", "")
+        if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
+            raise web.HTTPUnauthorized(text="unauthorized")
+        try:
+            decoded = json.loads(
+                base64.b64decode(req.headers["X-Shadow-Calibration-Manifest"], validate=True)
+            )
+            m = self.validate_shadow_calibration_manifest_schema(decoded)
+        except Exception as error:
+            if isinstance(error, web.HTTPException):
+                raise
+            raise web.HTTPBadRequest(text="bad shadow calibration manifest") from error
+        request_identity = sha(canon(m))
+        if request_identity != req.headers.get("X-Shadow-Calibration-Request-SHA256"):
+            raise web.HTTPBadRequest(text="identity")
+        self.validate_shadow_calibration_manifest_identity(m)
+        rr = cast(dict[str, int], m["requested_range"])
+        clock = cast(dict[str, object], m["audio_clock"])
+        if rr != {
+            "in_tick": clock["origin_tick"],
+            "out_tick": clock["origin_tick"] + clock["duration_tick"],
+        }:
+            raise web.HTTPBadRequest(text="full source only")
+        limits = cast(dict[str, int], m["source_byte_limits"])
+        await self.admit()
+        try:
+            with tempfile.TemporaryDirectory(prefix="funasr-shadow-calibration-") as directory:
+                path = Path(directory) / "source.mp4"
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as output:
+                    async for chunk in req.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > limits["effective_max_source_bytes"]:
+                            raise web.HTTPRequestEntityTooLarge(
+                                max_size=limits["effective_max_source_bytes"], actual_size=size
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+                source = cast(dict[str, str], m["source"])
+                if "sha256:" + digest.hexdigest() != source["source_sha256"]:
+                    raise web.HTTPBadRequest(text="source hash")
+                asr, vad_output = await self.run_inference(path)
+            self.validate_shadow_native_outputs(asr, vad_output)
+            response = {
+                "schema_version": SHADOW_CALIBRATION_RESPONSE_SCHEMA,
+                "request_identity_sha256": request_identity,
+                "source": m["source"],
+                "audio_clock": m["audio_clock"],
+                "requested_range": m["requested_range"],
+                "timed_speech_policy_sha256": m["timed_speech_policy_sha256"],
+                "word_gap_policy_sha256": m["word_gap_policy_sha256"],
+                "vad_merge_policy_sha256": m["vad_merge_policy_sha256"],
+                "native_profile_identity_sha256": m["native_profile_identity_sha256"],
+                "producer_identities": self.identities,
+                "asr_native_output": asr,
+                "vad_native_output": vad_output,
+            }
+            raw = canon(response)
+            response_limits = cast(dict[str, int], m["response_limits"])
+            if len(raw) > min(self.max_response, response_limits["max_response_bytes"]):
+                raise web.HTTPInternalServerError(text="response bound")
+            return web.Response(body=raw, content_type="application/json")
+        finally:
+            await self.release()
+
     async def evidence(self, req: web.Request) -> web.Response:
         if not self.ready:
             raise web.HTTPServiceUnavailable()
@@ -947,6 +1281,7 @@ def create_app(service: Service | None = None) -> web.Application:
             web.get("/health/live", live),
             web.get("/health/ready", ready),
             web.post("/v1/timed-speech-evidence", s.evidence),
+            web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
         ]
     )
     app.on_startup.append(startup)

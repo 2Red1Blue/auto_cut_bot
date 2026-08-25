@@ -210,6 +210,58 @@ def _service_profile(
     return profile
 
 
+def _shadow_calibration_profile(
+    ns: dict[str, object], asr_path: Path, vad_path: Path
+) -> dict[str, object]:
+    lock_path = asr_path.parents[2] / "funasr-service.lock"
+    ns["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
+    ns["Service"].__init__.__globals__["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
+    tree_hash = ns["tree_hash"]
+    service_hash = ns["service_hash"]
+    detector_hash = ns["detector_hash"]
+    profile: dict[str, object] = {
+        "schema_version": "funasr-shadow-calibration-profile-v1",
+        "provider_id": "funasr-http-v1",
+        "provider_version": "1.0.0",
+        "service_sha256": service_hash(),
+        "funasr_version": "test",
+        "torch_version": "test",
+        "device": "cpu",
+        "word_timing_capability": "required",
+        "max_request_bytes": 1_000_000,
+        "timed_speech_policy_sha256": H,
+        "word_gap_policy_sha256": H,
+        "vad_merge_policy_sha256": H,
+        "utterance_gap_milliseconds": 700,
+        "vad_merge_gap_milliseconds": 350,
+    }
+    producers = []
+    for kind, model_id, path, inference_kind in (
+        ("asr", "SenseVoiceSmall", asr_path, "sensevoice-word-timestamp"),
+        ("vad", "fsmn-vad", vad_path, "fsmn-vad-direct"),
+    ):
+        identity = {
+            "producer_kind": kind,
+            "producer_id": kind,
+            "producer_version": "1",
+            "generation_policy_sha256": H,
+            "detector_sha256": H,
+            "calibration_policy_sha256": H,
+            "model_id": model_id,
+            "model_revision": path.name,
+            "model_sha256": tree_hash(path),
+            "service_sha256": profile["service_sha256"],
+            "inference_kind": inference_kind,
+        }
+        identity["detector_sha256"] = detector_hash(identity, profile)
+        producers.append(identity)
+    profile["producers"] = producers
+    profile["native_port_identity_sha256"] = ns["sha"](
+        ns["canon"]({**profile, "producers": producers})
+    )
+    return profile
+
+
 def _service_environment(
     monkeypatch: pytest.MonkeyPatch, profile: dict[str, object], asr: Path, vad: Path
 ) -> None:
@@ -263,6 +315,50 @@ def _headers(request_value: TimedSpeechEvidenceRequest, token: str = "secret") -
         "Content-Type": "application/octet-stream",
         "X-Timed-Speech-Manifest": base64.b64encode(manifest).decode(),
         "X-Timed-Speech-Request-SHA256": request_value.identity_sha256,
+    }
+
+
+def _shadow_calibration_manifest(
+    tmp_path: Path, profile: dict[str, object]
+) -> tuple[dict[str, object], bytes]:
+    source = (tmp_path / "shadow.mp4").resolve()
+    body = b"shadow calibration source"
+    source.write_bytes(body)
+    request_value = request(tmp_path)
+    manifest = {
+        "schema_version": "shadow-calibration-funasr-raw-request-v1",
+        "source": {
+            "source_id": "calibration-corpus-0001",
+            "source_sha256": "sha256:" + hashlib.sha256(body).hexdigest(),
+        },
+        "source_byte_limits": request_value.to_mapping()["source_byte_limits"],
+        "container": {"media_type": "video/mp4", "safe_suffix": ".mp4"},
+        "audio_clock": request_value.to_mapping()["audio_clock"],
+        "requested_range": request_value.to_mapping()["requested_range"],
+        "expected_producers": profile["producers"],
+        "timed_speech_policy_sha256": profile["timed_speech_policy_sha256"],
+        "word_gap_policy_sha256": profile["word_gap_policy_sha256"],
+        "vad_merge_policy_sha256": profile["vad_merge_policy_sha256"],
+        "native_profile_identity_sha256": profile["native_port_identity_sha256"],
+        "response_limits": {"max_response_bytes": 1_000_000},
+        "timing_policy": {
+            "utterance_gap_milliseconds": 700,
+            "vad_merge_gap_milliseconds": 350,
+        },
+        "transcript_capability": request_value.to_mapping()["transcript_capability"],
+    }
+    return manifest, body
+
+
+def _shadow_calibration_headers(
+    manifest: dict[str, object], token: str = "secret"
+) -> dict[str, str]:
+    raw = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/octet-stream",
+        "X-Shadow-Calibration-Manifest": base64.b64encode(raw).decode(),
+        "X-Shadow-Calibration-Request-SHA256": "sha256:" + hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -785,6 +881,113 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
             headers=limit_headers,
         )
         assert limit_response.status == 409
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_shadow_calibration_raw_envelope_closes_over_native_request_without_bounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _shadow_calibration_profile(ns, asr, vad)
+    assert "profile_calibration_sha256" not in profile
+    assert all("calibration_record_sha256" not in item for item in profile["producers"])
+    assert all("timing_error_bound_tick" not in item for item in profile["producers"])
+    _service_environment(monkeypatch, profile, asr, vad)
+    client = TestClient(TestServer(ns["create_app"](ns["Service"]())))
+    await client.start_server()
+    try:
+        manifest, body = _shadow_calibration_manifest(tmp_path, profile)
+        response = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=_shadow_calibration_headers(manifest),
+        )
+        assert response.status == 200
+        value = await response.json()
+        assert set(value) == {
+            "schema_version",
+            "request_identity_sha256",
+            "source",
+            "audio_clock",
+            "requested_range",
+            "timed_speech_policy_sha256",
+            "word_gap_policy_sha256",
+            "vad_merge_policy_sha256",
+            "native_profile_identity_sha256",
+            "producer_identities",
+            "asr_native_output",
+            "vad_native_output",
+        }
+        assert value["schema_version"] == "shadow-calibration-funasr-raw-response-v1"
+        assert value["request_identity_sha256"] == ns["sha"](ns["canon"](manifest))
+        assert value["source"] == manifest["source"]
+        assert value["audio_clock"] == manifest["audio_clock"]
+        assert value["requested_range"] == manifest["requested_range"]
+        assert value["producer_identities"] == profile["producers"]
+        assert value["asr_native_output"] == [
+            {"text": "hello", "words": ["hello"], "timestamp": [[100, 200]]}
+        ]
+        assert value["vad_native_output"] == [{"value": [[50, 250]]}]
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        assert "calibration_record_sha256" not in encoded
+        assert "profile_calibration_sha256" not in encoded
+        assert "timing_error_bound_tick" not in encoded
+
+        extra = dict(manifest)
+        extra["profile_calibration_sha256"] = H
+        rejected_extra = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=_shadow_calibration_headers(extra),
+        )
+        assert rejected_extra.status == 400
+
+        partial = dict(manifest)
+        partial["requested_range"] = {"in_tick": 101, "out_tick": 4100}
+        rejected_partial = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=_shadow_calibration_headers(partial),
+        )
+        assert rejected_partial.status == 400
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_shadow_calibration_endpoint_rejects_ordinary_calibrated_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    normal_profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, normal_profile, asr, vad)
+    client = TestClient(TestServer(ns["create_app"](ns["Service"]())))
+    await client.start_server()
+    try:
+        shadow_profile = _shadow_calibration_profile(ns, asr, vad)
+        manifest, body = _shadow_calibration_manifest(tmp_path, shadow_profile)
+        response = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=_shadow_calibration_headers(manifest),
+        )
+        assert response.status == 409
     finally:
         await client.close()
 
