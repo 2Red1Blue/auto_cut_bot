@@ -15,7 +15,7 @@ from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
-JobProfile = Literal["test", "shadow", "production"]
+JobProfile = Literal["test", "shadow", "production", "authority"]
 VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"

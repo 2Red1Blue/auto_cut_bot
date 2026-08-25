@@ -21,6 +21,17 @@ from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
+from ..media import Stage4PredecessorError, decode_timed_speech_profile_registry_entry
+from ..registry.timed_speech import (
+    AUTHORITY_BOOTSTRAP_JOB,
+    BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
+    TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
+    TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
+    AuthorityRegistrySnapshot,
+    BootstrappedTimedSpeechProfile,
+    TimedSpeechProfileKey,
+    TimedSpeechRegistryError,
+)
 from ..source_manifest import (
     SourceManifestDecodeError,
     SourceOperationGrant,
@@ -1064,6 +1075,92 @@ class PostgresRuntimeStore:
                     "FinalizeVlmBatchCommand success requires the explicit VLM batch owner API"
                 )
             return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def commit_timed_speech_profile_bootstrap(
+        self,
+        success: CommandSuccess,
+        snapshot: AuthorityRegistrySnapshot,
+    ) -> CommandOutcome:
+        """Commit the only authority registry writer and its anchor together."""
+
+        if type(snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
+            raise StoreValidationError("timed speech bootstrap requires an authority snapshot")
+        if (
+            len(success.artifacts) != 1
+            or success.artifacts[0].scope != TIMED_SPEECH_PROFILE_REGISTRY_SCOPE
+            or success.artifacts[0].artifact_type != TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE
+            or success.artifacts[0].logical_id != snapshot.enabled_profile.logical_id
+            or success.artifacts[0].revision != 1
+        ):
+            raise StoreValidationError("timed speech bootstrap has an invalid registry artifact")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
+            if command_name != BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND:
+                raise CommandStateError("only the authority bootstrap command may commit a profile")
+            cursor.execute("SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s", (job_id,))
+            job_row = cursor.fetchone()
+            if job_row is None or Job(_text(job_row[0]), cast(JobProfile, _text(job_row[1]))) != AUTHORITY_BOOTSTRAP_JOB:
+                raise CommandStateError("timed speech bootstrap lost its dedicated authority Job")
+            artifact = success.artifacts[0]
+            try:
+                entry = decode_timed_speech_profile_registry_entry(
+                    _strict_json_object(artifact.payload_json, "timed speech bootstrap payload")
+                )
+                key = TimedSpeechProfileKey(entry.profile_id, entry.profile_version)
+            except (Stage4PredecessorError, TimedSpeechRegistryError) as error:
+                raise StoreValidationError("timed speech bootstrap payload is invalid") from error
+            if (
+                key != snapshot.enabled_profile
+                or artifact.content_hash != entry.canonical_hash
+                or artifact.logical_id != key.logical_id
+            ):
+                raise StoreValidationError("timed speech bootstrap payload does not close")
+            expected_request_hash = canonical_payload_hash(
+                json.dumps(
+                    {
+                        "command": BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
+                        "profile_key": key.value,
+                        "profile_payload_sha256": entry.canonical_hash,
+                        "registry_set_sha256": snapshot.registry_set_sha256,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+            if request_hash != expected_request_hash:
+                raise IdempotencyConflictError("bootstrap slot is not bound to the registry snapshot")
+            if state != "running":
+                replay = self._replay_or_raise(
+                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
+                )
+                self._read_bootstrapped_timed_speech_profile(cursor, snapshot)
+                return replay
+            outcome = self._write_success(cursor, success, job_id)
+            if outcome.receipt_id is None or outcome.artifact_set_id is None:
+                raise StoreValidationError("bootstrap success lost its immutable result identity")
+            cursor.execute(
+                """
+                INSERT INTO runtime.timed_speech_profile_anchors
+                    (profile_key, registry_set_sha256, receipt_id, artifact_set_id,
+                     member_ordinal, content_hash, command_slot_id)
+                VALUES (%s, %s, %s, %s, 0, %s, %s)
+                """,
+                (
+                    key.value,
+                    snapshot.registry_set_sha256,
+                    outcome.receipt_id,
+                    outcome.artifact_set_id,
+                    artifact.content_hash,
+                    success.command_slot_id,
+                ),
+            )
+            return outcome
 
         return self._transaction(operation)
 
@@ -2397,6 +2494,103 @@ class PostgresRuntimeStore:
             )
 
         return self._transaction(operation)
+
+    def read_bootstrapped_timed_speech_profile(
+        self,
+        snapshot: AuthorityRegistrySnapshot,
+    ) -> BootstrappedTimedSpeechProfile:
+        """Read one profile only through its authority anchor, never a head lookup."""
+
+        if type(snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
+            raise StoreValidationError("timed speech profile reader requires an authority snapshot")
+
+        def operation(cursor: DbCursor) -> BootstrappedTimedSpeechProfile:
+            return self._read_bootstrapped_timed_speech_profile(cursor, snapshot)
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _read_bootstrapped_timed_speech_profile(
+        cursor: DbCursor,
+        snapshot: AuthorityRegistrySnapshot,
+    ) -> BootstrappedTimedSpeechProfile:
+        key = snapshot.enabled_profile
+        cursor.execute(
+            """
+            SELECT anchor.receipt_id, anchor.artifact_set_id, anchor.member_ordinal,
+                   anchor.content_hash, artifact.payload_json::text
+              FROM runtime.timed_speech_profile_anchors AS anchor
+              JOIN runtime.command_receipts AS receipt
+                ON receipt.receipt_id = anchor.receipt_id
+               AND receipt.result_artifact_set_id = anchor.artifact_set_id
+               AND receipt.outcome = 'succeeded'
+              JOIN runtime.command_slots AS slot
+                ON slot.command_slot_id = receipt.command_slot_id
+               AND slot.command_slot_id = anchor.command_slot_id
+               AND slot.state = 'succeeded'
+               AND slot.command_name = %s
+              JOIN runtime.jobs AS job
+                ON job.job_id = slot.job_id
+               AND job.job_key = %s
+               AND job.profile = %s
+              JOIN runtime.artifact_sets AS artifact_set
+                ON artifact_set.artifact_set_id = anchor.artifact_set_id
+               AND artifact_set.command_slot_id = slot.command_slot_id
+              JOIN runtime.artifact_set_members AS member
+                ON member.artifact_set_id = artifact_set.artifact_set_id
+               AND member.ordinal = anchor.member_ordinal
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = artifact_set.artifact_set_id
+             WHERE anchor.profile_key = %s
+               AND anchor.registry_set_sha256 = %s
+               AND artifact.namespace = %s
+               AND artifact.scope_kind = %s
+               AND artifact.scope_key = %s
+               AND artifact.artifact_type = %s
+               AND artifact.logical_id = %s
+               AND artifact.revision = 1
+               AND artifact.content_hash = anchor.content_hash
+            """,
+            (
+                BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
+                AUTHORITY_BOOTSTRAP_JOB.job_key,
+                AUTHORITY_BOOTSTRAP_JOB.profile,
+                key.value,
+                snapshot.registry_set_sha256,
+                TIMED_SPEECH_PROFILE_REGISTRY_SCOPE.namespace,
+                TIMED_SPEECH_PROFILE_REGISTRY_SCOPE.kind,
+                TIMED_SPEECH_PROFILE_REGISTRY_SCOPE.key,
+                TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
+                key.logical_id,
+            ),
+        )
+        rows: list[tuple[object, ...]] = []
+        while (row := cursor.fetchone()) is not None:
+            rows.append(row)
+        if len(rows) != 1:
+            raise StoreValidationError("authority anchored timed speech profile is unavailable")
+        receipt_id, artifact_set_id, ordinal, content_hash, payload_json = rows[0]
+        reference = CommittedArtifactMemberReference(
+            receipt_id=UUID(str(receipt_id)),
+            artifact_set_id=UUID(str(artifact_set_id)),
+            member_ordinal=cast(int, ordinal),
+            scope=TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
+            artifact_type=TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
+            logical_id=key.logical_id,
+            revision=1,
+            content_hash=_text(content_hash),
+        )
+        try:
+            entry = decode_timed_speech_profile_registry_entry(
+                _strict_json_object(_text(payload_json), "timed speech profile payload")
+            )
+            resolved = BootstrappedTimedSpeechProfile(snapshot, reference, entry)
+        except (Stage4PredecessorError, TimedSpeechRegistryError) as error:
+            raise StoreValidationError("authority anchored timed speech profile is malformed") from error
+        if canonical_payload_hash(_text(payload_json)) != reference.content_hash:
+            raise StoreValidationError("authority anchored timed speech profile hash does not close")
+        return resolved
 
     def read_committed_semantic_inputs(
         self,

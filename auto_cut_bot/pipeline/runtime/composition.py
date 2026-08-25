@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import psycopg
+from autocut_kernel.registry import (
+    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
+    StoreAnchoredTimedSpeechProfileResolver,
+)
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
 from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
 from autocut_kernel.store.models import MaterializationLimits
@@ -411,6 +415,7 @@ def compose_pipeline_runtime_from_environment(
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(),
+        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
     )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),

@@ -1,5 +1,7 @@
 """Durable semantic persistence for the local Pipeline MVP."""
 
+from typing import TYPE_CHECKING
+
 from .errors import (
     BlobIntegrityError,
     CommandStateError,
@@ -41,8 +43,8 @@ from .models import (
     GenerationFailureDisposition,
     Job,
     MediaEvidenceReference,
-    PersistedMediaEvidence,
     PersistedCommittedArtifactMember,
+    PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
     PersistedVlmGenerationChild,
@@ -56,7 +58,19 @@ from .models import (
     VlmSemanticPackSetChild,
     WholeSeriesSourceManifestReference,
 )
-from .postgres import PostgresRuntimeStore
+
+if TYPE_CHECKING:
+    from .postgres import PostgresRuntimeStore
+
+
+def __getattr__(name: str) -> object:
+    """Delay the PostgreSQL adapter to keep authority-model imports acyclic."""
+
+    if name == "PostgresRuntimeStore":
+        from .postgres import PostgresRuntimeStore
+
+        return PostgresRuntimeStore
+    raise AttributeError(name)
 
 __all__ = [
     "ArtifactMember",
