@@ -1,0 +1,4 @@
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/06-stage-05-render-qc-release-implementation.md","reason":"render/QC/release conformance review"}
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/01-artifact-store-and-transaction-kernel.md","reason":"atomic Receipt and output visibility review"}
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/12-implementation-conformance-and-ai-drift-prevention.md","reason":"architecture drift and legacy reuse review"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/implementation-conformance-gates.md","reason":"independent acceptance gate"}

@@ -1,0 +1,3 @@
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/04-stage-01-to-03-semantic-implementation.md","reason":"semantic conformance review"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/implementation-conformance-gates.md","reason":"acceptance gate"}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/pipeline/vlm_semantic_adapter.py","reason":"current real Doubao observation handoff"}

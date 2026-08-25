@@ -1,0 +1,35 @@
+{
+  "id": "desktop-branch-runtime-runbook",
+  "name": "desktop-branch-runtime-runbook",
+  "title": "Desktop branch and runtime runbook",
+  "description": "Document the safe desktop branch, Podman infrastructure, and honest current runtime boundary.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "docs-only in auto_cut_bot feat/v213-contract-codegen",
+  "package": null,
+  "priority": "P2",
+  "creator": "liuzx",
+  "assignee": "liuzx",
+  "createdAt": "2026-08-26",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    ".worktrees/auto-cut-bot-v213/docs/v213-desktop-e2e-runbook.md",
+    ".worktrees/auto-cut-bot-v213/docs/v213-current-status-and-desktop-run.md",
+    ".worktrees/auto-cut-bot-v213/docs/README.md",
+    ".worktrees/auto-cut-bot-v213/deploy/funasr/README.md"
+  ],
+  "notes": "",
+  "meta": {
+    "target_repository": "auto_cut_bot",
+    "target_branch": "feat/v213-contract-codegen",
+    "target_worktree": "/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213"
+  }
+}

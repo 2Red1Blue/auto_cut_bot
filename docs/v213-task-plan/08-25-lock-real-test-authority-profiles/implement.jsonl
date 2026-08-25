@@ -1,0 +1,7 @@
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/governance/authority-lock.yaml","reason":"Protected lock and A-to-B-to-C source provenance."}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/governance/authority-sources.yaml","reason":"Inventory must enumerate every registry profile blob."}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/tools/authority/lock.py","reason":"Immutable Git-blob lock generation and verification."}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/registry/timed_speech.py","reason":"Timed-speech authority snapshot/profile contract."}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/auto_cut_bot/pipeline/runtime/composition.py","reason":"Verified snapshot injection/startup boundary."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-05-media-preflight-calibration/research/authority-registry-source-lock-gap.md","reason":"Existing source-lock gap evidence."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/research/stage1-audited-draft-authority-gap.md","reason":"Stage1 narrative profile requirement."}

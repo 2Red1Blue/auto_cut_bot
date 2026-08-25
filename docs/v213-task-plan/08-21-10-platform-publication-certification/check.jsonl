@@ -1,0 +1,14 @@
+{"file":".trellis/spec/backend/index.md","reason":"Source-only checker context; Loader/Snapshot must bind full hash/EOF and selected slices before review."}
+{"file":".trellis/spec/backend/authority-bootstrap-block.md","reason":"Checker must reject protected-path, authority-hash, repository-binding and self-approval violations."}
+{"file":".trellis/spec/backend/implementation-conformance-gates.md","reason":"Source-only checker context: evidence-bound review and stale invalidation; JSONL membership is never pass."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Checker traces exact data and validation ownership across every publication boundary."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/06-stage-05-render-qc-release-implementation.md","reason":"Read-only design source for exact committed Portfolio/QC input; no ac_auto_cut write scope."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/07-dual-runtime-implementation.md","reason":"Read-only design source for shared Dispatcher/conformance; no ac_auto_cut write scope."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/08-publication-transaction-and-certification.md","reason":"Read-only design source for 0-to-N and recovery semantics; independent evidence remains required."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/09-migration-rollout-and-operations.md","reason":"Read-only design source for rollout/kill switch; independent evidence remains required."}
+{"file":".trellis/tasks/08-21-04-command-admission-recovery/design.md","reason":"Verify bounded UoW composition, exact-head CAS/fencing and fail-closed indeterminate recovery."}
+{"file":".trellis/tasks/08-21-08-render-qc-release/design.md","reason":"Check that local atomic promotion and platform atomic visibility remain separate claims."}
+{"file":".trellis/tasks/08-21-09-dual-runtime-conformance/prd.md","reason":"Check the required predecessor has real evidence and is no longer a placeholder before entry."}
+{"file":".trellis/tasks/08-21-09-dual-runtime-conformance/design.md","reason":"Check that Task09 proves local runtime parity only and that Task10 separately proves unique batch intent without premature external effects."}
+{"file":".trellis/tasks/08-23-real-pipeline-mvp/review.md","reason":"Prevent a partial persistence review or completed task flag from being accepted as production E2E evidence."}
+{"file":".trellis/tasks/08-23-agent-runtime-mvp/review.md","reason":"Prevent unresolved Agent replay evidence from being accepted as dual-runtime conformance."}

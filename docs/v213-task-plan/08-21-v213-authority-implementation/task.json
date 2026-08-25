@@ -1,0 +1,61 @@
+{
+  "id": "v213-authority-implementation",
+  "name": "v213-authority-implementation",
+  "title": "v2.1.3 Authority Implementation",
+  "description": "Implement the v2.1.3 authority contracts with physical import isolation, admission-first reuse, dual runtime conformance, and fail-closed publication.",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "auto_cut_bot+ac_auto_cut",
+  "package": null,
+  "priority": "P0",
+  "creator": "liuzx",
+  "assignee": "liuzx",
+  "createdAt": "2026-08-21",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": null,
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-21-00-trellis-authority-sync",
+    "08-21-01-contract-codegen",
+    "08-21-02-import-firewall-and-package-skeleton",
+    "08-21-03-artifact-store-transaction-kernel",
+    "08-21-04-command-admission-recovery",
+    "08-21-05-media-preflight-calibration",
+    "08-21-06-stage4-exact-edit-vertical-slice",
+    "08-21-07-stage1-3-semantic-chain",
+    "08-21-08-render-qc-release",
+    "08-21-09-dual-runtime-conformance",
+    "08-21-10-platform-publication-certification",
+    "08-21-11-migration-cutover",
+    "08-22-global-task-control-plane",
+    "08-22-consumer-lock-authority-seal",
+    "08-22-execution-contract-consistency-errata",
+    "08-22-recovery-authority-closure-errata",
+    "08-23-real-pipeline-mvp",
+    "08-24-whole-series-source-prep",
+    "08-24-pipeline-http-run-service",
+    "08-24-doubao-ark-streaming-vlm-http-stage",
+    "08-25-pipeline-highlights-readonly",
+    "08-25-lock-real-test-authority-profiles"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "architecture_status": "planning_review_required",
+    "repository_refs": {
+      "auto_cut_bot": {
+        "base_branch": "sync/upstream-20260821",
+        "predecessor_commit": "28c0c0d4ed1762aa36e66a8cd742b5622954b9af"
+      },
+      "ac_auto_cut": {
+        "base_branch": "main",
+        "predecessor_commit": "dbaf408786b637708e343120e628929b79a8410a"
+      }
+    }
+  }
+}

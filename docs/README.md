@@ -12,6 +12,7 @@ Repository docs follow the current source tree and can be newer than the latest 
 | You are comfortable running commands | [Install and Quick Start](./quick-start.md) | `nanobot status` is healthy and the WebUI or CLI can get one reply |
 | Something already failed | [Troubleshooting](./troubleshooting.md) | You have isolated the problem to install, config, model, gateway, channel, or tool access |
 | Continue v2.1.3 development on a desktop | [v2.1.3 desktop quick-start](./v213-desktop-e2e-runbook.md) | The correct branch, dependencies and local services are ready |
+| Read the current implementation task design | [v2.1.3 task plan snapshot](./v213-task-plan/README.md) | The current v2.1.3 task boundaries are available in the Git repository |
 
 The recommended first-run path is:
 

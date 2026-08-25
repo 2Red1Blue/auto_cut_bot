@@ -1,0 +1,14 @@
+{"file":".trellis/spec/backend/index.md","reason":"Source-only context: backend authority checklist; listing grants no write scope, admission or pass."}
+{"file":".trellis/spec/backend/authority-bootstrap-block.md","reason":"Source-only context: fail-closed authority, task-control-plane and protected-path rules; TaskSnapshot hashes/slices are still required."}
+{"file":".trellis/spec/backend/implementation-conformance-gates.md","reason":"Source-only context: independent Supervisor and full-file/slice closure contract; this JSONL row is not an oracle."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Publication spans Store, coordinator, adapter, external surfaces and runtime boundaries."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/06-stage-05-render-qc-release-implementation.md","reason":"Read-only design source: Story/Portfolio release and QC handoff; never authorizes ac_auto_cut product writes."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/07-dual-runtime-implementation.md","reason":"Read-only design source: Pipeline/Agent conformance and capability isolation; never authorizes ac_auto_cut product writes."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/08-publication-transaction-and-certification.md","reason":"Read-only design source: publication transaction and atomic visibility semantics; never an adapter API or pass oracle."}
+{"file":"ac_auto_cut/原理/v2.1-implementation-design/09-migration-rollout-and-operations.md","reason":"Read-only design source: rollout, kill switch and rollback; never authorizes ac_auto_cut product writes."}
+{"file":".trellis/tasks/08-21-04-command-admission-recovery/design.md","reason":"Bounded PostgreSQL UoW, exact-head CAS, fencing, durable intent and indeterminate recovery design."}
+{"file":".trellis/tasks/08-21-08-render-qc-release/prd.md","reason":"Direct predecessor requirements; external publication cannot start from local render/QC alone."}
+{"file":".trellis/tasks/08-21-09-dual-runtime-conformance/prd.md","reason":"Hard predecessor task whose future exact conformance receipt must be verified rather than inferred from status."}
+{"file":".trellis/tasks/08-21-09-dual-runtime-conformance/design.md","reason":"Current detailed boundary: conformance proves shared local business facts while external publication remains unreachable."}
+{"file":".trellis/tasks/08-23-real-pipeline-mvp/review.md","reason":"Repository evidence that an accepted persistence slice was not a complete production local E2E proof."}
+{"file":".trellis/tasks/08-23-agent-runtime-mvp/review.md","reason":"Repository evidence of unresolved durable Agent replay/conformance concerns that task status cannot override."}

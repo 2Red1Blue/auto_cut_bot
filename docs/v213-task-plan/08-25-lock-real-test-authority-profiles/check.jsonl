@@ -1,0 +1,5 @@
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/authority-bootstrap-block.md","reason":"A-to-B-to-C and protected authority constraints."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/implementation-conformance-gates.md","reason":"Scoped independent verification requirements."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/prd.md","reason":"Local-only acceptance criteria."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/design.md","reason":"Profile state/source/lock/runtime boundary."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/implement.md","reason":"Ordered implementation and rollback."}
