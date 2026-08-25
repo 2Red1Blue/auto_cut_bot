@@ -53,7 +53,9 @@ from autocut_kernel.physical_edit import (
     PresentationNonOverlap,
     PresentationTimeRange,
     TimedSpeechGuardPolicy,
+    TimedSpeechProducerRecord,
     TimedSpeechProfile,
+    TimedSpeechProfileBinding,
     TimedSpeechProfileKind,
     VideoClockRange,
     VideoToAudioClockMapCertificate,
@@ -463,21 +465,40 @@ def _clock_map(
     return VideoToAudioClockMapCertificate.from_root_evidence(bundle)
 
 
-def _policy(**changes: object) -> ExactAvSpanPolicy:
+def _policy(bundle: RootMediaEvidenceBundle, **changes: object) -> ExactAvSpanPolicy:
+    profile = TimedSpeechProfile(
+        TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1,
+        "sentence-boundary-test",
+        "1.0.0",
+        HASH_A,
+        HASH_B,
+        "sha256:" + "c" * 64,
+    )
+
+    def record(evidence_set: TranscriptSet | SpeechActivitySet) -> TimedSpeechProducerRecord:
+        context = evidence_set.context
+        return TimedSpeechProducerRecord(
+            evidence_set.canonical_hash,
+            context.source_id,
+            context.source_sha256,
+            context.clock_id,
+            context.time_base,
+            context.producer_id,
+            context.generation_policy_sha256,
+            HASH_A,
+            HASH_B,
+            "sha256:" + "c" * 64,
+        )
+
     values: dict[str, object] = {
         "candidate_cartesian_limit": 1_000,
         "endpoint_stability_video_tick": 1,
         "subtitle_clearance_floor_video_tick": 1,
         "av_sync_tolerance_audio_tick": 0,
-        "timed_speech_profile": TimedSpeechProfile(
-            TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1,
-            "sentence-boundary-test",
-            "1.0.0",
-            HASH_A,
-            HASH_B,
-            "sha256:" + "c" * 64,
+        "timed_speech_profile_binding": TimedSpeechProfileBinding(
+            profile, HASH_B, record(bundle.transcript), record(bundle.speech_activity)
         ),
-        "timed_speech_guard_policy": TimedSpeechGuardPolicy(0, 0, 0, 0),
+        "timed_speech_guard_policy": TimedSpeechGuardPolicy(AUDIO_CLOCK, AUDIO_BASE, HASH_B, 0, 0, 0, 0),
         "require_audio": True,
     }
     values.update(changes)
@@ -486,7 +507,7 @@ def _policy(**changes: object) -> ExactAvSpanPolicy:
 
 def test_vfr_membership_four_endpoints_and_recomputable_proofs() -> None:
     bundle = _bundle()
-    result = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
+    result = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy(bundle))
 
     assert result.video_range == TickRange(60, 120)
     assert result.audio_range == TickRange(32, 64)
@@ -501,7 +522,7 @@ def test_vfr_membership_four_endpoints_and_recomputable_proofs() -> None:
 
 def test_asr_success_does_not_short_circuit_vad_protection() -> None:
     bundle = _bundle(transcript_protected=(1, 2), vad_protected=(30, 70))
-    result = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
+    result = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy(bundle))
 
     assert result.audio_range == TickRange(8, 96)
     assert result.dialogue_integrity_proof.checked_word_count == 1
@@ -514,15 +535,16 @@ def test_subtitle_error_and_policy_floor_are_both_protected() -> None:
         _request(bundle),
         bundle,
         _clock_map(bundle),
-        _policy(subtitle_clearance_floor_video_tick=3),
+        _policy(bundle, subtitle_clearance_floor_video_tick=3),
     )
 
     assert result.video_range == TickRange(15, 120)
 
 
 def test_zero_subtitle_clearance_floor_is_not_a_production_policy() -> None:
+    bundle = _bundle()
     with pytest.raises(ExactSpanValidationError, match="subtitle_clearance.*positive"):
-        _policy(subtitle_clearance_floor_video_tick=0)
+        _policy(bundle, subtitle_clearance_floor_video_tick=0)
 
 
 @pytest.mark.parametrize("classification", [VisualClassification.UNKNOWN, VisualClassification.BLACK])
@@ -531,7 +553,7 @@ def test_forbidden_or_unknown_visual_endpoint_region_fails_closed(
 ) -> None:
     bundle = _bundle(visual=((0, VIDEO_END, classification),))
     with pytest.raises(NoLegalSpanError):
-        compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
+        compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy(bundle))
 
 
 def test_equal_presentation_map_is_exact() -> None:
@@ -540,7 +562,7 @@ def test_equal_presentation_map_is_exact() -> None:
     assert certificate.map_video_tick_bounds(60) == (32, 32)
     assert certificate.map_video_tick_bounds(120) == (64, 64)
     assert compile_exact_av_span(
-        _request(bundle), bundle, certificate, _policy()
+        _request(bundle), bundle, certificate, _policy(bundle)
     ).audio_range == TickRange(32, 64)
 
 
@@ -561,7 +583,7 @@ def test_unequal_audio_tail_is_exposed_without_duration_ratio_drift() -> None:
         ),
     )
     assert compile_exact_av_span(
-        _request(bundle), bundle, certificate, _policy()
+        _request(bundle), bundle, certificate, _policy(bundle)
     ).audio_range == TickRange(32, 64)
 
 
@@ -581,7 +603,7 @@ def test_leading_video_non_overlap_is_explicit_and_outside_endpoint_fails() -> N
         ),
     )
     with pytest.raises(ExactSpanValidationError, match="common presentation interval"):
-        compile_exact_av_span(_request(bundle), bundle, certificate, _policy())
+        compile_exact_av_span(_request(bundle), bundle, certificate, _policy(bundle))
 
 
 def test_nonzero_origins_and_fractional_rounding_use_absolute_presentation_time() -> None:
@@ -599,7 +621,7 @@ def test_nonzero_origins_and_fractional_rounding_use_absolute_presentation_time(
     assert certificate.non_overlaps == ()
     assert certificate.map_video_tick_bounds(150) == (80, 80)
     assert compile_exact_av_span(
-        _request(bundle), bundle, certificate, _policy()
+        _request(bundle), bundle, certificate, _policy(bundle)
     ).audio_range == TickRange(80, 112)
 
     fractional = VideoToAudioClockMapCertificate(
@@ -632,26 +654,26 @@ def test_tampered_partition_and_indeterminate_map_are_rejected() -> None:
     )
     with pytest.raises(ExactSpanValidationError, match="exact common interval"):
         compile_exact_av_span(
-            _request(bundle), bundle, forged, _policy()
+            _request(bundle), bundle, forged, _policy(bundle)
         )
     with pytest.raises(ExactSpanValidationError, match="indeterminate"):
         compile_exact_av_span(
             _request(bundle),
             bundle,
             _clock_map(bundle, outcome=ClockMapOutcome.INDETERMINATE),
-            _policy(),
+            _policy(bundle),
         )
 
 
 def test_no_audio_and_missing_frame_sentinel_fail_closed() -> None:
     no_audio = _bundle(audio_present=False)
     with pytest.raises(ExactSpanValidationError, match="audio sample"):
-        compile_exact_av_span(_request(no_audio), no_audio, _clock_map(no_audio), _policy())
+        compile_exact_av_span(_request(no_audio), no_audio, _clock_map(no_audio), _policy(no_audio))
 
     no_sentinel = _bundle(frame_ticks=(15, 60, 120, 180))
     with pytest.raises(ExactSpanValidationError, match="sentinels"):
         compile_exact_av_span(
-            _request(no_sentinel), no_sentinel, _clock_map(no_sentinel), _policy()
+            _request(no_sentinel), no_sentinel, _clock_map(no_sentinel), _policy(no_sentinel)
         )
 
 
@@ -662,14 +684,14 @@ def test_candidate_limit_is_checked_for_full_cartesian_domain() -> None:
             _request(bundle),
             bundle,
             _clock_map(bundle),
-            _policy(candidate_cartesian_limit=35),
+            _policy(bundle, candidate_cartesian_limit=35),
         )
 
 
 def test_canonical_selection_and_identity_are_deterministic() -> None:
     bundle = _bundle()
-    first = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
-    second = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy())
+    first = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy(bundle))
+    second = compile_exact_av_span(_request(bundle), bundle, _clock_map(bundle), _policy(bundle))
 
     assert first.canonical_decision_key == second.canonical_decision_key
     assert first.canonical_hash == second.canonical_hash
@@ -691,5 +713,5 @@ def test_vlm_contract_cannot_be_used_as_endpoint_or_root_input() -> None:
             _request(bundle),
             forged_vlm_interval,  # type: ignore[arg-type]
             _clock_map(bundle),
-            _policy(),
+            _policy(bundle),
         )

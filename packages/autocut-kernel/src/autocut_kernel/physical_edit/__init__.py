@@ -9,7 +9,9 @@ from .dialogue_guard import (
     SourceDialogueGuardEvidence,
     TimedSpeechGuardPolicy,
     TimedSpeechProfile,
+    TimedSpeechProfileBinding,
     TimedSpeechProfileKind,
+    TimedSpeechProducerRecord,
     derive_dialogue_guard,
     derive_utterance_ranges,
     merge_vad_ranges,
@@ -71,5 +73,7 @@ __all__ = [
     "select_exact_span",
     "TimedSpeechGuardPolicy",
     "TimedSpeechProfile",
+    "TimedSpeechProfileBinding",
     "TimedSpeechProfileKind",
+    "TimedSpeechProducerRecord",
 ]

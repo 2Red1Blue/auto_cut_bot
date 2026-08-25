@@ -12,6 +12,7 @@ from enum import Enum
 
 from ..media.root_evidence import (
     AudioSourceOutcome,
+    CoverageOutcome,
     EvidenceCompleteness,
     RootMediaEvidenceBundle,
     SpeechSourceOutcome,
@@ -88,15 +89,143 @@ class TimedSpeechProfile:
 
 
 @dataclass(frozen=True, slots=True)
-class TimedSpeechGuardPolicy:
-    """Frozen integer-tick grouping, merge, and protection-roll policy."""
+class TimedSpeechProducerRecord:
+    """Immutable committed identity for one timed-speech evidence producer."""
 
+    evidence_set_sha256: str
+    source_id: str
+    source_sha256: str
+    clock_id: str
+    time_base: TimeBase
+    producer_id: str
+    generation_policy_sha256: str
+    producer_model_sha256: str
+    adapter_sha256: str
+    calibration_sha256: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("source_id", "clock_id", "producer_id"):
+            value = getattr(self, field_name)
+            if type(value) is not str or not value:  # noqa: E721
+                raise DialogueGuardError(f"timed speech producer {field_name} must be non-empty")
+        if type(self.time_base) is not TimeBase:  # noqa: E721
+            raise DialogueGuardError("timed speech producer time_base must be exact")
+        for field_name in (
+            "evidence_set_sha256",
+            "source_sha256",
+            "generation_policy_sha256",
+            "producer_model_sha256",
+            "adapter_sha256",
+            "calibration_sha256",
+        ):
+            try:
+                sha256_prefixed(getattr(self, field_name), f"timed_speech_producer.{field_name}")
+            except ValueError as error:
+                raise DialogueGuardError(str(error)) from error
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "evidence_set_sha256": self.evidence_set_sha256,
+            "source_id": self.source_id,
+            "source_sha256": self.source_sha256,
+            "clock_id": self.clock_id,
+            "time_base": {
+                "numerator": self.time_base.numerator,
+                "denominator": self.time_base.denominator,
+            },
+            "producer_id": self.producer_id,
+            "generation_policy_sha256": self.generation_policy_sha256,
+            "producer_model_sha256": self.producer_model_sha256,
+            "adapter_sha256": self.adapter_sha256,
+            "calibration_sha256": self.calibration_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TimedSpeechProfileBinding:
+    """A registered profile bound to committed ASR/VAD producer records.
+
+    A ``TimedSpeechProfile`` by itself is only a claimed capability.  The
+    binding is the admission object: it ties that capability to the exact
+    transcript and VAD records which were committed for the source clock.
+    """
+
+    profile: TimedSpeechProfile
+    timed_speech_policy_sha256: str
+    transcript_producer: TimedSpeechProducerRecord
+    vad_producer: TimedSpeechProducerRecord
+
+    def __post_init__(self) -> None:
+        if type(self.profile) is not TimedSpeechProfile:  # noqa: E721
+            raise DialogueGuardError("timed speech binding requires an exact profile")
+        try:
+            sha256_prefixed(
+                self.timed_speech_policy_sha256, "timed_speech_binding.timed_speech_policy_sha256"
+            )
+        except ValueError as error:
+            raise DialogueGuardError(str(error)) from error
+        if type(self.transcript_producer) is not TimedSpeechProducerRecord:  # noqa: E721
+            raise DialogueGuardError("timed speech binding requires a transcript producer record")
+        if type(self.vad_producer) is not TimedSpeechProducerRecord:  # noqa: E721
+            raise DialogueGuardError("timed speech binding requires a VAD producer record")
+        transcript = self.transcript_producer
+        vad = self.vad_producer
+        if (
+            transcript.source_id,
+            transcript.source_sha256,
+            transcript.clock_id,
+            transcript.time_base,
+        ) != (vad.source_id, vad.source_sha256, vad.clock_id, vad.time_base):
+            raise DialogueGuardError("timed speech producer records must bind one source audio clock")
+        profile = self.profile
+        if (
+            transcript.producer_model_sha256,
+            transcript.adapter_sha256,
+            transcript.calibration_sha256,
+        ) != (
+            profile.producer_model_sha256,
+            profile.adapter_sha256,
+            profile.calibration_sha256,
+        ):
+            raise DialogueGuardError("profile identity does not match the registered transcript producer")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "profile": self.profile.to_mapping(),
+            "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
+            "transcript_producer": self.transcript_producer.to_mapping(),
+            "vad_producer": self.vad_producer.to_mapping(),
+        }
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_sha256(self.to_mapping())
+
+
+@dataclass(frozen=True, slots=True)
+class TimedSpeechGuardPolicy:
+    """Frozen audio-clock tick grouping, merge, and protection-roll policy."""
+
+    clock_id: str
+    time_base: TimeBase
+    timed_speech_policy_sha256: str
     word_gap_tick: int
     vad_merge_gap_tick: int
     pre_roll_tick: int
     post_roll_tick: int
 
     def __post_init__(self) -> None:
+        if type(self.clock_id) is not str or not self.clock_id:  # noqa: E721
+            raise DialogueGuardError("timed speech guard policy clock_id must be non-empty")
+        if type(self.time_base) is not TimeBase:  # noqa: E721
+            raise DialogueGuardError("timed speech guard policy time_base must be exact")
+        try:
+            sha256_prefixed(
+                self.timed_speech_policy_sha256,
+                "timed_speech_guard_policy.timed_speech_policy_sha256",
+            )
+        except ValueError as error:
+            raise DialogueGuardError(str(error)) from error
         for field_name in (
             "word_gap_tick",
             "vad_merge_gap_tick",
@@ -107,8 +236,14 @@ class TimedSpeechGuardPolicy:
             if value < 0:
                 raise DialogueGuardError(f"{field_name} must be non-negative")
 
-    def to_mapping(self) -> dict[str, int]:
+    def to_mapping(self) -> dict[str, object]:
         return {
+            "clock_id": self.clock_id,
+            "time_base": {
+                "numerator": self.time_base.numerator,
+                "denominator": self.time_base.denominator,
+            },
+            "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
             "word_gap_tick": self.word_gap_tick,
             "vad_merge_gap_tick": self.vad_merge_gap_tick,
             "pre_roll_tick": self.pre_roll_tick,
@@ -167,7 +302,7 @@ class SourceDialogueGuardEvidence:
 
     kind: DialogueGuardKind
     reason: str
-    timed_speech_profile: TimedSpeechProfile | None
+    timed_speech_profile_binding: TimedSpeechProfileBinding | None
     timed_speech_policy_sha256: str | None
     transcript_set_sha256: str | None
     speech_activity_set_sha256: str | None
@@ -187,7 +322,7 @@ class SourceDialogueGuardEvidence:
         if self.kind is DialogueGuardKind.NOT_APPLICABLE:
             if (
                 self.reason != "no_audio"
-                or self.timed_speech_profile is not None
+                or self.timed_speech_profile_binding is not None
                 or self.timed_speech_policy_sha256 is not None
                 or self.transcript_set_sha256 is not None
                 or self.speech_activity_set_sha256 is not None
@@ -203,8 +338,8 @@ class SourceDialogueGuardEvidence:
         )
         if self.reason != expected_reason:
             raise DialogueGuardError("dialogue guard reason does not match its closed arm")
-        if type(self.timed_speech_profile) is not TimedSpeechProfile:  # noqa: E721
-            raise DialogueGuardError("audio dialogue guard requires a timed speech profile")
+        if type(self.timed_speech_profile_binding) is not TimedSpeechProfileBinding:  # noqa: E721
+            raise DialogueGuardError("audio dialogue guard requires a registered timed speech binding")
         for field_name in (
             "timed_speech_policy_sha256",
             "transcript_set_sha256",
@@ -219,10 +354,10 @@ class SourceDialogueGuardEvidence:
     def to_mapping(self) -> dict[str, object]:
         result: dict[str, object] = {"kind": self.kind.value, "reason": self.reason}
         if self.kind is not DialogueGuardKind.NOT_APPLICABLE:
-            assert self.timed_speech_profile is not None
+            assert self.timed_speech_profile_binding is not None
             result.update(
                 {
-                    "timed_speech_profile": self.timed_speech_profile.to_mapping(),
+                    "timed_speech_profile_binding": self.timed_speech_profile_binding.to_mapping(),
                     "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
                     "transcript_set_sha256": self.transcript_set_sha256,
                     "speech_activity_set_sha256": self.speech_activity_set_sha256,
@@ -265,10 +400,91 @@ def _validate_words(evidence: RootMediaEvidenceBundle) -> None:
         previous_end = word.out_tick
 
 
+def _validate_policy_clock(
+    evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
+) -> None:
+    context = evidence.audio_sample_boundaries.context
+    if (policy.clock_id, policy.time_base) != (context.clock_id, context.time_base):
+        raise DialogueGuardError("timed speech guard policy units do not bind the source audio clock")
+
+
+def _validate_registered_provenance(
+    evidence: RootMediaEvidenceBundle,
+    binding: TimedSpeechProfileBinding,
+    policy: TimedSpeechGuardPolicy,
+) -> None:
+    """Require the exact immutable registration before trusting timed evidence."""
+    _validate_policy_clock(evidence, policy)
+    if binding.timed_speech_policy_sha256 != policy.timed_speech_policy_sha256:
+        raise DialogueGuardError("timed speech binding policy does not match guard policy")
+
+    audio_context = evidence.audio_sample_boundaries.context
+    expected_source_clock = (
+        audio_context.source_id,
+        audio_context.source_sha256,
+        audio_context.clock_id,
+        audio_context.time_base,
+    )
+    transcript = evidence.transcript
+    speech = evidence.speech_activity
+    for record, evidence_set, context, record_kind in (
+        (binding.transcript_producer, transcript, transcript.context, "transcript"),
+        (binding.vad_producer, speech, speech.context, "VAD"),
+    ):
+        if (
+            record.source_id,
+            record.source_sha256,
+            record.clock_id,
+            record.time_base,
+        ) != expected_source_clock:
+            raise DialogueGuardError(
+                f"registered {record_kind} producer does not bind the source audio clock"
+            )
+        if record.evidence_set_sha256 != evidence_set.canonical_hash:
+            raise DialogueGuardError(f"registered {record_kind} producer does not bind committed evidence")
+        if (
+            record.producer_id,
+            record.generation_policy_sha256,
+        ) != (
+            context.producer_id,
+            context.generation_policy_sha256,
+        ):
+            raise DialogueGuardError(
+                f"registered {record_kind} producer does not match committed producer policy"
+            )
+
+
+def _require_complete_audio_success_evidence(evidence: RootMediaEvidenceBundle) -> None:
+    """Reject every partial, failed, truncated, or indeterminate audio success arm."""
+    transcript = evidence.transcript
+    speech = evidence.speech_activity
+    if evidence.audio_sample_boundaries.coverage.outcome is not CoverageOutcome.COMPLETE:
+        raise DialogueGuardError("audio dialogue guard requires complete audio boundary coverage")
+    if transcript.coverage.outcome is not CoverageOutcome.COMPLETE:
+        raise DialogueGuardError("audio dialogue guard requires complete transcript coverage")
+    if speech.coverage.outcome is not CoverageOutcome.COMPLETE:
+        raise DialogueGuardError("audio dialogue guard requires complete VAD coverage")
+    if transcript.truncated:
+        raise DialogueGuardError("truncated transcript cannot produce an audio dialogue guard")
+    if transcript.completeness.segment is not EvidenceCompleteness.COMPLETE:
+        raise DialogueGuardError("audio dialogue guard requires complete transcript segments")
+    if transcript.completeness.word in {
+        EvidenceCompleteness.PARTIAL,
+        EvidenceCompleteness.FAILED,
+    }:
+        raise DialogueGuardError("partial transcript words cannot produce an audio dialogue guard")
+    if transcript.completeness.sentence in {
+        EvidenceCompleteness.PARTIAL,
+        EvidenceCompleteness.FAILED,
+    }:
+        raise DialogueGuardError("partial transcript sentences cannot produce an audio dialogue guard")
+
+
 def derive_utterance_ranges(
     evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
 ) -> tuple[tuple[int, int], ...]:
     """Group ordered words; exactly-threshold gaps remain in the same utterance."""
+    _validate_policy_clock(evidence, policy)
     _validate_words(evidence)
     words = evidence.transcript.words
     if not words:
@@ -288,6 +504,7 @@ def merge_vad_ranges(
     evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
 ) -> tuple[tuple[int, int], ...]:
     """Merge FSMN-VAD activity with the frozen inclusive gap policy."""
+    _validate_policy_clock(evidence, policy)
     context = evidence.speech_activity.context
     ranges: list[tuple[int, int]] = []
     previous_end: int | None = None
@@ -355,19 +572,20 @@ def _require_audio_evidence(evidence: RootMediaEvidenceBundle) -> None:
         raise DialogueGuardError("audio-bearing transcript cannot be not_applicable")
     if evidence.speech_activity.source_outcome is SpeechSourceOutcome.NOT_APPLICABLE:
         raise DialogueGuardError("audio-bearing VAD cannot be not_applicable")
+    _require_complete_audio_success_evidence(evidence)
 
 
 def derive_dialogue_guard(
     evidence: RootMediaEvidenceBundle,
-    profile: TimedSpeechProfile,
+    binding: TimedSpeechProfileBinding,
     policy: TimedSpeechGuardPolicy,
     requirement: DialogueRequirement,
 ) -> SourceDialogueGuardEvidence:
     """Derive the only valid guard arm from profile capabilities and source evidence."""
     if type(evidence) is not RootMediaEvidenceBundle:  # noqa: E721
         raise DialogueGuardError("dialogue guard requires a RootMediaEvidenceBundle")
-    if type(profile) is not TimedSpeechProfile:  # noqa: E721
-        raise DialogueGuardError("dialogue guard requires an explicit timed speech profile")
+    if type(binding) is not TimedSpeechProfileBinding:  # noqa: E721
+        raise DialogueGuardError("dialogue guard requires an explicit registered timed speech binding")
     if type(policy) is not TimedSpeechGuardPolicy:  # noqa: E721
         raise DialogueGuardError("dialogue guard requires an explicit timed speech policy")
     if type(requirement) is not DialogueRequirement:  # noqa: E721
@@ -381,12 +599,13 @@ def derive_dialogue_guard(
         )
 
     _require_audio_evidence(evidence)
+    _validate_registered_provenance(evidence, binding, policy)
     transcript = evidence.transcript
     speech = evidence.speech_activity
     utterances: tuple[tuple[int, int], ...] = ()
     sentence_ranges: tuple[tuple[int, int], ...] = ()
 
-    if profile.kind is TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1:
+    if binding.profile.kind is TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1:
         if transcript.source_outcome is TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE:
             if (
                 transcript.completeness.word is not EvidenceCompleteness.COMPLETE
@@ -450,7 +669,7 @@ def derive_dialogue_guard(
             if kind is DialogueGuardKind.REQUIRED
             else "blueprint_does_not_require_complete_dialogue"
         ),
-        profile,
+        binding,
         policy.canonical_hash,
         transcript.canonical_hash,
         speech.canonical_hash,
@@ -467,7 +686,9 @@ __all__ = [
     "SourceDialogueGuardEvidence",
     "TimedSpeechGuardPolicy",
     "TimedSpeechProfile",
+    "TimedSpeechProfileBinding",
     "TimedSpeechProfileKind",
+    "TimedSpeechProducerRecord",
     "derive_dialogue_guard",
     "derive_utterance_ranges",
     "merge_vad_ranges",

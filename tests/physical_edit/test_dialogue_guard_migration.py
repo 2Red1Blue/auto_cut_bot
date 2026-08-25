@@ -39,6 +39,7 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import MediaValidationError, TickRange, canonical_sha256
 from autocut_kernel.physical_edit import (
+    DialogueGuardError,
     DialogueGuardIndeterminateError,
     DialogueGuardKind,
     DialogueRequirement,
@@ -46,7 +47,9 @@ from autocut_kernel.physical_edit import (
     ExactAvSpanRequest,
     ExactSpanValidationError,
     TimedSpeechGuardPolicy,
+    TimedSpeechProducerRecord,
     TimedSpeechProfile,
+    TimedSpeechProfileBinding,
     TimedSpeechProfileKind,
     VideoClockRange,
     VideoToAudioClockMapCertificate,
@@ -61,6 +64,7 @@ SOURCE_HASH = "sha256:" + "1" * 64
 MODEL_HASH = "sha256:" + "2" * 64
 ADAPTER_HASH = "sha256:" + "3" * 64
 CALIBRATION_HASH = "sha256:" + "4" * 64
+POLICY_HASH = "sha256:" + "5" * 64
 VIDEO_BASE = TimeBase(1, 90_000)
 AUDIO_BASE = TimeBase(1, 48_000)
 VIDEO_CLOCK = "dialogue-guard-source:video"
@@ -221,7 +225,34 @@ def _profile(kind: TimedSpeechProfileKind = TimedSpeechProfileKind.SENSEVOICE_WO
 
 
 def _guard_policy() -> TimedSpeechGuardPolicy:
-    return TimedSpeechGuardPolicy(word_gap_tick=7, vad_merge_gap_tick=2, pre_roll_tick=2, post_roll_tick=3)
+    return TimedSpeechGuardPolicy(
+        AUDIO_CLOCK, AUDIO_BASE, POLICY_HASH, word_gap_tick=7, vad_merge_gap_tick=2, pre_roll_tick=2,
+        post_roll_tick=3,
+    )
+
+
+def _binding(
+    bundle: RootMediaEvidenceBundle,
+    kind: TimedSpeechProfileKind = TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1,
+) -> TimedSpeechProfileBinding:
+    def producer(evidence_set: TranscriptSet | SpeechActivitySet) -> TimedSpeechProducerRecord:
+        context = evidence_set.context
+        return TimedSpeechProducerRecord(
+            evidence_set.canonical_hash,
+            context.source_id,
+            context.source_sha256,
+            context.clock_id,
+            context.time_base,
+            context.producer_id,
+            context.generation_policy_sha256,
+            MODEL_HASH,
+            ADAPTER_HASH,
+            CALIBRATION_HASH,
+        )
+
+    return TimedSpeechProfileBinding(
+        _profile(kind), POLICY_HASH, producer(bundle.transcript), producer(bundle.speech_activity)
+    )
 
 
 def _request(bundle: RootMediaEvidenceBundle, requirement: DialogueRequirement) -> ExactAvSpanRequest:
@@ -231,8 +262,8 @@ def _request(bundle: RootMediaEvidenceBundle, requirement: DialogueRequirement) 
     return ExactAvSpanRequest(desired, anchor, 40, requirement)
 
 
-def _exact_policy() -> ExactAvSpanPolicy:
-    return ExactAvSpanPolicy(1_000, 1, 1, 0, _profile(), _guard_policy())
+def _exact_policy(bundle: RootMediaEvidenceBundle) -> ExactAvSpanPolicy:
+    return ExactAvSpanPolicy(1_000, 1, 1, 0, _binding(bundle), _guard_policy())
 
 
 def _sentence_complete_bundle() -> RootMediaEvidenceBundle:
@@ -270,8 +301,8 @@ def test_word_only_non_dialogue_derives_deterministic_gap_and_vad_protection() -
 
     assert derive_utterance_ranges(bundle, _guard_policy()) == ((20, 30), (38, 40))
     assert merge_vad_ranges(bundle, _guard_policy()) == ((42, 48),)
-    first = derive_dialogue_guard(bundle, _profile(), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
-    second = derive_dialogue_guard(bundle, _profile(), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
+    first = derive_dialogue_guard(bundle, _binding(bundle), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
+    second = derive_dialogue_guard(bundle, _binding(bundle), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
 
     assert first.kind is DialogueGuardKind.NOT_REQUIRED
     assert [(item.in_tick, item.out_tick) for item in first.protected_ranges] == [(18, 33), (36, 51)]
@@ -287,13 +318,13 @@ def test_word_only_complete_dialogue_is_indeterminate_and_cannot_compile_recipe(
     )
 
     with pytest.raises(DialogueGuardIndeterminateError, match="cannot satisfy complete dialogue"):
-        derive_dialogue_guard(bundle, _profile(), _guard_policy(), DialogueRequirement.COMPLETE)
+        derive_dialogue_guard(bundle, _binding(bundle), _guard_policy(), DialogueRequirement.COMPLETE)
     with pytest.raises(ExactSpanValidationError, match="cannot satisfy complete dialogue"):
         compile_exact_av_span(
             _request(bundle, DialogueRequirement.COMPLETE),
             bundle,
             VideoToAudioClockMapCertificate.from_root_evidence(bundle),
-            _exact_policy(),
+            _exact_policy(bundle),
         )
 
 
@@ -302,7 +333,7 @@ def test_only_sentence_profile_with_complete_membership_can_satisfy_required_dia
 
     guard = derive_dialogue_guard(
         bundle,
-        _profile(TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),
+        _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),
         _guard_policy(),
         DialogueRequirement.COMPLETE,
     )
@@ -311,12 +342,114 @@ def test_only_sentence_profile_with_complete_membership_can_satisfy_required_dia
     assert [(item.in_tick, item.out_tick) for item in guard.protected_ranges] == [(34, 51)]
 
 
+def test_bare_profile_is_not_a_registered_sentence_capability() -> None:
+    bundle = _sentence_complete_bundle()
+
+    with pytest.raises(DialogueGuardError, match="registered timed speech binding"):
+        derive_dialogue_guard(
+            bundle,
+            _profile(TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),  # type: ignore[arg-type]
+            _guard_policy(),
+            DialogueRequirement.COMPLETE,
+        )
+
+
+@pytest.mark.parametrize("field_name", ["producer_model_sha256", "adapter_sha256", "calibration_sha256"])
+def test_claimed_profile_identity_must_match_the_registered_transcript_producer(
+    field_name: str,
+) -> None:
+    bundle = _sentence_complete_bundle()
+    binding = _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1)
+    forged_profile = replace(binding.profile, **{field_name: "sha256:" + "f" * 64})
+
+    with pytest.raises(DialogueGuardError, match="profile identity does not match"):
+        TimedSpeechProfileBinding(
+            forged_profile,
+            binding.timed_speech_policy_sha256,
+            binding.transcript_producer,
+            binding.vad_producer,
+        )
+
+
+def test_registered_sentence_profile_rejects_source_or_committed_record_mismatch() -> None:
+    bundle = _sentence_complete_bundle()
+    binding = _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1)
+    wrong_source = replace(
+        binding,
+        transcript_producer=replace(binding.transcript_producer, source_id="other-source"),
+        vad_producer=replace(binding.vad_producer, source_id="other-source"),
+    )
+    wrong_record = replace(
+        binding,
+        transcript_producer=replace(
+            binding.transcript_producer, evidence_set_sha256="sha256:" + "f" * 64
+        ),
+    )
+
+    with pytest.raises(DialogueGuardError, match="source audio clock"):
+        derive_dialogue_guard(bundle, wrong_source, _guard_policy(), DialogueRequirement.COMPLETE)
+    with pytest.raises(DialogueGuardError, match="committed evidence"):
+        derive_dialogue_guard(bundle, wrong_record, _guard_policy(), DialogueRequirement.COMPLETE)
+
+
+def test_registered_policy_and_audio_clock_units_must_match_the_source() -> None:
+    bundle = _sentence_complete_bundle()
+    binding = _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1)
+    wrong_policy = replace(_guard_policy(), timed_speech_policy_sha256=MODEL_HASH)
+    wrong_clock = replace(_guard_policy(), clock_id="other-audio-clock")
+
+    with pytest.raises(DialogueGuardError, match="binding policy"):
+        derive_dialogue_guard(bundle, binding, wrong_policy, DialogueRequirement.COMPLETE)
+    with pytest.raises(DialogueGuardError, match="policy units"):
+        derive_utterance_ranges(bundle, wrong_clock)
+    with pytest.raises(DialogueGuardError, match="policy units"):
+        merge_vad_ranges(bundle, wrong_clock)
+
+
+@pytest.mark.parametrize("component", ["segment", "word", "sentence"])
+def test_partial_transcript_components_fail_closed_for_audio(component: str) -> None:
+    bundle = _sentence_complete_bundle()
+    transcript = bundle.transcript
+    completeness = replace(transcript.completeness, **{component: EvidenceCompleteness.PARTIAL})
+    partial = replace(bundle, transcript=replace(transcript, completeness=completeness))
+
+    with pytest.raises(DialogueGuardError, match="transcript"):
+        derive_dialogue_guard(
+            partial,
+            _binding(partial, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),
+            _guard_policy(),
+            DialogueRequirement.NOT_REQUIRED,
+        )
+
+
+def test_partial_vad_coverage_and_truncation_fail_closed_for_audio() -> None:
+    bundle = _sentence_complete_bundle()
+    object.__setattr__(bundle.speech_activity.coverage, "outcome", CoverageOutcome.PARTIAL)
+    with pytest.raises(DialogueGuardError, match="complete VAD coverage"):
+        derive_dialogue_guard(
+            bundle,
+            _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),
+            _guard_policy(),
+            DialogueRequirement.NOT_REQUIRED,
+        )
+
+    bundle = _sentence_complete_bundle()
+    object.__setattr__(bundle.transcript, "truncated", True)
+    with pytest.raises(DialogueGuardError, match="truncated transcript"):
+        derive_dialogue_guard(
+            bundle,
+            _binding(bundle, TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1),
+            _guard_policy(),
+            DialogueRequirement.NOT_REQUIRED,
+        )
+
+
 def test_vad_only_nonlexical_audio_is_not_required_and_keeps_protection() -> None:
     bundle = _bundle(
         vad_ranges=((42, 44), (46, 48)), lexical_outcome=TranscriptSourceOutcome.NO_LEXICAL_CONTENT
     )
 
-    guard = derive_dialogue_guard(bundle, _profile(), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
+    guard = derive_dialogue_guard(bundle, _binding(bundle), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
 
     assert guard.kind is DialogueGuardKind.NOT_REQUIRED
     assert [(item.in_tick, item.out_tick) for item in guard.protected_ranges] == [(40, 51)]
@@ -325,7 +458,7 @@ def test_vad_only_nonlexical_audio_is_not_required_and_keeps_protection() -> Non
 def test_video_only_is_the_only_not_applicable_guard_arm() -> None:
     bundle = _bundle(audio=False)
 
-    guard = derive_dialogue_guard(bundle, _profile(), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
+    guard = derive_dialogue_guard(bundle, _binding(bundle), _guard_policy(), DialogueRequirement.NOT_REQUIRED)
 
     assert guard.kind is DialogueGuardKind.NOT_APPLICABLE
     assert guard.to_mapping() == {"kind": "not_applicable", "reason": "no_audio"}

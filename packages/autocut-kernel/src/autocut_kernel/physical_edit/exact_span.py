@@ -34,7 +34,7 @@ from .dialogue_guard import (
     DialogueRequirement,
     SourceDialogueGuardEvidence,
     TimedSpeechGuardPolicy,
-    TimedSpeechProfile,
+    TimedSpeechProfileBinding,
     derive_dialogue_guard,
 )
 
@@ -433,7 +433,7 @@ class ExactAvSpanPolicy:
     endpoint_stability_video_tick: int
     subtitle_clearance_floor_video_tick: int
     av_sync_tolerance_audio_tick: int
-    timed_speech_profile: TimedSpeechProfile
+    timed_speech_profile_binding: TimedSpeechProfileBinding
     timed_speech_guard_policy: TimedSpeechGuardPolicy
     require_audio: bool = True
     forbidden_visual_classes: tuple[VisualClassification, ...] = _DEFAULT_FORBIDDEN
@@ -451,8 +451,10 @@ class ExactAvSpanPolicy:
                 raise ExactSpanValidationError(f"{field_name} must be {qualifier}")
         if type(self.require_audio) is not bool:  # noqa: E721
             raise ExactSpanValidationError("require_audio must be a boolean")
-        if type(self.timed_speech_profile) is not TimedSpeechProfile:  # noqa: E721
-            raise ExactSpanValidationError("an explicit timed speech profile is required")
+        if type(self.timed_speech_profile_binding) is not TimedSpeechProfileBinding:  # noqa: E721
+            raise ExactSpanValidationError(
+                "an explicit registered timed speech profile binding is required"
+            )
         if type(self.timed_speech_guard_policy) is not TimedSpeechGuardPolicy:  # noqa: E721
             raise ExactSpanValidationError("an explicit timed speech guard policy is required")
         forbidden = tuple(self.forbidden_visual_classes)
@@ -474,7 +476,7 @@ class ExactAvSpanPolicy:
             "endpoint_stability_video_tick": self.endpoint_stability_video_tick,
             "subtitle_clearance_floor_video_tick": self.subtitle_clearance_floor_video_tick,
             "av_sync_tolerance_audio_tick": self.av_sync_tolerance_audio_tick,
-            "timed_speech_profile": self.timed_speech_profile.to_mapping(),
+            "timed_speech_profile_binding": self.timed_speech_profile_binding.to_mapping(),
             "timed_speech_guard_policy": self.timed_speech_guard_policy.to_mapping(),
             "require_audio": self.require_audio,
             "forbidden_visual_classes": [item.value for item in self.forbidden_visual_classes],
@@ -652,7 +654,7 @@ def _derive_guard_or_reject(
     try:
         return derive_dialogue_guard(
             evidence,
-            policy.timed_speech_profile,
+            policy.timed_speech_profile_binding,
             policy.timed_speech_guard_policy,
             request.dialogue_requirement,
         )
