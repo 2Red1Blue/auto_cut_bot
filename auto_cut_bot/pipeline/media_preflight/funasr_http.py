@@ -156,6 +156,12 @@ class FunASRHttpTimedSpeechEvidencePort:
         self._shared_token = token
 
     def produce(self, r: TimedSpeechEvidenceRequest) -> TimedSpeechEvidence:
+        try:
+            source_size = r.source_path.stat().st_size
+        except OSError as error:
+            raise LocalMediaSourceError("timed speech source materialization is unavailable") from error
+        if source_size < 0 or source_size > r.effective_max_source_bytes:
+            raise LocalMediaSourceError("source exceeds the frozen effective source-byte limit")
         manifest = json.dumps(r.to_mapping(), sort_keys=True, separators=(",", ":")).encode()
         headers = {
             "Content-Type": "application/octet-stream",
@@ -190,6 +196,7 @@ class FunASRHttpTimedSpeechEvidencePort:
                         "schema_version",
                         "request_identity_sha256",
                         "source",
+                        "source_byte_limits",
                         "container",
                         "audio_clock",
                         "requested_range",
@@ -220,12 +227,37 @@ class FunASRHttpTimedSpeechEvidencePort:
         ):
             raise LocalMediaSourceError("request identity drift")
         source = _obj(p["source"], {"source_id", "source_sha256"}, "source")
+        source_byte_limits = _obj(
+            p["source_byte_limits"],
+            {
+                "kernel_max_source_bytes",
+                "service_max_request_bytes",
+                "effective_max_source_bytes",
+            },
+            "source_byte_limits",
+        )
+        strict_source_byte_limits = {
+            "kernel_max_source_bytes": _integer(
+                source_byte_limits["kernel_max_source_bytes"],
+                "source_byte_limits.kernel_max_source_bytes",
+            ),
+            "service_max_request_bytes": _integer(
+                source_byte_limits["service_max_request_bytes"],
+                "source_byte_limits.service_max_request_bytes",
+            ),
+            "effective_max_source_bytes": _integer(
+                source_byte_limits["effective_max_source_bytes"],
+                "source_byte_limits.effective_max_source_bytes",
+            ),
+        }
         container = _obj(p["container"], {"media_type", "safe_suffix"}, "container")
         if source != {"source_id": r.source_id, "source_sha256": r.source_sha256} or container != {
             "media_type": "video/mp4",
             "safe_suffix": ".mp4",
         }:
             raise LocalMediaSourceError("source identity drift")
+        if strict_source_byte_limits != r.to_mapping()["source_byte_limits"]:
+            raise LocalMediaSourceError("source-byte limit drift")
         audio_clock = _obj(
             p["audio_clock"],
             {"clock_id", "time_base", "origin_tick", "duration_tick"},

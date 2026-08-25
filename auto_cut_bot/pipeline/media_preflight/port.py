@@ -245,8 +245,22 @@ class LocalMediaPreflightPort:
             raise LocalMediaToolError(f"required {name} executable is not a file")
         return path
 
-    def prepare(self, request: LocalMediaPreflightRequest) -> LocalMediaPreflightResult:
+    def prepare(
+        self,
+        request: LocalMediaPreflightRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
+    ) -> LocalMediaPreflightResult:
         """Build all root evidence conjunctively from one immutable MP4 materialization."""
+
+        for value, name in (
+            (kernel_max_source_bytes, "kernel_max_source_bytes"),
+            (service_max_request_bytes, "service_max_request_bytes"),
+        ):
+            if type(value) is not int or value <= 0:  # noqa: E721
+                raise LocalMediaPolicyError(f"{name} must be a positive integer")
+        effective_max_source_bytes = min(kernel_max_source_bytes, service_max_request_bytes)
 
         try:
             source_is_symlink = request.source_path.is_symlink()
@@ -255,7 +269,9 @@ class LocalMediaPreflightPort:
             raise LocalMediaSourceError("source_path materialization is unavailable") from error
         if path != request.source_path or source_is_symlink or not path.is_file():
             raise LocalMediaSourceError("source_path must be a direct regular-file materialization")
-        initial_hash, _ = _sha_file(path)
+        initial_hash, initial_size = _sha_file(path)
+        if initial_size > effective_max_source_bytes:
+            raise LocalMediaSourceError("source exceeds the frozen effective source-byte limit")
         if initial_hash != request.source_sha256:
             raise LocalMediaSourceError(
                 "materialized source hash does not match the committed Blob"
@@ -352,7 +368,14 @@ class LocalMediaPreflightPort:
             transcript = self._not_applicable_transcript(request)
             speech_activity = self._not_applicable_speech(request)
         else:
-            timed = self._speech_port.produce(self._speech_request(path, request))
+            timed = self._speech_port.produce(
+                self._speech_request(
+                    path,
+                    request,
+                    kernel_max_source_bytes=kernel_max_source_bytes,
+                    service_max_request_bytes=service_max_request_bytes,
+                )
+            )
             self._validate_timed_speech_evidence(timed, request)
             traces.extend(self._timed_speech_traces(timed))
             transcript, speech_activity = timed.transcript, timed.speech_activity
@@ -1363,7 +1386,11 @@ class LocalMediaPreflightPort:
 
     @staticmethod
     def _speech_request(
-        path: Path, request: LocalMediaPreflightRequest
+        path: Path,
+        request: LocalMediaPreflightRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
     ) -> TimedSpeechEvidenceRequest:
         policy = request.policy
         context = request.audio_sample_boundaries.context
@@ -1395,6 +1422,9 @@ class LocalMediaPreflightPort:
             path,
             request.source_id,
             request.source_sha256,
+            kernel_max_source_bytes,
+            service_max_request_bytes,
+            min(kernel_max_source_bytes, service_max_request_bytes),
             context.clock_id,
             context.time_base,
             context.origin_tick,

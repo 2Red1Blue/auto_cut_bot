@@ -443,6 +443,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     materialization_root = tmp_path / "verified-media-staging"
     materialization_limits = MaterializationLimits(
         max_source_bytes=8 * 1024 * 1024,
+        timed_speech_max_request_bytes=8 * 1024 * 1024,
         copy_chunk_bytes=1024,
         staging_quota_bytes=8 * 1024 * 1024,
     )

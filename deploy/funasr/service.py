@@ -531,6 +531,7 @@ class Service:
             "torch_version",
             "device",
             "word_timing_capability",
+            "max_request_bytes",
             "profile_calibration_sha256",
             "timed_speech_policy_sha256",
             "utterance_gap_milliseconds",
@@ -539,6 +540,8 @@ class Service:
         }
         if set(self.profile) != expected_fields:
             raise RuntimeError("profile schema is not closed")
+        if self.profile["max_request_bytes"] != self.max_request:
+            raise RuntimeError("FUNASR_MAX_REQUEST_BYTES does not match the measured profile")
         if self.profile["word_timing_capability"] != "required":
             raise RuntimeError("sensevoice_word_guard_v1 requires real word timestamps")
         measured = {
@@ -698,11 +701,19 @@ class Service:
                 "torch_version",
                 "device",
                 "word_timing_capability",
+                "max_request_bytes",
                 "profile_calibration_sha256",
             )
         }
         if profile != expected_profile:
             raise web.HTTPConflict(text="measured profile identity drift")
+        limits = cast(dict[str, int], manifest["source_byte_limits"])
+        if (
+            limits["service_max_request_bytes"] != self.measured_profile["max_request_bytes"]
+            or limits["effective_max_source_bytes"]
+            != min(limits["kernel_max_source_bytes"], limits["service_max_request_bytes"])
+        ):
+            raise web.HTTPConflict(text="measured source-byte policy drift")
         if manifest.get("timed_speech_policy_sha256") != self.measured_profile.get(
             "timed_speech_policy_sha256"
         ) or manifest.get("timing_policy") != {
@@ -733,6 +744,7 @@ class Service:
         fields = {
             "schema_version",
             "source",
+            "source_byte_limits",
             "container",
             "audio_clock",
             "requested_range",
@@ -747,6 +759,7 @@ class Service:
             raise web.HTTPBadRequest(text="manifest schema is not closed")
         value = cast(dict[str, object], manifest)
         source = value["source"]
+        source_byte_limits = value["source_byte_limits"]
         container = value["container"]
         clock = value["audio_clock"]
         requested = value["requested_range"]
@@ -754,8 +767,14 @@ class Service:
         if (
             type(source) is not dict
             or set(source) != {"source_id", "source_sha256"}
+            or type(source_byte_limits) is not dict
+            or set(source_byte_limits)
+            != {
+                "kernel_max_source_bytes",
+                "service_max_request_bytes",
+                "effective_max_source_bytes",
+            }
             or type(container) is not dict
-            or container != {"media_type": "video/mp4", "safe_suffix": ".mp4"}
             or type(clock) is not dict
             or set(clock) != {"clock_id", "time_base", "origin_tick", "duration_tick"}
             or type(requested) is not dict
@@ -771,6 +790,7 @@ class Service:
             requested["in_tick"],
             requested["out_tick"],
             response_limits["max_response_bytes"],
+            *cast(dict[str, object], source_byte_limits).values(),
         )
         if (
             type(time_base) is not dict
@@ -778,6 +798,7 @@ class Service:
             or any(type(item) is not int for item in (*integer_values, *time_base.values()))
             or clock["duration_tick"] <= 0
             or response_limits["max_response_bytes"] <= 0
+            or any(item <= 0 for item in cast(dict[str, int], source_byte_limits).values())
         ):
             raise web.HTTPBadRequest(text="manifest clock/bounds are invalid")
         return value
@@ -813,9 +834,10 @@ class Service:
                 with p.open("xb") as f:
                     async for chunk in req.content.iter_chunked(1 << 20):
                         size += len(chunk)
-                        if size > self.max_request:
+                        if size > m["source_byte_limits"]["effective_max_source_bytes"]:
                             raise web.HTTPRequestEntityTooLarge(
-                                max_size=self.max_request, actual_size=size
+                                max_size=m["source_byte_limits"]["effective_max_source_bytes"],
+                                actual_size=size,
                             )
                         h.update(chunk)
                         f.write(chunk)
@@ -870,6 +892,7 @@ class Service:
                 "schema_version": "timed-speech-evidence-response-v1",
                 "request_identity_sha256": sha(canon(m)),
                 "source": m["source"],
+                "source_byte_limits": m["source_byte_limits"],
                 "container": m["container"],
                 "audio_clock": c,
                 "requested_range": rr,

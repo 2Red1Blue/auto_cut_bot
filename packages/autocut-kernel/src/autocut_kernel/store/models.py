@@ -698,12 +698,14 @@ class MaterializationLimits:
     """Explicit bounded-transfer controls for one timed-media command."""
 
     max_source_bytes: int
+    timed_speech_max_request_bytes: int
     copy_chunk_bytes: int
     staging_quota_bytes: int
 
     def __post_init__(self) -> None:
         for field_name in (
             "max_source_bytes",
+            "timed_speech_max_request_bytes",
             "copy_chunk_bytes",
             "staging_quota_bytes",
         ):
@@ -715,15 +717,24 @@ class MaterializationLimits:
 
     @property
     def evidence_policy_sha256(self) -> str:
-        """Hash the frozen source ceiling, excluding host-only controls."""
+        """Hash the frozen kernel/service source ceilings, excluding host-only controls."""
 
         return canonical_payload_hash(
             json.dumps(
-                {"max_source_bytes": self.max_source_bytes},
+                {
+                    "max_source_bytes": self.max_source_bytes,
+                    "timed_speech_max_request_bytes": self.timed_speech_max_request_bytes,
+                },
                 separators=(",", ":"),
                 sort_keys=True,
             )
         )
+
+    @property
+    def effective_max_source_bytes(self) -> int:
+        """The one source ceiling enforced before private staging and dispatch."""
+
+        return min(self.max_source_bytes, self.timed_speech_max_request_bytes)
 
 
 class VerifiedMaterializedBlob(Protocol):

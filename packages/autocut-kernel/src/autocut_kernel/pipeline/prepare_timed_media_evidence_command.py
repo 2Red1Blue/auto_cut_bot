@@ -230,6 +230,12 @@ class PrepareTimedMediaEvidenceRequest:
                 "producer_policy_sha256": self.producer_policy_sha256,
                 "materialization_policy_sha256": self.materialization_limits.evidence_policy_sha256,
                 "max_source_bytes": self.materialization_limits.max_source_bytes,
+                "timed_speech_max_request_bytes": (
+                    self.materialization_limits.timed_speech_max_request_bytes
+                ),
+                "effective_max_source_bytes": (
+                    self.materialization_limits.effective_max_source_bytes
+                ),
                 "source_blob": _blob_mapping(self.source_blob),
                 "source_manifest_sha256": self.source_manifest_sha256,
                 "source_provenance_sha256": self.source_provenance_sha256,
@@ -254,6 +260,10 @@ class PrepareTimedMediaEvidenceRequest:
             "producer_policy_sha256": self.producer_policy_sha256,
             "materialization_policy_sha256": self.materialization_limits.evidence_policy_sha256,
             "max_source_bytes": self.materialization_limits.max_source_bytes,
+            "timed_speech_max_request_bytes": (
+                self.materialization_limits.timed_speech_max_request_bytes
+            ),
+            "effective_max_source_bytes": self.materialization_limits.effective_max_source_bytes,
             "root_input_manifest_sha256": self.root_input_manifest_sha256,
             "source_blob": _blob_mapping(self.source_blob),
             "source_manifest_sha256": self.source_manifest_sha256,
@@ -444,10 +454,13 @@ class PrepareTimedMediaEvidenceCommand:
             return PrepareTimedMediaEvidenceResult(claimed)
         source: VerifiedMaterializedBlob | None = None
         try:
-            if request.source_blob.byte_length > request.materialization_limits.max_source_bytes:
+            if (
+                request.source_blob.byte_length
+                > request.materialization_limits.effective_max_source_bytes
+            ):
                 raise TimedMediaEvidenceProducerError(
                     "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
-                    "committed source exceeds the frozen source-byte limit",
+                    "committed source exceeds the frozen effective source-byte limit",
                 )
             source = self._store.materialize_immutable_blob(
                 request.job,

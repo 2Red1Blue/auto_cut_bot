@@ -111,7 +111,11 @@ class _ClaimOwnedLocalProducer:
                     frame_detector_sha256=request.frame_detector_sha256,
                     audio_detector_sha256=request.audio_detector_sha256,
                     policy=self._policy,
-                )
+                ),
+                kernel_max_source_bytes=request.materialization_limits.max_source_bytes,
+                service_max_request_bytes=(
+                    request.materialization_limits.timed_speech_max_request_bytes
+                ),
             )
         except LocalMediaToolError as error:
             raise TimedMediaEvidenceProducerError(

@@ -59,6 +59,9 @@ class TimedSpeechEvidenceRequest:
     source_path: Path
     source_id: str
     source_sha256: str
+    kernel_max_source_bytes: int
+    service_max_request_bytes: int
+    effective_max_source_bytes: int
     clock_id: str
     time_base: TimeBase
     origin_tick: int
@@ -83,6 +86,17 @@ class TimedSpeechEvidenceRequest:
     def __post_init__(self) -> None:
         if not self.source_path.is_absolute():
             raise LocalMediaPolicyError("source_path must be absolute")
+        for value, name in (
+            (self.kernel_max_source_bytes, "kernel_max_source_bytes"),
+            (self.service_max_request_bytes, "service_max_request_bytes"),
+            (self.effective_max_source_bytes, "effective_max_source_bytes"),
+        ):
+            if type(value) is not int or value <= 0:  # noqa: E721
+                raise LocalMediaPolicyError(f"{name} must be a positive integer")
+        if self.effective_max_source_bytes != min(
+            self.kernel_max_source_bytes, self.service_max_request_bytes
+        ):
+            raise LocalMediaPolicyError("effective source-byte limit does not close")
         validate_timed_speech_endpoint(self.endpoint_url)
         for value, name in (
             (self.source_sha256, "source_sha256"),
@@ -117,6 +131,11 @@ class TimedSpeechEvidenceRequest:
         return {
             "schema_version": "timed-speech-evidence-request-v1",
             "source": {"source_id": self.source_id, "source_sha256": self.source_sha256},
+            "source_byte_limits": {
+                "kernel_max_source_bytes": self.kernel_max_source_bytes,
+                "service_max_request_bytes": self.service_max_request_bytes,
+                "effective_max_source_bytes": self.effective_max_source_bytes,
+            },
             "container": {"media_type": "video/mp4", "safe_suffix": ".mp4"},
             "audio_clock": {
                 "clock_id": self.clock_id,
@@ -138,6 +157,7 @@ class TimedSpeechEvidenceRequest:
                 "torch_version": self.torch_version,
                 "device": self.device,
                 "word_timing_capability": self.word_timing_capability,
+                "max_request_bytes": self.service_max_request_bytes,
                 "profile_calibration_sha256": self.profile_calibration_sha256,
             },
             "expected_producers": [x.to_mapping() for x in self.expected_producers],

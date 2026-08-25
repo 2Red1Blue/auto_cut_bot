@@ -21,6 +21,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     FunASRHttpTimedSpeechEvidencePort,
     LocalMediaEvidenceError,
     LocalMediaPolicyError,
+    LocalMediaSourceError,
     TimedSpeechEvidenceRequest,
     TimedSpeechExpectedProducer,
 )
@@ -54,6 +55,9 @@ def request(tmp_path: Path) -> TimedSpeechEvidenceRequest:
         p,
         "s",
         H,
+        1_000_000,
+        1_000_000,
+        1_000_000,
         "a",
         TimeBase(1, 1000),
         100,
@@ -174,6 +178,7 @@ def _service_profile(
         "torch_version": "test",
         "device": device,
         "word_timing_capability": "required",
+        "max_request_bytes": 1_000_000,
         "profile_calibration_sha256": H,
         "timed_speech_policy_sha256": H,
         "utterance_gap_milliseconds": 700,
@@ -712,6 +717,17 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
                 shared_token="secret",
             ).produce(request_value)
 
+        limit_drift = response.json()
+        limit_drift["source_byte_limits"]["effective_max_source_bytes"] -= 1
+        with pytest.raises(LocalMediaSourceError, match="source-byte limit drift"):
+            FunASRHttpTimedSpeechEvidencePort(
+                transport=_StaticTransport(
+                    200,
+                    json.dumps(limit_drift, separators=(",", ":"), sort_keys=True).encode(),
+                ),
+                shared_token="secret",
+            ).produce(request_value)
+
         nonmonotonic = response.json()
         nonmonotonic["transcript"]["words"][0]["in_tick"] = 300
         nonmonotonic["transcript"]["words"][0]["out_tick"] = 200
@@ -736,6 +752,19 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
             headers=legacy_headers,
         )
         assert legacy_response.status == 409
+
+        limit_manifest = request_value.to_mapping()
+        limit_manifest["source_byte_limits"]["service_max_request_bytes"] = 1  # type: ignore[index]
+        limit_raw = json.dumps(limit_manifest, sort_keys=True, separators=(",", ":")).encode()
+        limit_headers = _headers(request_value)
+        limit_headers["X-Timed-Speech-Manifest"] = base64.b64encode(limit_raw).decode()
+        limit_headers["X-Timed-Speech-Request-SHA256"] = ns["sha"](limit_raw)
+        limit_response = await client.post(
+            "/v1/timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers=limit_headers,
+        )
+        assert limit_response.status == 409
     finally:
         await client.close()
 

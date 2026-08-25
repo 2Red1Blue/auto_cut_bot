@@ -252,6 +252,7 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         producer_policy_sha256=TEST_POLICY_SHA256,
         materialization_limits=MaterializationLimits(
             max_source_bytes=1024,
+            timed_speech_max_request_bytes=1024,
             copy_chunk_bytes=128,
             staging_quota_bytes=1024,
         ),
@@ -421,8 +422,30 @@ def test_declared_oversize_is_rejected_before_materialization_or_producer() -> N
         _request(store),
         materialization_limits=MaterializationLimits(
             max_source_bytes=1,
+            timed_speech_max_request_bytes=1,
             copy_chunk_bytes=1,
             staging_quota_bytes=1,
+        ),
+    )
+    producer = _Producer(_bundle())
+
+    result = PrepareTimedMediaEvidenceCommand(store, producer).execute(request)
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.failure_code == "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED"
+    assert store.materializations == []
+    assert producer.calls == 0
+
+
+def test_service_ceiling_rejects_before_materialization_or_producer() -> None:
+    store = _Store()
+    request = replace(
+        _request(store),
+        materialization_limits=MaterializationLimits(
+            max_source_bytes=1024,
+            timed_speech_max_request_bytes=1,
+            copy_chunk_bytes=128,
+            staging_quota_bytes=1024,
         ),
     )
     producer = _Producer(_bundle())

@@ -44,6 +44,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightPolicy,
     LocalMediaPreflightPort,
     LocalMediaPreflightRequest,
+    LocalMediaSourceError,
     LocalMediaToolError,
     ProducerCalibrationIdentity,
     TimedSpeechEvidence,
@@ -411,7 +412,9 @@ def test_prepare_builds_conjunctive_real_tool_evidence(tmp_path: Path) -> None:
     runner = _Runner()
     port, request, speech = _request(tmp_path, runner)
 
-    result = port.prepare(request)
+    result = port.prepare(
+        request, kernel_max_source_bytes=1024 * 1024, service_max_request_bytes=1024 * 1024
+    )
 
     assert result.evidence.transcript.words[0].in_tick == 500
     assert result.evidence.speech_activity.source_outcome is SpeechSourceOutcome.SPEECH_DETECTED
@@ -454,15 +457,33 @@ def test_replaced_detector_binary_cannot_reuse_old_calibration(tmp_path: Path) -
     )
 
     with pytest.raises(LocalMediaEvidenceError, match="detector bytes/version/model"):
-        port.prepare(replace(request, policy=mismatched))
+        port.prepare(
+            replace(request, policy=mismatched),
+            kernel_max_source_bytes=1024 * 1024,
+            service_max_request_bytes=1024 * 1024,
+        )
 
 
 def test_production_process_never_invokes_whisper_or_silencedetect(tmp_path: Path) -> None:
     runner = _Runner()
     port, request, _ = _request(tmp_path, runner)
-    port.prepare(request)
+    port.prepare(
+        request, kernel_max_source_bytes=1024 * 1024, service_max_request_bytes=1024 * 1024
+    )
     flattened = " ".join(x for argv in runner.argvs for x in argv).lower()
     assert "whisper" not in flattened and "silencedetect" not in flattened
+
+
+def test_effective_source_limit_stops_detectors_and_timed_speech_dispatch(tmp_path: Path) -> None:
+    runner = _Runner()
+    port, request, speech = _request(tmp_path, runner)
+    runner.argvs.clear()
+
+    with pytest.raises(LocalMediaSourceError, match="effective source-byte limit"):
+        port.prepare(request, kernel_max_source_bytes=1024 * 1024, service_max_request_bytes=1)
+
+    assert runner.argvs == []
+    assert speech.requests == []
 
 
 def test_policy_mapping_is_closed_and_hashes_all_values(tmp_path: Path) -> None:
