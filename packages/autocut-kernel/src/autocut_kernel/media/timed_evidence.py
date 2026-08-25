@@ -131,6 +131,7 @@ class CalibrationBinding(CanonicalEvidence):
     time_base: TimeBase
     timing_error_bound_tick: int
     active: bool
+    adapter_sha256: str | None = None
 
     def __post_init__(self) -> None:
         _sha(self.policy_sha256, "calibration.policy_sha256")
@@ -138,6 +139,8 @@ class CalibrationBinding(CanonicalEvidence):
         _sha(self.calibration_record_sha256, "calibration.calibration_record_sha256")
         _text(self.producer_id, "calibration.producer_id")
         _text(self.producer_version, "calibration.producer_version")
+        if self.adapter_sha256 is not None:
+            _sha(self.adapter_sha256, "calibration.adapter_sha256")
         _time_base(self.time_base, "calibration.time_base")
         _tick(
             self.timing_error_bound_tick,

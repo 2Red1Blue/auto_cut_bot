@@ -27,8 +27,13 @@ from ..media import (
     FramePtsIndexSet,
     RootMediaEvidenceBundle,
     SentenceCompleteness,
+    Stage4PredecessorError,
+    TimedSpeechProfileRegistryEntry,
     TranscriptSourceOutcome,
+    admit_timed_speech_profile,
     advance_candidate_evidence_window,
+    decode_timed_speech_profile_registry_entry,
+    derive_presentation_timeline_facts,
     plan_candidate_evidence_window,
 )
 from ..media.root_evidence import CanonicalEvidence
@@ -41,7 +46,10 @@ from ..store import (
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
+    CommittedArtifactMemberReference,
     Job,
+    PersistedCommittedArtifactMember,
+    StoreValidationError,
 )
 from ..store.models import (
     MaterializationError,
@@ -56,6 +64,11 @@ TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
 TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION = "timed-media-evidence-batch-v1"
 TIMED_SPEECH_BUSY_RETRY_COUNT = 1
 TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS = 1
+TIMED_SPEECH_PROFILE_REGISTRY_SCOPE = ArtifactScope(
+    "autocut_authority", "registry", "timed_speech_profiles"
+)
+TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE = "timed_speech_profile_registry_entry"
+TIMED_SPEECH_PROFILE_REGISTRY_LOGICAL_ID = "timed_speech_profile_registry_entry"
 
 
 class TimedMediaEvidenceCommandError(ValueError):
@@ -128,6 +141,11 @@ class TimedMediaEvidenceProducerPort(Protocol):
 class TimedMediaEvidenceStore(Protocol):
     def read_outcome(self, job: Job, idempotency_key: str) -> CommandOutcome | None: ...
 
+    def read_committed_artifact_member(
+        self,
+        reference: CommittedArtifactMemberReference,
+    ) -> PersistedCommittedArtifactMember: ...
+
     def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
 
     def materialize_immutable_blob(
@@ -172,6 +190,7 @@ class PrepareTimedMediaEvidenceRequest:
     adaptive_policy: AdaptiveEvidenceWindowPolicy
     producer_policy_sha256: str
     materialization_limits: MaterializationLimits
+    timed_speech_profile_registry_entry: CommittedArtifactMemberReference | None = None
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job or type(self.source_blob) is not BlobRef:  # noqa: E721
@@ -207,6 +226,20 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("adaptive_policy must be exact")
         if type(self.materialization_limits) is not MaterializationLimits:  # noqa: E721
             raise TimedMediaEvidenceCommandError("materialization_limits must be exact")
+        registry = self.timed_speech_profile_registry_entry
+        if registry is not None:
+            if type(registry) is not CommittedArtifactMemberReference:  # noqa: E721
+                raise TimedMediaEvidenceCommandError(
+                    "timed speech registry must be an exact committed member reference"
+                )
+            if (
+                registry.scope != TIMED_SPEECH_PROFILE_REGISTRY_SCOPE
+                or registry.artifact_type != TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE
+                or registry.logical_id != TIMED_SPEECH_PROFILE_REGISTRY_LOGICAL_ID
+            ):
+                raise TimedMediaEvidenceCommandError(
+                    "timed speech profile registry reference is outside the authority registry"
+                )
         manifest = self.window_manifest
         if (
             manifest.source_sha256 != self.source_blob.content_hash
@@ -265,6 +298,9 @@ class PrepareTimedMediaEvidenceRequest:
             ),
             "effective_max_source_bytes": self.materialization_limits.effective_max_source_bytes,
             "root_input_manifest_sha256": self.root_input_manifest_sha256,
+            "timed_speech_profile_registry_entry": None
+            if self.timed_speech_profile_registry_entry is None
+            else self.timed_speech_profile_registry_entry.to_mapping(),
             "source_blob": _blob_mapping(self.source_blob),
             "source_manifest_sha256": self.source_manifest_sha256,
             "source_provenance_sha256": self.source_provenance_sha256,
@@ -454,6 +490,7 @@ class PrepareTimedMediaEvidenceCommand:
             return PrepareTimedMediaEvidenceResult(claimed)
         source: VerifiedMaterializedBlob | None = None
         try:
+            registry_entry = self._read_timed_speech_profile_registry(request)
             if (
                 request.source_blob.byte_length
                 > request.materialization_limits.effective_max_source_bytes
@@ -482,7 +519,9 @@ class PrepareTimedMediaEvidenceCommand:
                     time.sleep(TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS)
             self._validate_produced(request, produced)
             plans, candidates = self._close_candidates(request, produced)
-            artifacts = self._persist_artifacts(request, produced, plans, candidates)
+            artifacts = self._persist_artifacts(
+                request, produced, plans, candidates, registry_entry
+            )
             source.close()
             source = None
             outcome = self._store.commit_command_success(
@@ -518,6 +557,33 @@ class PrepareTimedMediaEvidenceCommand:
             if source is not None:
                 source.close()
 
+    def _read_timed_speech_profile_registry(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+    ) -> TimedSpeechProfileRegistryEntry:
+        """Consume a fixed authority member; a run request cannot supply a profile."""
+        reference = request.timed_speech_profile_registry_entry
+        if reference is None:
+            raise TimedMediaEvidenceCommandError(
+                "timed speech profile registry composition is unavailable"
+            )
+        try:
+            persisted = self._store.read_committed_artifact_member(reference)
+            entry = decode_timed_speech_profile_registry_entry(json.loads(persisted.payload_json))
+        except (Stage4PredecessorError, StoreValidationError, ValueError, TypeError) as error:
+            raise TimedMediaEvidenceCommandError(
+                "timed speech profile registry member is invalid"
+            ) from error
+        if (
+            persisted.reference != reference
+            or entry.canonical_hash != reference.content_hash
+            or persisted.reference.content_hash != entry.canonical_hash
+        ):
+            raise TimedMediaEvidenceCommandError(
+                "timed speech profile registry member hash does not close"
+            )
+        return entry
+
     @staticmethod
     def _validate_produced(
         request: PrepareTimedMediaEvidenceRequest,
@@ -541,6 +607,7 @@ class PrepareTimedMediaEvidenceCommand:
                 item["calibration_record_sha256"],
                 item["producer_version"],
                 item["timing_error_bound_tick"],
+                item.get("adapter_sha256"),
             )
             for item in provenance["producer_identities"]
         }
@@ -560,6 +627,7 @@ class PrepareTimedMediaEvidenceCommand:
                 item.calibration_record_sha256,
                 item.producer_version,
                 item.timing_error_bound_tick,
+                item.adapter_sha256,
             )
             for item in produced.calibration_bindings
         }
@@ -640,6 +708,7 @@ class PrepareTimedMediaEvidenceCommand:
         produced: ProducedTimedMediaEvidence,
         plans: tuple[CandidateEvidenceWindowPlan, ...],
         candidates: tuple[CandidateTimedEvidenceSet, ...],
+        registry_entry: TimedSpeechProfileRegistryEntry,
     ) -> tuple[ArtifactMember, ...]:
         root_blob = self._put_json_blob(
             request.job,
@@ -695,6 +764,38 @@ class PrepareTimedMediaEvidenceCommand:
             "schema_version": "candidate-timed-evidence-index-v1",
             "semantic_pack_sha256": request.semantic_pack.canonical_hash,
         }
+        registry_reference = request.timed_speech_profile_registry_entry
+        if registry_reference is None:
+            raise TimedMediaEvidenceCommandError("timed speech profile registry is unavailable")
+        try:
+            admission = admit_timed_speech_profile(
+                registry_entry,
+                registry_reference.content_hash,
+                produced.root_bundle,
+                produced.calibration_bindings,
+            )
+            tool_identity, tool_version, invocation = _probe_tool_identity(produced)
+            audio_binding = next(
+                item
+                for item in produced.calibration_bindings
+                if item.producer_id == produced.root_bundle.audio_sample_boundaries.context.producer_id
+            )
+            probe, certificate = derive_presentation_timeline_facts(
+                produced.root_bundle,
+                probe_tool_identity_sha256=tool_identity,
+                probe_tool_version_sha256=tool_version,
+                probe_invocation_sha256=invocation,
+                mapping_policy_sha256=produced.producer_policy_sha256,
+                snap_error_allowance_audio_tick=audio_binding.timing_error_bound_tick,
+            )
+        except (Stage4PredecessorError, StopIteration) as error:
+            raise TimedMediaEvidenceCommandError(
+                "Stage 4 predecessor facts do not close against committed preflight evidence"
+            ) from error
+        admission_payload = {
+            **admission.to_mapping(),
+            "registry_member_reference": registry_reference.to_mapping(),
+        }
         return (
             _artifact(
                 request,
@@ -707,6 +808,24 @@ class PrepareTimedMediaEvidenceCommand:
                 "candidate_timed_evidence_index",
                 f"candidate_timed_evidence_episode_{request.episode_index:04d}",
                 index_payload,
+            ),
+            _artifact(
+                request,
+                "timed_speech_profile_admission",
+                f"timed_speech_profile_admission_episode_{request.episode_index:04d}",
+                admission_payload,
+            ),
+            _artifact(
+                request,
+                "presentation_timeline_probe",
+                f"presentation_timeline_probe_episode_{request.episode_index:04d}",
+                probe.to_mapping(),
+            ),
+            _artifact(
+                request,
+                "committed_video_to_audio_clock_map_certificate",
+                f"video_to_audio_clock_map_episode_{request.episode_index:04d}",
+                certificate.to_mapping(),
             ),
         )
 
@@ -816,6 +935,29 @@ def _assess_window(
         right_truncated=right_truncated,
         sentence_completeness=sentence,
     )
+
+
+def _probe_tool_identity(produced: ProducedTimedMediaEvidence) -> tuple[str, str, str]:
+    """Extract the one committed ffprobe invocation; never accept a map identity."""
+    provenance = json.loads(produced.producer_provenance_json)
+    invocations = provenance.get("tool_invocations")
+    if type(invocations) is not list:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("preflight provenance lost its probe invocation")
+    probes: list[dict[str, object]] = []
+    for item in cast(list[object], invocations):
+        if type(item) is not dict:  # noqa: E721
+            continue
+        mapping = cast(dict[str, object], item)
+        if mapping.get("producer_kind") == "probe" and mapping.get("executable") == "ffprobe":
+            probes.append(mapping)
+    if len(probes) != 1:
+        raise TimedMediaEvidenceCommandError("preflight requires exactly one committed ffprobe probe")
+    probe = probes[0]
+    identity = probe.get("executable_sha256")
+    version = probe.get("version_evidence_sha256")
+    if not _is_sha256(identity) or not _is_sha256(version):
+        raise TimedMediaEvidenceCommandError("committed probe tool identity is invalid")
+    return cast(str, identity), cast(str, version), canonical_sha256(probe)
 
 
 def _physical(tick: int, context: object) -> Fraction:
@@ -981,7 +1123,7 @@ def _validate_producer_provenance_json(value: object) -> None:
         if type(identity_raw) is not dict:  # noqa: E721
             raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
         identity = cast(dict[str, object], identity_raw)
-        if set(identity) != identity_fields:
+        if set(identity) not in (identity_fields, identity_fields | {"adapter_sha256"}):
             raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
         if identity["producer_kind"] != expected_kinds[position]:
             raise TimedMediaEvidenceCommandError("producer identity order is not canonical")
@@ -993,6 +1135,8 @@ def _validate_producer_provenance_json(value: object) -> None:
         ):
             if not _is_sha256(identity[field]):
                 raise TimedMediaEvidenceCommandError("producer identity hash is invalid")
+        if "adapter_sha256" in identity and not _is_sha256(identity["adapter_sha256"]):
+            raise TimedMediaEvidenceCommandError("producer identity adapter hash is invalid")
 
 
 def _validate_canonical_mapping_json(

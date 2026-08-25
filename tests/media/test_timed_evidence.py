@@ -395,6 +395,7 @@ def _bindings(evidence_values: tuple[object, ...]) -> tuple[CalibrationBinding, 
             time_base=value.context.time_base,
             timing_error_bound_tick=1,
             active=True,
+            adapter_sha256=HASH_A,
         )
         for (producer_id, policy_sha), value in sorted(by_key.items())
     )

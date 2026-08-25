@@ -79,6 +79,7 @@ from .models import (
     MaterializationError,
     MaterializationLimits,
     MediaEvidenceReference,
+    PersistedCommittedArtifactMember,
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
@@ -2324,6 +2325,75 @@ class PostgresRuntimeStore:
                 None
                 if command is None
                 else self._read_outcome_by_slot(cursor, UUID(str(command[0])), job_id)
+            )
+
+        return self._transaction(operation)
+
+    def read_committed_artifact_member(
+        self,
+        reference: CommittedArtifactMemberReference,
+    ) -> PersistedCommittedArtifactMember:
+        """Reread one authority/predecessor member by full immutable identity.
+
+        This deliberately has no logical-head or caller-selected Job lookup.
+        A receipt, ArtifactSet, ordinal, scope and content hash must all name
+        the same succeeded durable member.
+        """
+
+        if type(reference) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError("committed member reader requires an exact reference")
+
+        def operation(cursor: DbCursor) -> PersistedCommittedArtifactMember:
+            cursor.execute(
+                """
+                SELECT slot.command_slot_id, artifact.payload_json::text
+                  FROM runtime.command_receipts AS receipt
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = receipt.command_slot_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = receipt.result_artifact_set_id
+                   AND artifact_set.command_slot_id = slot.command_slot_id
+                  JOIN runtime.artifact_set_members AS member
+                    ON member.artifact_set_id = artifact_set.artifact_set_id
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = member.artifact_set_id
+                 WHERE receipt.receipt_id = %s
+                   AND receipt.result_artifact_set_id = %s
+                   AND receipt.outcome = 'succeeded'
+                   AND slot.state = 'succeeded'
+                   AND member.ordinal = %s
+                   AND artifact.namespace = %s
+                   AND artifact.scope_kind = %s
+                   AND artifact.scope_key = %s
+                   AND artifact.artifact_type = %s
+                   AND artifact.logical_id = %s
+                   AND artifact.revision = %s
+                   AND artifact.content_hash = %s
+                """,
+                (
+                    reference.receipt_id,
+                    reference.artifact_set_id,
+                    reference.member_ordinal,
+                    reference.scope.namespace,
+                    reference.scope.kind,
+                    reference.scope.key,
+                    reference.artifact_type,
+                    reference.logical_id,
+                    reference.revision,
+                    reference.content_hash,
+                ),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if len(rows) != 1:
+                raise StoreValidationError("exact committed artifact member is unavailable")
+            slot_id, payload_json = rows[0]
+            return PersistedCommittedArtifactMember(
+                reference=reference,
+                payload_json=_text(payload_json),
+                command_slot_id=UUID(str(slot_id)),
             )
 
         return self._transaction(operation)

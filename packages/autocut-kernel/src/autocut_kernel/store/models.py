@@ -836,6 +836,32 @@ class CommittedArtifactMemberReference:
 
 
 @dataclass(frozen=True, slots=True)
+class PersistedCommittedArtifactMember:
+    """One exact member reread from a succeeded immutable ArtifactSet.
+
+    Unlike logical-head readers, this is intentionally useful to predecessor
+    contracts that must consume an authority member by its full Receipt/Set
+    identity.  The payload hash is verified here before a media command parses
+    its closed schema.
+    """
+
+    reference: CommittedArtifactMemberReference
+    payload_json: str
+    command_slot_id: UUID
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError("persisted committed member requires an exact reference")
+        _text(self.payload_json, "persisted committed member payload_json")
+        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
+            raise StoreValidationError(
+                "persisted committed member payload does not match its content hash"
+            )
+        if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise StoreValidationError("persisted committed member command_slot_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
 class VlmBatchRequestPolicy:
     """Frozen provider policy shared by every child in one semantic-pack set."""
 
