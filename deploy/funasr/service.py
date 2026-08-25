@@ -34,6 +34,7 @@ ASR_MODEL_ID = "SenseVoiceSmall"
 VAD_MODEL_ID = "fsmn-vad"
 ASR_INFERENCE_KIND = "sensevoice-word-timestamp"
 VAD_INFERENCE_KIND = "fsmn-vad-direct"
+SENSEVOICE_WORD_GUARD_PROFILE = "sensevoice_word_guard_v1"
 RESOURCE_PRESSURE_TEXT = "resource-pressure"
 CANONICAL_SINGLETON_LOCK_PATH = Path("/tmp").resolve(strict=True) / "autocut-funasr-service.lock"
 
@@ -308,7 +309,7 @@ def coverage(m: dict[str, object], outcome: str) -> dict[str, object]:
 def empty_transcript(required: bool, indeterminate: bool = False) -> dict[str, object]:
     return {
         "coverage_outcome": "partial" if indeterminate else "complete",
-        "outcome": "indeterminate" if indeterminate else "no_lexical_content",
+        "lexical_outcome": "indeterminate" if indeterminate else "no_lexical_content",
         "completeness": {
             "segment": "partial" if indeterminate else "complete",
             "word": "partial"
@@ -400,7 +401,7 @@ def transcript(
             )
         return {
             "coverage_outcome": "complete",
-            "outcome": "transcript_available",
+            "lexical_outcome": "transcript_available",
             "completeness": {
                 "segment": "complete",
                 "word": "complete",
@@ -538,6 +539,8 @@ class Service:
         }
         if set(self.profile) != expected_fields:
             raise RuntimeError("profile schema is not closed")
+        if self.profile["word_timing_capability"] != "required":
+            raise RuntimeError("sensevoice_word_guard_v1 requires real word timestamps")
         measured = {
             **{k: self.profile[k] for k in expected_fields - {"producers"}},
             "provider_id": PROVIDER_ID,
@@ -707,18 +710,15 @@ class Service:
             "vad_merge_gap_milliseconds": self.measured_profile.get("vad_merge_gap_milliseconds"),
         }:
             raise web.HTTPConflict(text="measured timing policy drift")
-        word = (
-            "complete"
-            if self.measured_profile["word_timing_capability"] == "required"
-            else "not_applicable"
-        )
+        if self.measured_profile["word_timing_capability"] != "required":
+            raise web.HTTPConflict(text="sensevoice word timing capability drift")
         if manifest.get("transcript_capability") != {
-            "profile": "sensevoice_word_utterance_v1",
+            "profile": SENSEVOICE_WORD_GUARD_PROFILE,
             "segment": "complete",
             "segment_semantics": "utterance_gap_protected_range",
             "sentence": "not_applicable",
-            "word": word,
-            "word_timing": self.measured_profile["word_timing_capability"],
+            "word": "complete",
+            "word_timing": "required",
         }:
             raise web.HTTPConflict(text="measured transcript capability drift")
         expected = manifest.get("expected_producers")
@@ -832,12 +832,10 @@ class Service:
                 m["profile"]["word_timing_capability"] == "required",
                 m["timing_policy"]["utterance_gap_milliseconds"],
             )
-            if t["outcome"] == "no_lexical_content" and state == "no_speech":
-                t["outcome"] = "no_speech"
             t["coverage"] = coverage(m, t.pop("coverage_outcome"))
             speech = {
                 "coverage": coverage(m, "partial" if state == "indeterminate" else "complete"),
-                "outcome": {
+                "speech_outcome": {
                     "speech": "speech_detected",
                     "no_speech": "none_detected",
                     "indeterminate": "indeterminate",

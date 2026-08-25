@@ -56,6 +56,7 @@ from auto_cut_bot.pipeline.detector_identity import local_detector_identity_sha2
 from .funasr_http import FunASRHttpTimedSpeechEvidencePort
 from .models import (
     LocalMediaEvidenceError,
+    LocalMediaPolicyError,
     LocalMediaPreflightPolicy,
     LocalMediaPreflightRequest,
     LocalMediaPreflightResult,
@@ -1366,6 +1367,10 @@ class LocalMediaPreflightPort:
     ) -> TimedSpeechEvidenceRequest:
         policy = request.policy
         context = request.audio_sample_boundaries.context
+        if policy.word_timing_capability != "required":
+            raise LocalMediaPolicyError(
+                "sensevoice_word_guard_v1 requires real word timestamps"
+            )
         expected = []
         for kind in cast(tuple[Literal["asr", "vad"], ...], ("asr", "vad")):
             c = policy.calibration(kind)
@@ -1402,7 +1407,7 @@ class LocalMediaPreflightPort:
             policy.funasr_version,
             policy.torch_version,
             cast(Literal["cpu", "mps"], policy.speech_device),
-            policy.word_timing_capability,
+            "required",
             policy.timed_speech_policy_sha256,
             policy.timed_speech_calibration_sha256,
             cast(tuple[TimedSpeechExpectedProducer, TimedSpeechExpectedProducer], tuple(expected)),
@@ -1417,11 +1422,11 @@ class LocalMediaPreflightPort:
         evidence: TimedSpeechEvidence, request: LocalMediaPreflightRequest
     ) -> None:
         context = request.audio_sample_boundaries.context
-        expected_word = (
-            EvidenceCompleteness.COMPLETE
-            if request.policy.word_timing_capability == "required"
-            else EvidenceCompleteness.NOT_APPLICABLE
-        )
+        if request.policy.word_timing_capability != "required":
+            raise LocalMediaPolicyError(
+                "sensevoice_word_guard_v1 requires real word timestamps"
+            )
+        expected_word = EvidenceCompleteness.COMPLETE
         if (
             evidence.transcript.completeness
             != TranscriptCompleteness(

@@ -15,7 +15,7 @@ from types import ModuleType, SimpleNamespace
 import httpx
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from autocut_kernel.media import TimeBase
+from autocut_kernel.media import SpeechSourceOutcome, TimeBase, TranscriptSourceOutcome
 
 from auto_cut_bot.pipeline.media_preflight import (
     FunASRHttpTimedSpeechEvidencePort,
@@ -24,6 +24,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     TimedSpeechEvidenceRequest,
     TimedSpeechExpectedProducer,
 )
+from auto_cut_bot.pipeline.media_preflight.speech_port import SENSEVOICE_WORD_GUARD_PROFILE
 
 H = "sha256:" + "1" * 64
 
@@ -272,10 +273,17 @@ class _StaticTransport:
 def test_closed_request_binds_required_capability_and_policy(tmp_path: Path) -> None:
     m = request(tmp_path).to_mapping()
     assert m["profile"]["word_timing_capability"] == "required"  # type: ignore[index]
+    assert m["transcript_capability"]["profile"] == SENSEVOICE_WORD_GUARD_PROFILE  # type: ignore[index]
+    assert m["transcript_capability"]["sentence"] == "not_applicable"  # type: ignore[index]
     assert m["timing_policy"] == {
         "utterance_gap_milliseconds": 700,
         "vad_merge_gap_milliseconds": 350,
     }
+
+
+def test_word_guard_rejects_sentence_only_timing_capability(tmp_path: Path) -> None:
+    with pytest.raises(LocalMediaPolicyError, match="requires real word timestamps"):
+        replace(request(tmp_path), word_timing_capability="sentence_only")  # type: ignore[arg-type]
 
 
 def test_endpoint_rejects_userinfo_remotehost(tmp_path: Path) -> None:
@@ -319,7 +327,9 @@ def test_misaligned_or_nonmonotonic_words_fail_closed(monkeypatch: pytest.Monkey
     tb = {"numerator": 1, "denominator": 1000}
     rr = {"in_tick": 0, "out_tick": 4000}
     assert (
-        fn([{"text": "a", "words": ["a"], "timestamp": []}], tb, rr, True, 700)["outcome"]
+        fn(
+            [{"text": "a", "words": ["a"], "timestamp": []}], tb, rr, True, 700
+        )["lexical_outcome"]
         == "indeterminate"
     )
     assert (
@@ -329,7 +339,7 @@ def test_misaligned_or_nonmonotonic_words_fail_closed(monkeypatch: pytest.Monkey
             rr,
             True,
             700,
-        )["outcome"]
+        )["lexical_outcome"]
         == "indeterminate"
     )
 
@@ -345,7 +355,7 @@ def test_explicit_empty_asr_distinguishes_silence_from_vad_only(
         True,
         700,
     )
-    assert tr["outcome"] == "no_lexical_content"
+    assert tr["lexical_outcome"] == "no_lexical_content"
     assert tr["completeness"]["sentence"] == "not_applicable"
     assert ns["vad"](
         [{"value": []}],
@@ -589,6 +599,12 @@ async def test_service_rejects_device_fallback_and_model_drift(
     with pytest.raises(RuntimeError, match="measured asr identity mismatch"):
         await ns["Service"]().load()
 
+    profile = _service_profile(ns, asr, vad)
+    profile["word_timing_capability"] = "sentence_only"
+    _service_environment(monkeypatch, profile, asr, vad)
+    with pytest.raises(RuntimeError, match="requires real word timestamps"):
+        await ns["Service"]().load()
+
 
 @pytest.mark.asyncio
 async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decodes(
@@ -625,6 +641,41 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
         assert evidence.transcript.boundary_touch_left is False
         assert evidence.transcript.boundary_touch_right is False
 
+        response = await asyncio.to_thread(
+            httpx.post,
+            endpoint,
+            headers=_headers(request_value),
+            content=request_value.source_path.read_bytes(),
+        )
+        vad_only = response.json()
+        vad_only["transcript"]["lexical_outcome"] = "no_lexical_content"
+        vad_only["transcript"]["words"] = []
+        vad_only["transcript"]["segments"] = []
+        vad_only_evidence = FunASRHttpTimedSpeechEvidencePort(
+            transport=_StaticTransport(
+                200, json.dumps(vad_only, separators=(",", ":"), sort_keys=True).encode()
+            ),
+            shared_token="secret",
+        ).produce(request_value)
+        assert vad_only_evidence.transcript.source_outcome is TranscriptSourceOutcome.NO_LEXICAL_CONTENT
+        assert vad_only_evidence.speech_activity.source_outcome is SpeechSourceOutcome.SPEECH_DETECTED
+        assert vad_only_evidence.speech_activity.segments
+
+        silence = response.json()
+        silence["transcript"]["lexical_outcome"] = "no_lexical_content"
+        silence["transcript"]["words"] = []
+        silence["transcript"]["segments"] = []
+        silence["speech_activity"]["speech_outcome"] = "none_detected"
+        silence["speech_activity"]["segments"] = []
+        silence_evidence = FunASRHttpTimedSpeechEvidencePort(
+            transport=_StaticTransport(
+                200, json.dumps(silence, separators=(",", ":"), sort_keys=True).encode()
+            ),
+            shared_token="secret",
+        ).produce(request_value)
+        assert silence_evidence.transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH
+        assert silence_evidence.speech_activity.source_outcome is SpeechSourceOutcome.NONE_DETECTED
+
         unauthorized = await client.post(
             "/v1/timed-speech-evidence",
             data=request_value.source_path.read_bytes(),
@@ -632,12 +683,6 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
         )
         assert unauthorized.status == 401
 
-        response = await asyncio.to_thread(
-            httpx.post,
-            endpoint,
-            headers=_headers(request_value),
-            content=request_value.source_path.read_bytes(),
-        )
         malformed = response.json()
         malformed["transcript"]["words"][0]["in_tick"] = True
         raw = json.dumps(malformed, separators=(",", ":"), sort_keys=True).encode()
@@ -666,6 +711,31 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
                 ),
                 shared_token="secret",
             ).produce(request_value)
+
+        nonmonotonic = response.json()
+        nonmonotonic["transcript"]["words"][0]["in_tick"] = 300
+        nonmonotonic["transcript"]["words"][0]["out_tick"] = 200
+        with pytest.raises(LocalMediaEvidenceError, match="timed speech response is malformed"):
+            FunASRHttpTimedSpeechEvidencePort(
+                transport=_StaticTransport(
+                    200,
+                    json.dumps(nonmonotonic, separators=(",", ":"), sort_keys=True).encode(),
+                ),
+                shared_token="secret",
+            ).produce(request_value)
+
+        legacy = request_value.to_mapping()
+        legacy["transcript_capability"]["profile"] = "sensevoice_word_utterance_v1"  # type: ignore[index]
+        legacy_raw = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+        legacy_headers = _headers(request_value)
+        legacy_headers["X-Timed-Speech-Manifest"] = base64.b64encode(legacy_raw).decode()
+        legacy_headers["X-Timed-Speech-Request-SHA256"] = ns["sha"](legacy_raw)
+        legacy_response = await client.post(
+            "/v1/timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers=legacy_headers,
+        )
+        assert legacy_response.status == 409
     finally:
         await client.close()
 

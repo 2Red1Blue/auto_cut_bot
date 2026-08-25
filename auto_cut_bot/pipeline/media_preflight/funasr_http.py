@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -273,7 +274,7 @@ class FunASRHttpTimedSpeechEvidencePort:
                 p["transcript"],
                 {
                     "coverage",
-                    "outcome",
+                    "lexical_outcome",
                     "completeness",
                     "segments",
                     "words",
@@ -287,16 +288,25 @@ class FunASRHttpTimedSpeechEvidencePort:
             context("asr"),
         )
         speech = cls._speech(
-            _obj(p["speech_activity"], {"coverage", "outcome", "segments"}, "speech"),
+            _obj(
+                p["speech_activity"],
+                {"coverage", "speech_outcome", "segments"},
+                "speech",
+            ),
             r,
             context("vad"),
         )
-        if (transcript.source_outcome, speech.source_outcome) not in {
+        outcomes = (transcript.source_outcome, speech.source_outcome)
+        if outcomes == (
+            TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
+            SpeechSourceOutcome.NONE_DETECTED,
+        ):
+            transcript = replace(transcript, source_outcome=TranscriptSourceOutcome.NO_SPEECH)
+        elif outcomes not in {
             (TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE, SpeechSourceOutcome.SPEECH_DETECTED),
             (TranscriptSourceOutcome.NO_LEXICAL_CONTENT, SpeechSourceOutcome.SPEECH_DETECTED),
-            (TranscriptSourceOutcome.NO_SPEECH, SpeechSourceOutcome.NONE_DETECTED),
         }:
-            raise LocalMediaEvidenceError("ASR/VAD outcome disagreement")
+            raise LocalMediaEvidenceError("lexical/VAD outcome disagreement")
         ids = cls._identities(p["producer_identities"], r)
         bounds = cls._bounds(p["timing_error_bounds"], r)
         service_sha256 = ids[0].service_sha256
@@ -442,13 +452,17 @@ class FunASRHttpTimedSpeechEvidencePort:
                 for item in _arr(i["segments"], "segments")
             )
         )
-        outcome = TranscriptSourceOutcome(_text(i["outcome"], "transcript.outcome"))
+        try:
+            outcome = TranscriptSourceOutcome(
+                _text(i["lexical_outcome"], "transcript.lexical_outcome")
+            )
+        except ValueError as error:
+            raise LocalMediaEvidenceError("invalid lexical outcome") from error
         if outcome not in {
             TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE,
             TranscriptSourceOutcome.NO_LEXICAL_CONTENT,
-            TranscriptSourceOutcome.NO_SPEECH,
         }:
-            raise LocalMediaEvidenceError("indeterminate transcript")
+            raise LocalMediaEvidenceError("indeterminate lexical outcome")
         if (
             r.word_timing_capability == "required"
             and outcome is TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE
@@ -498,7 +512,12 @@ class FunASRHttpTimedSpeechEvidencePort:
                     None,
                 )
             )
-        outcome = SpeechSourceOutcome(_text(i["outcome"], "speech.outcome"))
+        try:
+            outcome = SpeechSourceOutcome(
+                _text(i["speech_outcome"], "speech.speech_outcome")
+            )
+        except ValueError as error:
+            raise LocalMediaEvidenceError("invalid speech outcome") from error
         if outcome not in {SpeechSourceOutcome.SPEECH_DETECTED, SpeechSourceOutcome.NONE_DETECTED}:
             raise LocalMediaEvidenceError("indeterminate VAD")
         return SpeechActivitySet(

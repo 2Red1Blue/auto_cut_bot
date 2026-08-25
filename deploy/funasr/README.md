@@ -72,12 +72,23 @@ The complete runtime environment is:
 - `FUNASR_SHARED_TOKEN` (non-empty and sent only in loopback Authorization)
 - `FUNASR_PROFILE_JSON`
 
-The production profile uses required real word timestamps. Missing,
-misaligned, non-monotonic, or out-of-clock timestamps fail closed. Words are
-grouped at gaps greater than the calibrated 700 ms as non-linguistic utterance
-protected ranges; direct FSMN ranges merge at gaps up to 350 ms. These groups
-never claim sentence completeness. Empty ASR plus detected VAD is
-`no_lexical_content`; pure silence requires explicit empty ASR and empty VAD.
+The only admitted production profile is `sensevoice_word_guard_v1`. It requires
+SenseVoiceSmall `output_timestamp=True` real word pairs and independent direct
+FSMN-VAD. Missing, misaligned, non-monotonic, or out-of-clock timestamps fail
+closed; the service never interpolates them. Words are grouped at gaps greater
+than the calibrated 700 ms as non-linguistic utterance protected ranges; direct
+FSMN ranges merge at gaps up to 350 ms. These groups never claim sentence
+completeness: `sentence=not_applicable` is an unsupported capability, not a
+proof of complete dialogue.
+
+The response reports independent `lexical_outcome` and `speech_outcome` fields.
+`no_lexical_content` plus `speech_detected` is valid VAD-only protection and
+does not fabricate TranscriptWords. Empty lexical output plus `none_detected`
+is the only pure-silence closure. Any other outcome pairing, identity/policy
+drift, source-clock mismatch, or excessive/non-positive timing error bound is
+rejected by the HTTP client before evidence enters the pipeline. A future
+sentence-boundary profile must have its own registered and calibrated identity;
+the former `sensevoice_word_utterance_v1` identifier is unsupported.
 
 Timeout or model failure exits 70/71 so a supervisor replaces the unsafe
 process. Cancellation does not release the inference lock while its worker
@@ -101,6 +112,11 @@ exactly one model load, three admitted/serialized requests, fourth-request
 rejection before spool, cancellation/exception release, and resource readings
 showing the configured budget was respected. Until that record exists, status
 remains **NO-GO**.
+
+The checked-in test layer is intentionally provider-free: it substitutes only
+the process boundary and model object, does not download model weights, and
+asserts the closed request/response, admission, spool, cancellation and identity
+contracts. It is not evidence of a real-model deployment smoke.
 
 For the bounded media probe, stream-copy one short MP4 and bind its real audio
 clock rather than assuming a zero origin:

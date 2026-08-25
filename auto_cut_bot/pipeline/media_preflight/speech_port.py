@@ -11,6 +11,8 @@ from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
 
 from .models import LocalMediaEvidenceError, LocalMediaPolicyError, validate_timed_speech_endpoint
 
+SENSEVOICE_WORD_GUARD_PROFILE = "sensevoice_word_guard_v1"
+
 
 @dataclass(frozen=True, slots=True)
 class TimedSpeechExpectedProducer:
@@ -69,7 +71,7 @@ class TimedSpeechEvidenceRequest:
     funasr_version: str
     torch_version: str
     device: Literal["cpu", "mps"]
-    word_timing_capability: Literal["required", "sentence_only"]
+    word_timing_capability: Literal["required"]
     policy_sha256: str
     profile_calibration_sha256: str
     expected_producers: tuple[TimedSpeechExpectedProducer, TimedSpeechExpectedProducer]
@@ -106,9 +108,12 @@ class TimedSpeechEvidenceRequest:
             raise LocalMediaPolicyError("timed speech bounds must be positive")
         if tuple(x.producer_kind for x in self.expected_producers) != ("asr", "vad"):
             raise LocalMediaPolicyError("producers must be asr then vad")
+        if self.word_timing_capability != "required":
+            raise LocalMediaPolicyError(
+                "sensevoice_word_guard_v1 requires real word timestamps"
+            )
 
     def to_mapping(self) -> dict[str, object]:
-        word = "complete" if self.word_timing_capability == "required" else "not_applicable"
         return {
             "schema_version": "timed-speech-evidence-request-v1",
             "source": {"source_id": self.source_id, "source_sha256": self.source_sha256},
@@ -143,12 +148,12 @@ class TimedSpeechEvidenceRequest:
                 "vad_merge_gap_milliseconds": self.vad_merge_gap_milliseconds,
             },
             "transcript_capability": {
-                "profile": "sensevoice_word_utterance_v1",
+                "profile": SENSEVOICE_WORD_GUARD_PROFILE,
                 "segment": "complete",
                 "segment_semantics": "utterance_gap_protected_range",
                 "sentence": "not_applicable",
-                "word": word,
-                "word_timing": self.word_timing_capability,
+                "word": "complete",
+                "word_timing": "required",
             },
         }
 
