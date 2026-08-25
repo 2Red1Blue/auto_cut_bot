@@ -34,6 +34,7 @@ from auto_cut_bot.pipeline.vlm import (
 )
 from auto_cut_bot.pipeline.vlm.ark_file_cache import DbConnection as ArkDbConnection
 
+from .highlight_projection import PipelineHighlightReadService
 from .media_preflight_stage import MediaPreflightPipelineStage
 from .models import PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
@@ -279,6 +280,26 @@ class PipelineRuntimePort(Protocol):
     ) -> None: ...
 
 
+def compose_pipeline_highlight_read_service_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> PipelineHighlightReadService | None:
+    """Compose only the durable stores needed by the read-only highlights view."""
+    values = os.environ if environ is None else environ
+    control_dsn = values.get(PIPELINE_POSTGRES_DSN_ENV, "").strip()
+    if not control_dsn:
+        return None
+    kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
+    control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
+
+    def kernel_factory() -> psycopg.Connection[tuple[object, ...]]:
+        return psycopg.connect(kernel_dsn)
+
+    return PipelineHighlightReadService(
+        PostgresPipelineRunStore(control_factory),
+        PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory)),
+    )
+
+
 def compose_pipeline_runtime_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> PipelineRuntime | None:
@@ -434,5 +455,6 @@ __all__ = (
     "PipelineRuntimePort",
     "SourceCatalogEntry",
     "compose_pipeline_run_service_from_environment",
+    "compose_pipeline_highlight_read_service_from_environment",
     "compose_pipeline_runtime_from_environment",
 )

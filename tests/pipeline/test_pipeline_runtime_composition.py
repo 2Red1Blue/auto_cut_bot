@@ -19,12 +19,14 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_KERNEL_POSTGRES_DSN_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
     ConfiguredSourceCatalog,
     PipelineRuntimeConfigurationError,
+    compose_pipeline_highlight_read_service_from_environment,
     compose_pipeline_runtime_from_environment,
 )
 from auto_cut_bot.pipeline.runtime.worker import DurablePipelineWorker
@@ -195,6 +197,30 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
         tmp_path
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
+
+
+def test_highlight_read_composition_uses_only_configured_read_dsns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from auto_cut_bot.pipeline.runtime import composition
+    from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
+
+    connection_attempts: list[str] = []
+
+    def reject_connection(dsn: str) -> object:
+        connection_attempts.append(dsn)
+        raise AssertionError("read service composition must not connect")
+
+    monkeypatch.setattr(composition.psycopg, "connect", reject_connection)
+
+    assert compose_pipeline_highlight_read_service_from_environment({}) is None
+    service = compose_pipeline_highlight_read_service_from_environment({
+        PIPELINE_POSTGRES_DSN_ENV: "postgresql://control.invalid/runtime",
+        PIPELINE_KERNEL_POSTGRES_DSN_ENV: "postgresql://kernel.invalid/runtime",
+    })
+
+    assert isinstance(service, PipelineHighlightReadService)
+    assert connection_attempts == []
 
 
 def test_direct_v3_profile_cannot_relabel_v4_parse_fields_as_executable(

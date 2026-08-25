@@ -7,13 +7,20 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from websockets.datastructures import Headers
 from websockets.http11 import Request as WsRequest
 
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.manager import ChannelManager
+from auto_cut_bot.channels.plugin import load_channel_package
 from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
+from auto_cut_bot.config.schema import Config
+from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
+from auto_cut_bot.pipeline.runtime.models import PipelineRunRequest
 from auto_cut_bot.webui.gateway_services import build_gateway_services
 from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
-_RUN_ID = "0123456789abcdef0123456789abcdef"
+_RUN_ID = "pipeline_run_0123456789abcdef0123456789abcdef"
 _PATH = f"/api/pipeline/runs/{_RUN_ID}/highlights"
 
 
@@ -41,6 +48,20 @@ class _ReadService:
             raise self._error
         assert self._result is not None
         return self._result
+
+
+class _RunStore:
+    def __init__(self, snapshot: object | None) -> None:
+        self.snapshot = snapshot
+        self.calls: list[str] = []
+
+    async def read_run(self, run_id: str) -> object | None:
+        self.calls.append(run_id)
+        return self.snapshot
+
+
+class _NoEvidenceStore:
+    pass
 
 
 def _request(*, method: str = "GET") -> WsRequest:
@@ -93,6 +114,46 @@ async def test_pipeline_highlights_returns_the_projection_mapping_unchanged() ->
 
 
 @pytest.mark.asyncio
+async def test_authenticated_gateway_calls_the_real_highlight_read_service(
+    tmp_path: Path,
+) -> None:
+    run_store = _RunStore(
+        SimpleNamespace(
+            commands=(),
+            request=PipelineRunRequest("test", source_root="/authorized/source"),
+            execution_profile=SimpleNamespace(is_legacy_unresolved=False),
+            execution_profile_hash="profile-sha",
+        )
+    )
+    service = PipelineHighlightReadService(
+        cast(Any, run_store),
+        cast(Any, _NoEvidenceStore()),
+    )
+    gateway = build_gateway_services(
+        config=WebSocketConfig(),
+        bus=MagicMock(),
+        session_manager=None,
+        static_dist_path=None,
+        workspace_path=tmp_path,
+        default_restrict_to_workspace=False,
+        config_path=tmp_path / "config.json",
+        runtime_model_name=None,
+        runtime_surface="browser",
+        runtime_capabilities_overrides=None,
+        pipeline_highlight_read_service=service,
+    )
+    api_token = gateway.tokens.issue_api_token(300)
+    request = WsRequest(_PATH, Headers({"Authorization": f"Bearer {api_token}"}))
+
+    response = await gateway.http.dispatch(SimpleNamespace(remote_address=("127.0.0.1", 1)), request)
+
+    assert response is not None
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"status": "not_ready"}
+    assert run_store.calls == [_RUN_ID]
+
+
+@pytest.mark.asyncio
 async def test_pipeline_highlights_keeps_malformed_and_unknown_runs_generic() -> None:
     malformed_service = _ReadService(_ProjectionResult({"status": "ready", "items": []}))
     malformed_handler = _handler(authorized=True, service=malformed_service)
@@ -105,6 +166,16 @@ async def test_pipeline_highlights_keeps_malformed_and_unknown_runs_generic() ->
     assert malformed is not None
     assert malformed.status_code == 404
     assert malformed.body == b"API route not found"
+    assert malformed_service.calls == []
+
+    bare = await malformed_handler._dispatch_pipeline_highlight_routes(
+        _request(),
+        "/api/pipeline/runs/0123456789abcdef0123456789abcdef/highlights",
+    )
+
+    assert bare is not None
+    assert bare.status_code == 404
+    assert bare.body == b"API route not found"
     assert malformed_service.calls == []
 
     unknown_service = _ReadService(error=RuntimeError("protected source receipt"))
@@ -165,4 +236,43 @@ def test_gateway_composition_reuses_the_injected_read_service_without_calling_it
 
     assert gateway.pipeline_highlight_read_service is service
     assert gateway.http.pipeline_highlight_read_service is service
+    assert service.calls == []
+
+
+def test_channel_manager_composes_the_read_service_once_for_the_webui_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin = load_channel_package("websocket")
+    assert plugin is not None
+    monkeypatch.setattr(
+        "auto_cut_bot.channels.registry.discover_plugins",
+        lambda: {"websocket": plugin},
+    )
+    service = _ReadService(_ProjectionResult({"status": "ready", "items": []}))
+    compose_calls: list[None] = []
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.composition.compose_pipeline_highlight_read_service_from_environment",
+        lambda: compose_calls.append(None) or service,
+    )
+    config = Config.model_validate({
+        "channels": {
+            "websocket": {
+                "enabled": True,
+                "allowFrom": ["*"],
+                "websocketRequiresToken": False,
+            }
+        }
+    })
+
+    manager = ChannelManager(
+        config,
+        MessageBus(),
+        config_path=tmp_path / "config.json",
+        webui_static_dist=False,
+    )
+
+    channel = manager.channels["websocket"]
+    assert channel.gateway.pipeline_highlight_read_service is service
+    assert compose_calls == [None]
     assert service.calls == []

@@ -42,6 +42,7 @@ from auto_cut_bot.utils.restart import (
 
 if TYPE_CHECKING:
     from auto_cut_bot.cron.service import CronService
+    from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
     from auto_cut_bot.session.manager import SessionManager
     from auto_cut_bot.triggers.local_store import LocalTriggerStore
 
@@ -104,6 +105,7 @@ class ChannelManager:
         webui_mcp_runtime_status: Callable[[], Mapping[str, str]] | None = None,
         webui_mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         webui_skill_state_action: Callable[[set[str]], None] | None = None,
+        webui_pipeline_highlight_read_service: PipelineHighlightReadService | None = None,
         config_path: Path | None = None,
     ):
         if config_path is None:
@@ -126,6 +128,15 @@ class ChannelManager:
         self._webui_mcp_runtime_status = webui_mcp_runtime_status
         self._webui_mcp_reload = webui_mcp_reload
         self._webui_skill_state_action = webui_skill_state_action
+        if webui_pipeline_highlight_read_service is None:
+            from auto_cut_bot.pipeline.runtime.composition import (
+                compose_pipeline_highlight_read_service_from_environment,
+            )
+
+            webui_pipeline_highlight_read_service = (
+                compose_pipeline_highlight_read_service_from_environment()
+            )
+        self._webui_pipeline_highlight_read_service = webui_pipeline_highlight_read_service
         self.channels: dict[str, BaseChannel] = {}
         self._channel_owners: dict[str, str] = {}
         self._channel_runtime_specs: dict[str, tuple[str, str]] = {}
@@ -197,6 +208,7 @@ class ChannelManager:
                 mcp_runtime_status=self._webui_mcp_runtime_status,
                 mcp_reload=self._webui_mcp_reload,
                 skill_state_action=self._webui_skill_state_action,
+                pipeline_highlight_read_service=self._webui_pipeline_highlight_read_service,
                 logger=logger,
             )
             kwargs["gateway"] = gateway

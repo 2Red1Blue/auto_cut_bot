@@ -721,7 +721,7 @@ class GatewayHTTPHandler:
         if getattr(request, "method", "GET").upper() != "GET":
             return None
         match = re.fullmatch(
-            r"/api/pipeline/runs/([0-9a-f]{32})/highlights",
+            r"/api/pipeline/runs/(pipeline_run_[0-9a-f]{32})/highlights",
             got,
         )
         if match is None:

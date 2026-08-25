@@ -6,6 +6,7 @@ from .composition import (
     PipelineRuntimeConfigurationError,
     PipelineRuntimePort,
     SourceCatalogEntry,
+    compose_pipeline_highlight_read_service_from_environment,
     compose_pipeline_runtime_from_environment,
 )
 from .errors import (
@@ -95,5 +96,6 @@ __all__ = (
     "StaleRunVersionError",
     "validate_idempotency_key",
     "validate_run_id",
+    "compose_pipeline_highlight_read_service_from_environment",
     "compose_pipeline_runtime_from_environment",
 )
