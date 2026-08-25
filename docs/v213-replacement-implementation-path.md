@@ -128,14 +128,20 @@ implementation defect or test/fixture gap.
 
 If one root cause affects two or more modules, do not patch its consumers.
 Change the owning contract/model once, migrate every consumer and add one
-cross-layer regression test. A temporary import re-export may exist for one
-release, but it may not transform old requests, create authority or call an old
-builder.
+cross-layer regression test. Compatibility re-exports, request translation,
+dual writes and calls to an old builder are not allowed on this migration
+because v2 never produced executable production data.
 
-The old Stage 1-3 path is deleted only after the replacement passes exact Store
-tamper tests, PostgreSQL restart/replay, Pipeline/Agent conformance and one real
-Doubao episode. Runtime cutover and deletion occur in the same migration wave,
-so two semantic authorities never coexist.
+The unused old Stage 1-3 and fixture authority are removed at the v3 contract
+cutover. Until the replacement passes exact Store tamper tests, PostgreSQL
+restart/replay, Pipeline/Agent conformance and one real Doubao episode, the
+semantic pipeline remains explicitly fail-closed. This temporary lack of an
+admitted semantic path is preferable to two coexisting authorities.
+
+Source/Window canonical decoding is owned by Kernel. Store and both runtimes
+consume that decoder; Kernel must never import an application runtime to
+reconstruct committed evidence. Any repeated decoder discovered in an app is
+migrated to the Kernel owner and removed from the app in the same change.
 
 ## Required acceptance gates
 

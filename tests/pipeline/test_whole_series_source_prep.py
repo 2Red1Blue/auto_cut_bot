@@ -13,6 +13,7 @@ from autocut_kernel.store import BlobRef, Job
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     SeriesCensusError,
+    SourceOperationPolicy,
     WholeSeriesIdentityPreparer,
     census_series_sources,
 )
@@ -27,6 +28,20 @@ def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _policy(
+    expected_source_count: int,
+    *,
+    authorization_id: str = "authority",
+    series_id: str = "series",
+) -> SourceOperationPolicy:
+    return SourceOperationPolicy(
+        authorization_id,
+        series_id,
+        expected_source_count,
+        ("semantic_analysis", "render_source"),
+    )
+
+
 def _root(tmp_path: Path, *, count: int) -> AuthorizedSeriesSourceRoot:
     source_root = tmp_path / "videos"
     source_root.mkdir()
@@ -34,9 +49,11 @@ def _root(tmp_path: Path, *, count: int) -> AuthorizedSeriesSourceRoot:
         (source_root / f"episode-{number:02d}.mp4").write_bytes(f"episode-{number}".encode())
     return AuthorizedSeriesSourceRoot(
         root=source_root.resolve(),
-        authorization_id="fixture-authority-v1",
-        series_id="fixture-series",
-        expected_source_count=count,
+        policy=_policy(
+            count,
+            authorization_id="fixture-authority-v1",
+            series_id="fixture-series",
+        ),
     )
 
 
@@ -73,9 +90,11 @@ def test_authorized_real_corpus_has_stable_45_source_census() -> None:
     census = census_series_sources(
         AuthorizedSeriesSourceRoot(
             _AUTHORIZED_REAL_ROOT.resolve(),
-            "when-lucifer-kneels-authorized-v1",
-            "when-lucifer-kneels",
-            45,
+            _policy(
+                45,
+                authorization_id="when-lucifer-kneels-authorized-v1",
+                series_id="when-lucifer-kneels",
+            ),
         )
     )
 
@@ -84,7 +103,7 @@ def test_authorized_real_corpus_has_stable_45_source_census() -> None:
     assert census.sources[-1].relative_path == "ep45.mp4"
     assert sum(item.byte_size for item in census.sources) == 586_394_631
     assert census.canonical_hash == (
-        "sha256:0bd97c6224df57d6649431d40c23aba27299b4c227fef66fda27edc88caaa0b8"
+        "sha256:d802cf69644c181e21311e688b7df2b2f329af3ee2aafcba436fd1a86fe6c7c1"
     )
 
 
@@ -110,24 +129,20 @@ def test_census_rejects_symlinked_ancestor_and_hardlinked_source(tmp_path: Path)
     alias = tmp_path / "alias"
     alias.symlink_to(real_parent, target_is_directory=True)
     with pytest.raises(SeriesCensusError, match="symbolic path component"):
-        census_series_sources(
-            AuthorizedSeriesSourceRoot(alias / "videos", "authority", "series", 1)
-        )
+        census_series_sources(AuthorizedSeriesSourceRoot(alias / "videos", _policy(1)))
 
     alias.unlink()
     outside = tmp_path / "outside.mp4"
     os.link(videos / "episode.mp4", outside)
     with pytest.raises(SeriesCensusError, match="hard links"):
-        census_series_sources(
-            AuthorizedSeriesSourceRoot(videos.resolve(), "authority", "series", 1)
-        )
+        census_series_sources(AuthorizedSeriesSourceRoot(videos.resolve(), _policy(1)))
 
 
 def test_census_rejects_mp4_fifo_without_blocking_for_a_writer(tmp_path: Path) -> None:
     videos = tmp_path / "videos"
     videos.mkdir()
     os.mkfifo(videos / "blocked.mp4")
-    authorized = AuthorizedSeriesSourceRoot(videos.resolve(), "authority", "series", 1)
+    authorized = AuthorizedSeriesSourceRoot(videos.resolve(), _policy(1))
 
     started = time.monotonic()
     with pytest.raises(SeriesCensusError, match="regular file"):
@@ -171,16 +186,14 @@ def test_nested_census_is_globally_relative_path_sorted(tmp_path: Path) -> None:
     (videos / "a.mp4").write_bytes(b"root-a")
     (videos / "a" / "z.mp4").write_bytes(b"nested-z")
 
-    census = census_series_sources(
-        AuthorizedSeriesSourceRoot(videos.resolve(), "authority", "series", 2)
-    )
+    census = census_series_sources(AuthorizedSeriesSourceRoot(videos.resolve(), _policy(2)))
 
     assert [item.relative_path for item in census.sources] == ["a.mp4", "a/z.mp4"]
 
 
 def test_authorized_root_must_be_explicit_absolute_directory(tmp_path: Path) -> None:
     with pytest.raises(SeriesCensusError, match="absolute"):
-        AuthorizedSeriesSourceRoot(Path("videos"), "authority", "series", 1)
+        AuthorizedSeriesSourceRoot(Path("videos"), _policy(1))
 
 
 class _BlobStore:
@@ -279,7 +292,7 @@ def test_probe_sample_reads_ignore_authorized_ancestor_swap(tmp_path: Path) -> N
     videos.mkdir(parents=True)
     source = videos / "episode.mp4"
     source.write_bytes(b"original")
-    authorized = AuthorizedSeriesSourceRoot(videos.resolve(), "authority", "series", 1)
+    authorized = AuthorizedSeriesSourceRoot(videos.resolve(), _policy(1))
     saved_parent = tmp_path / "saved-parent"
     attacker_parent = tmp_path / "attacker-parent"
     (attacker_parent / "videos").mkdir(parents=True)

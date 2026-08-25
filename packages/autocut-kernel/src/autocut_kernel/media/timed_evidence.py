@@ -6,7 +6,11 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from fractions import Fraction
 
-from ..vlm.models import VlmObservation
+from ..vlm.models import (
+    VlmCandidateHypothesis,
+    VlmSemanticPack,
+    derive_vlm_global_id,
+)
 from ..vlm.window import WindowManifest
 from .root_evidence import (
     AudioSampleBoundarySet,
@@ -153,7 +157,7 @@ class CandidateEvidenceWindow(CanonicalEvidence):
     source_clock_id: str
     source_time_base: TimeBase
     source_range: TickRange
-    vlm_observation_sha256: str
+    vlm_candidate_sha256: str
     vlm_request_identity_sha256: str
     window_manifest_sha256: str
     frame_pts_index_set_sha256: str
@@ -177,7 +181,7 @@ class CandidateEvidenceWindow(CanonicalEvidence):
             raise TimedEvidenceValidationError(
                 "candidate current_range must contain the coarse VLM range"
             )
-        _sha(self.vlm_observation_sha256, "candidate.vlm_observation_sha256")
+        _sha(self.vlm_candidate_sha256, "candidate.vlm_candidate_sha256")
         _sha(
             self.vlm_request_identity_sha256,
             "candidate.vlm_request_identity_sha256",
@@ -247,21 +251,17 @@ class CandidateWindowAssessment(CanonicalEvidence):
 
 def _can_expand(window: CandidateEvidenceWindow, assessment: CandidateWindowAssessment) -> bool:
     return (
-        assessment.expand_left
-        and window.current_range.start_pts > window.source_range.start_pts
-    ) or (
-        assessment.expand_right
-        and window.current_range.end_pts < window.source_range.end_pts
-    )
+        assessment.expand_left and window.current_range.start_pts > window.source_range.start_pts
+    ) or (assessment.expand_right and window.current_range.end_pts < window.source_range.end_pts)
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateEvidenceWindowPlan(CanonicalEvidence):
-    """Complete incremental expansion trace for one VLM observation."""
+    """Complete incremental expansion trace for one VLM candidate hypothesis."""
 
     policy_sha256: str
     max_expansion_count: int
-    vlm_observation_sha256: str
+    vlm_candidate_sha256: str
     window_manifest_sha256: str
     windows: tuple[CandidateEvidenceWindow, ...]
     assessments: tuple[CandidateWindowAssessment, ...]
@@ -270,7 +270,7 @@ class CandidateEvidenceWindowPlan(CanonicalEvidence):
     def __post_init__(self) -> None:
         _sha(self.policy_sha256, "plan.policy_sha256")
         _tick(self.max_expansion_count, "plan.max_expansion_count")
-        _sha(self.vlm_observation_sha256, "plan.vlm_observation_sha256")
+        _sha(self.vlm_candidate_sha256, "plan.vlm_candidate_sha256")
         _sha(self.window_manifest_sha256, "plan.window_manifest_sha256")
         windows = tuple(self.windows)
         assessments = tuple(self.assessments)
@@ -288,7 +288,7 @@ class CandidateEvidenceWindowPlan(CanonicalEvidence):
             )
         first = windows[0]
         if any(
-            item.vlm_observation_sha256 != self.vlm_observation_sha256
+            item.vlm_candidate_sha256 != self.vlm_candidate_sha256
             or item.window_manifest_sha256 != self.window_manifest_sha256
             or item.source_id != first.source_id
             or item.source_sha256 != first.source_sha256
@@ -314,9 +314,7 @@ class CandidateEvidenceWindowPlan(CanonicalEvidence):
             assessment.candidate_window_sha256 != windows[position].canonical_hash
             for position, assessment in enumerate(assessments)
         ):
-            raise TimedEvidenceValidationError(
-                "each assessment must bind its exact plan window"
-            )
+            raise TimedEvidenceValidationError("each assessment must bind its exact plan window")
         if any(not item.needs_expansion for item in assessments[: len(windows) - 1]):
             raise TimedEvidenceValidationError(
                 "only an observed boundary/truncation may create another window"
@@ -381,7 +379,9 @@ def _coverage_contains_range(
     candidate_origin: int,
     coverage_origin: int,
 ) -> bool:
-    candidate_start = _physical_tick(candidate_range.start_pts, candidate_origin, candidate_time_base)
+    candidate_start = _physical_tick(
+        candidate_range.start_pts, candidate_origin, candidate_time_base
+    )
     candidate_end = _physical_tick(candidate_range.end_pts, candidate_origin, candidate_time_base)
     coverage_start = _physical_tick(coverage.in_tick, coverage_origin, coverage.time_base)
     coverage_end = _physical_tick(coverage.out_tick, coverage_origin, coverage.time_base)
@@ -406,9 +406,7 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
 
     def __post_init__(self) -> None:
         if type(self.candidate_window) is not CandidateEvidenceWindow:  # noqa: E721
-            raise TimedEvidenceValidationError(
-                "candidate_window must be a CandidateEvidenceWindow"
-            )
+            raise TimedEvidenceValidationError("candidate_window must be a CandidateEvidenceWindow")
         if type(self.window_assessment) is not CandidateWindowAssessment:  # noqa: E721
             raise TimedEvidenceValidationError(
                 "window_assessment must be a CandidateWindowAssessment"
@@ -429,9 +427,7 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
         )
         for value, expected_type, field_name in expected_types:
             if type(value) is not expected_type:  # noqa: E721
-                raise TimedEvidenceValidationError(
-                    f"{field_name} has an invalid evidence type"
-                )
+                raise TimedEvidenceValidationError(f"{field_name} has an invalid evidence type")
         window = self.candidate_window
         frame_key = _context_key(self.frame_pts_index)
         if frame_key != (
@@ -451,18 +447,19 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
             self.subtitle_cues,
         )
         if any(_context_key(item) != frame_key for item in video_sets):
-            raise TimedEvidenceValidationError(
-                "video evidence sets must share one source clock"
-            )
+            raise TimedEvidenceValidationError("video evidence sets must share one source clock")
         audio_key = _context_key(self.transcript)
         if any(
             _context_key(item) != audio_key
             for item in (self.speech_activity, self.audio_sample_boundaries)
         ):
-            raise TimedEvidenceValidationError(
-                "audio evidence sets must share one source clock"
-            )
-        for evidence in (*video_sets, self.transcript, self.speech_activity, self.audio_sample_boundaries):
+            raise TimedEvidenceValidationError("audio evidence sets must share one source clock")
+        for evidence in (
+            *video_sets,
+            self.transcript,
+            self.speech_activity,
+            self.audio_sample_boundaries,
+        ):
             if (
                 evidence.context.source_id != window.source_id
                 or evidence.context.source_sha256 != window.source_sha256
@@ -493,9 +490,7 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
                 "scene boundaries do not bind the exact frame PTS set"
             )
         if not self.frame_pts_index.pts_index.contains(window.current_range.start_pts):
-            raise TimedEvidenceValidationError(
-                "candidate start must be a decoded frame PTS"
-            )
+            raise TimedEvidenceValidationError("candidate start must be a decoded frame PTS")
         if (
             not self.frame_pts_index.pts_index.contains(window.current_range.end_pts)
             and window.current_range.end_pts != self.frame_pts_index.context.end_tick
@@ -579,24 +574,37 @@ def _snap_outward(
 
 
 def _validate_plan_inputs(
-    observation: VlmObservation,
+    candidate: VlmCandidateHypothesis,
+    semantic_pack: VlmSemanticPack,
     window_manifest: WindowManifest,
     frame_pts_index: FramePtsIndexSet,
     policy: AdaptiveEvidenceWindowPolicy,
 ) -> TickRange:
-    if type(observation) is not VlmObservation:  # noqa: E721
-        raise TimedEvidenceValidationError("observation must be a VlmObservation")
+    if type(candidate) is not VlmCandidateHypothesis:  # noqa: E721
+        raise TimedEvidenceValidationError("candidate must be a VlmCandidateHypothesis")
+    if type(semantic_pack) is not VlmSemanticPack:  # noqa: E721
+        raise TimedEvidenceValidationError("semantic_pack must be a VlmSemanticPack")
     if type(window_manifest) is not WindowManifest:  # noqa: E721
         raise TimedEvidenceValidationError("window_manifest must be a WindowManifest")
     if type(frame_pts_index) is not FramePtsIndexSet:  # noqa: E721
         raise TimedEvidenceValidationError("frame_pts_index must be a FramePtsIndexSet")
     if type(policy) is not AdaptiveEvidenceWindowPolicy:  # noqa: E721
+        raise TimedEvidenceValidationError("policy must be an AdaptiveEvidenceWindowPolicy")
+    if semantic_pack.window_manifest_sha256 != window_manifest.canonical_hash:
         raise TimedEvidenceValidationError(
-            "policy must be an AdaptiveEvidenceWindowPolicy"
+            "semantic pack does not bind the supplied window manifest"
         )
-    if observation.window_manifest_sha256 != window_manifest.canonical_hash:
+    if candidate not in semantic_pack.candidate_hypotheses:
         raise TimedEvidenceValidationError(
-            "observation does not bind the supplied window manifest"
+            "candidate is not a member of the supplied semantic pack"
+        )
+    if candidate.candidate_id != derive_vlm_global_id(
+        "candidate",
+        candidate.local_candidate_id,
+        semantic_pack.request_identity_sha256,
+    ):
+        raise TimedEvidenceValidationError(
+            "candidate does not bind the semantic pack request identity"
         )
     if window_manifest.frame_pts_index_set_sha256 != frame_pts_index.canonical_hash:
         raise TimedEvidenceValidationError(
@@ -612,29 +620,24 @@ def _validate_plan_inputs(
         raise TimedEvidenceValidationError(
             "frame PTS source clock does not match the window manifest"
         )
-    interval = observation.source_interval
+    interval = candidate.support.source_interval
     if interval.source_time_base != window_manifest.source_time_base:
-        raise TimedEvidenceValidationError(
-            "observation and window manifest clocks disagree"
-        )
+        raise TimedEvidenceValidationError("candidate and window manifest clocks disagree")
     if policy.time_base != window_manifest.source_time_base:
-        raise TimedEvidenceValidationError(
-            "policy time base does not match the video clock"
-        )
+        raise TimedEvidenceValidationError("policy time base does not match the video clock")
     source_range = TickRange(frame_context.origin_tick, frame_context.end_tick)
     if not source_range.contains(window_manifest.source_range):
         raise TimedEvidenceValidationError(
             "VLM window range must stay within the full source extent"
         )
     if not window_manifest.source_range.contains(interval.coarse_range):
-        raise TimedEvidenceValidationError(
-            "observation coarse range is outside its VLM window"
-        )
+        raise TimedEvidenceValidationError("candidate coarse range is outside its VLM window")
     return source_range
 
 
 def plan_candidate_evidence_window(
-    observation: VlmObservation,
+    candidate: VlmCandidateHypothesis,
+    semantic_pack: VlmSemanticPack,
     window_manifest: WindowManifest,
     frame_pts_index: FramePtsIndexSet,
     policy: AdaptiveEvidenceWindowPolicy,
@@ -642,9 +645,9 @@ def plan_candidate_evidence_window(
     """Create only the initial extraction request; real evidence drives expansion."""
 
     source_range = _validate_plan_inputs(
-        observation, window_manifest, frame_pts_index, policy
+        candidate, semantic_pack, window_manifest, frame_pts_index, policy
     )
-    interval = observation.source_interval
+    interval = candidate.support.source_interval
     error = interval.mapping_error_bound_source_pts
     desired_start = max(
         source_range.start_pts,
@@ -654,18 +657,16 @@ def plan_candidate_evidence_window(
         source_range.end_pts,
         interval.coarse_range.end_pts + error + policy.initial_right_expansion_pts,
     )
-    current = _snap_outward(
-        frame_pts_index, source_range, desired_start, desired_end
-    )
-    observation_hash = canonical_sha256(observation.to_mapping())
+    current = _snap_outward(frame_pts_index, source_range, desired_start, desired_end)
+    candidate_hash = canonical_sha256(candidate.to_mapping())
     initial = CandidateEvidenceWindow(
         source_id=window_manifest.source_id,
         source_sha256=window_manifest.source_sha256,
         source_clock_id=window_manifest.source_clock_id,
         source_time_base=window_manifest.source_time_base,
         source_range=source_range,
-        vlm_observation_sha256=observation_hash,
-        vlm_request_identity_sha256=observation.request_identity_sha256,
+        vlm_candidate_sha256=candidate_hash,
+        vlm_request_identity_sha256=semantic_pack.request_identity_sha256,
         window_manifest_sha256=window_manifest.canonical_hash,
         frame_pts_index_set_sha256=frame_pts_index.canonical_hash,
         coarse_range=interval.coarse_range,
@@ -675,7 +676,7 @@ def plan_candidate_evidence_window(
     return CandidateEvidenceWindowPlan(
         policy_sha256=policy.canonical_hash,
         max_expansion_count=policy.max_expansion_count,
-        vlm_observation_sha256=observation_hash,
+        vlm_candidate_sha256=candidate_hash,
         window_manifest_sha256=window_manifest.canonical_hash,
         windows=(initial,),
         assessments=(),
@@ -694,26 +695,20 @@ def advance_candidate_evidence_window(
     if type(plan) is not CandidateEvidenceWindowPlan:  # noqa: E721
         raise TimedEvidenceValidationError("plan must be a CandidateEvidenceWindowPlan")
     if type(assessment) is not CandidateWindowAssessment:  # noqa: E721
-        raise TimedEvidenceValidationError(
-            "assessment must be a CandidateWindowAssessment"
-        )
+        raise TimedEvidenceValidationError("assessment must be a CandidateWindowAssessment")
     if plan.outcome is not CandidateWindowOutcome.AWAITING_EVIDENCE:
         raise TimedEvidenceValidationError("only an awaiting plan may advance")
     if type(frame_pts_index) is not FramePtsIndexSet:  # noqa: E721
         raise TimedEvidenceValidationError("frame_pts_index must be a FramePtsIndexSet")
     if type(policy) is not AdaptiveEvidenceWindowPolicy:  # noqa: E721
-        raise TimedEvidenceValidationError(
-            "policy must be an AdaptiveEvidenceWindowPolicy"
-        )
+        raise TimedEvidenceValidationError("policy must be an AdaptiveEvidenceWindowPolicy")
     if (
         plan.policy_sha256 != policy.canonical_hash
         or plan.max_expansion_count != policy.max_expansion_count
         or plan.final_window.frame_pts_index_set_sha256 != frame_pts_index.canonical_hash
         or assessment.candidate_window_sha256 != plan.final_window.canonical_hash
     ):
-        raise TimedEvidenceValidationError(
-            "advance inputs do not match the exact awaiting plan"
-        )
+        raise TimedEvidenceValidationError("advance inputs do not match the exact awaiting plan")
     assessments = (*plan.assessments, assessment)
     if assessment.closed:
         return replace(
@@ -728,9 +723,8 @@ def advance_candidate_evidence_window(
             outcome=CandidateWindowOutcome.INDETERMINATE,
         )
     current = plan.final_window
-    if (
-        current.expansion_ordinal >= policy.max_expansion_count
-        or not _can_expand(current, assessment)
+    if current.expansion_ordinal >= policy.max_expansion_count or not _can_expand(
+        current, assessment
     ):
         return replace(
             plan,

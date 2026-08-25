@@ -41,14 +41,6 @@ class JobProfileMismatchError(RuntimeStoreError):
     """A durable Job exists, but belongs to a different runtime profile."""
 
 
-class VlmObservationUnavailableError(RuntimeStoreError):
-    """No exact committed VLM observation set is available for a child Command."""
-
-
-class VlmObservationIntegrityError(RuntimeStoreError):
-    """A committed VLM observation set violates its immutable provenance contract."""
-
-
 class SemanticInputUnavailableError(RuntimeStoreError):
     """An exact committed Source/Window/VLM input identity is unavailable."""
 
@@ -79,11 +71,3 @@ class MediaOutputsUnavailableError(RuntimeStoreError):
 
 class MediaOutputsIntegrityError(RuntimeStoreError):
     """A succeeded media-output pair violates its shared immutable provenance."""
-
-
-class SemanticResolutionProofUnavailableError(RuntimeStoreError):
-    """No exact succeeded semantic-resolution proof is available for a Job."""
-
-
-class SemanticResolutionProofIntegrityError(RuntimeStoreError):
-    """A semantic-resolution proof violates its immutable ArtifactSet contract."""

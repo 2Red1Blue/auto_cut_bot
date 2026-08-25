@@ -11,25 +11,19 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 from uuid import UUID
 
 from autocut_kernel.media import (
-    AudioBoundaryMethod,
-    AudioSampleBoundary,
-    AudioSampleBoundarySet,
-    AudioSourceOutcome,
-    Coverage,
-    CoverageOutcome,
-    EvidenceContext,
     FramePtsIndexSet,
-    MediaKind,
-    PTSIndex,
-    TickRange,
-    TimeBase,
 )
-from autocut_kernel.media.ffprobe_port import ProbeResult
-from autocut_kernel.media.types import ToolEvidence, VideoStreamEvidence, canonical_sha256
+from autocut_kernel.media.types import canonical_sha256
+from autocut_kernel.source_manifest import (
+    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
+    SourceManifestDecodeError,
+    decode_source_manifest,
+    identity_frame_index,
+)
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
@@ -50,12 +44,11 @@ from autocut_kernel.vlm import (
     WindowManifestSet,
     WindowProxyBlobRef,
 )
-from autocut_kernel.vlm.window import ProxyTimelineMap, ProxyTimelineSegment
+from autocut_kernel.vlm.window import ProxyTimelineMap
 
 from .census import snapshot_series_sources
 from .models import AuthorizedSeriesSourceRoot, SeriesCensusError, SeriesSourceCensus
 from .probe import (
-    IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     FFprobeSourceMediaPort,
     SourceMediaProbe,
 )
@@ -72,12 +65,6 @@ class FrameSampleToolError(RuntimeError):
     """FFmpeg could not produce a deterministic frame sample."""
 
     code = "FRAME_SAMPLE_TOOL_FAILED"
-
-
-class SourceManifestDecodeError(SeriesCensusError):
-    """A committed source manifest cannot be reconstructed exactly."""
-
-    code = "SOURCE_MANIFEST_INVALID"
 
 
 class SourceProbePort(Protocol):
@@ -500,14 +487,9 @@ class PrepareWholeSeriesSourcesCommand:
             artifact_scope=request.artifact_scope,
             artifact_revision=request.artifact_revision,
         )
-        census = prepared.census
-        if (
-            census.authorization_id != request.source_root.authorization_id
-            or census.series_id != request.source_root.series_id
-            or len(census.sources) != request.source_root.expected_source_count
-        ):
+        if prepared.census.policy != request.source_root.policy:
             raise SourceManifestDecodeError(
-                "replayed source manifest does not match the authorized series identity"
+                "replayed source manifest does not match the exact operation policy"
             )
         artifact = _artifact(request, prepared.to_mapping())
         return PrepareWholeSeriesSourcesResult(outcome, prepared, (artifact,))
@@ -521,7 +503,7 @@ def read_persisted_prepared_sources(
     artifact_scope: ArtifactScope,
     artifact_revision: int,
 ) -> PreparedSeriesSources:
-    """Compatibility reader returning only the strictly decoded prepared value."""
+    """Return the source-prep projection from the Kernel-owned strict decoder."""
 
     return read_persisted_prepared_sources_bundle(
         store,
@@ -641,568 +623,60 @@ def _identity_frame_index(
     probe: SourceMediaProbe,
     policy: str,
 ) -> FramePtsIndexSet:
-    stream = probe.video_probe.video_stream
-    clock_id = f"video-stream-{stream.stream_index}"
-    context = EvidenceContext(
-        probe.source.source_id,
-        probe.source.content_sha256,
-        MediaKind.VIDEO,
-        clock_id,
-        stream.time_base,
-        probe.video_range.start_pts,
-        probe.video_range.duration_pts,
-        "identity-source-window-v2",
-        policy,
-    )
-    coverage = Coverage(
-        probe.source.source_id,
-        probe.source.content_sha256,
-        clock_id,
-        stream.time_base,
-        probe.video_range.start_pts,
-        probe.video_range.end_pts,
-        CoverageOutcome.COMPLETE,
-    )
-    return FramePtsIndexSet(
-        "identity-source-frame-pts-v2",
-        context,
-        coverage,
-        probe.video_probe.pts_index,
-        canonical_sha256(list(probe.video_probe.pts_index.ticks)),
-    )
+    if policy != IDENTITY_FRAME_GENERATION_POLICY_SHA256:
+        raise ValueError("identity frame policy is not canonical")
+    return identity_frame_index(probe)
 
 
 def _decode_prepared_sources(
     persisted: PersistedWholeSeriesSourceManifest,
 ) -> PreparedSeriesSources:
-    try:
-        raw: object = json.loads(
-            persisted.payload_json,
-            parse_constant=lambda value: (_ for _ in ()).throw(
-                ValueError(f"invalid JSON constant {value}")
-            ),
-        )
-        root = _closed_mapping(
-            raw,
-            {"census", "census_sha256", "completion_policy", "episodes"},
-            "source manifest",
-        )
-        census = _decode_census(root["census"])
-        if (
-            _text_value(root["census_sha256"], "census_sha256")
-            != census.canonical_hash
-            or root["completion_policy"] != census.completion_policy
-        ):
-            raise ValueError("source manifest census certificate is invalid")
-        episodes_raw = _array(root["episodes"], "episodes")
-        if len(episodes_raw) != len(census.sources) or len(episodes_raw) != len(
-            persisted.proxy_blobs
-        ):
-            raise ValueError("source manifest episode count is inconsistent")
-        episodes = tuple(
-            _decode_episode(raw_episode, source, blob)
-            for raw_episode, source, blob in zip(
-                episodes_raw,
-                census.sources,
-                persisted.proxy_blobs,
-                strict=True,
-            )
-        )
-        prepared = PreparedSeriesSources(census, episodes)
-        if prepared.to_mapping() != root:
-            raise ValueError("source manifest is not the canonical prepared mapping")
-        return prepared
-    except SourceManifestDecodeError:
-        raise
-    except (KeyError, TypeError, ValueError) as error:
-        raise SourceManifestDecodeError(
-            "committed source manifest failed strict decoding"
-        ) from error
+    """Adapt the Kernel-owned closed decoder into source-prep domain values."""
 
-
-def _decode_census(value: object) -> SeriesSourceCensus:
     from .models import SeriesSource
 
-    raw = _closed_mapping(
-        value,
-        {"authorization_id", "completion_policy", "series_id", "sources"},
-        "census",
-    )
+    decoded = decode_source_manifest(persisted.payload_json, persisted.proxy_blobs)
     sources = tuple(
         SeriesSource(
-            _text_value(item["relative_path"], "source.relative_path"),
-            _text_value(item["source_id"], "source.source_id"),
-            _text_value(item["content_sha256"], "source.content_sha256"),
-            _int_value(item["byte_size"], "source.byte_size"),
+            source.relative_path,
+            source.source_id,
+            source.content_sha256,
+            source.byte_size,
         )
-        for item in (
-            _closed_mapping(
-                entry,
-                {"relative_path", "source_id", "content_sha256", "byte_size"},
-                "source",
-            )
-            for entry in _array(raw["sources"], "census.sources")
-        )
+        for source in decoded.census.sources
     )
     census = SeriesSourceCensus(
-        _text_value(raw["authorization_id"], "census.authorization_id"),
-        _text_value(raw["series_id"], "census.series_id"),
-        _text_value(raw["completion_policy"], "census.completion_policy"),
+        decoded.census.policy,
+        decoded.census.completion_policy,
         sources,
     )
-    if census.to_mapping() != raw:
-        raise ValueError("census is not canonical")
-    return census
-
-
-def _decode_episode(
-    value: object,
-    source: object,
-    durable_blob: BlobRef,
-) -> PreparedSourceEpisode:
-    from .models import SeriesSource
-
-    if type(source) is not SeriesSource:  # noqa: E721
-        raise ValueError("episode source is invalid")
-    raw = _closed_mapping(
-        value,
-        {"media_probe", "proxy_blob", "window_manifest", "window_manifest_set"},
-        "episode",
-    )
-    declared_blob = _decode_blob(raw["proxy_blob"])
-    if declared_blob != durable_blob:
-        raise ValueError("episode proxy BlobRef does not match durable storage")
-    probe = _decode_probe(raw["media_probe"], source)
-    manifest = _decode_manifest(raw["window_manifest"], probe, durable_blob)
-    manifest_set = _decode_manifest_set(raw["window_manifest_set"], manifest)
-    return PreparedSourceEpisode(probe, durable_blob, manifest, manifest_set)
-
-
-def _decode_probe(value: object, source: object) -> SourceMediaProbe:
-    from .models import SeriesSource
-
-    if type(source) is not SeriesSource:  # noqa: E721
-        raise ValueError("probe source is invalid")
-    raw = _closed_mapping(
-        value,
-        {
-            "audio_sample_boundaries",
-            "decoded_video_frame_pts",
-            "ffprobe",
-            "source",
-            "video_stream",
-        },
-        "media_probe",
-    )
-    if raw["source"] != source.to_mapping():
-        raise ValueError("media probe source identity is inconsistent")
-    video = _closed_mapping(
-        raw["video_stream"],
-        {
-            "codec_name",
-            "duration_tick",
-            "end_tick",
-            "height",
-            "index",
-            "start_tick",
-            "time_base",
-            "width",
-        },
-        "video_stream",
-    )
-    time_base = _decode_time_base(video["time_base"], "video.time_base")
-    video_range = TickRange(
-        _int_value(video["start_tick"], "video.start_tick"),
-        _int_value(video["end_tick"], "video.end_tick"),
-    )
-    if _int_value(video["duration_tick"], "video.duration_tick") != video_range.duration_pts:
-        raise ValueError("video duration is inconsistent")
-    tool_raw = _closed_mapping(
-        raw["ffprobe"],
-        {
-            "audio_detector_sha256",
-            "executable",
-            "frame_detector_sha256",
-            "stderr_sha256",
-            "version",
-        },
-        "ffprobe",
-    )
-    if tool_raw["executable"] != "ffprobe":
-        raise ValueError("ffprobe executable identity is not canonical")
-    result = ProbeResult(
-        VideoStreamEvidence(
-            _int_value(video["index"], "video.index"),
-            _text_value(video["codec_name"], "video.codec_name"),
-            _int_value(video["width"], "video.width"),
-            _int_value(video["height"], "video.height"),
-            time_base,
-        ),
-        PTSIndex(
-            tuple(
-                _int_value(item, "decoded_video_frame_pts")
-                for item in _array(
-                    raw["decoded_video_frame_pts"], "decoded_video_frame_pts"
-                )
-            )
-        ),
-        ToolEvidence(
-            _text_value(tool_raw["executable"], "ffprobe.executable"),
-            _text_value(tool_raw["version"], "ffprobe.version"),
-            _text_value(tool_raw["stderr_sha256"], "ffprobe.stderr_sha256"),
-        ),
-    )
-    if any(
-        not video_range.start_pts <= tick < video_range.end_pts
-        for tick in result.pts_index.ticks
-    ):
-        raise ValueError("decoded video PTS is outside the half-open stream range")
-    audio = _decode_audio_boundaries(raw["audio_sample_boundaries"])
-    audio_context = audio.context
-    audio_coverage = audio.coverage
-    if (
-        audio_context.source_id != source.source_id
-        or audio_context.source_sha256 != source.content_sha256
-        or audio_coverage.source_id != source.source_id
-        or audio_coverage.source_sha256 != source.content_sha256
-        or audio_coverage.clock_id != audio_context.clock_id
-        or audio_coverage.time_base != audio_context.time_base
-        or audio_coverage.in_tick != audio_context.origin_tick
-        or audio_coverage.out_tick != audio_context.end_tick
-        or any(
-            point.source_id != source.source_id
-            or point.source_sha256 != source.content_sha256
-            or point.clock_id != audio_context.clock_id
-            or point.time_base != audio_context.time_base
-            or not audio_context.origin_tick <= point.tick <= audio_context.end_tick
-            for point in audio.points
-        )
-    ):
-        raise ValueError("audio evidence is not bound to the episode source clock")
-    probe = SourceMediaProbe(
-        source,
-        result,
-        video_range,
-        audio,
-        _text_value(
-            tool_raw["frame_detector_sha256"],
-            "ffprobe.frame_detector_sha256",
-        ),
-        _text_value(
-            tool_raw["audio_detector_sha256"],
-            "ffprobe.audio_detector_sha256",
-        ),
-    )
-    if probe.to_mapping() != raw:
-        raise ValueError("media probe is not canonical")
-    return probe
-
-
-def _decode_audio_boundaries(value: object) -> AudioSampleBoundarySet:
-    raw = _closed_mapping(
-        value,
-        {
-            "audio_sample_boundary_set_id",
-            "context",
-            "coverage",
-            "points",
-            "source_outcome",
-        },
-        "audio boundaries",
-    )
-    context_raw = _closed_mapping(
-        raw["context"],
-        {
-            "clock_id",
-            "duration_tick",
-            "generation_policy_sha256",
-            "media_kind",
-            "origin_tick",
-            "producer_id",
-            "source_id",
-            "source_sha256",
-            "time_base",
-        },
-        "audio context",
-    )
-    context = EvidenceContext(
-        _text_value(context_raw["source_id"], "audio.context.source_id"),
-        _text_value(context_raw["source_sha256"], "audio.context.source_sha256"),
-        MediaKind(_text_value(context_raw["media_kind"], "audio.context.media_kind")),
-        _text_value(context_raw["clock_id"], "audio.context.clock_id"),
-        _decode_time_base(context_raw["time_base"], "audio.context.time_base"),
-        _int_value(context_raw["origin_tick"], "audio.context.origin_tick"),
-        _int_value(context_raw["duration_tick"], "audio.context.duration_tick"),
-        _text_value(context_raw["producer_id"], "audio.context.producer_id"),
-        _text_value(
-            context_raw["generation_policy_sha256"],
-            "audio.context.generation_policy_sha256",
-        ),
-    )
-    coverage_raw = _closed_mapping(
-        raw["coverage"],
-        {
-            "clock_id",
-            "diagnostics",
-            "in_tick",
-            "out_tick",
-            "outcome",
-            "source_id",
-            "source_sha256",
-            "time_base",
-        },
-        "audio coverage",
-    )
-    if _array(coverage_raw["diagnostics"], "audio.coverage.diagnostics"):
-        raise ValueError("complete source audio coverage cannot contain diagnostics")
-    coverage = Coverage(
-        _text_value(coverage_raw["source_id"], "audio.coverage.source_id"),
-        _text_value(
-            coverage_raw["source_sha256"], "audio.coverage.source_sha256"
-        ),
-        _text_value(coverage_raw["clock_id"], "audio.coverage.clock_id"),
-        _decode_time_base(coverage_raw["time_base"], "audio.coverage.time_base"),
-        _int_value(coverage_raw["in_tick"], "audio.coverage.in_tick"),
-        _int_value(coverage_raw["out_tick"], "audio.coverage.out_tick"),
-        CoverageOutcome(
-            _text_value(coverage_raw["outcome"], "audio.coverage.outcome")
-        ),
-    )
-    points = tuple(
-        AudioSampleBoundary(
-            _text_value(item["boundary_id"], "audio.boundary_id"),
-            _text_value(item["source_id"], "audio.source_id"),
-            _text_value(item["source_sha256"], "audio.source_sha256"),
-            _text_value(item["clock_id"], "audio.clock_id"),
-            _decode_time_base(item["time_base"], "audio.time_base"),
-            _int_value(item["tick"], "audio.tick"),
-            AudioBoundaryMethod(_text_value(item["method"], "audio.method")),
-        )
-        for item in (
-            _closed_mapping(
-                entry,
-                {
-                    "boundary_id",
-                    "clock_id",
-                    "method",
-                    "source_id",
-                    "source_sha256",
-                    "tick",
-                    "time_base",
-                },
-                "audio boundary",
-            )
-            for entry in _array(raw["points"], "audio.points")
-        )
-    )
-    result = AudioSampleBoundarySet(
-        _text_value(
-            raw["audio_sample_boundary_set_id"], "audio_sample_boundary_set_id"
-        ),
-        context,
-        coverage,
-        AudioSourceOutcome(
-            _text_value(raw["source_outcome"], "audio.source_outcome")
-        ),
-        points,
-    )
-    if result.to_mapping() != raw:
-        raise ValueError("audio boundaries are not canonical")
-    return result
-
-
-def _decode_manifest(
-    value: object,
-    probe: SourceMediaProbe,
-    blob: BlobRef,
-) -> WindowManifest:
-    raw = _closed_mapping(
-        value,
-        {
-            "core_range",
-            "frame_pts_index_set_sha256",
-            "frame_samples",
-            "preprocess_policy_sha256",
-            "proxy_blob_ref",
-            "source_clock_id",
-            "source_id",
-            "source_range",
-            "source_sha256",
-            "source_time_base",
-            "stream_index",
-            "timeline_map",
-            "window_sampling_policy_sha256",
-        },
-        "window manifest",
-    )
-    frame_index = _identity_frame_index(probe, _identity_policy())
-    proxy = WindowProxyBlobRef(
-        str(blob.object_id), blob.content_hash, blob.byte_length, blob.media_type
-    )
-    if raw["proxy_blob_ref"] != proxy.to_mapping():
-        raise ValueError("window proxy BlobRef does not match durable storage")
-    samples = tuple(
-        WindowFrameSample(
-            _int_value(item["source_pts"], "frame_sample.source_pts"),
-            _int_value(item["proxy_pts"], "frame_sample.proxy_pts"),
-            _text_value(item["frame_sha256"], "frame_sample.frame_sha256"),
-        )
-        for item in (
-            _closed_mapping(
-                entry,
-                {"frame_sha256", "proxy_pts", "source_pts"},
-                "frame sample",
-            )
-            for entry in _array(raw["frame_samples"], "frame_samples")
-        )
-    )
-    result = WindowManifest(
-        _text_value(raw["source_id"], "window.source_id"),
-        _text_value(raw["source_clock_id"], "window.source_clock_id"),
-        _text_value(raw["source_sha256"], "window.source_sha256"),
-        _int_value(raw["stream_index"], "window.stream_index"),
-        _decode_time_base(raw["source_time_base"], "window.source_time_base"),
-        _decode_range(raw["source_range"], "window.source_range"),
-        _decode_range(raw["core_range"], "window.core_range"),
-        frame_index,
-        proxy,
-        _text_value(
-            raw["preprocess_policy_sha256"], "window.preprocess_policy_sha256"
-        ),
-        _text_value(
-            raw["window_sampling_policy_sha256"],
-            "window.window_sampling_policy_sha256",
-        ),
-        _decode_timeline_map(raw["timeline_map"]),
-        samples,
-    )
-    if result.to_mapping() != raw:
-        raise ValueError("window manifest is not canonical")
-    return result
-
-
-def _decode_manifest_set(value: object, manifest: WindowManifest) -> WindowManifestSet:
-    raw = _closed_mapping(
-        value,
-        {
-            "declared_source_range",
-            "frame_pts_index_set_sha256",
-            "manifest_hashes",
-            "source_clock_id",
-            "source_id",
-            "source_sha256",
-            "source_time_base",
-            "stream_index",
-        },
-        "window manifest set",
-    )
-    result = WindowManifestSet(
-        _text_value(raw["source_id"], "window_set.source_id"),
-        _text_value(raw["source_clock_id"], "window_set.source_clock_id"),
-        _text_value(raw["source_sha256"], "window_set.source_sha256"),
-        _int_value(raw["stream_index"], "window_set.stream_index"),
-        _decode_time_base(raw["source_time_base"], "window_set.source_time_base"),
-        _decode_range(raw["declared_source_range"], "window_set.declared_source_range"),
-        (manifest,),
-    )
-    if result.to_mapping() != raw:
-        raise ValueError("window manifest set is not canonical")
-    return result
-
-
-def _decode_timeline_map(value: object) -> ProxyTimelineMap:
-    raw = _closed_mapping(
-        value,
-        {"certificate_kind", "proxy_time_base", "segments", "source_time_base"},
-        "timeline map",
-    )
-    segments = tuple(
-        ProxyTimelineSegment(
-            _decode_range(item["proxy_range"], "timeline.proxy_range"),
-            _decode_range(item["source_range"], "timeline.source_range"),
-            _int_value(
-                item["max_source_error_pts"], "timeline.max_source_error_pts"
+    episodes = tuple(
+        PreparedSourceEpisode(
+            SourceMediaProbe(
+                source,
+                episode.media_probe.video_probe,
+                episode.media_probe.video_range,
+                episode.media_probe.audio_sample_boundaries,
+                episode.media_probe.frame_detector_sha256,
+                episode.media_probe.audio_detector_sha256,
             ),
+            proxy_blob,
+            episode.manifest,
+            episode.manifest_set,
         )
-        for item in (
-            _closed_mapping(
-                entry,
-                {"max_source_error_pts", "proxy_range", "source_range"},
-                "timeline segment",
-            )
-            for entry in _array(raw["segments"], "timeline.segments")
+        for source, episode, proxy_blob in zip(
+            sources,
+            decoded.episodes,
+            persisted.proxy_blobs,
+            strict=True,
         )
     )
-    result = ProxyTimelineMap(
-        _decode_time_base(raw["proxy_time_base"], "timeline.proxy_time_base"),
-        _decode_time_base(raw["source_time_base"], "timeline.source_time_base"),
-        segments,
-        _text_value(raw["certificate_kind"], "timeline.certificate_kind"),
-    )
-    if result.to_mapping() != raw:
-        raise ValueError("timeline map is not canonical")
-    return result
-
-
-def _decode_blob(value: object) -> BlobRef:
-    raw = _closed_mapping(
-        value,
-        {"byte_length", "content_hash", "media_type", "object_id"},
-        "proxy blob",
-    )
-    return BlobRef(
-        UUID(_text_value(raw["object_id"], "proxy_blob.object_id")),
-        _text_value(raw["content_hash"], "proxy_blob.content_hash"),
-        _int_value(raw["byte_length"], "proxy_blob.byte_length"),
-        _text_value(raw["media_type"], "proxy_blob.media_type"),
-    )
-
-
-def _decode_time_base(value: object, field_name: str) -> TimeBase:
-    raw = _closed_mapping(value, {"denominator", "numerator"}, field_name)
-    return TimeBase(
-        _int_value(raw["numerator"], f"{field_name}.numerator"),
-        _int_value(raw["denominator"], f"{field_name}.denominator"),
-    )
-
-
-def _decode_range(value: object, field_name: str) -> TickRange:
-    raw = _closed_mapping(value, {"end_pts", "start_pts"}, field_name)
-    return TickRange(
-        _int_value(raw["start_pts"], f"{field_name}.start_pts"),
-        _int_value(raw["end_pts"], f"{field_name}.end_pts"),
-    )
-
-
-def _closed_mapping(
-    value: object,
-    keys: set[str],
-    field_name: str,
-) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{field_name} must be a closed object")
-    mapping = cast(dict[object, object], value)
-    if set(mapping) != keys:
-        raise ValueError(f"{field_name} must be a closed object")
-    return {str(key): item for key, item in mapping.items()}
-
-
-def _array(value: object, field_name: str) -> list[object]:
-    if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be an array")
-    return list(cast(list[object], value))
-
-
-def _text_value(value: object, field_name: str) -> str:
-    if type(value) is not str or not value:  # noqa: E721
-        raise ValueError(f"{field_name} must be text")
-    return value
-
-
-def _int_value(value: object, field_name: str) -> int:
-    if type(value) is not int:  # noqa: E721
-        raise ValueError(f"{field_name} must be an integer")
-    return value
+    prepared = PreparedSeriesSources(census, episodes)
+    if prepared.to_mapping() != decoded.to_mapping():
+        raise SourceManifestDecodeError(
+            "source-prep projection changed the canonical Kernel manifest"
+        )
+    return prepared
 
 
 def _diagnostic_code(error: Exception, default: str) -> str:

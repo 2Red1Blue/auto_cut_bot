@@ -2,7 +2,7 @@
 
 The command owns orchestration only.  Provider adapters perform one external
 invocation or reconciliation; the strict Kernel parser remains the sole
-producer of semantic observations.
+producer of a Semantic Pack.
 """
 
 from __future__ import annotations
@@ -35,19 +35,19 @@ from ..vlm import (
     ProviderIndeterminate,
     ProviderPending,
     ProviderReconcileQuery,
-    VlmObservationSet,
     VlmParsePolicy,
     VlmProviderPort,
     VlmRequestIdentity,
     VlmResponseIndeterminate,
     VlmResponseRejected,
+    VlmSemanticPack,
     WindowManifest,
     WindowManifestSet,
     parse_vlm_response,
 )
 
 _COMMAND_NAME = "GenerateVlmEvidenceCommand"
-VLM_PARSER_STRATEGY_VERSION = "strict-unique-frame-prefix-v2"
+VLM_PARSER_STRATEGY_VERSION = "strict-semantic-pack-v3"
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -293,6 +293,7 @@ class GenerateVlmEvidenceRequest:
         return _json_bytes(
             {
                 "model_id": self.model_id,
+                "parse_policy": self.parse_policy.to_mapping(),
                 "parser_strategy_version": self.parser_strategy_version,
                 "prompt": self.prompt_template,
                 "prompt_version": self.prompt_version,
@@ -390,7 +391,7 @@ class GenerateVlmEvidenceRequest:
 class GenerateVlmEvidenceResult:
     outcome: CommandOutcome
     attempt: GenerationAttempt | None = None
-    observation_set: VlmObservationSet | None = None
+    semantic_pack: VlmSemanticPack | None = None
     artifacts: tuple[ArtifactMember, ...] = ()
 
 
@@ -595,7 +596,7 @@ class GenerateVlmEvidenceCommand:
             return GenerateVlmEvidenceResult(outcome, attempt)
         raw_response = self._store.read_immutable_blob(request.job, attempt.raw_response)
         try:
-            observation_set = parse_vlm_response(
+            semantic_pack = parse_vlm_response(
                 raw_response,
                 manifest=request.manifest,
                 manifest_set=request.manifest_set,
@@ -621,7 +622,7 @@ class GenerateVlmEvidenceCommand:
             )
             return GenerateVlmEvidenceResult(rejection, failed)
 
-        artifacts = _artifacts(request, attempt, observation_set)
+        artifacts = _artifacts(request, attempt, semantic_pack)
         success = CommandSuccess(
             outcome.command_slot_id,
             _artifact_set_hash(artifacts),
@@ -642,7 +643,7 @@ class GenerateVlmEvidenceCommand:
         return GenerateVlmEvidenceResult(
             committed_outcome,
             committed,
-            observation_set,
+            semantic_pack,
             artifacts,
         )
 
@@ -750,7 +751,7 @@ class GenerateVlmEvidenceCommand:
             return GenerateVlmEvidenceResult(outcome, attempt)
         self._assert_attempt_identity(request, outcome, attempt)
         raw_response = self._store.read_immutable_blob(request.job, attempt.raw_response)
-        observation_set = parse_vlm_response(
+        semantic_pack = parse_vlm_response(
             raw_response,
             manifest=request.manifest,
             manifest_set=request.manifest_set,
@@ -760,8 +761,8 @@ class GenerateVlmEvidenceCommand:
         return GenerateVlmEvidenceResult(
             outcome,
             attempt,
-            observation_set,
-            _artifacts(request, attempt, observation_set),
+            semantic_pack,
+            _artifacts(request, attempt, semantic_pack),
         )
 
     @staticmethod
@@ -805,7 +806,7 @@ def _artifact(
 def _artifacts(
     request: GenerateVlmEvidenceRequest,
     attempt: GenerationAttempt,
-    observation_set: VlmObservationSet,
+    semantic_pack: VlmSemanticPack,
 ) -> tuple[ArtifactMember, ...]:
     if attempt.raw_response is None:
         raise ValueError("generation artifacts require an exact raw-response BlobRef")
@@ -829,7 +830,7 @@ def _artifacts(
         "attempt_id": str(attempt.attempt_id),
         "provider_request_id": attempt.provider_request_id,
         "raw_response_blob": _blob_mapping(attempt.raw_response),
-        "raw_response_sha256": observation_set.raw_response_sha256,
+        "raw_response_sha256": semantic_pack.raw_response_sha256,
     }
     return (
         _artifact(
@@ -846,9 +847,9 @@ def _artifacts(
         ),
         _artifact(
             request,
-            artifact_type="vlm_observation_set",
-            logical_id=f"evidence_{request.manifest.canonical_hash[7:39]}",
-            payload=observation_set.to_mapping(),
+            artifact_type="vlm_semantic_pack",
+            logical_id=f"semantic_pack_{request.manifest.canonical_hash[7:39]}",
+            payload=semantic_pack.to_mapping(),
         ),
     )
 

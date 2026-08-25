@@ -136,6 +136,13 @@ def execution_profile(*, model_id: str = "doubao-seed-2-1-pro-260628") -> Pipeli
 def _v2_execution_profile() -> PipelineExecutionProfile:
     mapping = execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v2"
+    mapping["parse_policy"] = {
+        "max_observations": 64,
+        "max_response_bytes": 64_000,
+        "max_summary_characters": 512,
+        "max_total_summary_characters": 8_192,
+        "minimum_confidence": "0.80",
+    }
     del mapping["media_preflight_policy"]
     del mapping["media_preflight_policy_hash"]
     return PipelineExecutionProfile.from_mapping(mapping)
@@ -239,7 +246,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
 
 
 def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() -> None:
-    v3 = execution_profile()
+    v4 = execution_profile()
     v2 = _v2_execution_profile()
     v1_mapping = v2.to_mapping()
     v1_mapping["schema_version"] = "pipeline-execution-profile-v1"
@@ -251,7 +258,7 @@ def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() ->
     assert v1.to_generation_retry_policy().backoff_seconds == ()
     assert v2.to_generation_retry_policy().max_attempts == 3
     assert v2.to_generation_retry_policy().backoff_seconds == (2, 8)
-    assert v3.to_media_preflight_policy().canonical_hash == v3.media_preflight_policy_hash
+    assert v4.to_media_preflight_policy().canonical_hash == v4.media_preflight_policy_hash
     with pytest.raises(PipelineRunValidationError, match="no frozen media-preflight"):
         v2.to_media_preflight_policy()
     assert v1.canonical_hash != v2.canonical_hash
@@ -343,7 +350,7 @@ def test_execution_profile_rejects_unregistered_or_object_shaped_schema_tamperin
         replace(profile, vlm_stage_strategy_version="toy-stage-strategy")
     with pytest.raises(PipelineRunValidationError, match="registered Doubao policy"):
         replace(profile, kernel_parser_strategy_version="toy-parser-strategy")
-    with pytest.raises(PipelineRunValidationError, match="properties require a closed object"):
+    with pytest.raises(PipelineRunValidationError, match="registered Doubao policy"):
         replace(
             profile,
             response_schema_json=(
@@ -717,9 +724,7 @@ async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> N
     result = await reconciler.reconcile(_snapshot(command_store.command))
 
     assert result == PipelineStageResult("command-1", "succeeded", stage.receipt_id)
-    assert stage.commands == [
-        PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)
-    ]
+    assert stage.commands == [PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)]
     assert command_store.command.status == "succeeded"
 
 

@@ -35,9 +35,8 @@ from autocut_kernel.store import (
     CommandSuccess,
     Job,
 )
-from autocut_kernel.vlm import VlmObservationSet
 from test_root_evidence import HASH_A, HASH_B, SOURCE_HASH, _bundle
-from test_timed_evidence import _bindings, _manifest_and_observation
+from test_timed_evidence import _bindings, _manifest_and_candidate
 
 TEST_POLICY_JSON = json.dumps(
     {"policy_id": "fixture-policy"},
@@ -184,14 +183,10 @@ class _UnknownResultProducer(_Producer):
         )
 
 
-def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
-    manifest, observation = _manifest_and_observation()
-    observation_set = VlmObservationSet(
-        observation.request_identity_sha256,
-        manifest.canonical_hash,
-        HASH_B,
-        (observation,),
-    )
+def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMediaEvidenceRequest:
+    manifest, semantic_pack, _ = _manifest_and_candidate()
+    if not with_candidates:
+        semantic_pack = replace(semantic_pack, candidate_hypotheses=())
     source_blob = BlobRef(uuid4(), SOURCE_HASH, len(b"committed source"), "video/mp4")
     store.blobs[source_blob.object_id] = b"committed source"
     template = _bundle()
@@ -205,7 +200,7 @@ def _request(store: _Store) -> PrepareTimedMediaEvidenceRequest:
         source_manifest_sha256=HASH_B,
         source_provenance_sha256=HASH_A,
         window_manifest=manifest,
-        observation_set=observation_set,
+        semantic_pack=semantic_pack,
         frame_pts_index=manifest.frame_pts_index_set,
         audio_sample_boundaries=template.audio_sample_boundaries,
         frame_detector_sha256=HASH_B,
@@ -299,6 +294,26 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     }
 
 
+def test_empty_candidate_pack_commits_explicit_empty_index() -> None:
+    store = _Store()
+    request = _request(store, with_candidates=False)
+
+    result = PrepareTimedMediaEvidenceCommand(store, _Producer(_bundle())).execute(request)
+
+    assert result.outcome.state == "succeeded"
+    assert result.candidate_count == 0
+    index = next(
+        item
+        for item in store.successes[0].artifacts
+        if item.artifact_type == "candidate_timed_evidence_index"
+    )
+    payload = json.loads(index.payload_json)
+    assert payload["candidate_count"] == 0
+    assert payload["candidate_index_state"] == "empty"
+    assert payload["candidate_blobs"] == []
+    assert payload["semantic_pack_sha256"] == request.semantic_pack.canonical_hash
+
+
 def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
     store = _Store()
     request = _request(store)
@@ -325,9 +340,7 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
 
     assert result.outcome.state == "succeeded"
     candidate_payloads = [
-        json.loads(content)
-        for content in store.blobs.values()
-        if b'"window_assessment"' in content
+        json.loads(content) for content in store.blobs.values() if b'"window_assessment"' in content
     ]
     assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "unknown"
 

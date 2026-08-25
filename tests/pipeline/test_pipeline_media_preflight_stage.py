@@ -11,7 +11,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from autocut_kernel.store import PostgresRuntimeStore
+from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
+from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
 from runtime_profile_fixture import execution_profile, media_preflight_policy
 from test_local_media_preflight import _SpeechPort
@@ -36,7 +37,10 @@ from auto_cut_bot.pipeline.runtime import (
 from auto_cut_bot.pipeline.runtime.media_preflight_stage import MediaPreflightPipelineStage
 from auto_cut_bot.pipeline.runtime.source_prep_stage import SourcePrepPipelineStage
 from auto_cut_bot.pipeline.runtime.vlm_stage import VlmPipelineStage
-from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
+from auto_cut_bot.pipeline.source_prep import (
+    AuthorizedSeriesSourceRoot,
+    SourceOperationPolicy,
+)
 from auto_cut_bot.pipeline.source_prep.models import SeriesSource
 from auto_cut_bot.pipeline.source_prep.probe import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
@@ -63,7 +67,7 @@ class _SourceResolver:
         return self.source_root
 
 
-class _VisibleObservationProvider:
+class _VisibleSemanticPackProvider:
     def __init__(self) -> None:
         self.dispatch_calls = 0
 
@@ -78,19 +82,92 @@ class _VisibleObservationProvider:
         end = min(start + 1, int(proxy_range["end_pts_exclusive"]))
         if end <= start:
             start -= 1
+        support = {
+            "confidence": "0.91",
+            "proxy_interval": {
+                "start_pts": start,
+                "end_pts": end,
+                "uncertainty_pts": 0,
+            },
+            "supporting_frame_ids": [anchor["frame_id"]],
+        }
         response = {
-            "schema_version": 1,
-            "observations": [
+            "schema_version": 3,
+            "window_summary": {
+                "summary": "画面中可见测试图案。",
+                "dominant_temporal_mode": "present",
+                "fact_refs": ["fact_1"],
+                "event_refs": ["event_1"],
+                "confidence": "0.91",
+            },
+            "continuity": {
+                "starts_mid_event": False,
+                "ends_mid_event": False,
+                "continues_from_previous": False,
+                "continues_into_next": False,
+                "entry_state_fact_refs": [],
+                "exit_state_fact_refs": [],
+                "temporal_segments": [],
+            },
+            "entities": [
                 {
-                    "confidence": "0.91",
-                    "kind": "observation",
-                    "proxy_interval": {
-                        "start_pts": start,
-                        "end_pts": end,
-                        "uncertainty_pts": 0,
-                    },
-                    "summary": "画面中可见测试图案。",
-                    "supporting_frame_ids": [anchor["frame_id"]],
+                    "local_entity_id": "entity_1",
+                    "entity_kind": "object",
+                    "display_label": "测试图案",
+                    "visual_description": "画面中的测试图案",
+                    "support": support,
+                }
+            ],
+            "facts": [
+                {
+                    "local_fact_id": "fact_1",
+                    "fact_kind": "visible_presence",
+                    "subject_ref": "entity_1",
+                    "object_ref": None,
+                    "summary": "测试图案可见。",
+                    "support": support,
+                }
+            ],
+            "events": [
+                {
+                    "local_event_id": "event_1",
+                    "event_kind": "reveal",
+                    "summary": "测试图案出现。",
+                    "participant_refs": ["entity_1"],
+                    "fact_refs": ["fact_1"],
+                    "cause_event_refs": [],
+                    "effect_event_refs": [],
+                    "open_question": None,
+                    "temporal_mode": "present",
+                    "support": support,
+                }
+            ],
+            "candidate_hypotheses": [
+                {
+                    "local_candidate_id": "candidate_1",
+                    "candidate_kind": "highlight",
+                    "anchor_event_ref": "event_1",
+                    "supporting_event_refs": ["event_1"],
+                    "context_event_refs": [],
+                    "payoff_event_refs": ["event_1"],
+                    "open_question": None,
+                    "reason": "测试图案形成明确视觉事件。",
+                    "anchor_summary": "测试图案出现。",
+                    "payoff_or_open_question": "测试图案完整出现。",
+                    "dialogue_excerpt": None,
+                    "editing_modes": ["action"],
+                    "narrative_functions": ["reveal", "payoff"],
+                    "tags": ["action", "reveal"],
+                    "measurements": [
+                        {
+                            "measurement_kind": "visual_salience",
+                            "value": "0.91",
+                            "confidence": "0.91",
+                            "fact_refs": ["fact_1"],
+                            "event_refs": ["event_1"],
+                        }
+                    ],
+                    "support": support,
                 }
             ],
         }
@@ -248,13 +325,100 @@ def _artifact_identity(command_name: str) -> tuple[str, str]:
     return str(rows[0][0]), str(rows[0][1])
 
 
+def _forge_semantic_pack_with_recomputed_member_and_set_hash() -> None:
+    assert DSN is not None
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT artifact.artifact_id, artifact.artifact_set_id,
+                       artifact.payload_json
+                  FROM runtime.artifacts AS artifact
+                 WHERE artifact.artifact_type = 'vlm_semantic_pack'
+                """
+            )
+            rows = cursor.fetchall()
+            assert len(rows) == 1
+            artifact_id, artifact_set_id, payload = rows[0]
+            forged = dict(payload)
+            forged["window_summary"]["summary"] = "伪造但内部闭合的摘要。"
+            forged["facts"][0]["summary"] = "伪造但内部闭合的摘要。"
+            payload_json = json.dumps(
+                forged,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            content_hash = canonical_payload_hash(payload_json)
+            cursor.execute("ALTER TABLE runtime.artifacts DISABLE TRIGGER USER")
+            cursor.execute("ALTER TABLE runtime.artifact_sets DISABLE TRIGGER USER")
+            try:
+                cursor.execute(
+                    """
+                    UPDATE runtime.artifacts
+                       SET payload_json = %s::jsonb, content_hash = %s
+                     WHERE artifact_id = %s
+                    """,
+                    (payload_json, content_hash, artifact_id),
+                )
+                cursor.execute(
+                    """
+                    SELECT artifact.artifact_type, artifact.logical_id,
+                           artifact.revision, artifact.namespace,
+                           artifact.scope_kind, artifact.scope_key,
+                           artifact.content_hash, artifact.payload_json
+                      FROM runtime.artifact_set_members AS member
+                      JOIN runtime.artifacts AS artifact
+                        ON artifact.artifact_id = member.artifact_id
+                     WHERE member.artifact_set_id = %s
+                     ORDER BY member.ordinal
+                    """,
+                    (artifact_set_id,),
+                )
+                canonical_members = [
+                    {
+                        "artifact_type": row[0],
+                        "content_hash": row[6],
+                        "logical_id": row[1],
+                        "payload_json": row[7],
+                        "revision": row[2],
+                        "scope": {
+                            "key": row[5],
+                            "kind": row[4],
+                            "namespace": row[3],
+                        },
+                    }
+                    for row in cursor.fetchall()
+                ]
+                encoded = json.dumps(
+                    canonical_members,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+                set_hash = "sha256:" + hashlib.sha256(encoded).hexdigest()
+                cursor.execute(
+                    "UPDATE runtime.artifact_sets SET set_hash = %s WHERE artifact_set_id = %s",
+                    (set_hash, artifact_set_id),
+                )
+            finally:
+                cursor.execute("ALTER TABLE runtime.artifacts ENABLE TRIGGER USER")
+                cursor.execute("ALTER TABLE runtime.artifact_sets ENABLE TRIGGER USER")
+
+
 @pytest.mark.skipif(
     not DSN or shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="disposable PostgreSQL, ffmpeg and ffprobe are required",
 )
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    ("valid", "forged-pack", "missing-render-grant"),
+)
 async def test_real_restart_reconcile_replays_original_receipt_without_detectors(
     tmp_path: Path,
+    scenario: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert DSN is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -313,27 +477,66 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         _SourceResolver(
             AuthorizedSeriesSourceRoot(
                 source_root.resolve(),
-                "fixture-authority",
-                "fixture-series",
-                1,
+                SourceOperationPolicy(
+                    "fixture-authority",
+                    "fixture-series",
+                    1,
+                    (
+                        ("semantic_analysis",)
+                        if scenario == "missing-render-grant"
+                        else ("semantic_analysis", "render_source")
+                    ),
+                ),
             )
         ),
     ).execute(source_context)
     await project(source_context, source_result)
 
     vlm_context = await claim_context()
-    provider = _VisibleObservationProvider()
+    provider = _VisibleSemanticPackProvider()
     vlm_result = await VlmPipelineStage(kernel_store, provider).execute(vlm_context)
     await project(vlm_context, vlm_result)
     assert provider.dispatch_calls == 1
 
+    if scenario == "forged-pack":
+        _forge_semantic_pack_with_recomputed_member_and_set_hash()
+
     media_context = await claim_context()
     speech = _SpeechPort()
     runner = _CountingRunner()
+    if scenario == "missing-render-grant":
+
+        def unexpected_vlm_read(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("render authorization must precede every VLM read")
+
+        monkeypatch.setattr(
+            kernel_store,
+            "read_committed_vlm_input_reference",
+            unexpected_vlm_read,
+        )
+        monkeypatch.setattr(
+            kernel_store,
+            "read_committed_semantic_inputs",
+            unexpected_vlm_read,
+        )
     first_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
     )
+    if scenario == "missing-render-grant":
+        with pytest.raises(PipelineRunValidationError, match="render_source"):
+            await first_stage.execute(media_context)
+        with pytest.raises(PipelineRunValidationError, match="render_source"):
+            await first_stage.reconcile(media_context)
+        assert len(speech.requests) == 0
+        assert runner.visual_calls == 0
+        return
+    if scenario == "forged-pack":
+        with pytest.raises(SemanticInputIntegrityError, match="member/blob/owner"):
+            await first_stage.execute(media_context)
+        assert len(speech.requests) == 0
+        assert runner.visual_calls == 0
+        return
     first = await first_stage.execute(media_context)
     assert first.outcome == "succeeded" and first.receipt_id is not None
     assert len(speech.requests) == 1
@@ -376,17 +579,22 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     )
 
 
-def test_media_preflight_context_rejects_legacy_v2_profile() -> None:
+def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     mapping = execution_profile(media_policy=_fixture_policy()).to_mapping()
-    mapping["schema_version"] = "pipeline-execution-profile-v2"
-    del mapping["media_preflight_policy"]
-    del mapping["media_preflight_policy_hash"]
-    v2 = PipelineExecutionProfile.from_mapping(mapping)
+    mapping["schema_version"] = "pipeline-execution-profile-v3"
+    mapping["parse_policy"] = {
+        "max_observations": 64,
+        "max_response_bytes": 64_000,
+        "max_summary_characters": 512,
+        "max_total_summary_characters": 8_192,
+        "minimum_confidence": "0.80",
+    }
+    v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="without its frozen policy"):
+    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v4"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),
             PipelineCommand("media-command", "media_preflight", "pending"),
-            v2,
+            v3,
         )

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from autocut_kernel.source_manifest import SourceOperationPolicy
 from psycopg import OperationalError
 from runtime_profile_fixture import media_preflight_policy
 
@@ -28,12 +30,25 @@ from auto_cut_bot.pipeline.runtime.composition import (
 from auto_cut_bot.pipeline.runtime.worker import DurablePipelineWorker
 
 
+@pytest.fixture(autouse=True)
+def _funasr_shared_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FUNASR_SHARED_TOKEN", "runtime-composition-test-secret")
+
+
 def _catalog(path: Path) -> str:
+    policy = SourceOperationPolicy(
+        "authorization:episode-1",
+        "series-1",
+        1,
+        ("semantic_analysis", "render_source"),
+    )
     return json.dumps(
         [
             {
                 "authorization_id": "authorization:episode-1",
+                "authorization_policy_sha256": policy.policy_sha256,
                 "authorized_path": str(path),
+                "authorized_purposes": list(policy.authorized_purposes),
                 "expected_source_count": 1,
                 "series_id": "series-1",
             }
@@ -67,18 +82,83 @@ def test_closed_source_catalog_requires_an_exact_path_and_preserves_identity(
     catalog = ConfiguredSourceCatalog.from_json(_catalog(source))
     exact = PipelineRunRequest("test", source_root=str(source))
     child = PipelineRunRequest("test", source_root=str(source / "nested"))
-    reference = PipelineRunRequest(
-        "shadow", source_reference="authorization:episode-1"
-    )
+    reference = PipelineRunRequest("shadow", source_reference="authorization:episode-1")
 
     assert catalog.allows(exact)
     assert catalog.allows(reference)
     assert not catalog.allows(child)
     resolved = catalog.resolve(SimpleNamespace(request=exact))
     assert resolved.root == source.resolve()
-    assert resolved.authorization_id == "authorization:episode-1"
-    assert resolved.series_id == "series-1"
-    assert resolved.expected_source_count == 1
+    assert resolved.policy.authorization_id == "authorization:episode-1"
+    assert resolved.policy.series_id == "series-1"
+    assert resolved.policy.expected_source_count == 1
+    assert resolved.policy.authorized_purposes == (
+        "semantic_analysis",
+        "render_source",
+    )
+
+
+@pytest.mark.parametrize(
+    "purposes",
+    [
+        [],
+        ["semantic_analysis", "semantic_analysis"],
+        ["render_source", "semantic_analysis"],
+        ["semantic-analysis"],
+        ["semantic_analysis", 1],
+    ],
+)
+def test_source_catalog_rejects_noncanonical_authorized_purposes(
+    tmp_path: Path,
+    purposes: list[object],
+) -> None:
+    policy = SourceOperationPolicy(
+        "authorization:episode-1",
+        "series-1",
+        1,
+        ("semantic_analysis", "render_source"),
+    )
+    raw = json.dumps(
+        [
+            {
+                "authorization_id": policy.authorization_id,
+                "authorization_policy_sha256": policy.policy_sha256,
+                "authorized_path": str(tmp_path),
+                "authorized_purposes": purposes,
+                "expected_source_count": policy.expected_source_count,
+                "series_id": policy.series_id,
+            }
+        ]
+    )
+
+    with pytest.raises(PipelineRuntimeConfigurationError):
+        ConfiguredSourceCatalog.from_json(raw)
+
+
+def test_source_catalog_rejects_duplicate_json_keys_and_policy_hash_mismatch(
+    tmp_path: Path,
+) -> None:
+    valid = json.loads(_catalog(tmp_path))
+    assert isinstance(valid, list)
+    mismatched = valid[0]
+    assert isinstance(mismatched, dict)
+    mismatched["authorization_policy_sha256"] = "sha256:" + "0" * 64
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match="hash mismatch"):
+        ConfiguredSourceCatalog.from_json(json.dumps(valid))
+    with pytest.raises(PipelineRuntimeConfigurationError, match="valid JSON"):
+        ConfiguredSourceCatalog.from_json(
+            '[{"authorization_id":"first","authorization_id":"second"}]'
+        )
+
+
+def test_source_catalog_rejects_unknown_fields(tmp_path: Path) -> None:
+    decoded = json.loads(_catalog(tmp_path))
+    assert isinstance(decoded, list) and isinstance(decoded[0], dict)
+    decoded[0]["implicit_authority"] = True
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match="closed catalog fields"):
+        ConfiguredSourceCatalog.from_json(json.dumps(decoded))
 
 
 @pytest.mark.parametrize(
@@ -104,17 +184,31 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
 
     assert runtime is not None
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v3"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v4"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
-    assert json.loads(runtime.execution_profile.request_parameters_json or "{}")[
-        "max_output_tokens"
-    ] == 16_384
     assert (
-        runtime.execution_profile.to_media_preflight_policy().to_mapping()
-        == _media_policy(tmp_path)
+        json.loads(runtime.execution_profile.request_parameters_json or "{}")["max_output_tokens"]
+        == 16_384
+    )
+    assert runtime.execution_profile.to_media_preflight_policy().to_mapping() == _media_policy(
+        tmp_path
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
+
+
+def test_direct_v3_profile_cannot_relabel_v4_parse_fields_as_executable(
+    tmp_path: Path,
+) -> None:
+    runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
+    assert runtime is not None
+    profile = runtime.execution_profile
+
+    with pytest.raises(
+        PipelineRunValidationError,
+        match="only be reconstructed from persisted mappings",
+    ):
+        replace(profile, schema_version="pipeline-execution-profile-v3")
 
 
 def test_environment_uses_registered_ark_base_url_when_not_overridden(

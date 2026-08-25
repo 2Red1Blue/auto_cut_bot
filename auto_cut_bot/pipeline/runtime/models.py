@@ -7,8 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from dataclasses import InitVar, dataclass
 from typing import TYPE_CHECKING, Literal, Mapping, cast
 from uuid import UUID
 
@@ -132,20 +131,14 @@ def _decode_canonical_json(raw: object, field_name: str) -> dict[str, object]:
 
 def _require_closed_response_schema(schema: dict[str, object]) -> None:
     if schema.get("type") != "object" or schema.get("additionalProperties") is not False:
-        raise PipelineRunValidationError(
-            "response_schema_json must be a closed object schema"
-        )
+        raise PipelineRunValidationError("response_schema_json must be a closed object schema")
 
     def visit(value: object) -> None:
         if type(value) is dict:  # noqa: E721
             node = cast(dict[str, object], value)
-            if "properties" in node and (
-                node.get("type") != "object"
-                or node.get("additionalProperties") is not False
-                or type(node["properties"]) is not dict  # noqa: E721
-            ):
+            if "properties" in node and type(node["properties"]) is not dict:  # noqa: E721
                 raise PipelineRunValidationError(
-                    "response_schema_json properties require a closed object schema"
+                    "response_schema_json properties must be an object"
                 )
             if node.get("type") == "object" and node.get("additionalProperties") is not False:
                 raise PipelineRunValidationError(
@@ -165,20 +158,33 @@ _REQUEST_PARAMETER_FIELDS = frozenset(
 )
 _PARSE_POLICY_FIELDS = frozenset(
     {
-        "minimum_confidence",
         "max_response_bytes",
+        "max_entities",
+        "max_facts",
+        "max_events",
+        "max_candidate_hypotheses",
+        "max_temporal_segments",
+        "max_measurements",
+        "max_text_characters",
+        "max_total_text_characters",
+    }
+)
+_LEGACY_PARSE_POLICY_FIELDS = frozenset(
+    {
         "max_observations",
+        "max_response_bytes",
         "max_summary_characters",
         "max_total_summary_characters",
+        "minimum_confidence",
     }
 )
 _EXECUTION_PROFILE_SCHEMA_VERSION_V1 = "pipeline-execution-profile-v1"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V2 = "pipeline-execution-profile-v2"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V3 = "pipeline-execution-profile-v3"
-_RETRY_POLICY_FIELDS = frozenset(
-    {"backoff_seconds", "max_attempts", "strategy_version"}
-)
-_DECIMAL_ZERO_TO_ONE = re.compile(r"(?:0(?:\.[0-9]+)?|1(?:\.0+)?)\Z")
+_EXECUTION_PROFILE_SCHEMA_VERSION_V4 = "pipeline-execution-profile-v4"
+_RETRY_POLICY_FIELDS = frozenset({"backoff_seconds", "max_attempts", "strategy_version"})
+_HISTORICAL_PROFILE_READ_TOKEN = object()
+_FAIL_CLOSED_BOOTSTRAP_STAGES = ("source_prep", "vlm", "media_preflight")
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,10 +208,11 @@ class PipelineExecutionProfile:
     generation_retry_policy_json: str | None = None
     media_preflight_policy_json: str | None = None
     media_preflight_policy_hash: str | None = None
-    schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V2
+    schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V4
     kind: PipelineExecutionProfileKind = "doubao_vlm"
+    _historical_read_token: InitVar[object | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _historical_read_token: object | None) -> None:
         if self.kind == "legacy_unresolved":
             if any(
                 value is not None
@@ -234,6 +241,13 @@ class PipelineExecutionProfile:
             return
         if self.kind != "doubao_vlm":
             raise PipelineRunValidationError("execution profile kind is unsupported")
+        if (
+            self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V4
+            and _historical_read_token is not _HISTORICAL_PROFILE_READ_TOKEN
+        ):
+            raise PipelineRunValidationError(
+                "historical execution profiles can only be reconstructed from persisted mappings"
+            )
         for field_name in (
             "provider_id",
             "model_id",
@@ -264,59 +278,66 @@ class PipelineExecutionProfile:
         temperature = request_parameters["temperature"]
         video_fps = request_parameters["video_fps"]
         if type(tokens) is not int or not 1 <= tokens <= 32_768:  # noqa: E721
-            raise PipelineRunValidationError(
-                "request_parameters_json.max_output_tokens is invalid"
-            )
+            raise PipelineRunValidationError("request_parameters_json.max_output_tokens is invalid")
         for value, field_name, minimum, maximum in (
             (temperature, "temperature", 0, 2),
             (video_fps, "video_fps", 0.1, 10),
         ):
             if isinstance(value, bool) or type(value) not in (int, float):
-                raise PipelineRunValidationError(
-                    f"request_parameters_json.{field_name} is invalid"
-                )
+                raise PipelineRunValidationError(f"request_parameters_json.{field_name} is invalid")
             numeric_value = cast(int | float, value)
             if not minimum <= numeric_value <= maximum:
-                raise PipelineRunValidationError(
-                    f"request_parameters_json.{field_name} is invalid"
-                )
+                raise PipelineRunValidationError(f"request_parameters_json.{field_name} is invalid")
         parse_policy = _decode_canonical_json(self.parse_policy_json, "parse_policy_json")
-        if frozenset(parse_policy) != _PARSE_POLICY_FIELDS:
+        parse_policy_fields = frozenset(parse_policy)
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V4:
+            expected_parse_policy_fields = _PARSE_POLICY_FIELDS
+        elif self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V1,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+        }:
+            expected_parse_policy_fields = _LEGACY_PARSE_POLICY_FIELDS
+        else:
+            raise PipelineRunValidationError("execution profile schema version is unsupported")
+        if parse_policy_fields != expected_parse_policy_fields:
             raise PipelineRunValidationError(
                 "parse_policy_json must match the closed VLM parse policy contract"
             )
-        confidence = parse_policy["minimum_confidence"]
-        if type(confidence) is not str:  # noqa: E721
-            raise PipelineRunValidationError(
-                "parse_policy_json.minimum_confidence must be a decimal string"
-            )
-        if _DECIMAL_ZERO_TO_ONE.fullmatch(confidence) is None:
-            raise PipelineRunValidationError(
-                "parse_policy_json.minimum_confidence must use canonical fixed-point syntax"
-            )
-        try:
-            minimum_confidence = Decimal(confidence)
-        except InvalidOperation as error:
-            raise PipelineRunValidationError(
-                "parse_policy_json.minimum_confidence is invalid"
-            ) from error
-        if not minimum_confidence.is_finite() or not Decimal("0") <= minimum_confidence <= Decimal("1"):
-            raise PipelineRunValidationError(
-                "parse_policy_json.minimum_confidence must be between zero and one"
-            )
-        for field_name in _PARSE_POLICY_FIELDS - {"minimum_confidence"}:
+        integer_fields = expected_parse_policy_fields - {"minimum_confidence"}
+        for field_name in integer_fields:
             value = parse_policy[field_name]
             if type(value) is not int or value <= 0:  # noqa: E721
                 raise PipelineRunValidationError(
                     f"parse_policy_json.{field_name} must be a positive integer"
                 )
-        if cast(int, parse_policy["max_summary_characters"]) > cast(
-            int,
-            parse_policy["max_total_summary_characters"],
-        ):
+        per_field_budget = (
+            "max_text_characters"
+            if expected_parse_policy_fields == _PARSE_POLICY_FIELDS
+            else "max_summary_characters"
+        )
+        total_budget = (
+            "max_total_text_characters"
+            if expected_parse_policy_fields == _PARSE_POLICY_FIELDS
+            else "max_total_summary_characters"
+        )
+        if cast(int, parse_policy[per_field_budget]) > cast(int, parse_policy[total_budget]):
             raise PipelineRunValidationError(
-                "parse policy per-observation summary budget exceeds its total budget"
+                "parse policy per-field text budget exceeds its total budget"
             )
+        if expected_parse_policy_fields == _LEGACY_PARSE_POLICY_FIELDS:
+            confidence = parse_policy["minimum_confidence"]
+            if type(confidence) is not str or confidence not in {  # noqa: E721
+                "0.70",
+                "0.75",
+                "0.80",
+                "0.85",
+                "0.90",
+                "0.95",
+            }:
+                raise PipelineRunValidationError(
+                    "legacy parse_policy.minimum_confidence is invalid"
+                )
         if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
             if any(
                 value is not None
@@ -341,12 +362,16 @@ class PipelineExecutionProfile:
                     "execution profile v2 cannot claim a media-preflight policy"
                 )
             self._decode_generation_retry_policy()
-        elif self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        elif self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+        }:
             self._decode_generation_retry_policy()
             self._decode_media_preflight_policy()
         else:
             raise PipelineRunValidationError("execution profile schema version is unsupported")
-        _build_registered_doubao_policy(self)
+        if expected_parse_policy_fields == _PARSE_POLICY_FIELDS:
+            _build_registered_doubao_policy(self)
 
     @classmethod
     def legacy_unresolved(cls) -> PipelineExecutionProfile:
@@ -370,19 +395,27 @@ class PipelineExecutionProfile:
         )
 
     @classmethod
-    def from_doubao_policy(
+    def from_policies(
         cls,
         policy: DoubaoVlmRequestPolicy,
+        media_preflight_policy: LocalMediaPreflightPolicy,
         *,
         retry_policy: GenerationRetryPolicy,
     ) -> PipelineExecutionProfile:
+        """Freeze every process-supplied VLM and physical-evidence strategy."""
+
         from autocut_kernel.vlm import GenerationRetryPolicy
 
+        from auto_cut_bot.pipeline.media_preflight import LocalMediaPreflightPolicy
         from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
         if type(policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
             raise PipelineRunValidationError(
                 "execution profile requires an exact DoubaoVlmRequestPolicy"
+            )
+        if type(media_preflight_policy) is not LocalMediaPreflightPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "execution profile requires an exact LocalMediaPreflightPolicy"
             )
         if type(retry_policy) is not GenerationRetryPolicy:  # noqa: E721
             raise PipelineRunValidationError(
@@ -399,48 +432,15 @@ class PipelineExecutionProfile:
             parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
             vlm_stage_strategy_version=policy.stage_strategy_version,
             generation_retry_policy_json=_canonical_json(retry_policy.to_mapping()),
-            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V2,
-        )
-
-    @classmethod
-    def from_policies(
-        cls,
-        policy: DoubaoVlmRequestPolicy,
-        media_preflight_policy: LocalMediaPreflightPolicy,
-        *,
-        retry_policy: GenerationRetryPolicy,
-    ) -> PipelineExecutionProfile:
-        """Freeze every process-supplied VLM and physical-evidence strategy."""
-
-        from auto_cut_bot.pipeline.media_preflight import LocalMediaPreflightPolicy
-
-        if type(media_preflight_policy) is not LocalMediaPreflightPolicy:  # noqa: E721
-            raise PipelineRunValidationError(
-                "execution profile requires an exact LocalMediaPreflightPolicy"
-            )
-        vlm_profile = cls.from_doubao_policy(policy, retry_policy=retry_policy)
-        return cls(
-            provider_id=vlm_profile.provider_id,
-            model_id=vlm_profile.model_id,
-            adapter_strategy_version=vlm_profile.adapter_strategy_version,
-            prompt_version=vlm_profile.prompt_version,
-            kernel_parser_strategy_version=vlm_profile.kernel_parser_strategy_version,
-            response_schema_json=vlm_profile.response_schema_json,
-            request_parameters_json=vlm_profile.request_parameters_json,
-            parse_policy_json=vlm_profile.parse_policy_json,
-            vlm_stage_strategy_version=vlm_profile.vlm_stage_strategy_version,
-            generation_retry_policy_json=vlm_profile.generation_retry_policy_json,
             media_preflight_policy_json=_canonical_json(media_preflight_policy.to_mapping()),
             media_preflight_policy_hash=media_preflight_policy.canonical_hash,
-            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V4,
         )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> PipelineExecutionProfile:
         if any(type(key) is not str for key in value):  # noqa: E721
-            raise PipelineRunValidationError(
-                "execution profile field names must be strings"
-            )
+            raise PipelineRunValidationError("execution profile field names must be strings")
         kind = value.get("kind")
         schema_version = value.get("schema_version")
         if kind == "legacy_unresolved":
@@ -450,10 +450,7 @@ class PipelineExecutionProfile:
                 raise PipelineRunValidationError(
                     f"execution profile contains unsupported fields: {', '.join(sorted(unsupported))}"
                 )
-            if (
-                set(value) != allowed
-                or schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V1
-            ):
+            if set(value) != allowed or schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V1:
                 raise PipelineRunValidationError("legacy execution profile marker is invalid")
             return cls.legacy_unresolved()
         base_allowed = {
@@ -473,7 +470,10 @@ class PipelineExecutionProfile:
             allowed = base_allowed
         elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V2:
             allowed = base_allowed | {"generation_retry_policy"}
-        elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        elif schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+        }:
             allowed = base_allowed | {
                 "generation_retry_policy",
                 "media_preflight_policy",
@@ -494,13 +494,26 @@ class PipelineExecutionProfile:
         if kind != "doubao_vlm":
             raise PipelineRunValidationError("execution profile kind or schema version is invalid")
         embedded_objects = {"response_schema", "request_parameters", "parse_policy"}
-        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        if schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+        }:
             embedded_objects.add("media_preflight_policy")
         for field_name in embedded_objects:
             if type(value[field_name]) is not dict:  # noqa: E721
                 raise PipelineRunValidationError(
                     f"execution profile {field_name} must be a JSON object"
                 )
+        parse_policy_value = cast(dict[str, object], value["parse_policy"])
+        expected_parse_fields = (
+            _PARSE_POLICY_FIELDS
+            if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V4
+            else _LEGACY_PARSE_POLICY_FIELDS
+        )
+        if frozenset(parse_policy_value) != expected_parse_fields:
+            raise PipelineRunValidationError(
+                "execution profile parse_policy does not match its schema major"
+            )
         return cls(
             provider_id=_profile_text(value["provider_id"], "execution_profile.provider_id"),
             model_id=_profile_text(value["model_id"], "execution_profile.model_id"),
@@ -530,7 +543,11 @@ class PipelineExecutionProfile:
             ),
             media_preflight_policy_json=(
                 _canonical_json(value["media_preflight_policy"])
-                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
+                if schema_version
+                in {
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+                }
                 else None
             ),
             media_preflight_policy_hash=(
@@ -538,10 +555,24 @@ class PipelineExecutionProfile:
                     value["media_preflight_policy_hash"],
                     "execution_profile.media_preflight_policy_hash",
                 )
-                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
+                if schema_version
+                in {
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+                }
                 else None
             ),
             schema_version=cast(str, schema_version),
+            _historical_read_token=(
+                _HISTORICAL_PROFILE_READ_TOKEN
+                if schema_version
+                in {
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V1,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+                }
+                else None
+            ),
         )
 
     @property
@@ -550,7 +581,9 @@ class PipelineExecutionProfile:
 
     @property
     def has_media_preflight_policy(self) -> bool:
-        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3
+        """Whether this profile can execute the media-preflight stage."""
+
+        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V4
 
     def to_mapping(self) -> dict[str, object]:
         if self.is_legacy_unresolved:
@@ -580,12 +613,16 @@ class PipelineExecutionProfile:
         if self.schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
         }:
             result["generation_retry_policy"] = _decode_canonical_json(
                 self.generation_retry_policy_json,
                 "generation_retry_policy_json",
             )
-        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        if self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+        }:
             result["media_preflight_policy"] = _decode_canonical_json(
                 self.media_preflight_policy_json,
                 "media_preflight_policy_json",
@@ -617,7 +654,10 @@ class PipelineExecutionProfile:
             LocalMediaPreflightPolicy,
         )
 
-        if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
+        if self.schema_version not in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
+        }:
             raise PipelineRunValidationError(
                 "execution profile has no frozen media-preflight policy"
             )
@@ -628,9 +668,7 @@ class PipelineExecutionProfile:
         try:
             policy = LocalMediaPreflightPolicy.from_mapping(value)
         except LocalMediaPolicyError as error:
-            raise PipelineRunValidationError(
-                "media_preflight_policy_json is invalid"
-            ) from error
+            raise PipelineRunValidationError("media_preflight_policy_json is invalid") from error
         if policy.word_timing_capability != "required":
             raise PipelineRunValidationError(
                 "pipeline execution profile requires exact word timing"
@@ -640,9 +678,7 @@ class PipelineExecutionProfile:
                 "media-preflight policy hash does not bind its canonical JSON"
             )
         if _canonical_json(policy.to_mapping()) != self.media_preflight_policy_json:
-            raise PipelineRunValidationError(
-                "media-preflight policy is not canonical"
-            )
+            raise PipelineRunValidationError("media-preflight policy is not canonical")
         return policy
 
     def _decode_generation_retry_policy(self) -> GenerationRetryPolicy:
@@ -676,9 +712,7 @@ class PipelineExecutionProfile:
                 backoff_seconds=tuple(cast(int, item) for item in backoff_items),
             )
         except (TypeError, ValueError) as error:
-            raise PipelineRunValidationError(
-                "generation retry policy is invalid"
-            ) from error
+            raise PipelineRunValidationError("generation retry policy is invalid") from error
 
     def to_generation_retry_policy(self) -> GenerationRetryPolicy:
         from autocut_kernel.vlm import (
@@ -713,11 +747,19 @@ def _build_registered_doubao_policy(
         raise PipelineRunValidationError(
             "legacy-unresolved execution profile cannot reconstruct a Doubao policy"
         )
+    if profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V4:
+        raise PipelineRunValidationError(
+            "historical execution profile is read-only and cannot map to v4 policy"
+        )
     parameters = _decode_canonical_json(
         profile.request_parameters_json,
         "request_parameters_json",
     )
     parse_policy = _decode_canonical_json(profile.parse_policy_json, "parse_policy_json")
+    if frozenset(parse_policy) != _PARSE_POLICY_FIELDS:
+        raise PipelineRunValidationError(
+            "historical execution profile is read-only and cannot map to v4 policy"
+        )
     try:
         rebuilt = DoubaoVlmRequestPolicy(
             model_id=cast(str, profile.model_id),
@@ -733,17 +775,15 @@ def _build_registered_doubao_policy(
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
             temperature=cast(int | float, parameters["temperature"]),
             parse_policy=VlmParsePolicy(
-                minimum_confidence=Decimal(cast(str, parse_policy["minimum_confidence"])),
                 max_response_bytes=cast(int, parse_policy["max_response_bytes"]),
-                max_observations=cast(int, parse_policy["max_observations"]),
-                max_summary_characters=cast(
-                    int,
-                    parse_policy["max_summary_characters"],
-                ),
-                max_total_summary_characters=cast(
-                    int,
-                    parse_policy["max_total_summary_characters"],
-                ),
+                max_entities=cast(int, parse_policy["max_entities"]),
+                max_facts=cast(int, parse_policy["max_facts"]),
+                max_events=cast(int, parse_policy["max_events"]),
+                max_candidate_hypotheses=cast(int, parse_policy["max_candidate_hypotheses"]),
+                max_temporal_segments=cast(int, parse_policy["max_temporal_segments"]),
+                max_measurements=cast(int, parse_policy["max_measurements"]),
+                max_text_characters=cast(int, parse_policy["max_text_characters"]),
+                max_total_text_characters=cast(int, parse_policy["max_total_text_characters"]),
             ),
             stage_strategy_version=cast(str, profile.vlm_stage_strategy_version),
         )
@@ -767,20 +807,11 @@ def _build_registered_doubao_policy(
         "schema_version": profile.schema_version,
         "vlm_stage_strategy_version": rebuilt.stage_strategy_version,
     }
-    if profile.schema_version in {
-        _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
-        _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
-    }:
-        registered_mapping["generation_retry_policy"] = (
-            profile.to_generation_retry_policy().to_mapping()
-        )
-    if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V3:
-        registered_mapping["media_preflight_policy"] = (
-            profile.to_media_preflight_policy().to_mapping()
-        )
-        registered_mapping["media_preflight_policy_hash"] = (
-            profile.media_preflight_policy_hash
-        )
+    registered_mapping["generation_retry_policy"] = (
+        profile.to_generation_retry_policy().to_mapping()
+    )
+    registered_mapping["media_preflight_policy"] = profile.to_media_preflight_policy().to_mapping()
+    registered_mapping["media_preflight_policy_hash"] = profile.media_preflight_policy_hash
     if _canonical_json(registered_mapping) != profile.canonical_json:
         raise PipelineRunValidationError(
             "execution profile cannot exactly reconstruct its registered Doubao policy"
@@ -895,7 +926,10 @@ class PipelineCommand:
             _required_text(self.lease_id, "lease_id")
         if self.status in ("succeeded", "denied", "failed") and self.receipt_id is None:
             raise PipelineRunValidationError("terminal command requires a Receipt")
-        if self.status in ("pending", "running", "indeterminate", "blocked") and self.receipt_id is not None:
+        if (
+            self.status in ("pending", "running", "indeterminate", "blocked")
+            and self.receipt_id is not None
+        ):
             raise PipelineRunValidationError("nonterminal command cannot claim a Receipt")
         if self.status == "running" and self.lease_id is None:
             raise PipelineRunValidationError("running command requires a lease")
@@ -937,15 +971,14 @@ class PipelineRunSnapshot:
         if type(self.request) is not PipelineRunRequest:  # noqa: E721
             raise PipelineRunValidationError("request must be a PipelineRunRequest")
         if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
-            raise PipelineRunValidationError(
-                "execution_profile must be a PipelineExecutionProfile"
-            )
+            raise PipelineRunValidationError("execution_profile must be a PipelineExecutionProfile")
         if self.request_hash != self.request.request_hash:
             raise PipelineRunValidationError("request_hash does not bind the canonical request")
         if self.status not in ("accepted", "running", "succeeded", "denied", "failed"):
             raise PipelineRunValidationError("run status is unsupported")
         if type(self.commands) is not tuple or any(  # noqa: E721
-            type(command) is not PipelineCommand for command in self.commands  # noqa: E721
+            type(command) is not PipelineCommand
+            for command in self.commands  # noqa: E721
         ):
             raise PipelineRunValidationError("commands must be a tuple of PipelineCommand values")
         if not self.commands:
@@ -964,13 +997,19 @@ class PipelineRunSnapshot:
                 command.status == "denied" for command in self.commands
             ):
                 raise PipelineRunValidationError("denied run must contain a denied command")
-            if self.status == "failed" and not any(
-                command.status == "failed" for command in self.commands
+            if self.status == "failed" and not (
+                any(command.status == "failed" for command in self.commands)
+                or (
+                    tuple(command.stage for command in self.commands)
+                    == _FAIL_CLOSED_BOOTSTRAP_STAGES
+                    and all(command.status == "succeeded" for command in self.commands)
+                )
             ):
-                raise PipelineRunValidationError("failed run must contain a failed command")
+                raise PipelineRunValidationError(
+                    "failed run must contain a failed command or a fail-closed incomplete plan"
+                )
         elif not any(
-            command.status in ("pending", "running", "indeterminate")
-            for command in self.commands
+            command.status in ("pending", "running", "indeterminate") for command in self.commands
         ):
             raise PipelineRunValidationError(
                 "nonterminal run requires at least one nonterminal command"
@@ -1042,19 +1081,24 @@ class PipelineStageContext:
         if type(self.command) is not PipelineCommand:  # noqa: E721
             raise PipelineRunValidationError("stage context command must be persisted")
         if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
-            raise PipelineRunValidationError(
-                "stage context execution_profile must be persisted"
-            )
+            raise PipelineRunValidationError("stage context execution_profile must be persisted")
         if self.command.stage == "vlm" and self.execution_profile.is_legacy_unresolved:
             raise PipelineRunValidationError(
                 "legacy-unresolved execution profile cannot execute VLM"
             )
         if (
-            self.command.stage == "media_preflight"
-            and not self.execution_profile.has_media_preflight_policy
+            self.command.stage == "vlm"
+            and self.execution_profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V4
         ):
             raise PipelineRunValidationError(
-                "media-preflight cannot execute without its frozen policy"
+                "VLM execution requires a persisted execution profile v4"
+            )
+        if (
+            self.command.stage == "media_preflight"
+            and self.execution_profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V4
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight execution requires a persisted execution profile v4"
             )
 
     @property

@@ -22,11 +22,29 @@ from autocut_kernel.media.types import TickRange
 from autocut_kernel.vlm import (
     MappedSourceInterval,
     ProxyTimelineMap,
-    VlmObservation,
-    VlmObservationKind,
+    VlmCandidateHypothesis,
+    VlmCandidateKind,
+    VlmCandidateTag,
+    VlmContinuity,
+    VlmEditingMode,
+    VlmEntity,
+    VlmEntityKind,
+    VlmEvent,
+    VlmEventKind,
+    VlmFact,
+    VlmFactKind,
+    VlmMeasurementKind,
+    VlmNarrativeFunction,
+    VlmProxyInterval,
+    VlmSemanticMeasurement,
+    VlmSemanticPack,
+    VlmSemanticSupport,
+    VlmTemporalMode,
+    VlmWindowSummary,
     WindowFrameSample,
     WindowManifest,
     WindowProxyBlobRef,
+    derive_vlm_global_id,
 )
 from test_root_evidence import (
     HASH_A,
@@ -47,18 +65,16 @@ from test_root_evidence import (
 VIDEO_BASE = TimeBase(1, 90_000)
 
 
-def _manifest_and_observation(
+def _manifest_and_candidate(
     coarse_range: TickRange = TickRange(40, 60),
     mapping_error: int = 5,
     *,
     manifest_source_range: TickRange = TickRange(0, 100),
-) -> tuple[WindowManifest, VlmObservation]:
+) -> tuple[WindowManifest, VlmSemanticPack, VlmCandidateHypothesis]:
     frame_set = _frame_pts(replace(_context(MediaKind.VIDEO, "frame-decoder-v1")))
     timeline = ProxyTimelineMap.translation(
         time_base=VIDEO_BASE,
-        proxy_range=TickRange(
-            0, manifest_source_range.end_pts - manifest_source_range.start_pts
-        ),
+        proxy_range=TickRange(0, manifest_source_range.end_pts - manifest_source_range.start_pts),
         source_start_pts=manifest_source_range.start_pts,
     )
     samples = tuple(
@@ -81,12 +97,14 @@ def _manifest_and_observation(
         timeline_map=timeline,
         frame_samples=samples,
     )
-    observation = VlmObservation(
-        observation_id=HASH_C,
-        kind=VlmObservationKind.OBSERVATION,
-        summary="candidate",
-        confidence=Decimal("0.9"),
+    request_identity_sha256 = HASH_A
+    entity_id = derive_vlm_global_id("entity", "entity_1", request_identity_sha256)
+    fact_id = derive_vlm_global_id("fact", "fact_1", request_identity_sha256)
+    event_id = derive_vlm_global_id("event", "event_1", request_identity_sha256)
+    support = VlmSemanticSupport(
+        proxy_interval=VlmProxyInterval(TickRange(0, 1), 0),
         supporting_frame_ids=(samples[0].frame_id,),
+        confidence=Decimal("0.9"),
         source_interval=MappedSourceInterval(
             coarse_range=coarse_range,
             mapping_error_bound_source_pts=mapping_error,
@@ -94,11 +112,87 @@ def _manifest_and_observation(
             provider_uncertainty_proxy_pts=0,
             proxy_time_base=VIDEO_BASE,
         ),
-        request_identity_sha256=HASH_A,
-        window_manifest_sha256=manifest.canonical_hash,
-        core_owned=False,
+        core_owner_window_manifest_sha256=manifest.canonical_hash,
     )
-    return manifest, observation
+    entity = VlmEntity(
+        entity_id,
+        "entity_1",
+        VlmEntityKind.PERSON,
+        "person",
+        "visible person",
+        support,
+    )
+    fact = VlmFact(
+        fact_id,
+        "fact_1",
+        VlmFactKind.VISIBLE_ACTION,
+        entity_id,
+        None,
+        "person acts",
+        support,
+    )
+    event = VlmEvent(
+        event_id,
+        "event_1",
+        VlmEventKind.REVEAL,
+        "visible reveal",
+        (entity_id,),
+        (fact_id,),
+        (),
+        (),
+        None,
+        VlmTemporalMode.PRESENT,
+        support,
+    )
+    candidate = VlmCandidateHypothesis(
+        derive_vlm_global_id("candidate", "candidate_1", request_identity_sha256),
+        "candidate_1",
+        VlmCandidateKind.HIGHLIGHT,
+        event_id,
+        (event_id,),
+        (),
+        (event_id,),
+        None,
+        "the reveal is a candidate",
+        "a visible reveal",
+        "the reveal completes",
+        None,
+        (VlmEditingMode.DIALOGUE, VlmEditingMode.ACTION),
+        (
+            VlmNarrativeFunction.HOOK,
+            VlmNarrativeFunction.REVEAL,
+            VlmNarrativeFunction.PAYOFF,
+        ),
+        (VlmCandidateTag.DIALOGUE, VlmCandidateTag.EMOTION, VlmCandidateTag.REVEAL),
+        (
+            VlmSemanticMeasurement(
+                VlmMeasurementKind.REVEAL_STRENGTH,
+                Decimal("0.9"),
+                Decimal("0.9"),
+                (fact_id,),
+                (event_id,),
+            ),
+        ),
+        support,
+    )
+    pack = VlmSemanticPack(
+        request_identity_sha256,
+        manifest.canonical_hash,
+        HASH_B,
+        VlmWindowSummary(
+            "visible reveal",
+            VlmTemporalMode.PRESENT,
+            (fact_id,),
+            (event_id,),
+            Decimal("0.9"),
+        ),
+        VlmContinuity(False, False, False, False, (), (), ()),
+        (entity,),
+        (fact,),
+        (event,),
+        (candidate,),
+    )
+    return manifest, pack, candidate
 
 
 def _policy(
@@ -143,11 +237,11 @@ def _assessment(
 
 
 def _initial_plan(**policy_overrides: int):
-    manifest, observation = _manifest_and_observation()
+    manifest, pack, candidate = _manifest_and_candidate()
     policy = _policy(**policy_overrides)
     return (
         plan_candidate_evidence_window(
-            observation, manifest, manifest.frame_pts_index_set, policy
+            candidate, pack, manifest, manifest.frame_pts_index_set, policy
         ),
         manifest,
         policy,
@@ -179,19 +273,21 @@ def test_boundary_feedback_expands_only_the_observed_side() -> None:
 
     assert expanded.outcome is CandidateWindowOutcome.AWAITING_EVIDENCE
     assert len(expanded.windows) == 2
-    assert expanded.final_window.current_range.start_pts == plan.final_window.current_range.start_pts
+    assert (
+        expanded.final_window.current_range.start_pts == plan.final_window.current_range.start_pts
+    )
     assert expanded.final_window.current_range.end_pts > plan.final_window.current_range.end_pts
 
 
 def test_expansion_uses_full_episode_extent_not_proxy_window_extent() -> None:
-    manifest, observation = _manifest_and_observation(
+    manifest, pack, candidate = _manifest_and_candidate(
         TickRange(70, 78),
         mapping_error=0,
         manifest_source_range=TickRange(20, 80),
     )
     policy = _policy(step=15, maximum=2)
     plan = plan_candidate_evidence_window(
-        observation, manifest, manifest.frame_pts_index_set, policy
+        candidate, pack, manifest, manifest.frame_pts_index_set, policy
     )
 
     expanded = advance_candidate_evidence_window(
@@ -320,14 +416,10 @@ def test_candidate_timed_evidence_requires_conjunctive_audio_video_and_calibrati
     audio_context = _context(MediaKind.AUDIO, "asr-v1")
     transcript = _transcript(audio_context)
     speech = _speech(replace(audio_context, producer_id="vad-v1"))
-    audio_boundaries = _audio_boundaries(
-        replace(audio_context, producer_id="audio-boundary-v1")
-    )
+    audio_boundaries = _audio_boundaries(replace(audio_context, producer_id="audio-boundary-v1"))
     video_context = _context(MediaKind.VIDEO, "visual-detector-v1")
     visual = _visual(video_context)
-    subtitles = _subtitles(
-        replace(video_context, producer_id="subtitle-detector-v1")
-    )
+    subtitles = _subtitles(replace(video_context, producer_id="subtitle-detector-v1"))
     evidence_values = (
         transcript,
         speech,
@@ -388,5 +480,9 @@ def test_candidate_timed_evidence_requires_conjunctive_audio_video_and_calibrati
 def test_candidate_window_has_no_admission_fields() -> None:
     plan, _, _ = _initial_plan()
     field_names = {field.name for field in fields(CandidateEvidenceWindow)}
+    plan_field_names = {field.name for field in fields(type(plan))}
     assert not field_names.intersection({"pass", "ready", "allow"})
+    assert "vlm_candidate_sha256" in field_names
+    assert "vlm_candidate_sha256" in plan_field_names
+    assert "vlm_observation_sha256" not in field_names | plan_field_names
     assert not hasattr(plan.final_window, "pass")

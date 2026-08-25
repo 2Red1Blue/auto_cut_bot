@@ -5,7 +5,6 @@ import json
 import os
 import threading
 from dataclasses import replace
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -26,9 +25,7 @@ from autocut_kernel.pipeline import (
     GenerateVlmEvidenceCommand,
     GenerateVlmEvidenceRequest,
     VlmBatchChildOutcome,
-    adapt_vlm_observations,
 )
-from autocut_kernel.semantic_chain import SemanticChainBuilder, SemanticProfile
 from autocut_kernel.store import (
     CommandClaim,
     CommandRejection,
@@ -37,7 +34,7 @@ from autocut_kernel.store import (
     PostgresRuntimeStore,
     StoreValidationError,
 )
-from autocut_kernel.store.models import canonical_payload_hash, canonical_recipe_scope
+from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import (
     GENERATION_RETRY_STRATEGY_VERSION,
     GenerationRetryPolicy,
@@ -326,13 +323,23 @@ def _request(
         prompt_template="Identify only visible semantic changes.",
         prompt_version="semantic-evidence-v1",
         response_schema_json=json.dumps(
-            {"schema_version": 1, "type": "object"},
+            {"schema_version": 3, "type": "object"},
             separators=(",", ":"),
         ),
         request_parameters_json='{"temperature":"0"}',
         model_id="fake-vlm-v1",
         provider_id="fake-provider",
-        parse_policy=VlmParsePolicy(Decimal("0.80"), 4_096, 4, 128, 256),
+        parse_policy=VlmParsePolicy(
+            max_response_bytes=64_000,
+            max_entities=8,
+            max_facts=16,
+            max_events=16,
+            max_candidate_hypotheses=8,
+            max_temporal_segments=8,
+            max_measurements=16,
+            max_text_characters=512,
+            max_total_text_characters=8_192,
+        ),
         retry_policy=GenerationRetryPolicy(
             GENERATION_RETRY_STRATEGY_VERSION,
             3,
@@ -343,22 +350,55 @@ def _request(
 
 
 def _raw_success(request: GenerateVlmEvidenceRequest) -> bytes:
+    support = {
+        "confidence": "0.91",
+        "proxy_interval": {
+            "start_pts": 40,
+            "end_pts": 60,
+            "uncertainty_pts": 2,
+        },
+        "supporting_frame_ids": [request.manifest.frame_samples[1].frame_id],
+    }
     return json.dumps(
         {
-            "schema_version": 1,
-            "observations": [
+            "schema_version": 3,
+            "window_summary": {
+                "summary": "画面发生变化。",
+                "dominant_temporal_mode": "present",
+                "fact_refs": ["fact_1"],
+                "event_refs": [],
+                "confidence": "0.91",
+            },
+            "continuity": {
+                "starts_mid_event": False,
+                "ends_mid_event": False,
+                "continues_from_previous": False,
+                "continues_into_next": False,
+                "entry_state_fact_refs": [],
+                "exit_state_fact_refs": [],
+                "temporal_segments": [],
+            },
+            "entities": [
                 {
-                    "confidence": "0.91",
-                    "kind": "change",
-                    "proxy_interval": {
-                        "start_pts": 40,
-                        "end_pts": 60,
-                        "uncertainty_pts": 2,
-                    },
-                    "summary": "画面发生变化。",
-                    "supporting_frame_ids": [request.manifest.frame_samples[1].frame_id],
+                    "local_entity_id": "entity_1",
+                    "entity_kind": "person",
+                    "display_label": "Visible person",
+                    "visual_description": "A person visible in the frame.",
+                    "support": support,
                 }
             ],
+            "facts": [
+                {
+                    "local_fact_id": "fact_1",
+                    "fact_kind": "visible_change",
+                    "subject_ref": "entity_1",
+                    "object_ref": None,
+                    "summary": "画面发生变化。",
+                    "support": support,
+                }
+            ],
+            "events": [],
+            "candidate_hypotheses": [],
         },
         separators=(",", ":"),
     ).encode()
@@ -375,30 +415,26 @@ def test_success_is_persisted_once_and_replay_never_calls_provider() -> None:
     replay = command.execute(request)
 
     assert first.outcome.state == "succeeded"
-    assert first.observation_set is not None
+    assert first.semantic_pack is not None
     assert replay.outcome.state == "succeeded"
-    assert replay.observation_set == first.observation_set
+    assert replay.semantic_pack == first.semantic_pack
     assert len(provider.dispatch_calls) == 1
     assert not provider.reconcile_calls
     assert provider.dispatch_calls[0].proxy_content == b"exact-proxy-video"
-    observation_artifact = next(
-        item for item in first.artifacts if item.artifact_type == "vlm_observation_set"
+    semantic_pack_artifact = next(
+        item for item in first.artifacts if item.artifact_type == "vlm_semantic_pack"
     )
-    adapted = adapt_vlm_observations(
-        profile=SemanticProfile.TEST,
-        manifest=request.manifest,
-        request_identity=request.request_identity,
-        observation_set=first.observation_set,
-        observation_artifact=observation_artifact,
+    assert semantic_pack_artifact.payload_json == json.dumps(
+        first.semantic_pack.to_mapping(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     )
-    chain = SemanticChainBuilder().build(adapted.semantic_input)
-    assert len(chain.narrative.nodes) == 1
-    assert adapted.candidate_catalog.entries[0].summary == "画面发生变化。"
-    assert (
-        adapted.candidate_catalog.entries[0]
-        .coarse_interval.to_mapping()["semantic_precision"]
-        == "coarse_only"
-    )
+    assert first.semantic_pack.facts[0].summary == "画面发生变化。"
+    assert first.semantic_pack.candidate_hypotheses == ()
+    assert first.semantic_pack.facts[0].support.source_interval.to_mapping()[
+        "semantic_precision"
+    ] == "coarse_only"
 
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
@@ -413,7 +449,7 @@ def test_success_is_persisted_once_and_replay_never_calls_provider() -> None:
             assert (state.decode() if isinstance(state, bytes) else state) == "running"
 
 
-def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> None:
+def test_postgres_resolves_exact_child_references_and_batch_finalizer() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("vlm-independent-proof", "test")
@@ -427,7 +463,7 @@ def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> Non
     child_result = GenerateVlmEvidenceCommand(store, provider).execute(request)
 
     persisted = store.read_committed_vlm_generation_child(job, request.idempotency_key)
-    persisted_observations = store.read_committed_vlm_observation_set(
+    exact_reference = store.read_committed_vlm_input_reference(
         job, request.idempotency_key
     )
 
@@ -438,12 +474,9 @@ def test_postgres_reader_independently_proves_child_and_batch_finalizer() -> Non
     assert persisted.window_manifest_set_sha256 == request.manifest_set.canonical_hash
     assert persisted.source_manifest_sha256 == request.source_manifest_sha256
     assert persisted.source_provenance_sha256 == request.source_provenance_sha256
-    assert persisted_observations.source_child == persisted
-    assert persisted_observations.observation_set == child_result.observation_set
-    assert (
-        persisted_observations.reference.content_hash
-        == canonical_payload_hash(persisted_observations.payload_json)
-    )
+    assert exact_reference.request_record.content_hash == persisted.reference.content_hash
+    assert exact_reference.request_payload == persisted.request_payload
+    assert exact_reference.semantic_pack.artifact_type == "vlm_semantic_pack"
     assert child_result.outcome.receipt_id is not None
     assert child_result.outcome.artifact_set_id is not None
     batch = FinalizeVlmBatchCommand(store).execute(
@@ -611,11 +644,11 @@ def test_callback_failure_fallback_persists_id_and_replay_only_reconciles() -> N
     )
 
 
-def test_invalid_response_is_denied_without_observation_artifact() -> None:
+def test_invalid_response_is_denied_without_semantic_pack_artifact() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request = _request(store, Job("vlm-invalid", "test"))
-    raw = b'{"schema_version":1,"observations":[]}'
+    raw = b'{"schema_version":2,"observations":[]}'
     provider = FakeProvider(ProviderCompleted(raw, "provider-request-invalid"))
 
     result = GenerateVlmEvidenceCommand(store, provider).execute(request)
@@ -625,7 +658,7 @@ def test_invalid_response_is_denied_without_observation_artifact() -> None:
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT count(*) FROM runtime.artifacts WHERE artifact_type = 'vlm_observation_set'"
+                "SELECT count(*) FROM runtime.artifacts WHERE artifact_type = 'vlm_semantic_pack'"
             )
             assert cursor.fetchone()[0] == 0
             cursor.execute(
@@ -633,6 +666,80 @@ def test_invalid_response_is_denied_without_observation_artifact() -> None:
                 (_digest(raw),),
             )
             assert cursor.fetchone()[0] == 1
+
+
+def test_event_fact_support_invariant_denial_persists_terminal_receipt() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-support-mismatch", "test"))
+    payload = json.loads(_raw_success(request))
+    event_support = {
+        "confidence": "0.91",
+        "proxy_interval": {
+            "start_pts": 70,
+            "end_pts": 95,
+            "uncertainty_pts": 0,
+        },
+        "supporting_frame_ids": [request.manifest.frame_samples[2].frame_id],
+    }
+    payload["events"] = [
+        {
+            "local_event_id": "event_1",
+            "event_kind": "reveal",
+            "summary": "另一个时段发生变化。",
+            "participant_refs": ["entity_1"],
+            "fact_refs": ["fact_1"],
+            "cause_event_refs": [],
+            "effect_event_refs": [],
+            "open_question": None,
+            "temporal_mode": "present",
+            "support": event_support,
+        }
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+    result = GenerateVlmEvidenceCommand(
+        store,
+        FakeProvider(ProviderCompleted(raw, "provider-support-mismatch")),
+    ).execute(request)
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.receipt_id is not None
+    assert result.attempt is not None and result.attempt.state == "failed"
+    assert result.attempt.failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
+    with psycopg.connect(DSN) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT outcome, failure_code
+                  FROM runtime.command_receipts
+                 WHERE receipt_id = %s
+                """,
+                (result.outcome.receipt_id,),
+            )
+            assert cursor.fetchone() == (
+                "denied",
+                "SEMANTIC_PACK_INVARIANT_VIOLATION",
+            )
+
+
+def test_continuity_invariant_denial_persists_terminal_receipt() -> None:
+    assert DSN is not None
+    store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    request = _request(store, Job("vlm-continuity-mismatch", "test"))
+    payload = json.loads(_raw_success(request))
+    payload["continuity"]["entry_state_fact_refs"] = ["fact_1"]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+
+    result = GenerateVlmEvidenceCommand(
+        store,
+        FakeProvider(ProviderCompleted(raw, "provider-continuity-mismatch")),
+    ).execute(request)
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.receipt_id is not None
+    assert result.attempt is not None and result.attempt.state == "failed"
+    assert result.attempt.failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
 
 
 def test_provider_terminal_failure_closes_attempt_and_command_without_artifacts() -> None:

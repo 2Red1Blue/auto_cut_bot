@@ -44,7 +44,7 @@ from ..store import (
     Job,
 )
 from ..store.models import canonical_recipe_scope
-from ..vlm import VlmObservationSet, WindowManifest
+from ..vlm import VlmSemanticPack, WindowManifest
 
 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
@@ -154,7 +154,7 @@ class PrepareTimedMediaEvidenceRequest:
     source_manifest_sha256: str
     source_provenance_sha256: str
     window_manifest: WindowManifest
-    observation_set: VlmObservationSet
+    semantic_pack: VlmSemanticPack
     frame_pts_index: FramePtsIndexSet
     audio_sample_boundaries: AudioSampleBoundarySet
     frame_detector_sha256: str
@@ -184,25 +184,21 @@ class PrepareTimedMediaEvidenceRequest:
                 )
         if type(self.window_manifest) is not WindowManifest:  # noqa: E721
             raise TimedMediaEvidenceCommandError("window_manifest must be exact")
-        if type(self.observation_set) is not VlmObservationSet:  # noqa: E721
-            raise TimedMediaEvidenceCommandError("observation_set must be exact")
+        if type(self.semantic_pack) is not VlmSemanticPack:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("semantic_pack must be exact")
         if type(self.frame_pts_index) is not FramePtsIndexSet:  # noqa: E721
             raise TimedMediaEvidenceCommandError("frame_pts_index must be exact")
         if type(self.audio_sample_boundaries) is not AudioSampleBoundarySet:  # noqa: E721
             raise TimedMediaEvidenceCommandError("audio boundaries must be exact")
-        if not _is_sha256(self.frame_detector_sha256) or not _is_sha256(
-            self.audio_detector_sha256
-        ):
-            raise TimedMediaEvidenceCommandError(
-                "physical detector identities must be sha256"
-            )
+        if not _is_sha256(self.frame_detector_sha256) or not _is_sha256(self.audio_detector_sha256):
+            raise TimedMediaEvidenceCommandError("physical detector identities must be sha256")
         if type(self.adaptive_policy) is not AdaptiveEvidenceWindowPolicy:  # noqa: E721
             raise TimedMediaEvidenceCommandError("adaptive_policy must be exact")
         manifest = self.window_manifest
         if (
             manifest.source_sha256 != self.source_blob.content_hash
             or manifest.frame_pts_index_set_sha256 != self.frame_pts_index.canonical_hash
-            or self.observation_set.window_manifest_sha256 != manifest.canonical_hash
+            or self.semantic_pack.window_manifest_sha256 != manifest.canonical_hash
             or self.adaptive_policy.time_base != manifest.source_time_base
         ):
             raise TimedMediaEvidenceCommandError("source/VLM/frame/policy identities do not close")
@@ -217,7 +213,7 @@ class PrepareTimedMediaEvidenceRequest:
                 "adaptive_policy_sha256": self.adaptive_policy.canonical_hash,
                 "episode_index": self.episode_index,
                 "frame_detector_sha256": self.frame_detector_sha256,
-                "observation_set_sha256": self.observation_set.canonical_hash,
+                "semantic_pack_sha256": self.semantic_pack.canonical_hash,
                 "producer_policy_sha256": self.producer_policy_sha256,
                 "source_blob": _blob_mapping(self.source_blob),
                 "source_manifest_sha256": self.source_manifest_sha256,
@@ -239,7 +235,7 @@ class PrepareTimedMediaEvidenceRequest:
             "frame_detector_sha256": self.frame_detector_sha256,
             "idempotency_key": self.idempotency_key,
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
-            "observation_set_sha256": self.observation_set.canonical_hash,
+            "semantic_pack_sha256": self.semantic_pack.canonical_hash,
             "producer_policy_sha256": self.producer_policy_sha256,
             "root_input_manifest_sha256": self.root_input_manifest_sha256,
             "source_blob": _blob_mapping(self.source_blob),
@@ -501,10 +497,8 @@ class PrepareTimedMediaEvidenceCommand:
         }
         provenance_identities = provenance["producer_identities"]
         if (
-            provenance_identities[0]["detector_sha256"]
-            != request.frame_detector_sha256
-            or provenance_identities[1]["detector_sha256"]
-            != request.audio_detector_sha256
+            provenance_identities[0]["detector_sha256"] != request.frame_detector_sha256
+            or provenance_identities[1]["detector_sha256"] != request.audio_detector_sha256
         ):
             raise TimedMediaEvidenceCommandError(
                 "producer provenance replaced committed physical detector identities"
@@ -544,9 +538,10 @@ class PrepareTimedMediaEvidenceCommand:
         root = produced.root_bundle
         plans: list[CandidateEvidenceWindowPlan] = []
         candidates: list[CandidateTimedEvidenceSet] = []
-        for observation in request.observation_set.observations:
+        for candidate in request.semantic_pack.candidate_hypotheses:
             plan = plan_candidate_evidence_window(
-                observation,
+                candidate,
+                request.semantic_pack,
                 request.window_manifest,
                 request.frame_pts_index,
                 request.adaptive_policy,
@@ -643,12 +638,13 @@ class PrepareTimedMediaEvidenceCommand:
         index_payload = {
             "candidate_blobs": [_blob_mapping(item) for item in candidate_blobs],
             "candidate_count": len(candidate_blobs),
+            "candidate_index_state": "populated" if candidate_blobs else "empty",
             "candidate_set_sha256": [item.canonical_hash for item in candidates],
             "episode_index": request.episode_index,
-            "observation_set_sha256": request.observation_set.canonical_hash,
             "plan_blob": _blob_mapping(plan_blob),
             "plan_set_sha256": canonical_sha256(plan_payload),
             "schema_version": "candidate-timed-evidence-index-v1",
+            "semantic_pack_sha256": request.semantic_pack.canonical_hash,
         }
         return (
             _artifact(
@@ -905,9 +901,7 @@ def _validate_producer_provenance_json(value: object) -> None:
         for field in invocation_fields - {"executable", "producer_kind"}:
             if not _is_sha256(invocation[field]):
                 raise TimedMediaEvidenceCommandError("producer tool trace hash is invalid")
-        if (invocation["producer_kind"], invocation["executable"]) not in (
-            allowed_invocations
-        ):
+        if (invocation["producer_kind"], invocation["executable"]) not in (allowed_invocations):
             raise TimedMediaEvidenceCommandError(
                 "producer tool trace executable identity is not registered"
             )
@@ -967,9 +961,7 @@ def _validate_canonical_mapping_json(
         raise TimedMediaEvidenceCommandError(f"{label} must be a JSON object")
     payload = cast(dict[str, object], decoded)
     if _json(payload) != value or canonical_sha256(payload) != expected_sha256:
-        raise TimedMediaEvidenceCommandError(
-            f"{label} does not match its canonical hash"
-        )
+        raise TimedMediaEvidenceCommandError(f"{label} does not match its canonical hash")
 
 
 __all__ = (

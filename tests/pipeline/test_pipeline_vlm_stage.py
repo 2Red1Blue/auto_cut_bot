@@ -4,7 +4,6 @@ import hashlib
 import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -48,6 +47,7 @@ from autocut_kernel.vlm import (
     WindowManifestSet,
     WindowProxyBlobRef,
 )
+from runtime_profile_fixture import media_preflight_policy
 
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.models import (
@@ -62,11 +62,14 @@ from auto_cut_bot.pipeline.runtime.source_prep_stage import (
 from auto_cut_bot.pipeline.runtime.vlm_stage import (
     VLM_EPISODE_SELECTION_STRATEGY_VERSION,
     VlmPipelineStage,
+    vlm_kernel_idempotency_key,
 )
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     PreparedSeriesSources,
     PreparedSourceEpisode,
+    SourceOperationPolicy,
+    SourceOperationPurpose,
 )
 from auto_cut_bot.pipeline.source_prep.models import SeriesSource, SeriesSourceCensus
 from auto_cut_bot.pipeline.source_prep.probe import SourceMediaProbe
@@ -164,13 +167,25 @@ def _episode(index: int) -> tuple[PreparedSourceEpisode, bytes, SeriesSource]:
     )
 
 
-def _bundle(count: int = 1) -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
+def _bundle(
+    count: int = 1,
+    *,
+    authorization_id: str = "authorized-source",
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
+) -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
     values = tuple(_episode(index) for index in range(count))
     job = Job(RUN_ID, "test")
     prepared = PreparedSeriesSources(
         SeriesSourceCensus(
-            "authorized-source",
-            "series-001",
+            SourceOperationPolicy(
+                authorization_id,
+                "series-001",
+                count,
+                authorized_purposes,
+            ),
             "all_or_nothing",
             tuple(value[2] for value in values),
         ),
@@ -592,20 +607,93 @@ class Provider:
         self.reconcile_calls: list[ProviderReconcileQuery] = []
 
     def _completed(self, manifest_hash: str, request_id: str) -> ProviderCompleted:
+        support = {
+            "confidence": "0.91",
+            "proxy_interval": {
+                "end_pts": 60,
+                "start_pts": 40,
+                "uncertainty_pts": 2,
+            },
+            "supporting_frame_ids": [self.frame_ids[manifest_hash]],
+        }
         raw = json.dumps(
             {
-                "schema_version": 1,
-                "observations": [
+                "schema_version": 3,
+                "window_summary": {
+                    "summary": "Visible scene change.",
+                    "dominant_temporal_mode": "present",
+                    "fact_refs": ["fact_1"],
+                    "event_refs": ["event_1"],
+                    "confidence": "0.91",
+                },
+                "continuity": {
+                    "starts_mid_event": False,
+                    "ends_mid_event": False,
+                    "continues_from_previous": False,
+                    "continues_into_next": False,
+                    "entry_state_fact_refs": [],
+                    "exit_state_fact_refs": [],
+                    "temporal_segments": [],
+                },
+                "entities": [
                     {
-                        "confidence": "0.91",
-                        "kind": "change",
-                        "proxy_interval": {
-                            "end_pts": 60,
-                            "start_pts": 40,
-                            "uncertainty_pts": 2,
-                        },
+                        "local_entity_id": "entity_1",
+                        "entity_kind": "object",
+                        "display_label": "Visible subject",
+                        "visual_description": "A visible subject in the scene.",
+                        "support": support,
+                    }
+                ],
+                "facts": [
+                    {
+                        "local_fact_id": "fact_1",
+                        "fact_kind": "visible_change",
+                        "subject_ref": "entity_1",
+                        "object_ref": None,
+                        "summary": "The visible scene changes.",
+                        "support": support,
+                    }
+                ],
+                "events": [
+                    {
+                        "local_event_id": "event_1",
+                        "event_kind": "transition",
                         "summary": "Visible scene change.",
-                        "supporting_frame_ids": [self.frame_ids[manifest_hash]],
+                        "participant_refs": ["entity_1"],
+                        "fact_refs": ["fact_1"],
+                        "cause_event_refs": [],
+                        "effect_event_refs": [],
+                        "open_question": None,
+                        "temporal_mode": "present",
+                        "support": support,
+                    }
+                ],
+                "candidate_hypotheses": [
+                    {
+                        "local_candidate_id": "candidate_1",
+                        "candidate_kind": "highlight",
+                        "anchor_event_ref": "event_1",
+                        "supporting_event_refs": ["event_1"],
+                        "context_event_refs": [],
+                        "payoff_event_refs": ["event_1"],
+                        "open_question": None,
+                        "reason": "The visible transition is a concrete highlight.",
+                        "anchor_summary": "The scene visibly changes.",
+                        "payoff_or_open_question": "The transition completes visibly.",
+                        "dialogue_excerpt": None,
+                        "editing_modes": ["action"],
+                        "narrative_functions": ["payoff"],
+                        "tags": ["action"],
+                        "measurements": [
+                            {
+                                "measurement_kind": "visual_salience",
+                                "value": "0.91",
+                                "confidence": "0.91",
+                                "fact_refs": ["fact_1"],
+                                "event_refs": ["event_1"],
+                            }
+                        ],
+                        "support": support,
                     }
                 ],
             },
@@ -619,7 +707,7 @@ class Provider:
         request_id = f"provider-request-{len(self.dispatch_calls)}"
         if self.deny_first and len(self.dispatch_calls) == 1:
             return ProviderCompleted(
-                b'{"schema_version":1,"observations":[]}',
+                b'{"schema_version":3,"candidate_hypotheses":[]}',
                 request_id,
             )
         if self.indeterminate_first:
@@ -641,17 +729,51 @@ class Provider:
 
 
 def _profile() -> PipelineExecutionProfile:
-    return PipelineExecutionProfile.from_doubao_policy(
+    return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(
             model_id="doubao-seed-2-1-pro-260628",
-            parse_policy=VlmParsePolicy(Decimal("0.80"), 1_000_000, 4, 128, 512),
+            parse_policy=VlmParsePolicy(
+                max_response_bytes=1_000_000,
+                max_entities=8,
+                max_facts=16,
+                max_events=8,
+                max_candidate_hypotheses=4,
+                max_temporal_segments=8,
+                max_measurements=16,
+                max_text_characters=512,
+                max_total_text_characters=8_192,
+            ),
         ),
+        media_preflight_policy(),
         retry_policy=GenerationRetryPolicy(
             GENERATION_RETRY_STRATEGY_VERSION,
             3,
             (2, 8),
         ),
     )
+
+
+def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
+    mapping = _profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v3"
+    mapping["parse_policy"] = {
+        "max_observations": 64,
+        "max_response_bytes": 64_000,
+        "max_summary_characters": 512,
+        "max_total_summary_characters": 8_192,
+        "minimum_confidence": "0.80",
+    }
+    historical = PipelineExecutionProfile.from_mapping(mapping)
+
+    with pytest.raises(PipelineRunValidationError, match="profile v4"):
+        PipelineStageContext(
+            RUN_ID,
+            PipelineRunRequest("test", source_reference="authorized-source"),
+            PipelineCommand("control-vlm-history", "vlm", "pending"),
+            historical,
+        )
+    with pytest.raises(PipelineRunValidationError, match="read-only"):
+        historical.to_doubao_policy()
 
 
 def _context(stage: str = "vlm", *, status: str = "running") -> PipelineStageContext:
@@ -676,6 +798,86 @@ def _source_success() -> CommandOutcome:
         receipt_id=uuid4(),
         artifact_set_id=uuid4(),
         job_id=uuid4(),
+    )
+
+
+def _replace_census_sources(
+    bundle: PersistedPreparedSources,
+    sources: tuple[SeriesSource, ...],
+) -> PersistedPreparedSources:
+    prepared = replace(
+        bundle.prepared,
+        census=SeriesSourceCensus(
+            bundle.prepared.census.policy,
+            "all_or_nothing",
+            sources,
+        ),
+    )
+    payload_json = json.dumps(
+        prepared.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return replace(
+        bundle,
+        prepared=prepared,
+        artifact_reference=replace(
+            bundle.artifact_reference,
+            content_hash=canonical_payload_hash(payload_json),
+        ),
+    )
+
+
+def _replace_source_policy(
+    bundle: PersistedPreparedSources,
+    policy: SourceOperationPolicy,
+) -> PersistedPreparedSources:
+    prepared = replace(
+        bundle.prepared,
+        census=SeriesSourceCensus(
+            policy,
+            "all_or_nothing",
+            bundle.prepared.census.sources,
+        ),
+    )
+    payload_json = json.dumps(
+        prepared.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return replace(
+        bundle,
+        prepared=prepared,
+        artifact_reference=replace(
+            bundle.artifact_reference,
+            content_hash=canonical_payload_hash(payload_json),
+        ),
+    )
+
+
+def test_source_grant_changes_flow_into_manifest_provenance_and_vlm_identity() -> None:
+    bundle, _blobs = _bundle()
+    semantic_only = _replace_source_policy(
+        bundle,
+        SourceOperationPolicy(
+            "authorized-source",
+            "series-001",
+            1,
+            ("semantic_analysis",),
+        ),
+    )
+    policy = _profile().to_doubao_policy()
+
+    assert semantic_only.artifact_reference.content_hash != (bundle.artifact_reference.content_hash)
+    assert semantic_only.canonical_hash != bundle.canonical_hash
+    assert vlm_kernel_idempotency_key(
+        run_id=RUN_ID,
+        episode_index=0,
+        source_bundle=semantic_only,
+        policy=policy,
+        execution_profile_hash=_profile().canonical_hash,
+    ) != vlm_kernel_idempotency_key(
+        run_id=RUN_ID,
+        episode_index=0,
+        source_bundle=bundle,
+        policy=policy,
+        execution_profile_hash=_profile().canonical_hash,
     )
 
 
@@ -743,6 +945,57 @@ async def test_missing_or_nonterminal_source_is_indeterminate_without_dispatch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["execute", "reconcile"])
+async def test_source_grant_without_semantic_analysis_blocks_batch_before_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    bundle, blobs = _bundle(authorized_purposes=("render_source",))
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="semantic_analysis"):
+        if operation == "execute":
+            await stage.execute(_context(status="indeterminate"))
+        else:
+            await stage.reconcile(_context(status="indeterminate"))
+
+    assert store.claims == {}
+    assert provider.dispatch_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["execute", "reconcile"])
+async def test_source_grant_membership_mismatch_blocks_batch_before_claim(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    bundle, blobs = _bundle()
+    source = bundle.prepared.census.sources[0]
+    forged = replace(source, source_id="source-not-owned-by-episode")
+    mismatched_bundle = _replace_census_sources(bundle, (forged,))
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=mismatched_bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="do not match"):
+        if operation == "execute":
+            await stage.execute(_context(status="indeterminate"))
+        else:
+            await stage.reconcile(_context(status="indeterminate"))
+
+    assert store.claims == {}
+    assert provider.dispatch_calls == []
+
+
+@pytest.mark.asyncio
 async def test_legacy_execution_profile_is_refused_even_for_forged_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -778,9 +1031,7 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     assert result.outcome == "succeeded"
     assert result.receipt_id is not None
     assert len(provider.dispatch_calls) == 2
-    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == (
-        "all-committed-episodes-sequential-v1"
-    )
+    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == ("all-committed-episodes-sequential-v1")
     aggregate = next(
         outcome
         for claim, outcome in store.claims.values()
@@ -868,6 +1119,5 @@ async def test_rejected_episode_short_circuits_later_dispatch_and_denies_batch(
     assert result.receipt_id is not None
     assert len(provider.dispatch_calls) == 1
     assert all(
-        claim.command_name != "FinalizeVlmBatchCommand"
-        for claim, _outcome in store.claims.values()
+        claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )

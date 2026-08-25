@@ -50,6 +50,11 @@ class DbConnection(Protocol):
 ConnectionFactory = Callable[[], DbConnection]
 _Result = TypeVar("_Result")
 
+# Stage1-3 have no durable commands yet. Once their final command exists, this
+# is the single success boundary to replace; the bootstrap stages alone must
+# never manufacture a semantically complete run.
+_PIPELINE_SUCCESS_TERMINAL_STAGE: str | None = None
+
 
 def _text(value: object) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
@@ -62,13 +67,9 @@ def _execution_profile(value: object, expected_hash: object) -> PipelineExecutio
         try:
             decoded = cast(object, json.loads(_text(value)))
         except (json.JSONDecodeError, UnicodeError) as error:
-            raise PipelineRunValidationError(
-                "persisted execution profile is not JSON"
-            ) from error
+            raise PipelineRunValidationError("persisted execution profile is not JSON") from error
         if not isinstance(decoded, Mapping):
-            raise PipelineRunValidationError(
-                "persisted execution profile must be an object"
-            )
+            raise PipelineRunValidationError("persisted execution profile must be an object")
         mapping = cast(Mapping[str, object], decoded)
     profile = PipelineExecutionProfile.from_mapping(mapping)
     if profile.canonical_hash != _text(expected_hash):
@@ -76,6 +77,25 @@ def _execution_profile(value: object, expected_hash: object) -> PipelineExecutio
             "persisted execution profile hash does not bind its canonical JSON"
         )
     return profile
+
+
+def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
+    states = [state for _stage, state in command_rows]
+    terminal_states = {"succeeded", "denied", "failed", "blocked"}
+    if not states or any(state not in terminal_states for state in states):
+        return "running"
+    if "failed" in states:
+        return "failed"
+    if "denied" in states:
+        return "denied"
+    if "blocked" in states:
+        return "failed"
+    if _PIPELINE_SUCCESS_TERMINAL_STAGE is not None and any(
+        stage == _PIPELINE_SUCCESS_TERMINAL_STAGE and state == "succeeded"
+        for stage, state in command_rows
+    ):
+        return "succeeded"
+    return "failed"
 
 
 def _ensure_pending_outbox(cursor: DbCursor, run_id: str) -> None:
@@ -169,9 +189,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         execution_profile: PipelineExecutionProfile,
     ) -> RunClaim:
         if type(execution_profile) is not PipelineExecutionProfile:  # noqa: E721
-            raise PipelineRunValidationError(
-                "claim_run requires a PipelineExecutionProfile"
-            )
+            raise PipelineRunValidationError("claim_run requires a PipelineExecutionProfile")
         if request_hash != request.request_hash:
             raise PipelineRunValidationError(
                 "claim_run request_hash does not bind the canonical request"
@@ -500,6 +518,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
+                              AND profile_run.execution_profile
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v4'
                        )
                    )
                    AND (
@@ -508,7 +528,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v3'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v4'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy'
                               AND profile_run.execution_profile
@@ -658,23 +678,13 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 ),
             )
             cursor.execute(
-                "SELECT state FROM runtime.pipeline_commands WHERE run_id = %s",
+                "SELECT stage, state FROM runtime.pipeline_commands WHERE run_id = %s",
                 (run_id,),
             )
-            command_states: list[str] = []
+            command_rows: list[tuple[str, str]] = []
             while (command_row := cursor.fetchone()) is not None:
-                command_states.append(_text(command_row[0]))
-            terminal = {"succeeded", "denied", "failed", "blocked"}
-            if command_states and all(state in terminal for state in command_states):
-                next_run_state = (
-                    "failed"
-                    if "failed" in command_states
-                    else "denied"
-                    if "denied" in command_states
-                    else "succeeded"
-                )
-            else:
-                next_run_state = "running"
+                command_rows.append((_text(command_row[0]), _text(command_row[1])))
+            next_run_state = _terminal_run_state(command_rows)
             cursor.execute(
                 """
                 UPDATE runtime.pipeline_runs
@@ -748,9 +758,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         expected_version: int,
     ) -> None:
         if result.outcome == "indeterminate" or result.receipt_id is None:
-            raise PipelineRunValidationError(
-                "reconciled result must contain a terminal Receipt"
-            )
+            raise PipelineRunValidationError("reconciled result must contain a terminal Receipt")
 
         def operation(cursor: DbCursor) -> None:
             cursor.execute(
@@ -805,23 +813,13 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     (result.command_id, run_id, result.command_id),
                 )
             cursor.execute(
-                "SELECT state FROM runtime.pipeline_commands WHERE run_id = %s",
+                "SELECT stage, state FROM runtime.pipeline_commands WHERE run_id = %s",
                 (run_id,),
             )
-            command_states: list[str] = []
+            command_rows: list[tuple[str, str]] = []
             while (command_row := cursor.fetchone()) is not None:
-                command_states.append(_text(command_row[0]))
-            terminal = {"succeeded", "denied", "failed", "blocked"}
-            if command_states and all(state in terminal for state in command_states):
-                next_run_state = (
-                    "failed"
-                    if "failed" in command_states
-                    else "denied"
-                    if "denied" in command_states
-                    else "succeeded"
-                )
-            else:
-                next_run_state = "running"
+                command_rows.append((_text(command_row[0]), _text(command_row[1])))
+            next_run_state = _terminal_run_state(command_rows)
             cursor.execute(
                 """
                 UPDATE runtime.pipeline_runs
@@ -869,9 +867,9 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             execution_profile_hash,
         ) = run
         request_mapping: dict[str, object] = {"profile": _text(profile)}
-        request_mapping[
-            "source_root" if _text(source_kind) == "root" else "source_reference"
-        ] = _text(source_value)
+        request_mapping["source_root" if _text(source_kind) == "root" else "source_reference"] = (
+            _text(source_value)
+        )
         request = PipelineRunRequest.from_mapping(request_mapping)
         frozen_execution_profile = _execution_profile(
             execution_profile_json,

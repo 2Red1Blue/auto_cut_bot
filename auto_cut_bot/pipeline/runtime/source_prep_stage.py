@@ -11,9 +11,12 @@ from autocut_kernel.store import ArtifactScope, CommandOutcome, Job
 
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
+    PersistedPreparedSources,
     PrepareWholeSeriesSourcesCommand,
     PrepareWholeSeriesSourcesRequest,
+    SourceOperationPurpose,
     SourcePrepStore,
+    SourcePurposeDeniedError,
 )
 
 from .errors import PipelineRunValidationError
@@ -27,6 +30,37 @@ def source_prep_kernel_idempotency_key(run_id: str) -> str:
 
     validate_run_id(run_id)
     return f"{_SOURCE_PREP_KERNEL_IDEMPOTENCY_VERSION}:{run_id}"
+
+
+def require_committed_source_operation(
+    source_bundle: PersistedPreparedSources,
+    purpose: SourceOperationPurpose,
+) -> None:
+    """Require one purpose and exact episode membership from a committed grant."""
+
+    if type(source_bundle) is not PersistedPreparedSources:  # noqa: E721
+        raise PipelineRunValidationError(
+            "source operation requires exact persisted source provenance"
+        )
+    census = source_bundle.prepared.census
+    try:
+        census.require_purpose(purpose)
+    except SourcePurposeDeniedError as error:
+        raise PipelineRunValidationError(
+            f"committed source grant does not authorize {purpose}"
+        ) from error
+    granted_sources = tuple((source.source_id, source.content_sha256) for source in census.sources)
+    episode_sources = tuple(
+        (
+            episode.manifest.source_id,
+            episode.manifest.source_sha256,
+        )
+        for episode in source_bundle.prepared.episodes
+    )
+    if not episode_sources or episode_sources != granted_sources:
+        raise PipelineRunValidationError(
+            "committed source episodes do not match the operation grant"
+        )
 
 
 class SourcePrepRootResolver(Protocol):
@@ -54,9 +88,7 @@ class SourcePrepPipelineStage:
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
         if type(context) is not PipelineStageContext:  # noqa: E721
-            raise PipelineRunValidationError(
-                "source prep adapter requires an exact stage context"
-            )
+            raise PipelineRunValidationError("source prep adapter requires an exact stage context")
         if context.command.stage != "source_prep":
             raise PipelineRunValidationError("source prep adapter received another stage")
         validate_run_id(context.run_id)

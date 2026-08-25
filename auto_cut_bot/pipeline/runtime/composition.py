@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import psycopg
+from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
 from autocut_kernel.store import PostgresRuntimeStore
 from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
 from autocut_kernel.vlm import (
@@ -69,7 +70,14 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
 )
 _CATALOG_FIELDS = frozenset(
-    {"authorization_id", "authorized_path", "expected_source_count", "series_id"}
+    {
+        "authorization_id",
+        "authorization_policy_sha256",
+        "authorized_path",
+        "authorized_purposes",
+        "expected_source_count",
+        "series_id",
+    }
 )
 
 DOUBAO_GENERATION_RETRY_POLICY = GenerationRetryPolicy(
@@ -95,7 +103,7 @@ class SourceCatalogEntry:
 
     @property
     def authorization_id(self) -> str:
-        return self.authorized_root.authorization_id
+        return self.authorized_root.policy.authorization_id
 
 
 class ConfiguredSourceCatalog:
@@ -106,7 +114,7 @@ class ConfiguredSourceCatalog:
             raise PipelineRuntimeConfigurationError("source catalog must not be empty")
         paths = tuple(entry.path for entry in entries)
         authorization_ids = tuple(entry.authorization_id for entry in entries)
-        series_ids = tuple(entry.authorized_root.series_id for entry in entries)
+        series_ids = tuple(entry.authorized_root.policy.series_id for entry in entries)
         if len(set(paths)) != len(paths):
             raise PipelineRuntimeConfigurationError("source catalog paths must be unique")
         if len(set(authorization_ids)) != len(authorization_ids):
@@ -122,8 +130,8 @@ class ConfiguredSourceCatalog:
     @classmethod
     def from_json(cls, raw: str) -> ConfiguredSourceCatalog:
         try:
-            decoded = cast(object, json.loads(raw))
-        except (json.JSONDecodeError, UnicodeError) as error:
+            decoded = cast(object, json.loads(raw, object_pairs_hook=_closed_json_object))
+        except (json.JSONDecodeError, UnicodeError, ValueError) as error:
             raise PipelineRuntimeConfigurationError(
                 f"{PIPELINE_SOURCE_CATALOG_ENV} must be valid JSON"
             ) from error
@@ -153,15 +161,50 @@ class ConfiguredSourceCatalog:
                 raise PipelineRuntimeConfigurationError(
                     f"source catalog entry {index} expected_source_count must be positive"
                 )
+            raw_purposes = item["authorized_purposes"]
+            if type(raw_purposes) is not list or not raw_purposes:  # noqa: E721
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} authorized_purposes must be a non-empty array"
+                )
+            purposes = tuple(cast(list[object], raw_purposes))
+            if any(type(purpose) is not str for purpose in purposes):
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} authorized_purposes must contain strings"
+                )
+            try:
+                policy = SourceOperationPolicy(
+                    authorization_id=_catalog_text(
+                        item["authorization_id"], index, "authorization_id"
+                    ),
+                    series_id=_catalog_text(item["series_id"], index, "series_id"),
+                    expected_source_count=expected_count,
+                    authorized_purposes=cast(
+                        tuple[SourceOperationPurpose, ...],
+                        purposes,
+                    ),
+                )
+            except ValueError as error:
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} operation policy is invalid"
+                ) from error
+            if purposes != policy.authorized_purposes:
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} authorized_purposes must be canonical"
+                )
+            supplied_policy_hash = _catalog_text(
+                item["authorization_policy_sha256"],
+                index,
+                "authorization_policy_sha256",
+            )
+            if supplied_policy_hash != policy.policy_sha256:
+                raise PipelineRuntimeConfigurationError(
+                    f"source catalog entry {index} authorization policy hash mismatch"
+                )
             entries.append(
                 SourceCatalogEntry(
                     AuthorizedSeriesSourceRoot(
                         root=path.resolve(strict=False),
-                        authorization_id=_catalog_text(
-                            item["authorization_id"], index, "authorization_id"
-                        ),
-                        series_id=_catalog_text(item["series_id"], index, "series_id"),
-                        expected_source_count=expected_count,
+                        policy=policy,
                     )
                 )
             )

@@ -120,9 +120,10 @@ class QwenVlmProvider:
             )
             prompt = (
                 f"{payload['prompt']}\n"
-                "必须输出 JSON 根字段 schema_version 和 observations。"
-                "每个 observation 必须使用 kind、summary、confidence、proxy_interval、"
-                "supporting_frame_ids；禁止使用 type/start_pts/end_pts/frame_id 等扁平别名。"
+                "必须输出 Semantic Pack v3 的全部 JSON 根字段：schema_version、"
+                "window_summary、continuity、entities、facts、events 和 candidate_hypotheses。"
+                "所有时序证据必须放在 support.proxy_interval 中并引用 supporting_frame_ids；"
+                "禁止输出 observations 或 type/start_pts/end_pts/frame_id 等 v2 扁平别名。"
                 f"完整 JSON Schema：{response_schema}"
             )
             client = self._client_factory(
@@ -165,7 +166,9 @@ class QwenVlmProvider:
             if type(content) is not str or not content.strip():  # noqa: E721
                 return ProviderFailed("PROVIDER_EMPTY_RESPONSE", '{"retryable":false}')
             response_id = getattr(response, "id", None)
-            provider_request_id = response_id if isinstance(response_id, str) and response_id else None
+            provider_request_id = (
+                response_id if isinstance(response_id, str) and response_id else None
+            )
             return ProviderCompleted(content.encode("utf-8"), provider_request_id)
         except ValueError:
             return ProviderFailed("INVALID_PROVIDER_REQUEST", '{"retryable":false}')
@@ -246,14 +249,18 @@ def _map_provider_error(error: Exception) -> ProviderResult:
     status = getattr(error, "status_code", None)
     status_code = status if isinstance(status, int) and not isinstance(status, bool) else None
     request_id_value = getattr(error, "request_id", None)
-    request_id = request_id_value if isinstance(request_id_value, str) and request_id_value else None
+    request_id = (
+        request_id_value if isinstance(request_id_value, str) and request_id_value else None
+    )
     if status_code in {400, 401, 403, 404, 422}:
         return ProviderFailed(
             f"PROVIDER_HTTP_{status_code}",
             json.dumps({"http_status": status_code, "retryable": False}, separators=(",", ":")),
             request_id,
         )
-    reason = f"PROVIDER_HTTP_{status_code}" if status_code is not None else "PROVIDER_TRANSPORT_UNKNOWN"
+    reason = (
+        f"PROVIDER_HTTP_{status_code}" if status_code is not None else "PROVIDER_TRANSPORT_UNKNOWN"
+    )
     return ProviderIndeterminate(reason, request_id)
 
 

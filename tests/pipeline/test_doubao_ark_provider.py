@@ -224,9 +224,7 @@ def _payload() -> bytes:
         "max_attempts": 3,
         "strategy_version": "generation-retry-v1",
     }
-    retry_policy_bytes = json.dumps(
-        retry_policy, separators=(",", ":"), sort_keys=True
-    ).encode()
+    retry_policy_bytes = json.dumps(retry_policy, separators=(",", ":"), sort_keys=True).encode()
     return json.dumps(
         {
             "model_id": "doubao-seed-2-1-pro-260628",
@@ -247,8 +245,7 @@ def _payload() -> bytes:
                 "video_fps": 1.0,
             },
             "retry_policy": retry_policy,
-            "retry_policy_sha256": "sha256:"
-            + hashlib.sha256(retry_policy_bytes).hexdigest(),
+            "retry_policy_sha256": "sha256:" + hashlib.sha256(retry_policy_bytes).hexdigest(),
             "response_schema": {"type": "object"},
             "window_manifest_set_sha256": "sha256:" + "2" * 64,
             "window_manifest_sha256": "sha256:" + "3" * 64,
@@ -274,9 +271,7 @@ def _dispatch(*, created_ids: list[str] | None = None) -> ProviderDispatchReques
             "video/mp4",
         ),
         video,
-        (lambda _provider_request_id: None)
-        if created_ids is None
-        else created_ids.append,
+        (lambda _provider_request_id: None) if created_ids is None else created_ids.append,
     )
 
 
@@ -342,7 +337,7 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
     assert call["text"] == {
         "format": {
             "type": "json_schema",
-            "name": "vlm_observation_set",
+            "name": "vlm_semantic_pack_v3",
             "strict": True,
             "schema": {"type": "object"},
         }
@@ -356,15 +351,11 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
 def test_doubao_ark_reuses_validated_file_id_without_uploading_again() -> None:
     cache = MemoryFileCache()
     first = FakeClientFactory(_completed_stream())
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=cache, client_factory=first
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=first)
     assert isinstance(provider.dispatch(_dispatch()), ProviderCompleted)
 
     second = FakeClientFactory(_completed_stream())
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=cache, client_factory=second
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=second)
     result = provider.dispatch(_dispatch())
 
     assert isinstance(result, ProviderCompleted)
@@ -376,18 +367,14 @@ def test_doubao_ark_reuses_validated_file_id_without_uploading_again() -> None:
 def test_doubao_ark_expires_a_cached_file_that_provider_no_longer_has() -> None:
     cache = MemoryFileCache()
     first = FakeClientFactory(_completed_stream())
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=cache, client_factory=first
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=first)
     assert isinstance(provider.dispatch(_dispatch()), ProviderCompleted)
 
     missing = RuntimeError("not found")
     missing.status_code = 404  # type: ignore[attr-defined]
     second = FakeClientFactory(_completed_stream())
     second.files.retrieve_error = missing
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=cache, client_factory=second
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=second)
 
     result = provider.dispatch(_dispatch())
 
@@ -425,9 +412,7 @@ def test_doubao_ark_classifies_explicit_create_503_as_retryable_without_using_tr
     error.status_code = 503  # type: ignore[attr-defined]
     error.request_id = "http-trace-not-response-id"  # type: ignore[attr-defined]
     factory.responses.create_error = error
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=MemoryFileCache(), client_factory=factory
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
 
     result = provider.dispatch(_dispatch(created_ids=[]))
 
@@ -449,9 +434,7 @@ def test_doubao_ark_reconcile_503_keeps_original_response_id_indeterminate() -> 
     error.status_code = 503  # type: ignore[attr-defined]
     error.request_id = "http-trace-not-response-id"  # type: ignore[attr-defined]
     factory.responses.retrieve_error = error
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=MemoryFileCache(), client_factory=factory
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
 
     result = provider.reconcile(
         ProviderReconcileQuery(
@@ -473,9 +456,7 @@ def test_doubao_ark_reconcile_deterministic_http_error_is_terminal() -> None:
     error = RuntimeError("response is not accessible")
     error.status_code = 403  # type: ignore[attr-defined]
     factory.responses.retrieve_error = error
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=MemoryFileCache(), client_factory=factory
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
 
     result = provider.reconcile(
         ProviderReconcileQuery(
@@ -501,15 +482,11 @@ def test_doubao_ark_terminal_response_failed_requires_explicit_transient_evidenc
             ),
             SimpleNamespace(
                 type="response.failed",
-                response=SimpleNamespace(
-                    id="response-failed", model=MODEL_ID, status="failed"
-                ),
+                response=SimpleNamespace(id="response-failed", model=MODEL_ID, status="failed"),
             ),
         ]
     )
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=MemoryFileCache(), client_factory=factory
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
 
     result = provider.dispatch(_dispatch(created_ids=[]))
 
@@ -596,9 +573,7 @@ def test_doubao_ark_stream_interruption_preserves_request_id_for_reconcile() -> 
     assert isinstance(interrupted, ProviderIndeterminate)
     assert interrupted.reason_code == "PROVIDER_STREAM_INTERRUPTED"
     assert interrupted.provider_request_id == "response-interrupted"
-    factory.responses.retrieve_result = _response(
-        "response-interrupted", '{"schema_version":1}'
-    )
+    factory.responses.retrieve_result = _response("response-interrupted", '{"schema_version":1}')
     reconciled = provider.reconcile(
         ProviderReconcileQuery(
             DOUBAO_ARK_PROVIDER_ID,
@@ -624,18 +599,14 @@ def test_doubao_ark_callback_failure_preserves_created_id_for_kernel_fallback() 
         observed_ids.append(provider_request_id)
         raise RuntimeError("simulated request-id CAS failure")
 
-    result = provider.dispatch(
-        replace(_dispatch(), on_provider_request_id=fail_persistence)
-    )
+    result = provider.dispatch(replace(_dispatch(), on_provider_request_id=fail_persistence))
 
     assert isinstance(result, ProviderIndeterminate)
     assert result.reason_code == "PROVIDER_REQUEST_ID_PERSIST_FAILED"
     assert result.provider_request_id == "response-doubao-1"
     assert observed_ids == ["response-doubao-1"]
     assert len(factory.responses.create_calls) == 1
-    factory.responses.retrieve_result = _response(
-        "response-doubao-1", '{"schema_version":1}'
-    )
+    factory.responses.retrieve_result = _response("response-doubao-1", '{"schema_version":1}')
 
     reconciled = provider.reconcile(
         ProviderReconcileQuery(
@@ -696,9 +667,7 @@ def test_doubao_ark_terminal_output_never_falls_back_to_delta_or_done_text() -> 
             SimpleNamespace(type="response.completed", response=response),
         ]
     )
-    provider = DoubaoArkVlmProvider(
-        _config(), file_cache=MemoryFileCache(), client_factory=factory
-    )
+    provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
 
     result = provider.dispatch(_dispatch(created_ids=[]))
 
@@ -819,9 +788,9 @@ def test_doubao_ark_recovers_a_known_processing_file_by_retrieve_without_upload(
     assert cache.record.provider_file_id == "file-doubao-1"
     cache.lease_acquired_on_replay = True
     second = FakeClientFactory(_completed_stream())
-    recovered = DoubaoArkVlmProvider(
-        _config(), file_cache=cache, client_factory=second
-    ).dispatch(_dispatch(created_ids=[]))
+    recovered = DoubaoArkVlmProvider(_config(), file_cache=cache, client_factory=second).dispatch(
+        _dispatch(created_ids=[])
+    )
 
     assert isinstance(recovered, ProviderCompleted)
     assert not second.files.create_calls
@@ -834,7 +803,4 @@ def test_doubao_ark_scope_fingerprint_changes_with_tenant_project_or_origin() ->
     assert _config(api_key="rotated-secret").provider_scope_fingerprint == base
     assert _config(tenant_id="tenant-b").provider_scope_fingerprint != base
     assert _config(project_id="project-b").provider_scope_fingerprint != base
-    assert (
-        _config(base_url="https://ark.example.com/api/v3").provider_scope_fingerprint
-        != base
-    )
+    assert _config(base_url="https://ark.example.com/api/v3").provider_scope_fingerprint != base

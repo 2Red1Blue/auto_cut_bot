@@ -17,11 +17,17 @@ from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
+from ..source_manifest import SourceManifestDecodeError, decode_source_manifest
 from ..vlm import (
     GENERATION_PROVIDER_LEASE_SECONDS,
+    VlmParsePolicy,
     VlmRequestIdentity,
+    VlmSemanticPack,
     VlmValidationError,
-    decode_vlm_observation_set,
+    WindowManifest,
+    WindowManifestSet,
+    decode_vlm_semantic_pack,
+    parse_vlm_response,
 )
 from .errors import (
     BlobIntegrityError,
@@ -39,13 +45,9 @@ from .errors import (
     RuntimeStoreError,
     SemanticInputIntegrityError,
     SemanticInputUnavailableError,
-    SemanticResolutionProofIntegrityError,
-    SemanticResolutionProofUnavailableError,
     StaleHeadError,
     StoreConcurrencyError,
     StoreValidationError,
-    VlmObservationIntegrityError,
-    VlmObservationUnavailableError,
 )
 from .models import (
     VLM_REQUEST_IDENTITY_FIELDS,
@@ -59,6 +61,7 @@ from .models import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedSemanticInputsRequest,
+    CommittedVlmInputReference,
     CommittedVlmSemanticInput,
     GenerationAttempt,
     Job,
@@ -66,15 +69,13 @@ from .models import (
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
-    PersistedSemanticResolutionProof,
     PersistedVlmGenerationChild,
-    PersistedVlmObservationSet,
+    PersistedVlmSemanticPack,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
-    SemanticResolutionProofReference,
     SourceWindowIdentity,
-    VlmObservationSetReference,
     VlmRequestRecordReference,
+    VlmSemanticPackReference,
     WholeSeriesSourceManifestReference,
     canonical_payload_hash,
     canonical_recipe_scope,
@@ -276,6 +277,27 @@ def _blob_ref(value: object, field_name: str) -> BlobRef:
         raise StoreValidationError(f"{field_name} is invalid") from error
 
 
+def _exact_blob_bytes(
+    cursor: DbCursor,
+    reference: BlobRef,
+    field_name: str,
+) -> bytes:
+    cursor.execute(
+        "SELECT content_bytes FROM storage.blob_objects WHERE object_id = %s",
+        (reference.object_id,),
+    )
+    row = cursor.fetchone()
+    if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+        raise StoreValidationError(f"{field_name} bytes are unavailable")
+    content = row[0].tobytes() if isinstance(row[0], memoryview) else bytes(row[0])
+    if (
+        len(content) != reference.byte_length
+        or "sha256:" + hashlib.sha256(content).hexdigest() != reference.content_hash
+    ):
+        raise StoreValidationError(f"{field_name} bytes fail exact integrity validation")
+    return content
+
+
 def _decode_request_identity(value: object) -> VlmRequestIdentity:
     mapping = _closed_mapping(value, VLM_REQUEST_IDENTITY_FIELDS, "request_identity")
     try:
@@ -347,139 +369,157 @@ def _decode_request_identity(value: object) -> VlmRequestIdentity:
         raise StoreValidationError("request_identity is invalid") from error
 
 
-def _source_window_identities(
-    payload_json: str,
-    proxy_blobs: tuple[BlobRef, ...],
-) -> tuple[SourceWindowIdentity, ...]:
-    root = _strict_json_object(payload_json, "whole-series source manifest")
-    _closed_mapping(
-        root,
-        frozenset({"census", "census_sha256", "completion_policy", "episodes"}),
-        "whole-series source manifest",
-    )
-    census = _closed_mapping(
-        root["census"],
-        frozenset({"authorization_id", "completion_policy", "series_id", "sources"}),
-        "source census",
-    )
-    sources_value = census["sources"]
-    episodes_value = root["episodes"]
-    if type(sources_value) is not list or type(episodes_value) is not list:  # noqa: E721
-        raise StoreValidationError("source census and episodes must be arrays")
-    sources = cast(list[object], sources_value)
-    episodes = cast(list[object], episodes_value)
-    if not episodes or len(sources) != len(episodes) or len(episodes) != len(proxy_blobs):
-        raise StoreValidationError(
-            "source census, episodes, and exact proxy BlobRefs must be one-to-one"
+def _decode_parse_policy(value: object) -> VlmParsePolicy:
+    if type(value) is not dict:  # noqa: E721
+        raise StoreValidationError("parse_policy must be an object")
+    try:
+        policy = VlmParsePolicy(**cast(dict[str, int], value))
+    except (TypeError, VlmValidationError) as error:
+        raise StoreValidationError("parse_policy is invalid") from error
+    if policy.to_mapping() != value:
+        raise StoreValidationError("parse_policy is not in canonical persisted form")
+    return policy
+
+
+@dataclass(frozen=True, slots=True)
+class _DecodedSourceWindow:
+    identity: SourceWindowIdentity
+    manifest: WindowManifest
+    manifest_set: WindowManifestSet
+
+    @property
+    def canonical_order_key(self) -> tuple[object, ...]:
+        manifest = self.manifest
+        return (
+            manifest.source_id,
+            manifest.source_sha256,
+            manifest.stream_index,
+            manifest.source_clock_id,
+            manifest.core_range.start_pts,
+            manifest.core_range.end_pts,
+            manifest.canonical_hash,
         )
-    census_json = json.dumps(census, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    if root["census_sha256"] != canonical_payload_hash(census_json):
-        raise StoreValidationError("source census hash is invalid")
-    if (
-        root["completion_policy"] != "all_or_nothing"
-        or census["completion_policy"] != root["completion_policy"]
-    ):
-        raise StoreValidationError("source completion policy is invalid")
-    results: list[SourceWindowIdentity] = []
-    for episode_index, (source_value, episode_value, durable_blob) in enumerate(
-        zip(sources, episodes, proxy_blobs, strict=True)
-    ):
-        source = _closed_mapping(
-            source_value,
-            frozenset({"relative_path", "source_id", "content_sha256", "byte_size"}),
-            f"source[{episode_index}]",
+
+
+def _strict_source_windows(
+    persisted: PersistedWholeSeriesSourceManifest,
+) -> tuple[_DecodedSourceWindow, ...]:
+    """Use the Kernel-owned canonical decoder; never project loose mappings."""
+
+    try:
+        prepared = decode_source_manifest(
+            persisted.payload_json,
+            persisted.proxy_blobs,
         )
-        episode = _closed_mapping(
-            episode_value,
-            frozenset({"media_probe", "proxy_blob", "window_manifest", "window_manifest_set"}),
-            f"episode[{episode_index}]",
-        )
-        media_probe = episode["media_probe"]
-        if type(media_probe) is not dict or cast(dict[str, object], media_probe).get("source") != source:  # noqa: E721
-            raise StoreValidationError("source episode media owner is inconsistent")
-        declared_blob = _blob_ref(episode["proxy_blob"], f"episode[{episode_index}].proxy_blob")
-        if declared_blob != durable_blob:
-            raise StoreValidationError("source episode proxy BlobRef is not exact")
-        manifest = _closed_mapping(
-            episode["window_manifest"],
-            frozenset(
-                {
-                    "core_range",
-                    "frame_samples",
-                    "frame_pts_index_set_sha256",
-                    "preprocess_policy_sha256",
-                    "proxy_blob_ref",
-                    "source_clock_id",
-                    "source_id",
-                    "source_range",
-                    "source_sha256",
-                    "source_time_base",
-                    "stream_index",
-                    "timeline_map",
-                    "window_sampling_policy_sha256",
-                }
-            ),
-            f"episode[{episode_index}].window_manifest",
-        )
-        manifest_set = _closed_mapping(
-            episode["window_manifest_set"],
-            frozenset(
-                {
-                    "declared_source_range",
-                    "frame_pts_index_set_sha256",
-                    "manifest_hashes",
-                    "source_clock_id",
-                    "source_id",
-                    "source_sha256",
-                    "source_time_base",
-                    "stream_index",
-                }
-            ),
-            f"episode[{episode_index}].window_manifest_set",
-        )
-        manifest_hash = canonical_payload_hash(
-            json.dumps(manifest, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        )
-        manifest_set_hash = canonical_payload_hash(
-            json.dumps(manifest_set, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-        )
-        if manifest_set["manifest_hashes"] != [manifest_hash]:
-            raise StoreValidationError("source WindowManifestSet membership is invalid")
-        if _blob_ref(manifest["proxy_blob_ref"], "window_manifest.proxy_blob_ref") != durable_blob:
-            raise StoreValidationError("source window proxy BlobRef is not exact")
-        source_id = _required_text(source["source_id"], "source.source_id")
-        source_sha256 = _required_text(source["content_sha256"], "source.content_sha256")
-        source_clock_id = _required_text(
-            manifest["source_clock_id"], "window_manifest.source_clock_id"
-        )
-        for field_name, expected in (
-            ("source_id", source_id),
-            ("source_sha256", source_sha256),
-            ("source_clock_id", source_clock_id),
-        ):
-            if manifest.get(field_name) != expected or manifest_set.get(field_name) != expected:
-                raise StoreValidationError("source/window owner identity is inconsistent")
-        for field_name in (
-            "stream_index",
-            "source_time_base",
-            "frame_pts_index_set_sha256",
-        ):
-            if manifest.get(field_name) != manifest_set.get(field_name):
-                raise StoreValidationError("source/window clock identity is inconsistent")
-        results.append(
-            SourceWindowIdentity(
-                episode_index,
-                source_id,
-                source_sha256,
-                source_clock_id,
-                manifest_hash,
-                manifest_set_hash,
-                durable_blob,
+        results = tuple(
+            _DecodedSourceWindow(
+                identity=SourceWindowIdentity(
+                    episode_index=episode_index,
+                    source_id=episode.manifest.source_id,
+                    source_sha256=episode.manifest.source_sha256,
+                    source_clock_id=episode.manifest.source_clock_id,
+                    window_manifest_sha256=episode.manifest.canonical_hash,
+                    window_manifest_set_sha256=episode.manifest_set.canonical_hash,
+                    proxy_blob=proxy_blob,
+                    stream_index=episode.manifest.stream_index,
+                    core_start_pts=episode.manifest.core_range.start_pts,
+                    core_end_pts=episode.manifest.core_range.end_pts,
+                ),
+                manifest=episode.manifest,
+                manifest_set=episode.manifest_set,
+            )
+            for episode_index, (episode, proxy_blob) in enumerate(
+                zip(prepared.episodes, persisted.proxy_blobs, strict=True)
             )
         )
-    if len({item.window_manifest_sha256 for item in results}) != len(results):
+    except (SourceManifestDecodeError, TypeError, ValueError) as error:
+        raise StoreValidationError(
+            "committed SourceManifest failed canonical source-prep decoding"
+        ) from error
+    if not results or len({item.manifest.canonical_hash for item in results}) != len(results):
         raise StoreValidationError("source windows must have unique immutable identities")
-    return tuple(results)
+    return tuple(sorted(results, key=lambda item: item.canonical_order_key))
+
+
+def _continuity_state_signatures(
+    pack: VlmSemanticPack,
+    fact_refs: tuple[str, ...],
+) -> tuple[str, ...]:
+    facts = {item.fact_id: item for item in pack.facts}
+    entities = {item.entity_id: item for item in pack.entities}
+    signatures: list[str] = []
+    for fact_ref in fact_refs:
+        fact = facts[fact_ref]
+        subject = entities[fact.subject_ref]
+        object_entity = None if fact.object_ref is None else entities[fact.object_ref]
+        signatures.append(
+            canonical_payload_hash(
+                json.dumps(
+                    {
+                        "fact_kind": fact.fact_kind.value,
+                        "object": (
+                            None
+                            if object_entity is None
+                            else {
+                                "display_label": object_entity.display_label,
+                                "entity_kind": object_entity.entity_kind.value,
+                                "visual_description": object_entity.visual_description,
+                            }
+                        ),
+                        "subject": {
+                            "display_label": subject.display_label,
+                            "entity_kind": subject.entity_kind.value,
+                            "visual_description": subject.visual_description,
+                        },
+                        "summary": fact.summary,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+            )
+        )
+    return tuple(sorted(signatures))
+
+
+def _validate_semantic_pack_continuity(
+    inputs: tuple[CommittedVlmSemanticInput, ...],
+) -> None:
+    if not inputs:
+        raise SemanticInputIntegrityError("semantic VLM inputs must be non-empty")
+    first = inputs[0].semantic_pack.semantic_pack
+    last = inputs[-1].semantic_pack.semantic_pack
+    if first.continuity.continues_from_previous:
+        raise SemanticInputIntegrityError(
+            "first canonical VLM window cannot continue from a missing predecessor"
+        )
+    if last.continuity.continues_into_next:
+        raise SemanticInputIntegrityError(
+            "last canonical VLM window cannot continue into a missing successor"
+        )
+    for previous_input, next_input in zip(inputs, inputs[1:], strict=False):
+        previous = previous_input.semantic_pack.semantic_pack
+        following = next_input.semantic_pack.semantic_pack
+        if (
+            previous.continuity.continues_into_next
+            != following.continuity.continues_from_previous
+        ):
+            raise SemanticInputIntegrityError(
+                "adjacent VLM continuity flags are inconsistent"
+            )
+        if not previous.continuity.continues_into_next:
+            continue
+        previous_refs = previous.continuity.exit_state_fact_refs
+        following_refs = following.continuity.entry_state_fact_refs
+        if (
+            not previous_refs
+            or not following_refs
+            or _continuity_state_signatures(previous, previous_refs)
+            != _continuity_state_signatures(following, following_refs)
+        ):
+            raise SemanticInputIntegrityError(
+                "adjacent VLM continuity state facts are not verifiably consistent"
+            )
 
 
 class PostgresRuntimeStore:
@@ -1617,7 +1657,7 @@ class PostgresRuntimeStore:
 
         Every member is resolved through its Job, profile, Receipt, ArtifactSet,
         ordinal, full artifact identity, and exact BlobRefs.  Only the Source
-        owner projection and VLM semantic observations are returned; no
+        owner projection and VLM Semantic Packs are returned; no
         Transcript or VAD artifact is queried by this reader.
         """
 
@@ -1676,21 +1716,21 @@ class PostgresRuntimeStore:
                     command_slot_id=source_set.command_slot_id,
                     source_job=request.job,
                 )
-                source_windows = _source_window_identities(
-                    source_artifact.payload_json,
-                    durable_blobs,
-                )
+                source_windows = _strict_source_windows(source_manifest)
             except (BlobIntegrityError, StoreValidationError) as error:
                 raise SemanticInputIntegrityError(
                     "committed Source/Window input failed exact verification"
                 ) from error
 
             semantic_inputs: list[CommittedVlmSemanticInput] = []
+            source_windows_by_episode = {
+                item.identity.episode_index: item for item in source_windows
+            }
             for vlm_reference in request.vlm_inputs:
                 member_refs = (
                     vlm_reference.request_record,
                     vlm_reference.response_record,
-                    vlm_reference.observation_set,
+                    vlm_reference.semantic_pack,
                 )
                 set_ids = {item.artifact_set_id for item in member_refs}
                 receipt_ids = {item.receipt_id for item in member_refs}
@@ -1706,7 +1746,7 @@ class PostgresRuntimeStore:
                 expected_refs = (
                     (0, "vlm_request_record", vlm_reference.request_record),
                     (1, "vlm_response_record", vlm_reference.response_record),
-                    (2, "vlm_observation_set", vlm_reference.observation_set),
+                    (2, "vlm_semantic_pack", vlm_reference.semantic_pack),
                 )
                 if vlm_set.command_name != "GenerateVlmEvidenceCommand" or len(
                     vlm_set.members
@@ -1735,7 +1775,7 @@ class PostgresRuntimeStore:
                         )
                 request_artifact = vlm_set.members[0][1]
                 response_artifact = vlm_set.members[1][1]
-                observation_artifact = vlm_set.members[2][1]
+                semantic_pack_artifact = vlm_set.members[2][1]
                 try:
                     cursor.execute(
                         """
@@ -1833,6 +1873,17 @@ class PostgresRuntimeStore:
                     request_identity = _decode_request_identity(
                         request_payload_json["request_identity"]
                     )
+                    provider_request_payload = _strict_json_object(
+                        _exact_blob_bytes(
+                            cursor,
+                            request_payload,
+                            "VLM request payload",
+                        ).decode("utf-8", "strict"),
+                        "VLM provider request payload",
+                    )
+                    parse_policy = _decode_parse_policy(
+                        provider_request_payload["parse_policy"]
+                    )
                     (
                         episode_index,
                         window_manifest_sha256,
@@ -1866,21 +1917,21 @@ class PostgresRuntimeStore:
                         source_provenance_sha256=source_provenance_sha256,
                         request_identity_sha256=request_identity_sha256,
                     )
-                    decoded = decode_vlm_observation_set(
+                    decoded = decode_vlm_semantic_pack(
                         _strict_json_object(
-                            observation_artifact.payload_json,
-                            "VLM observation set",
+                            semantic_pack_artifact.payload_json,
+                            "VLM Semantic Pack",
                         )
                     )
-                    observations = PersistedVlmObservationSet(
-                        reference=VlmObservationSetReference(
-                            observation_artifact.scope,
-                            observation_artifact.logical_id,
-                            observation_artifact.revision,
-                            observation_artifact.content_hash,
+                    semantic_pack = PersistedVlmSemanticPack(
+                        reference=VlmSemanticPackReference(
+                            semantic_pack_artifact.scope,
+                            semantic_pack_artifact.logical_id,
+                            semantic_pack_artifact.revision,
+                            semantic_pack_artifact.content_hash,
                         ),
-                        payload_json=observation_artifact.payload_json,
-                        observation_set=decoded,
+                        payload_json=semantic_pack_artifact.payload_json,
+                        semantic_pack=decoded,
                         source_child=child,
                     )
                     response = _closed_mapping(
@@ -1926,11 +1977,12 @@ class PostgresRuntimeStore:
                         vlm_reference.proxy_blob,
                         field_name="semantic VLM proxy",
                     )
-                    if not 0 <= episode_index < len(source_windows):
+                    if episode_index not in source_windows_by_episode:
                         raise StoreValidationError(
                             "VLM episode_index has no committed Source owner"
                         )
-                    source_window = source_windows[episode_index]
+                    decoded_source_window = source_windows_by_episode[episode_index]
+                    source_window = decoded_source_window.identity
                     if (
                         child.source_manifest_sha256
                         != source_manifest.reference.content_hash
@@ -1969,11 +2021,30 @@ class PostgresRuntimeStore:
                         raise StoreValidationError(
                             "VLM input does not match its committed Source/Window owner"
                         )
+                    raw_bytes = _exact_blob_bytes(
+                        cursor,
+                        raw_response,
+                        "VLM raw response",
+                    )
+                    reparsed = parse_vlm_response(
+                        raw_bytes,
+                        manifest=decoded_source_window.manifest,
+                        manifest_set=decoded_source_window.manifest_set,
+                        request_identity=request_identity,
+                        policy=parse_policy,
+                    )
+                    if (
+                        reparsed.to_mapping() != decoded.to_mapping()
+                        or reparsed.canonical_hash != decoded.canonical_hash
+                    ):
+                        raise StoreValidationError(
+                            "persisted VLM Semantic Pack does not match exact raw-response reparse"
+                        )
                     semantic_inputs.append(
                         CommittedVlmSemanticInput(
                             source_window=source_window,
                             request_identity=request_identity,
-                            observations=observations,
+                            semantic_pack=semantic_pack,
                             response_record=vlm_reference.response_record,
                             raw_response=raw_response,
                         )
@@ -1988,13 +2059,23 @@ class PostgresRuntimeStore:
                     raise SemanticInputIntegrityError(
                         "committed VLM input failed member/blob/owner verification"
                     ) from error
-            semantic_inputs.sort(key=lambda item: item.source_window.episode_index)
-            if tuple(item.source_window.episode_index for item in semantic_inputs) != tuple(
-                range(len(source_windows))
-            ):
+            source_order = {
+                item.identity.window_manifest_sha256: item.canonical_order_key
+                for item in source_windows
+            }
+            semantic_inputs.sort(
+                key=lambda item: source_order[
+                    item.source_window.window_manifest_sha256
+                ]
+            )
+            if {
+                item.source_window.window_manifest_sha256
+                for item in semantic_inputs
+            } != set(source_order):
                 raise SemanticInputIntegrityError(
                     "committed Source windows and VLM inputs are not one-to-one"
                 )
+            _validate_semantic_pack_continuity(tuple(semantic_inputs))
             return CommittedSemanticInputs(source_manifest, tuple(semantic_inputs))
 
         return self._transaction(operation)
@@ -2028,6 +2109,9 @@ class PostgresRuntimeStore:
                        attempt.provider_idempotency_key, attempt.state,
                        request_blob.object_id, request_blob.content_hash,
                        request_blob.byte_length, request_blob.media_type,
+                       response_blob.object_id, response_blob.content_hash,
+                       response_blob.byte_length, response_blob.media_type,
+                       attempt.provider_request_id,
                        attempt.receipt_id, attempt.artifact_set_id,
                        receipt.receipt_id, receipt.outcome,
                        receipt.result_artifact_set_id, artifact_set.set_hash,
@@ -2038,6 +2122,8 @@ class PostgresRuntimeStore:
                    AND attempt.job_id = slot.job_id
                   JOIN storage.blob_objects AS request_blob
                     ON request_blob.object_id = attempt.request_payload_object_id
+                  JOIN storage.blob_objects AS response_blob
+                    ON response_blob.object_id = attempt.raw_response_object_id
                   JOIN runtime.command_receipts AS receipt
                     ON receipt.command_slot_id = slot.command_slot_id
                    AND receipt.receipt_id = attempt.receipt_id
@@ -2072,6 +2158,11 @@ class PostgresRuntimeStore:
                 request_blob_hash,
                 request_byte_length,
                 request_media_type,
+                response_object_id,
+                response_blob_hash,
+                response_byte_length,
+                response_media_type,
+                provider_request_id,
                 attempt_receipt_id,
                 attempt_artifact_set_id,
                 receipt_id,
@@ -2107,6 +2198,18 @@ class PostgresRuntimeStore:
                 durable_job_id,
                 request_payload,
                 field_name="VLM request payload",
+            )
+            raw_response = BlobRef(
+                UUID(str(response_object_id)),
+                _text(response_blob_hash),
+                int(_text(response_byte_length)),
+                _text(response_media_type),
+            )
+            self._claimed_blob_ref(
+                cursor,
+                durable_job_id,
+                raw_response,
+                field_name="VLM raw response",
             )
             cursor.execute(
                 """
@@ -2155,21 +2258,24 @@ class PostgresRuntimeStore:
                     )
                 )
             artifact_tuple = tuple(artifacts)
-            if len(artifact_tuple) != 3:
-                raise StoreValidationError("VLM ArtifactSet must contain exactly three members")
-            CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
-            request_records = tuple(
-                artifact
-                for artifact in artifact_tuple
-                if artifact.artifact_type == "vlm_request_record"
-            )
-            if len(request_records) != 1:
+            if tuple(item.artifact_type for item in artifact_tuple) != (
+                "vlm_request_record",
+                "vlm_response_record",
+                "vlm_semantic_pack",
+            ):
                 raise StoreValidationError(
-                    "VLM ArtifactSet requires one exact request record"
+                    "VLM ArtifactSet must exact-bind request, response, and Semantic Pack"
                 )
-            record = request_records[0]
-            if record.scope != canonical_recipe_scope(job):
-                raise StoreValidationError("VLM request record has a non-canonical scope")
+            if any(
+                item.scope != canonical_recipe_scope(job)
+                or item.revision != artifact_tuple[0].revision
+                for item in artifact_tuple
+            ):
+                raise StoreValidationError(
+                    "VLM ArtifactSet members do not share one Job scope/revision"
+                )
+            CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
+            record, response_record, semantic_pack_record = artifact_tuple
             (
                 episode_index,
                 window_manifest_sha256,
@@ -2184,7 +2290,7 @@ class PostgresRuntimeStore:
                 record.revision,
                 record.content_hash,
             )
-            return PersistedVlmGenerationChild(
+            child = PersistedVlmGenerationChild(
                 reference=reference,
                 payload_json=record.payload_json,
                 source_job=job,
@@ -2204,84 +2310,220 @@ class PostgresRuntimeStore:
                 source_provenance_sha256=source_provenance_sha256,
                 request_identity_sha256=request_identity_sha256,
             )
+            try:
+                decoded = decode_vlm_semantic_pack(
+                    _strict_json_object(
+                        semantic_pack_record.payload_json,
+                        "VLM Semantic Pack",
+                    )
+                )
+                PersistedVlmSemanticPack(
+                    reference=VlmSemanticPackReference(
+                        semantic_pack_record.scope,
+                        semantic_pack_record.logical_id,
+                        semantic_pack_record.revision,
+                        semantic_pack_record.content_hash,
+                    ),
+                    payload_json=semantic_pack_record.payload_json,
+                    semantic_pack=decoded,
+                    source_child=child,
+                )
+                response = _closed_mapping(
+                    _strict_json_object(
+                        response_record.payload_json,
+                        "VLM response record",
+                    ),
+                    frozenset(
+                        {
+                            "attempt_id",
+                            "provider_request_id",
+                            "raw_response_blob",
+                            "raw_response_sha256",
+                        }
+                    ),
+                    "VLM response record",
+                )
+                if (
+                    response["attempt_id"] != str(child.attempt_id)
+                    or response["provider_request_id"]
+                    != (
+                        None
+                        if provider_request_id is None
+                        else _text(provider_request_id)
+                    )
+                    or _blob_ref(
+                        response["raw_response_blob"],
+                        "VLM response raw_response_blob",
+                    )
+                    != raw_response
+                    or response["raw_response_sha256"]
+                    != decoded.raw_response_sha256
+                    or raw_response.content_hash != decoded.raw_response_sha256
+                ):
+                    raise StoreValidationError(
+                        "VLM response and Semantic Pack provenance do not match"
+                    )
+            except (StoreValidationError, VlmValidationError) as error:
+                raise StoreValidationError(
+                    "committed VLM ArtifactSet failed exact v3 verification"
+                ) from error
+            return child
 
         return self._transaction(operation)
 
-    def read_committed_vlm_observation_set(
+    def read_committed_vlm_input_reference(
         self,
         job: Job,
         idempotency_key: str,
-    ) -> PersistedVlmObservationSet:
-        """Read and independently decode one exact committed observation set.
+    ) -> CommittedVlmInputReference:
+        """Resolve only the exact references needed by the authoritative reader.
 
-        The request record is proved first.  The second immutable read is pinned
-        to that child's exact ArtifactSet id, so downstream stages never consume
-        an uncommitted head or a caller-supplied VLM payload.
+        This method never returns semantic content. Callers must pass its result
+        to ``read_committed_semantic_inputs``, which reparses the raw response.
         """
 
         child = self.read_committed_vlm_generation_child(job, idempotency_key)
 
-        def operation(cursor: DbCursor) -> PersistedVlmObservationSet:
-            cursor.execute(
-                """
-                SELECT artifact.logical_id, artifact.revision,
-                       artifact.namespace, artifact.scope_kind,
-                       artifact.scope_key, artifact.content_hash,
-                       artifact.payload_json::text
-                  FROM runtime.artifact_set_members AS member
-                  JOIN runtime.artifacts AS artifact
-                    ON artifact.artifact_id = member.artifact_id
-                   AND artifact.artifact_set_id = member.artifact_set_id
-                 WHERE member.artifact_set_id = %s
-                   AND artifact.artifact_type = 'vlm_observation_set'
-                 ORDER BY member.ordinal
-                """,
-                (child.artifact_set_id,),
-            )
-            rows: list[tuple[object, ...]] = []
-            while (row := cursor.fetchone()) is not None:
-                rows.append(row)
-            if len(rows) != 1:
-                raise VlmObservationUnavailableError(
-                    "committed VLM child does not contain one exact observation set"
-                )
-            (
-                logical_id,
-                revision,
-                namespace,
-                scope_kind,
-                scope_key,
-                content_hash,
-                payload_json,
-            ) = rows[0]
-            serialized = _text(payload_json)
-            reference = VlmObservationSetReference(
-                scope=ArtifactScope(
-                    _text(namespace),
-                    _text(scope_kind),
-                    _text(scope_key),
-                ),
-                logical_id=_text(logical_id),
-                revision=int(_text(revision)),
-                content_hash=_text(content_hash),
-            )
+        def operation(cursor: DbCursor) -> CommittedVlmInputReference:
             try:
-                if canonical_payload_hash(serialized) != reference.content_hash:
-                    raise StoreValidationError(
-                        "VLM observation payload hash is invalid"
+                cursor.execute(
+                    """
+                    SELECT member.ordinal, artifact.artifact_type,
+                           artifact.logical_id, artifact.revision,
+                           artifact.namespace, artifact.scope_kind,
+                           artifact.scope_key, artifact.content_hash,
+                           artifact.payload_json::text
+                      FROM runtime.artifact_set_members AS member
+                      JOIN runtime.artifacts AS artifact
+                        ON artifact.artifact_id = member.artifact_id
+                       AND artifact.artifact_set_id = member.artifact_set_id
+                     WHERE member.artifact_set_id = %s
+                     ORDER BY member.ordinal
+                    """,
+                    (child.artifact_set_id,),
+                )
+                rows: list[tuple[object, ...]] = []
+                while (row := cursor.fetchone()) is not None:
+                    rows.append(row)
+                if len(rows) != 3:
+                    raise SemanticInputUnavailableError(
+                        "committed VLM input does not contain three exact members"
                     )
-                decoded = decode_vlm_observation_set(
-                    _strict_json_object(serialized, "VLM observation set")
+                members: list[tuple[int, ArtifactMember]] = []
+                for row in rows:
+                    (
+                        ordinal, artifact_type, logical_id, revision,
+                        namespace, scope_kind, scope_key, content_hash, payload_json,
+                    ) = row
+                    serialized = _text(payload_json)
+                    if canonical_payload_hash(serialized) != _text(content_hash):
+                        raise StoreValidationError(
+                            "committed VLM member payload hash is invalid"
+                        )
+                    members.append(
+                        (
+                            int(_text(ordinal)),
+                            ArtifactMember(
+                                _text(artifact_type),
+                                _text(logical_id),
+                                int(_text(revision)),
+                                ArtifactScope(
+                                    _text(namespace),
+                                    _text(scope_kind),
+                                    _text(scope_key),
+                                ),
+                                _text(content_hash),
+                                serialized,
+                            ),
+                        )
+                    )
+                member_tuple = tuple(members)
+                if tuple((ordinal, member.artifact_type) for ordinal, member in member_tuple) != (
+                    (0, "vlm_request_record"),
+                    (1, "vlm_response_record"),
+                    (2, "vlm_semantic_pack"),
+                ):
+                    raise StoreValidationError(
+                        "committed VLM member ordering is not canonical"
+                    )
+                cursor.execute(
+                    """
+                    SELECT response.object_id, response.content_hash,
+                           response.byte_length, response.media_type
+                      FROM runtime.generation_attempts AS attempt
+                      JOIN storage.blob_objects AS response
+                        ON response.object_id = attempt.raw_response_object_id
+                     WHERE attempt.attempt_id = %s
+                       AND attempt.state = 'committed'
+                       AND attempt.receipt_id = %s
+                       AND attempt.artifact_set_id = %s
+                    """,
+                    (child.attempt_id, child.receipt_id, child.artifact_set_id),
                 )
-                return PersistedVlmObservationSet(
-                    reference=reference,
-                    payload_json=serialized,
-                    observation_set=decoded,
-                    source_child=child,
+                raw_row = cursor.fetchone()
+                if raw_row is None or cursor.fetchone() is not None:
+                    raise SemanticInputUnavailableError(
+                        "committed VLM input lost its exact raw response"
+                    )
+                raw_response = BlobRef(
+                    UUID(str(raw_row[0])),
+                    _text(raw_row[1]),
+                    int(_text(raw_row[2])),
+                    _text(raw_row[3]),
                 )
-            except (StoreValidationError, VlmValidationError) as error:
-                raise VlmObservationIntegrityError(
-                    "committed VLM observation set failed independent verification"
+                request_member = member_tuple[0][1]
+                request_payload = _strict_json_object(
+                    request_member.payload_json,
+                    "VLM request record",
+                )
+                proxy_blob = _blob_ref(
+                    request_payload["proxy_blob"],
+                    "VLM request proxy_blob",
+                )
+                self._claimed_blob_ref(
+                    cursor,
+                    child.kernel_job_id,
+                    proxy_blob,
+                    field_name="committed VLM proxy",
+                )
+                self._claimed_blob_ref(
+                    cursor,
+                    child.kernel_job_id,
+                    child.request_payload,
+                    field_name="committed VLM request payload",
+                )
+                self._claimed_blob_ref(
+                    cursor,
+                    child.kernel_job_id,
+                    raw_response,
+                    field_name="committed VLM raw response",
+                )
+                references = tuple(
+                    CommittedArtifactMemberReference(
+                        receipt_id=child.receipt_id,
+                        artifact_set_id=child.artifact_set_id,
+                        member_ordinal=ordinal,
+                        scope=member.scope,
+                        artifact_type=member.artifact_type,
+                        logical_id=member.logical_id,
+                        revision=member.revision,
+                        content_hash=member.content_hash,
+                    )
+                    for ordinal, member in member_tuple
+                )
+                return CommittedVlmInputReference(
+                    request_record=references[0],
+                    response_record=references[1],
+                    semantic_pack=references[2],
+                    proxy_blob=proxy_blob,
+                    request_payload=child.request_payload,
+                    raw_response=raw_response,
+                )
+            except SemanticInputUnavailableError:
+                raise
+            except (BlobIntegrityError, StoreValidationError, TypeError, ValueError) as error:
+                raise SemanticInputIntegrityError(
+                    "committed VLM input references failed exact resolution"
                 ) from error
 
         return self._transaction(operation)
@@ -2394,7 +2636,7 @@ class PostgresRuntimeStore:
                 )
                 for position, blob in enumerate(declared_blobs)
             )
-            return PersistedWholeSeriesSourceManifest(
+            persisted = PersistedWholeSeriesSourceManifest(
                 reference,
                 serialized,
                 durable_blobs,
@@ -2404,6 +2646,8 @@ class PostgresRuntimeStore:
                 slot_id,
                 job,
             )
+            _strict_source_windows(persisted)
+            return persisted
 
         return self._transaction(operation)
 
@@ -2697,132 +2941,6 @@ class PostgresRuntimeStore:
             except (StoreValidationError, TypeError, ValueError) as error:
                 raise MediaOutputsIntegrityError(
                     "succeeded media output pair failed immutable provenance validation"
-                ) from error
-
-        return self._transaction(operation)
-
-    # ------------------------------------------------------------------
-    # read_succeeded_semantic_resolution_proof
-    # ------------------------------------------------------------------
-
-    def read_succeeded_semantic_resolution_proof(
-        self, job: Job
-    ) -> PersistedSemanticResolutionProof:
-        """Read the proof only from a complete succeeded semantic ArtifactSet.
-
-        The query requires the four-member semantic output shape rather than a
-        generic proof lookup: narrative graph, story set, editorial blueprint,
-        and the exact resolution proof must share the command receipt/set.
-        """
-
-        def operation(cursor: DbCursor) -> PersistedSemanticResolutionProof:
-            cursor.execute(
-                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
-                (job.job_key,),
-            )
-            job_row = cursor.fetchone()
-            if job_row is None:
-                raise SemanticResolutionProofUnavailableError(
-                    "job has no succeeded semantic resolution proof"
-                )
-            job_id, profile = job_row
-            if _text(profile) != job.profile:
-                raise JobProfileMismatchError("job_key belongs to a different profile")
-
-            cursor.execute(
-                """
-                SELECT proof.logical_id, proof.revision, proof.content_hash,
-                       proof.payload_json::text, artifact_set.artifact_set_id,
-                       receipt.receipt_id, slot.command_slot_id
-                  FROM runtime.command_slots AS slot
-                  JOIN runtime.artifact_sets AS artifact_set
-                    ON artifact_set.command_slot_id = slot.command_slot_id
-                   AND artifact_set.job_id = slot.job_id
-                  JOIN runtime.command_receipts AS receipt
-                    ON receipt.command_slot_id = slot.command_slot_id
-                   AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
-                  JOIN runtime.artifacts AS narrative
-                    ON narrative.artifact_set_id = artifact_set.artifact_set_id
-                   AND narrative.job_id = artifact_set.job_id
-                   AND narrative.artifact_type = 'narrative_graph'
-                   AND narrative.namespace = 'pipeline'
-                   AND narrative.scope_kind = 'job'
-                   AND narrative.scope_key = %s
-                  JOIN runtime.artifact_set_members AS narrative_member
-                    ON narrative_member.artifact_set_id = artifact_set.artifact_set_id
-                   AND narrative_member.artifact_id = narrative.artifact_id
-                  JOIN runtime.artifacts AS story
-                    ON story.artifact_set_id = artifact_set.artifact_set_id
-                   AND story.job_id = artifact_set.job_id
-                   AND story.artifact_type = 'story_set'
-                   AND story.logical_id = 'story_set'
-                   AND story.namespace = 'pipeline'
-                   AND story.scope_kind = 'job'
-                   AND story.scope_key = %s
-                  JOIN runtime.artifact_set_members AS story_member
-                    ON story_member.artifact_set_id = artifact_set.artifact_set_id
-                   AND story_member.artifact_id = story.artifact_id
-                  JOIN runtime.artifacts AS blueprint
-                    ON blueprint.artifact_set_id = artifact_set.artifact_set_id
-                   AND blueprint.job_id = artifact_set.job_id
-                   AND blueprint.artifact_type = 'editorial_blueprint'
-                   AND blueprint.namespace = 'pipeline'
-                   AND blueprint.scope_kind = 'job'
-                   AND blueprint.scope_key = %s
-                  JOIN runtime.artifact_set_members AS blueprint_member
-                    ON blueprint_member.artifact_set_id = artifact_set.artifact_set_id
-                   AND blueprint_member.artifact_id = blueprint.artifact_id
-                  JOIN runtime.artifacts AS proof
-                    ON proof.artifact_set_id = artifact_set.artifact_set_id
-                   AND proof.job_id = artifact_set.job_id
-                   AND proof.artifact_type = 'semantic_resolution_proof'
-                   AND proof.logical_id = 'semantic_resolution_proof'
-                   AND proof.namespace = 'pipeline'
-                   AND proof.scope_kind = 'job'
-                   AND proof.scope_key = %s
-                  JOIN runtime.artifact_set_members AS proof_member
-                    ON proof_member.artifact_set_id = artifact_set.artifact_set_id
-                   AND proof_member.artifact_id = proof.artifact_id
-                 WHERE slot.job_id = %s
-                   AND slot.command_name = 'semantic_chain_command'
-                   AND slot.state = 'succeeded'
-                   AND receipt.outcome = 'succeeded'
-                   AND artifact_set.member_count = 4
-                """,
-                (job.job_key, job.job_key, job.job_key, job.job_key, UUID(str(job_id))),
-            )
-            rows: list[tuple[object, ...]] = []
-            while (row := cursor.fetchone()) is not None:
-                rows.append(row)
-            if not rows:
-                raise SemanticResolutionProofUnavailableError(
-                    "no complete succeeded semantic resolution proof is available"
-                )
-            if len(rows) != 1:
-                raise SemanticResolutionProofIntegrityError(
-                    "semantic resolution proof resolved to multiple durable rows"
-                )
-            logical_id, revision, content_hash, payload_json, artifact_set_id, receipt_id, command_slot_id = rows[0]
-            try:
-                reference = SemanticResolutionProofReference(
-                    canonical_recipe_scope(job),
-                    _text(logical_id),
-                    int(_text(revision)),
-                    _text(content_hash),
-                )
-                if canonical_payload_hash(_text(payload_json)) != reference.content_hash:
-                    raise StoreValidationError("semantic proof payload hash does not match artifact identity")
-                return PersistedSemanticResolutionProof(
-                    reference,
-                    _text(payload_json),
-                    UUID(str(job_id)),
-                    UUID(str(receipt_id)),
-                    UUID(str(artifact_set_id)),
-                    UUID(str(command_slot_id)),
-                )
-            except (StoreValidationError, TypeError, ValueError) as error:
-                raise SemanticResolutionProofIntegrityError(
-                    "semantic resolution proof failed immutable provenance validation"
                 ) from error
 
         return self._transaction(operation)

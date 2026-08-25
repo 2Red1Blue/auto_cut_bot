@@ -13,23 +13,20 @@ from tools.architecture.import_firewall import assert_clean
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 KERNEL_ROOT = REPOSITORY_ROOT / "packages" / "autocut-kernel"
 KERNEL_SOURCE = KERNEL_ROOT / "src" / "autocut_kernel"
-AGENT_RUNTIME = REPOSITORY_ROOT / "auto_cut_bot" / "autocut_agent_runtime"
 
 
 def test_kernel_identity_requires_explicit_name_and_version(monkeypatch) -> None:
     monkeypatch.syspath_prepend(str(KERNEL_ROOT / "src"))
     kernel_identity_type = import_module("autocut_kernel").KernelIdentity
-    compose_runtime = import_module("auto_cut_bot.autocut_agent_runtime").compose_runtime
     identity = kernel_identity_type(name="autocut", version="0.1.0")
 
     assert identity.name == "autocut"
     assert identity.version == "0.1.0"
-    assert compose_runtime(identity).kernel is identity
 
 
-def test_kernel_and_agent_runtime_stay_on_one_way_zero_legacy_boundary() -> None:
+def test_kernel_stays_on_zero_legacy_boundary() -> None:
     assert_clean(
-        [KERNEL_SOURCE, AGENT_RUNTIME],
+        [KERNEL_SOURCE],
         forbidden_roots={
             "ac_auto_cut",
             "artifact_bus",

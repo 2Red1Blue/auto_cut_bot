@@ -23,6 +23,9 @@ from .models import (
     SeriesCensusError,
     SeriesSource,
     SeriesSourceCensus,
+    SourceOperationPolicy,
+    SourceOperationPurpose,
+    SourcePurposeDeniedError,
 )
 from .probe import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
@@ -64,7 +67,10 @@ __all__ = [
     "SeriesSourceSnapshot",
     "SourceMediaProbe",
     "SourceManifestDecodeError",
+    "SourceOperationPolicy",
+    "SourceOperationPurpose",
     "SourcePrepStore",
+    "SourcePurposeDeniedError",
     "WholeSeriesIdentityPreparer",
     "census_series_sources",
     "snapshot_series_sources",

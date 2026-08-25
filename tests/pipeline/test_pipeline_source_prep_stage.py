@@ -20,6 +20,7 @@ from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     PrepareWholeSeriesSourcesResult,
     SourceManifestDecodeError,
+    SourceOperationPolicy,
     read_persisted_prepared_sources,
 )
 
@@ -29,9 +30,12 @@ class RootResolver:
         assert context.request.source_root is not None
         return AuthorizedSeriesSourceRoot(
             Path(context.request.source_root),
-            "http-authority",
-            "series-1",
-            1,
+            SourceOperationPolicy(
+                "http-authority",
+                "series-1",
+                1,
+                ("semantic_analysis", "render_source"),
+            ),
         )
 
 
@@ -101,9 +105,7 @@ async def test_stage_uses_deterministic_kernel_job_and_run_bound_key(tmp_path: P
     assert len(command.requests) == 1
     request = command.requests[0]
     assert request.job == Job(stage_context.run_id, "test")
-    assert request.idempotency_key == source_prep_kernel_idempotency_key(
-        stage_context.run_id
-    )
+    assert request.idempotency_key == source_prep_kernel_idempotency_key(stage_context.run_id)
     assert request.artifact_scope == ArtifactScope("pipeline", "job", stage_context.run_id)
 
 
@@ -239,9 +241,7 @@ def test_persisted_reader_rejects_nonterminal_without_reading_or_probing() -> No
 def test_source_prep_kernel_key_is_stable_and_rejects_invalid_run_id() -> None:
     run_id = "pipeline_run_" + "b" * 32
 
-    assert source_prep_kernel_idempotency_key(run_id) == (
-        "source-prep-kernel-v1:" + run_id
-    )
+    assert source_prep_kernel_idempotency_key(run_id) == ("source-prep-kernel-v1:" + run_id)
     assert source_prep_kernel_idempotency_key(run_id) == (
         source_prep_kernel_idempotency_key(run_id)
     )

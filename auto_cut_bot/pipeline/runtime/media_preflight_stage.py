@@ -27,9 +27,13 @@ from autocut_kernel.pipeline import (
 from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
+    CommittedArtifactMemberReference,
+    CommittedSemanticInputs,
+    CommittedSemanticInputsRequest,
+    CommittedVlmInputReference,
     Job,
-    PersistedVlmObservationSet,
-    VlmObservationUnavailableError,
+    PersistedVlmSemanticPack,
+    SemanticInputUnavailableError,
 )
 from autocut_kernel.store.models import canonical_recipe_scope
 
@@ -48,7 +52,10 @@ from auto_cut_bot.pipeline.source_prep import (
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
-from .source_prep_stage import source_prep_kernel_idempotency_key
+from .source_prep_stage import (
+    require_committed_source_operation,
+    source_prep_kernel_idempotency_key,
+)
 from .vlm_stage import vlm_kernel_idempotency_key
 
 MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequential-v1"
@@ -56,11 +63,16 @@ _ARTIFACT_REVISION = 1
 
 
 class MediaPreflightPipelineStore(SourcePrepStore, TimedMediaEvidenceStore, Protocol):
-    def read_committed_vlm_observation_set(
+    def read_committed_vlm_input_reference(
         self,
         job: Job,
         idempotency_key: str,
-    ) -> PersistedVlmObservationSet: ...
+    ) -> CommittedVlmInputReference: ...
+
+    def read_committed_semantic_inputs(
+        self,
+        request: CommittedSemanticInputsRequest,
+    ) -> CommittedSemanticInputs: ...
 
 
 class _ClaimOwnedLocalProducer:
@@ -148,7 +160,7 @@ def media_preflight_kernel_idempotency_key(
     run_id: str,
     episode_index: int,
     source_bundle: PersistedPreparedSources,
-    observation: PersistedVlmObservationSet,
+    semantic_pack: PersistedVlmSemanticPack,
     producer_policy_sha256: str,
     adaptive_policy_sha256: str,
 ) -> str:
@@ -158,7 +170,7 @@ def media_preflight_kernel_idempotency_key(
     payload = {
         "adaptive_policy_sha256": adaptive_policy_sha256,
         "episode_index": episode_index,
-        "observation_set_sha256": observation.observation_set.canonical_hash,
+        "semantic_pack_sha256": semantic_pack.semantic_pack.canonical_hash,
         "producer_policy_sha256": producer_policy_sha256,
         "run_id": run_id,
         "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
@@ -215,9 +227,10 @@ class MediaPreflightPipelineStage:
             artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
             artifact_revision=_ARTIFACT_REVISION,
         )
+        require_committed_source_operation(source_bundle, "render_source")
         doubao_policy = context.execution_profile.to_doubao_policy()
-        requests: list[PrepareTimedMediaEvidenceRequest] = []
-        for episode_index, episode in enumerate(source_bundle.prepared.episodes):
+        vlm_references: list[CommittedVlmInputReference] = []
+        for episode_index, _episode in enumerate(source_bundle.prepared.episodes):
             vlm_key = vlm_kernel_idempotency_key(
                 run_id=context.run_id,
                 episode_index=episode_index,
@@ -226,16 +239,49 @@ class MediaPreflightPipelineStage:
                 execution_profile_hash=context.execution_profile_hash,
             )
             try:
-                persisted = self._store.read_committed_vlm_observation_set(job, vlm_key)
-            except VlmObservationUnavailableError:
-                return None
+                vlm_references.append(self._store.read_committed_vlm_input_reference(job, vlm_key))
+            except SemanticInputUnavailableError as error:
+                raise PipelineRunValidationError(
+                    "media-preflight requires exact committed VLM references"
+                ) from error
+        source_reference = source_bundle.artifact_reference
+        committed = self._store.read_committed_semantic_inputs(
+            CommittedSemanticInputsRequest(
+                job=job,
+                source_manifest=CommittedArtifactMemberReference(
+                    receipt_id=source_bundle.receipt_id,
+                    artifact_set_id=source_bundle.artifact_set_id,
+                    member_ordinal=0,
+                    scope=source_reference.scope,
+                    artifact_type=source_reference.artifact_type,
+                    logical_id=source_reference.logical_id,
+                    revision=source_reference.revision,
+                    content_hash=source_reference.content_hash,
+                ),
+                source_proxy_blobs=tuple(
+                    episode.proxy_blob for episode in source_bundle.prepared.episodes
+                ),
+                vlm_inputs=tuple(vlm_references),
+            )
+        )
+        inputs_by_window = {
+            item.source_window.window_manifest_sha256: item for item in committed.inputs
+        }
+        requests: list[PrepareTimedMediaEvidenceRequest] = []
+        for episode_index, episode in enumerate(source_bundle.prepared.episodes):
+            try:
+                semantic_input = inputs_by_window[episode.manifest.canonical_hash]
+            except KeyError as error:
+                raise PipelineRunValidationError(
+                    "exact committed semantic inputs lost a source window"
+                ) from error
+            persisted = semantic_input.semantic_pack
             child = persisted.source_child
             if (
                 child.episode_index != episode_index
                 or child.source_manifest_sha256 != source_bundle.artifact_reference.content_hash
                 or child.source_provenance_sha256 != source_bundle.canonical_hash
-                or persisted.observation_set.window_manifest_sha256
-                != episode.manifest.canonical_hash
+                or persisted.semantic_pack.window_manifest_sha256 != episode.manifest.canonical_hash
                 or child.window_manifest_set_sha256 != episode.manifest_set.canonical_hash
             ):
                 raise PipelineRunValidationError(
@@ -246,7 +292,7 @@ class MediaPreflightPipelineStage:
                 run_id=context.run_id,
                 episode_index=episode_index,
                 source_bundle=source_bundle,
-                observation=persisted,
+                semantic_pack=persisted,
                 producer_policy_sha256=policy.canonical_hash,
                 adaptive_policy_sha256=adaptive.canonical_hash,
             )
@@ -261,7 +307,7 @@ class MediaPreflightPipelineStage:
                     source_manifest_sha256=source_bundle.artifact_reference.content_hash,
                     source_provenance_sha256=source_bundle.canonical_hash,
                     window_manifest=episode.manifest,
-                    observation_set=persisted.observation_set,
+                    semantic_pack=persisted.semantic_pack,
                     frame_pts_index=episode.manifest.frame_pts_index_set,
                     audio_sample_boundaries=episode.media_probe.audio_sample_boundaries,
                     frame_detector_sha256=episode.media_probe.frame_detector_sha256,

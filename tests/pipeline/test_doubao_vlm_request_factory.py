@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace
-from decimal import Decimal
 from typing import cast
 from uuid import uuid4
 
@@ -38,22 +38,29 @@ from autocut_kernel.vlm import (
     WindowManifestSet,
     WindowProxyBlobRef,
 )
+from jsonschema import Draft202012Validator
 
 from auto_cut_bot.pipeline.source_prep.command import (
     PersistedPreparedSources,
     PreparedSeriesSources,
     PreparedSourceEpisode,
 )
-from auto_cut_bot.pipeline.source_prep.models import SeriesSource, SeriesSourceCensus
+from auto_cut_bot.pipeline.source_prep.models import (
+    SeriesSource,
+    SeriesSourceCensus,
+    SourceOperationPolicy,
+)
 from auto_cut_bot.pipeline.source_prep.probe import SourceMediaProbe
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
     DOUBAO_VLM_STAGE_STRATEGY_VERSION,
     VLM_PROMPT_VERSION,
+    VLM_RESPONSE_SCHEMA,
     DoubaoVlmRequestFactory,
     DoubaoVlmRequestPolicy,
     build_doubao_vlm_request,
+    build_vlm_prompt,
     vlm_response_schema_json,
 )
 
@@ -147,7 +154,17 @@ class _TestProbe:
 
 
 def _parse_policy() -> VlmParsePolicy:
-    return VlmParsePolicy(Decimal("0.80"), 1_000_000, 4, 128, 512)
+    return VlmParsePolicy(
+        max_response_bytes=2 * 1024 * 1024,
+        max_entities=24,
+        max_facts=48,
+        max_events=24,
+        max_candidate_hypotheses=8,
+        max_temporal_segments=8,
+        max_measurements=48,
+        max_text_characters=512,
+        max_total_text_characters=64 * 1024,
+    )
 
 
 def _retry_policy() -> GenerationRetryPolicy:
@@ -166,8 +183,12 @@ def _source_bundle(
     episode = prepared_episode or _prepared_episode()
     source_job = job or Job("run-001-window-001", "test")
     census = SeriesSourceCensus(
-        "authorized-test-source",
-        "series-001",
+        SourceOperationPolicy(
+            "authorized-test-source",
+            "series-001",
+            1,
+            ("semantic_analysis", "render_source"),
+        ),
         "all_or_nothing",
         (SeriesSource("episode-001.mp4", "source-001", _hash("a"), 4_096),),
     )
@@ -209,9 +230,20 @@ def test_policy_is_closed_immutable_and_canonically_binds_every_strategy_input()
     assert first.prompt_version == VLM_PROMPT_VERSION
     assert first.response_schema_json == vlm_response_schema_json()
     assert first.stage_strategy_version == DOUBAO_VLM_STAGE_STRATEGY_VERSION
+    assert first.parse_policy.to_mapping() == {
+        "max_candidate_hypotheses": 8,
+        "max_entities": 24,
+        "max_events": 24,
+        "max_facts": 48,
+        "max_measurements": 48,
+        "max_response_bytes": 2 * 1024 * 1024,
+        "max_temporal_segments": 8,
+        "max_text_characters": 512,
+        "max_total_text_characters": 64 * 1024,
+    }
     assert first.request_parameters_json == (
         '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v1",'
-        '"max_output_tokens":4096,"temperature":0.0,"video_fps":1.0}'
+        '"max_output_tokens":16384,"temperature":0.0,"video_fps":1.0}'
     )
     assert first.to_mapping() == second.to_mapping()
     assert first.canonical_hash == second.canonical_hash
@@ -268,8 +300,18 @@ def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:
     assert json.loads(request.request_payload)["parser_strategy_version"] == (
         VLM_PARSER_STRATEGY_VERSION
     )
-    assert "physical_cut" not in request.request_payload.decode()
-    assert "edit_decision" not in request.request_payload.decode()
+    payload_text = request.request_payload.decode()
+    for forbidden in (
+        "anchor_ts",
+        "lead_in_seconds",
+        "physical_cut",
+        "edit_decision",
+        "ASR",
+        "VAD",
+        "OCR",
+        "Transcript",
+    ):
+        assert forbidden not in payload_text
 
 
 @pytest.mark.parametrize(
@@ -284,6 +326,7 @@ def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:
         ("response_schema_json", '{"type":"object"}', "response schema"),
         ("stage_strategy_version", "automatic-provider-fallback-v1", "stage strategy"),
         ("parser_strategy_version", "strict-v2", "parser strategy"),
+        ("parse_policy", object(), "parse_policy"),
         ("video_fps", float("nan"), "video_fps"),
         ("video_fps", float("inf"), "video_fps"),
         ("max_output_tokens", True, "max_output_tokens"),
@@ -319,9 +362,7 @@ def test_parse_policy_and_parameters_change_policy_and_kernel_request_identity()
     job = Job("run-identity", "shadow")
     source_bundle = _source_bundle(prepared, job=job)
     first_policy = _policy()
-    changed_parse = _policy(
-        parse_policy=VlmParsePolicy(Decimal("0.90"), 1_000_000, 4, 128, 512)
-    )
+    changed_parse = _policy(parse_policy=replace(_parse_policy(), max_facts=47))
     changed_parameters = _policy(max_output_tokens=8_192)
 
     def build(policy: DoubaoVlmRequestPolicy) -> GenerateVlmEvidenceRequest:
@@ -335,20 +376,26 @@ def test_parse_policy_and_parameters_change_policy_and_kernel_request_identity()
             retry_policy=_retry_policy(),
         )
 
-    assert len(
-        {
-            build(first_policy).request_hash,
-            build(changed_parse).request_hash,
-            build(changed_parameters).request_hash,
-        }
-    ) == 3
-    assert len(
-        {
-            first_policy.canonical_hash,
-            changed_parse.canonical_hash,
-            changed_parameters.canonical_hash,
-        }
-    ) == 3
+    assert (
+        len(
+            {
+                build(first_policy).request_hash,
+                build(changed_parse).request_hash,
+                build(changed_parameters).request_hash,
+            }
+        )
+        == 3
+    )
+    assert (
+        len(
+            {
+                first_policy.canonical_hash,
+                changed_parse.canonical_hash,
+                changed_parameters.canonical_hash,
+            }
+        )
+        == 3
+    )
 
 
 def test_factory_fails_closed_on_cross_manifest_and_blob_tampering() -> None:
@@ -443,3 +490,137 @@ def test_kernel_request_rejects_parser_drift_and_binds_source_provenance() -> No
     assert first.provider_idempotency_key != second.provider_idempotency_key
     with pytest.raises(ValueError, match="parser_strategy_version is not registered"):
         replace(first, parser_strategy_version="strict-v2")
+
+
+def _minimal_semantic_pack() -> dict[str, object]:
+    support = {
+        "confidence": "0.90",
+        "proxy_interval": {"start_pts": 10, "end_pts": 51, "uncertainty_pts": 2},
+        "supporting_frame_ids": [_hash("e")],
+    }
+    return {
+        "schema_version": 3,
+        "window_summary": {
+            "confidence": "0.90",
+            "dominant_temporal_mode": "present",
+            "event_refs": ["event_1"],
+            "fact_refs": ["fact_1"],
+            "summary": "一名人物走近桌边。",
+        },
+        "continuity": {
+            "continues_from_previous": False,
+            "continues_into_next": True,
+            "ends_mid_event": False,
+            "entry_state_fact_refs": [],
+            "exit_state_fact_refs": ["fact_1"],
+            "starts_mid_event": False,
+            "temporal_segments": [],
+        },
+        "entities": [
+            {
+                "display_label": "人物",
+                "entity_kind": "person",
+                "local_entity_id": "entity_1",
+                "support": support,
+                "visual_description": "画面中的一名人物",
+            }
+        ],
+        "facts": [
+            {
+                "fact_kind": "visible_action",
+                "local_fact_id": "fact_1",
+                "object_ref": None,
+                "subject_ref": "entity_1",
+                "summary": "人物走近桌边。",
+                "support": support,
+            }
+        ],
+        "events": [
+            {
+                "cause_event_refs": [],
+                "effect_event_refs": [],
+                "event_kind": "action",
+                "fact_refs": ["fact_1"],
+                "local_event_id": "event_1",
+                "open_question": None,
+                "participant_refs": ["entity_1"],
+                "summary": "人物走近桌边。",
+                "support": support,
+                "temporal_mode": "present",
+            }
+        ],
+        "candidate_hypotheses": [],
+    }
+
+
+def test_v3_schema_is_closed_canonical_and_allows_no_candidate_hypothesis() -> None:
+    schema = json.loads(vlm_response_schema_json())
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+
+    assert schema == VLM_RESPONSE_SCHEMA
+    assert VLM_PROMPT_VERSION == "vlm-semantic-pack-v3"
+    assert schema["properties"]["schema_version"] == {"const": 3, "type": "integer"}
+    assert schema["properties"]["facts"]["minItems"] == 1
+    assert "minItems" not in schema["properties"]["candidate_hypotheses"]
+    assert validator.is_valid(_minimal_semantic_pack())
+
+
+def test_v3_schema_rejects_v2_float_pts_unknown_fields_and_noncanonical_modes() -> None:
+    validator = Draft202012Validator(VLM_RESPONSE_SCHEMA)
+
+    legacy = _minimal_semantic_pack()
+    legacy["schema_version"] = 2
+    assert not validator.is_valid(legacy)
+
+    float_pts = deepcopy(_minimal_semantic_pack())
+    float_pts["facts"][0]["support"]["proxy_interval"]["start_pts"] = 10.5
+    assert not validator.is_valid(float_pts)
+
+    physical = deepcopy(_minimal_semantic_pack())
+    physical["facts"][0]["anchor_ts"] = "1.0"
+    assert not validator.is_valid(physical)
+
+    candidate = deepcopy(_minimal_semantic_pack())
+    candidate["candidate_hypotheses"] = [
+        {
+            "anchor_event_ref": "event_1",
+            "anchor_summary": "人物完成关键动作。",
+            "candidate_kind": "highlight",
+            "context_event_refs": [],
+            "dialogue_excerpt": None,
+            "editing_modes": ["action", "dialogue"],
+            "local_candidate_id": "candidate_1",
+            "measurements": [
+                {
+                    "confidence": "0.8",
+                    "event_refs": ["event_1"],
+                    "fact_refs": [],
+                    "measurement_kind": "action_salience",
+                    "value": "0.9",
+                }
+            ],
+            "narrative_functions": ["payoff"],
+            "open_question": None,
+            "payoff_event_refs": ["event_1"],
+            "payoff_or_open_question": "人物完成了关键动作。",
+            "reason": "动作在当前窗口内完成并形成结果。",
+            "support": candidate["facts"][0]["support"],
+            "supporting_event_refs": ["event_1"],
+            "tags": ["action"],
+        }
+    ]
+    assert not validator.is_valid(candidate)
+
+
+def test_prompt_freezes_candidate_absolute_standards_and_pts_only_context() -> None:
+    prompt = build_vlm_prompt(_prepared_episode().manifest)
+
+    assert "candidate_hypotheses" in prompt
+    assert "普通闲聊、过场、铺垫或证据不足时必须输出空数组" in prompt
+    assert "candidate_kind=hook 必须提出具体且尚未回答的 open_question" in prompt
+    assert "candidate_kind=highlight 必须引用本窗口已经发生的非空 payoff_event_refs" in prompt
+    assert "['dialogue','action']" in prompt
+    assert "dialogue_excerpt" in prompt
+    assert '"proxy_pts":10' in prompt
+    assert "seconds" not in prompt

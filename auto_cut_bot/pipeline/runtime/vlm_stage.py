@@ -34,7 +34,10 @@ from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy, build_doubao_vlm_r
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
-from .source_prep_stage import source_prep_kernel_idempotency_key
+from .source_prep_stage import (
+    require_committed_source_operation,
+    source_prep_kernel_idempotency_key,
+)
 
 VLM_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-sequential-v1"
 _ARTIFACT_REVISION = 1
@@ -141,9 +144,8 @@ class VlmPipelineStage:
             artifact_revision=_ARTIFACT_REVISION,
         )
         if type(source_bundle) is not PersistedPreparedSources:  # noqa: E721
-            raise PipelineRunValidationError(
-                "VLM source reader lost exact persisted provenance"
-            )
+            raise PipelineRunValidationError("VLM source reader lost exact persisted provenance")
+        require_committed_source_operation(source_bundle, "semantic_analysis")
         if not source_bundle.prepared.episodes:
             raise PipelineRunValidationError(
                 "VLM stage requires at least one committed source episode"
@@ -203,13 +205,9 @@ class VlmPipelineStage:
             if outcome.state in ("pending", "running"):
                 return result
             if outcome.state not in ("succeeded", "denied", "failed"):
-                raise PipelineRunValidationError(
-                    "Kernel returned an unsupported VLM child outcome"
-                )
+                raise PipelineRunValidationError("Kernel returned an unsupported VLM child outcome")
             if outcome.receipt_id is None:
-                raise PipelineRunValidationError(
-                    "terminal Kernel VLM child lost its Receipt"
-                )
+                raise PipelineRunValidationError("terminal Kernel VLM child lost its Receipt")
             if outcome.state in ("denied", "failed"):
                 # A causal child Receipt truthfully blocks all-or-nothing batch
                 # success. Rejected Generate commands have no ArtifactSet-backed
@@ -232,9 +230,7 @@ class VlmPipelineStage:
         finalizer_request = FinalizeVlmBatchRequest(
             job=Job(context.run_id, context.request.profile),
             idempotency_key=self._batch_idempotency_key(context, source_bundle),
-            artifact_scope=canonical_recipe_scope(
-                Job(context.run_id, context.request.profile)
-            ),
+            artifact_scope=canonical_recipe_scope(Job(context.run_id, context.request.profile)),
             artifact_revision=_ARTIFACT_REVISION,
             declared_episode_count=len(requests),
             source_manifest_sha256=source_bundle.artifact_reference.content_hash,

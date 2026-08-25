@@ -58,10 +58,10 @@ def snapshot_series_sources(
         with tempfile.TemporaryDirectory(prefix="autocut-source-snapshot-") as temporary:
             snapshot_root = Path(temporary)
             copied = tuple(sorted(_copy_tree(root_fd, snapshot_root), key=lambda item: item[0]))
-            if len(copied) != source_root.expected_source_count:
+            if len(copied) != source_root.policy.expected_source_count:
                 raise SeriesCensusError(
                     "authorized source root must contain exactly "
-                    f"{source_root.expected_source_count} MP4 files"
+                    f"{source_root.policy.expected_source_count} MP4 files"
                 )
             sources = tuple(
                 SeriesSource(
@@ -79,8 +79,7 @@ def snapshot_series_sources(
                 for relative_path, content_sha256, byte_size in copied
             )
             census = SeriesSourceCensus(
-                source_root.authorization_id,
-                source_root.series_id,
+                source_root.policy,
                 "all_or_nothing",
                 sources,
             )

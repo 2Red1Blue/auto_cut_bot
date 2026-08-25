@@ -44,22 +44,6 @@ from .render_local import (
     render_local,
     render_persisted_local,
 )
-from .semantic_chain_command import (
-    FixtureBeatResolver,
-    ResolutionPolicyIdentity,
-    ResolvedSemanticBeat,
-    SemanticArtifactReference,
-    SemanticArtifactReferences,
-    SemanticChainCommand,
-    SemanticChainCommandRequest,
-    SemanticChainCommandResult,
-)
-from .vlm_semantic_adapter import (
-    VlmCandidateCatalog,
-    VlmCandidateCatalogEntry,
-    VlmSemanticAdapterResult,
-    adapt_vlm_observations,
-)
 
 __all__ = [
     "FinalizeVlmBatchCommand",
@@ -90,18 +74,6 @@ __all__ = [
     "TimedMediaEvidenceProducerError",
     "TimedMediaEvidenceProducerPort",
     "TimedMediaEvidenceStore",
-    "FixtureBeatResolver",
-    "ResolutionPolicyIdentity",
-    "ResolvedSemanticBeat",
-    "SemanticArtifactReference",
-    "SemanticArtifactReferences",
-    "SemanticChainCommand",
-    "SemanticChainCommandRequest",
-    "SemanticChainCommandResult",
-    "VlmCandidateCatalog",
-    "VlmCandidateCatalogEntry",
-    "VlmSemanticAdapterResult",
-    "adapt_vlm_observations",
     "LocalRenderOrchestrator",
     "PersistedRenderLocalRequest",
     "RenderLocalDenied",

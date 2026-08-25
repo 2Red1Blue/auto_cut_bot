@@ -222,7 +222,7 @@ class DoubaoArkVlmProvider:
                 text={
                     "format": {
                         "type": "json_schema",
-                        "name": "vlm_observation_set",
+                        "name": "vlm_semantic_pack_v3",
                         "strict": True,
                         "schema": payload["response_schema"],
                     }

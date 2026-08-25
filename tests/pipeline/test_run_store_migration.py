@@ -8,6 +8,9 @@ EXECUTION_PROFILE_MIGRATION = Path(
 MEDIA_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0012_pipeline_media_preflight_profile.sql"
 )
+SEMANTIC_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0013_vlm_semantic_pack_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -84,4 +87,24 @@ def test_media_profile_migration_requires_v3_for_reconstructible_runs() -> None:
     assert "word_timing_capability' = 'required'" in sql
     assert "calibrations" in sql
     assert "state IN ('succeeded', 'denied', 'failed')" in sql
+    assert ") IS TRUE);" in sql
+
+
+def test_semantic_profile_migration_closes_v4_parse_policy_major() -> None:
+    sql = SEMANTIC_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE" in sql
+    assert "0013 refuses accepted/running pipeline runs" in sql
+    assert "execution_profile_semantic_v4_is_valid" in sql
+    assert "pipeline-execution-profile-v4" in sql
+    assert "pipeline-execution-profile-v3" in sql
+    assert "max_candidate_hypotheses" in sql
+    assert "max_total_text_characters" in sql
+    assert "max_observations" in sql
+    assert "v1/v2/v3 are terminal read-only history" in sql
+    assert "guard_historical_execution_profile_write" in sql
+    assert "new v1/v2/v3 execution profile rows are forbidden" in sql
+    assert "historical v1/v2/v3 execution profile rows are read-only" in sql
+    assert "BEFORE INSERT OR UPDATE ON runtime.pipeline_runs" in sql
+    assert ") IS NOT TRUE" in sql
     assert ") IS TRUE);" in sql

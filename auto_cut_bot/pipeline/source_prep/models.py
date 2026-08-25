@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
+from autocut_kernel.source_manifest import (
+    SourceOperationPolicy,
+    SourceOperationPurpose,
+    SourcePurposeDeniedError,
+)
 
 
 class SeriesCensusError(ValueError):
@@ -21,18 +26,16 @@ class AuthorizedSeriesSourceRoot:
     """An explicitly authorized, canonical local source boundary."""
 
     root: Path
-    authorization_id: str
-    series_id: str
-    expected_source_count: int
+    policy: SourceOperationPolicy
 
     def __post_init__(self) -> None:
         root = Path(self.root)
         if not root.is_absolute():
             raise SeriesCensusError("authorized source root must be absolute")
-        if not self.authorization_id.strip() or not self.series_id.strip():
-            raise SeriesCensusError("authorization_id and series_id must be non-empty")
-        if type(self.expected_source_count) is not int or self.expected_source_count < 1:  # noqa: E721
-            raise SeriesCensusError("expected_source_count must be a positive integer")
+        if type(self.policy) is not SourceOperationPolicy:  # noqa: E721
+            raise SeriesCensusError(
+                "authorized source root requires an exact SourceOperationPolicy"
+            )
         object.__setattr__(self, "root", root)
 
 
@@ -65,25 +68,37 @@ class SeriesSource:
 
 @dataclass(frozen=True, slots=True)
 class SeriesSourceCensus:
-    authorization_id: str
-    series_id: str
+    policy: SourceOperationPolicy
     completion_policy: str
     sources: tuple[SeriesSource, ...]
 
     def __post_init__(self) -> None:
         sources = tuple(self.sources)
+        if type(self.policy) is not SourceOperationPolicy:  # noqa: E721
+            raise SeriesCensusError("source census requires an exact operation policy")
         if self.completion_policy != "all_or_nothing":
             raise SeriesCensusError("whole-series completion policy must be all_or_nothing")
         paths = tuple(item.relative_path for item in sources)
         if not sources or paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
             raise SeriesCensusError("series sources must be non-empty, sorted, and unique")
+        if len(sources) != self.policy.expected_source_count:
+            raise SeriesCensusError(
+                "series source count does not match its authorization policy"
+            )
         object.__setattr__(self, "sources", sources)
+
+    def require_purpose(self, purpose: SourceOperationPurpose) -> None:
+        self.policy.require_purpose(purpose)
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "authorization_id": self.authorization_id,
+            "authorization_id": self.policy.authorization_id,
+            "authorization_policy_schema_version": self.policy.schema_version,
+            "authorization_policy_sha256": self.policy.policy_sha256,
+            "authorized_purposes": list(self.policy.authorized_purposes),
             "completion_policy": self.completion_policy,
-            "series_id": self.series_id,
+            "expected_source_count": self.policy.expected_source_count,
+            "series_id": self.policy.series_id,
             "sources": [item.to_mapping() for item in self.sources],
         }
 
@@ -97,4 +112,7 @@ __all__ = [
     "SeriesCensusError",
     "SeriesSource",
     "SeriesSourceCensus",
+    "SourceOperationPolicy",
+    "SourceOperationPurpose",
+    "SourcePurposeDeniedError",
 ]

@@ -13,7 +13,6 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import cast
 
 from autocut_kernel.pipeline import (
@@ -40,17 +39,21 @@ from .prompt import (
     vlm_response_schema_json,
 )
 
-DOUBAO_VLM_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-request-v1"
+DOUBAO_VLM_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-semantic-pack-v3-request-v1"
 DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION = DOUBAO_VLM_STAGE_STRATEGY_VERSION
 
 
 def _default_parse_policy() -> VlmParsePolicy:
     return VlmParsePolicy(
-        minimum_confidence=Decimal("0.80"),
-        max_response_bytes=8 * 1024 * 1024,
-        max_observations=4,
-        max_summary_characters=128,
-        max_total_summary_characters=512,
+        max_response_bytes=2 * 1024 * 1024,
+        max_entities=24,
+        max_facts=48,
+        max_events=24,
+        max_candidate_hypotheses=8,
+        max_temporal_segments=8,
+        max_measurements=48,
+        max_text_characters=512,
+        max_total_text_characters=64 * 1024,
     )
 
 
@@ -99,7 +102,9 @@ def _canonical_json(value: object) -> str:
 def _closed_text(value: object, field_name: str) -> str:
     if type(value) is not str or not value.strip() or len(value) > 256:  # noqa: E721
         raise ValueError(f"{field_name} must be non-empty text of at most 256 characters")
-    if value != value.strip() or any(ord(character) < 32 or ord(character) == 127 for character in value):
+    if value != value.strip() or any(
+        ord(character) < 32 or ord(character) == 127 for character in value
+    ):
         raise ValueError(f"{field_name} must be canonical text without whitespace or controls")
     try:
         value.encode("utf-8", errors="strict")
@@ -133,7 +138,7 @@ class DoubaoVlmRequestPolicy:
     prompt_version: str = VLM_PROMPT_VERSION
     response_schema_json: str = field(default_factory=vlm_response_schema_json)
     video_fps: float = 1.0
-    max_output_tokens: int = 4_096
+    max_output_tokens: int = 16_384
     temperature: int | float = 0
     parse_policy: VlmParsePolicy = field(default_factory=_default_parse_policy)
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION

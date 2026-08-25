@@ -28,6 +28,7 @@ def media_preflight_policy(**changes: object) -> LocalMediaPreflightPolicy:
         "timed_speech_endpoint_url": "http://127.0.0.1:10095/v1/timed-speech-evidence",
         "timed_speech_provider_id": "funasr-http",
         "timed_speech_provider_version": "funasr-http-v1",
+        "timed_speech_service_sha256": digest,
         "funasr_version": "1.2.7",
         "torch_version": "2.8.0",
         "speech_device": "cpu",

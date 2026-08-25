@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import UUID
 
-from ..vlm.models import VlmObservationSet, VlmRequestIdentity
+from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
@@ -280,23 +280,23 @@ class VlmRequestRecordReference:
 
 
 @dataclass(frozen=True, slots=True)
-class VlmObservationSetReference:
-    """Exact immutable identity of one committed VLM observation set."""
+class VlmSemanticPackReference:
+    """Exact immutable identity of one committed VLM Semantic Pack."""
 
     scope: ArtifactScope
     logical_id: str
     revision: int
     content_hash: str
-    artifact_type: Literal["vlm_observation_set"] = "vlm_observation_set"
+    artifact_type: Literal["vlm_semantic_pack"] = "vlm_semantic_pack"
 
     def __post_init__(self) -> None:
         _text(self.logical_id, "logical_id")
         if type(self.revision) is not int or self.revision < 1:  # noqa: E721
             raise StoreValidationError("revision must be a positive integer")
         _sha256(self.content_hash, "content_hash")
-        if self.artifact_type != "vlm_observation_set":
+        if self.artifact_type != "vlm_semantic_pack":
             raise StoreValidationError(
-                "VLM observation-set reference has an invalid artifact_type"
+                "VLM Semantic Pack reference has an invalid artifact_type"
             )
 
 
@@ -523,50 +523,50 @@ class PersistedVlmGenerationChild:
 
 
 @dataclass(frozen=True, slots=True)
-class PersistedVlmObservationSet:
-    """Strictly decoded observation evidence bound to one committed child."""
+class PersistedVlmSemanticPack:
+    """Strictly decoded Semantic Pack bound to one committed VLM child."""
 
-    reference: VlmObservationSetReference
+    reference: VlmSemanticPackReference
     payload_json: str
-    observation_set: VlmObservationSet
+    semantic_pack: VlmSemanticPack
     source_child: PersistedVlmGenerationChild
 
     def __post_init__(self) -> None:
-        if type(self.reference) is not VlmObservationSetReference:  # noqa: E721
-            raise StoreValidationError("VLM observation-set reference is invalid")
-        if type(self.observation_set) is not VlmObservationSet:  # noqa: E721
-            raise StoreValidationError("VLM observation-set value is invalid")
+        if type(self.reference) is not VlmSemanticPackReference:  # noqa: E721
+            raise StoreValidationError("VLM Semantic Pack reference is invalid")
+        if type(self.semantic_pack) is not VlmSemanticPack:  # noqa: E721
+            raise StoreValidationError("VLM Semantic Pack value is invalid")
         if type(self.source_child) is not PersistedVlmGenerationChild:  # noqa: E721
-            raise StoreValidationError("VLM observation source child is invalid")
+            raise StoreValidationError("VLM Semantic Pack source child is invalid")
         if self.reference.scope != canonical_recipe_scope(self.source_child.source_job):
-            raise StoreValidationError("VLM observation set has a non-canonical Job scope")
+            raise StoreValidationError("VLM Semantic Pack has a non-canonical Job scope")
         expected_logical_id = (
-            f"evidence_{self.source_child.window_manifest_sha256[7:39]}"
+            f"semantic_pack_{self.source_child.window_manifest_sha256[7:39]}"
         )
         if self.reference.logical_id != expected_logical_id:
-            raise StoreValidationError("VLM observation logical identity is invalid")
+            raise StoreValidationError("VLM Semantic Pack logical identity is invalid")
         if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
             raise StoreValidationError(
-                "VLM observation payload does not match its artifact hash"
+                "VLM Semantic Pack payload does not match its artifact hash"
             )
         decoded_payload_json = json.dumps(
-            self.observation_set.to_mapping(),
+            self.semantic_pack.to_mapping(),
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
         if canonical_payload_hash(decoded_payload_json) != self.reference.content_hash:
             raise StoreValidationError(
-                "decoded VLM observation set does not match its artifact hash"
+                "decoded VLM Semantic Pack does not match its artifact hash"
             )
         if (
-            self.observation_set.request_identity_sha256
+            self.semantic_pack.request_identity_sha256
             != self.source_child.request_identity_sha256
-            or self.observation_set.window_manifest_sha256
+            or self.semantic_pack.window_manifest_sha256
             != self.source_child.window_manifest_sha256
         ):
             raise StoreValidationError(
-                "VLM observation set does not match its committed request provenance"
+                "VLM Semantic Pack does not match its committed request provenance"
             )
 
 
@@ -653,53 +653,6 @@ class PersistedMediaOutputs:
 
 
 @dataclass(frozen=True, slots=True)
-class SemanticResolutionProofReference:
-    """The exact immutable proof member from a semantic command ArtifactSet."""
-
-    scope: ArtifactScope
-    logical_id: str
-    revision: int
-    content_hash: str
-    artifact_type: Literal["semantic_resolution_proof"] = "semantic_resolution_proof"
-
-    def __post_init__(self) -> None:
-        _text(self.logical_id, "logical_id")
-        if type(self.revision) is not int or self.revision < 1:  # noqa: E721
-            raise StoreValidationError("revision must be a positive integer")
-        _sha256(self.content_hash, "content_hash")
-        if self.artifact_type != "semantic_resolution_proof":
-            raise StoreValidationError(
-                "semantic resolution proof artifact_type must be 'semantic_resolution_proof'"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class PersistedSemanticResolutionProof:
-    """Verified proof payload and shared success provenance for replay recovery."""
-
-    reference: SemanticResolutionProofReference
-    payload_json: str
-    job_id: UUID
-    receipt_id: UUID
-    artifact_set_id: UUID
-    command_slot_id: UUID
-
-    def __post_init__(self) -> None:
-        if type(self.reference) is not SemanticResolutionProofReference:  # noqa: E721
-            raise StoreValidationError("reference must be a SemanticResolutionProofReference")
-        for field_name, value in (
-            ("job_id", self.job_id),
-            ("receipt_id", self.receipt_id),
-            ("artifact_set_id", self.artifact_set_id),
-            ("command_slot_id", self.command_slot_id),
-        ):
-            if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise StoreValidationError(f"{field_name} must be a UUID")
-        if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
-            raise StoreValidationError("payload_json does not match semantic resolution proof content_hash")
-
-
-@dataclass(frozen=True, slots=True)
 class BlobRef:
     """Kernel-visible identity for immutable bytes, without a storage locator."""
 
@@ -754,13 +707,13 @@ class CommittedVlmInputReference:
 
     request_record: CommittedArtifactMemberReference
     response_record: CommittedArtifactMemberReference
-    observation_set: CommittedArtifactMemberReference
+    semantic_pack: CommittedArtifactMemberReference
     proxy_blob: BlobRef
     request_payload: BlobRef
     raw_response: BlobRef
 
     def __post_init__(self) -> None:
-        members = (self.request_record, self.response_record, self.observation_set)
+        members = (self.request_record, self.response_record, self.semantic_pack)
         if any(type(item) is not CommittedArtifactMemberReference for item in members):  # noqa: E721
             raise StoreValidationError(
                 "committed VLM members must be exact member references"
@@ -797,7 +750,7 @@ class CommittedSemanticInputsRequest:
             )
         if len(source_blobs) != len(set(source_blobs)):
             raise StoreValidationError("semantic source proxy BlobRefs must be unique")
-        set_ids = tuple(item.observation_set.artifact_set_id for item in vlm_inputs)
+        set_ids = tuple(item.semantic_pack.artifact_set_id for item in vlm_inputs)
         if len(set_ids) != len(set(set_ids)):
             raise StoreValidationError("semantic VLM ArtifactSets must be unique")
         object.__setattr__(self, "source_proxy_blobs", source_blobs)
@@ -815,6 +768,9 @@ class SourceWindowIdentity:
     window_manifest_sha256: str
     window_manifest_set_sha256: str
     proxy_blob: BlobRef
+    stream_index: int = 0
+    core_start_pts: int = 0
+    core_end_pts: int = 1
 
     def __post_init__(self) -> None:
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
@@ -829,15 +785,35 @@ class SourceWindowIdentity:
             _sha256(getattr(self, field_name), f"source window {field_name}")
         if type(self.proxy_blob) is not BlobRef:  # noqa: E721
             raise StoreValidationError("source window proxy_blob must be a BlobRef")
+        if type(self.stream_index) is not int or self.stream_index < 0:  # noqa: E721
+            raise StoreValidationError("source window stream_index must be non-negative")
+        if (
+            type(self.core_start_pts) is not int  # noqa: E721
+            or type(self.core_end_pts) is not int  # noqa: E721
+            or self.core_start_pts >= self.core_end_pts
+        ):
+            raise StoreValidationError("source window core range is invalid")
+
+    @property
+    def canonical_order_key(self) -> tuple[object, ...]:
+        return (
+            self.source_id,
+            self.source_sha256,
+            self.stream_index,
+            self.source_clock_id,
+            self.core_start_pts,
+            self.core_end_pts,
+            self.window_manifest_sha256,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class CommittedVlmSemanticInput:
-    """One exact VLM observation set joined to its committed Source window."""
+    """One exact VLM Semantic Pack joined to its committed Source window."""
 
     source_window: SourceWindowIdentity
     request_identity: VlmRequestIdentity
-    observations: PersistedVlmObservationSet
+    semantic_pack: PersistedVlmSemanticPack
     response_record: CommittedArtifactMemberReference
     raw_response: BlobRef
 
@@ -846,8 +822,8 @@ class CommittedVlmSemanticInput:
             raise StoreValidationError("VLM semantic source_window is invalid")
         if type(self.request_identity) is not VlmRequestIdentity:  # noqa: E721
             raise StoreValidationError("VLM semantic request_identity is invalid")
-        if type(self.observations) is not PersistedVlmObservationSet:  # noqa: E721
-            raise StoreValidationError("VLM semantic observations are invalid")
+        if type(self.semantic_pack) is not PersistedVlmSemanticPack:  # noqa: E721
+            raise StoreValidationError("VLM semantic pack is invalid")
         if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
             raise StoreValidationError("VLM semantic response_record is invalid")
         if type(self.raw_response) is not BlobRef:  # noqa: E721
@@ -867,12 +843,15 @@ class CommittedSemanticInputs:
         inputs = tuple(self.inputs)
         if not inputs or any(type(item) is not CommittedVlmSemanticInput for item in inputs):  # noqa: E721
             raise StoreValidationError("semantic inputs must contain committed VLM inputs")
-        episode_indexes = tuple(item.source_window.episode_index for item in inputs)
-        if episode_indexes != tuple(sorted(episode_indexes)) or len(episode_indexes) != len(
-            set(episode_indexes)
+        order_keys = tuple(item.source_window.canonical_order_key for item in inputs)
+        window_ids = tuple(
+            item.source_window.window_manifest_sha256 for item in inputs
+        )
+        if order_keys != tuple(sorted(order_keys)) or len(window_ids) != len(
+            set(window_ids)
         ):
             raise StoreValidationError(
-                "semantic inputs must have unique canonical episode order"
+                "semantic inputs must have unique canonical Source/Window order"
             )
         object.__setattr__(self, "inputs", inputs)
 

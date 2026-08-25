@@ -7,12 +7,12 @@ import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from autocut_kernel.media import PTSIndex
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import GenerateVlmEvidenceRequest
 from autocut_kernel.store import (
     ArtifactScope,
@@ -43,6 +43,9 @@ from auto_cut_bot.pipeline.source_prep import (
     PrepareWholeSeriesSourcesCommand,
     PrepareWholeSeriesSourcesRequest,
     PrepareWholeSeriesSourcesResult,
+    SourceOperationPolicy,
+    SourceOperationPurpose,
+    SourcePurposeDeniedError,
 )
 from auto_cut_bot.pipeline.source_prep.command import (
     FrameSampleEvidenceError,
@@ -193,6 +196,76 @@ class MustNotBuild:
         raise AssertionError("changed request hash must fail before rebuilding")
 
 
+def _source_policy(
+    authorization_id: str = "authority",
+    series_id: str = "series",
+    expected_source_count: int = 1,
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
+) -> SourceOperationPolicy:
+    return SourceOperationPolicy(
+        authorization_id,
+        series_id,
+        expected_source_count,
+        authorized_purposes,
+    )
+
+
+def _source_root(
+    root: Path,
+    authorization_id: str = "authority",
+    series_id: str = "series",
+    expected_source_count: int = 1,
+    authorized_purposes: tuple[SourceOperationPurpose, ...] = (
+        "semantic_analysis",
+        "render_source",
+    ),
+) -> AuthorizedSeriesSourceRoot:
+    return AuthorizedSeriesSourceRoot(
+        root,
+        _source_policy(
+            authorization_id,
+            series_id,
+            expected_source_count,
+            authorized_purposes,
+        ),
+    )
+
+
+def test_source_operation_policy_is_canonical_hash_bound_and_default_deny() -> None:
+    policy = _source_policy(
+        authorized_purposes=("render_source", "semantic_analysis")
+    )
+
+    assert policy.authorized_purposes == ("semantic_analysis", "render_source")
+    assert policy.policy_sha256 == canonical_sha256(policy.to_mapping())
+    policy.require_purpose("semantic_analysis")
+    policy.require_purpose("render_source")
+
+    render_only = _source_policy(authorized_purposes=("render_source",))
+    with pytest.raises(SourcePurposeDeniedError, match="semantic_analysis"):
+        render_only.require_purpose("semantic_analysis")
+
+
+@pytest.mark.parametrize(
+    "authorized_purposes",
+    [
+        (),
+        ("semantic_analysis", "semantic_analysis"),
+        ("unknown",),
+    ],
+)
+def test_source_operation_policy_rejects_invalid_purpose_sets(
+    authorized_purposes: tuple[str, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        _source_policy(
+            authorized_purposes=authorized_purposes,  # type: ignore[arg-type]
+        )
+
+
 def _make_nonzero_media(path: Path) -> None:
     completed = subprocess.run(
         [
@@ -249,7 +322,7 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
         "prepare-v1",
         scope,
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "fixture-authority", "fixture-series", 1),
+        _source_root(root.resolve(), "fixture-authority", "fixture-series", 1),
     )
     command = PrepareWholeSeriesSourcesCommand(
         store,
@@ -265,6 +338,13 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
     assert first.prepared is not None
     assert replay.prepared == first.prepared
     assert replay.prepared is not None
+    assert replay.prepared.census.policy == request.source_root.policy
+    replay.prepared.census.require_purpose("semantic_analysis")
+    persisted_mapping = json.loads(first.artifacts[0].payload_json)
+    assert str(root.resolve()) not in first.artifacts[0].payload_json
+    assert persisted_mapping["census"]["authorization_policy_sha256"] == (
+        request.source_root.policy.policy_sha256
+    )
     episode = replay.prepared.episodes[0]
     assert episode.media_probe.video_range.start_pts > 0
     frame_ticks = episode.media_probe.video_probe.pts_index.ticks
@@ -304,7 +384,17 @@ def test_real_probe_identity_window_persistence_and_replay(tmp_path: Path) -> No
         "{}",
         "model",
         "provider",
-        VlmParsePolicy(Decimal("0.5"), 100_000, 10, 100, 1_000),
+        VlmParsePolicy(
+            max_response_bytes=100_000,
+            max_entities=10,
+            max_facts=100,
+            max_events=100,
+            max_candidate_hypotheses=10,
+            max_temporal_segments=10,
+            max_measurements=100,
+            max_text_characters=1_000,
+            max_total_text_characters=10_000,
+        ),
         GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 1, ()),
     )
     assert vlm_request.proxy_blob == episode.proxy_blob
@@ -344,7 +434,7 @@ def test_proxy_blob_tamper_fails_closed_without_artifact_set(tmp_path: Path) -> 
             "prepare-v1",
             ArtifactScope("pipeline", "job", job.job_key),
             1,
-            AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+            _source_root(root.resolve()),
         )
     )
 
@@ -371,7 +461,7 @@ def test_terminal_replay_uses_committed_snapshot_after_source_mutation(tmp_path:
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     command = PrepareWholeSeriesSourcesCommand(
         store,
@@ -402,7 +492,7 @@ def test_running_claim_recomputes_census_and_rejects_changed_request_hash(
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     with pytest.raises(SimulatedProcessCrash):
         PrepareWholeSeriesSourcesCommand(
@@ -453,7 +543,7 @@ def test_crash_after_partial_blob_concurrent_exact_replays_converge(
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     store = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
     with pytest.raises(SimulatedProcessCrash):
@@ -515,7 +605,7 @@ def test_real_episode_persists_receipt_artifact_set_blob_and_replays(tmp_path: P
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     probe = CountingProbe()
     store = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
@@ -621,7 +711,7 @@ def test_terminal_replay_rejects_tampered_manifest_certificate(tmp_path: Path) -
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     command = PrepareWholeSeriesSourcesCommand(
         store,
@@ -647,6 +737,68 @@ def test_terminal_replay_rejects_tampered_manifest_certificate(tmp_path: Path) -
     with pytest.raises(SourceManifestDecodeError):
         command.execute(request)
     assert probe.calls == 1
+
+
+@pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg and ffprobe are required",
+)
+def test_terminal_replay_rejects_policy_and_source_tamper_with_recomputed_hashes(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "videos"
+    root.mkdir()
+    _make_nonzero_media(root / "episode.mp4")
+    store = Store()
+    job = Job("authorization-purpose-tamper", "test")
+    request = PrepareWholeSeriesSourcesRequest(
+        job,
+        "prepare-v1",
+        ArtifactScope("pipeline", "job", job.job_key),
+        1,
+        _source_root(root.resolve()),
+    )
+    command = PrepareWholeSeriesSourcesCommand(
+        store,
+        builder=IdentitySourceWindowBuilder(sample_count=1),
+    )
+    first = command.execute(request)
+    assert first.outcome.artifact_set_id is not None
+    persisted = store.manifests[first.outcome.artifact_set_id]
+    payload = json.loads(persisted.payload_json)
+    original_payload = json.loads(persisted.payload_json)
+    census = payload["census"]
+    census["authorized_purposes"] = ["semantic_analysis"]
+
+    _install_recomputed_manifest_payload(store, first.outcome.artifact_set_id, payload)
+    with pytest.raises(SourceManifestDecodeError):
+        command.execute(request)
+
+    source_tamper = original_payload
+    source_tamper["census"]["sources"][0]["content_sha256"] = "sha256:" + "f" * 64
+    source_tamper["census_sha256"] = canonical_sha256(source_tamper["census"])
+    _install_recomputed_manifest_payload(
+        store,
+        first.outcome.artifact_set_id,
+        source_tamper,
+    )
+
+    with pytest.raises(SourceManifestDecodeError):
+        command.execute(request)
+
+    policy_mapping = {
+        "authorization_id": census["authorization_id"],
+        "authorized_purposes": census["authorized_purposes"],
+        "expected_source_count": census["expected_source_count"],
+        "schema_version": census["authorization_policy_schema_version"],
+        "series_id": census["series_id"],
+    }
+    census["authorization_policy_sha256"] = canonical_sha256(policy_mapping)
+    payload["census_sha256"] = canonical_sha256(census)
+    _install_recomputed_manifest_payload(store, first.outcome.artifact_set_id, payload)
+
+    with pytest.raises(SourceManifestDecodeError):
+        command.execute(request)
 
 
 def _install_recomputed_manifest_payload(
@@ -683,7 +835,7 @@ def test_terminal_replay_rejects_rehashed_audio_bound_to_foreign_source(
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     command = PrepareWholeSeriesSourcesCommand(
         store,
@@ -746,7 +898,7 @@ def test_terminal_replay_rejects_rehashed_video_pts_equal_to_stream_end(
         "prepare-v1",
         ArtifactScope("pipeline", "job", job.job_key),
         1,
-        AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+        _source_root(root.resolve()),
     )
     command = PrepareWholeSeriesSourcesCommand(
         store,
@@ -826,7 +978,7 @@ def test_command_classifies_denied_and_failed_without_path_details(
             "prepare-v1",
             ArtifactScope("pipeline", "job", job.job_key),
             1,
-            AuthorizedSeriesSourceRoot(root.resolve(), "authority", "series", 1),
+            _source_root(root.resolve()),
         )
     )
 

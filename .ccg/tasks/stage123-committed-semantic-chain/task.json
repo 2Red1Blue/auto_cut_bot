@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "Implement semantic-pack v3 as the first incompatible replacement wave",
+  "nextAction": "Implement the new semantic-chain authority and Stage 1 strict-global command",
   "createdAt": "2026-08-25T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

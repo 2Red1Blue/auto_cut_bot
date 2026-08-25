@@ -30,7 +30,10 @@ from auto_cut_bot.pipeline.runtime import (
     StaleRunVersionError,
 )
 from auto_cut_bot.pipeline.runtime.composition import ConfiguredSourceCatalog, SourceCatalogEntry
-from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
+from auto_cut_bot.pipeline.source_prep import (
+    AuthorizedSeriesSourceRoot,
+    SourceOperationPolicy,
+)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -48,9 +51,7 @@ def migrated_database() -> None:
         with connection.cursor() as cursor:
             cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
             cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
-            for migration in sorted(
-                Path("packages/autocut-kernel/migrations").glob("*.sql")
-            ):
+            for migration in sorted(Path("packages/autocut-kernel/migrations").glob("*.sql")):
                 cursor.execute(migration.read_text(encoding="utf-8"))
 
 
@@ -85,9 +86,12 @@ def _source_catalog(
             SourceCatalogEntry(
                 AuthorizedSeriesSourceRoot(
                     root=root.resolve(),
-                    authorization_id=f"source:fixture-{index}",
-                    series_id=f"series:fixture-{index}",
-                    expected_source_count=1,
+                    policy=SourceOperationPolicy(
+                        f"source:fixture-{index}",
+                        f"series:fixture-{index}",
+                        1,
+                        ("semantic_analysis", "render_source"),
+                    ),
                 )
             )
             for index, root in enumerate(roots, start=1)
@@ -114,11 +118,113 @@ def _historical_execution_profile(
 ) -> PipelineExecutionProfile:
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = schema_version
-    del mapping["media_preflight_policy"]
-    del mapping["media_preflight_policy_hash"]
+    mapping["parse_policy"] = {
+        "max_observations": 64,
+        "max_response_bytes": 64_000,
+        "max_summary_characters": 512,
+        "max_total_summary_characters": 8_192,
+        "minimum_confidence": "0.80",
+    }
+    if schema_version in {
+        "pipeline-execution-profile-v1",
+        "pipeline-execution-profile-v2",
+    }:
+        del mapping["media_preflight_policy"]
+        del mapping["media_preflight_policy_hash"]
     if schema_version == "pipeline-execution-profile-v1":
         del mapping["generation_retry_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
+
+
+def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> None:
+    assert DSN is not None
+    request = PipelineRunRequest("test", source_root="/migration-0013/source")
+    v4 = _execution_profile()
+    v3 = _historical_execution_profile("pipeline-execution-profile-v3")
+
+    def insert_profile(
+        cursor,
+        *,
+        label: str,
+        profile: dict[str, object],
+        profile_hash: str,
+        state: str,
+    ) -> None:
+        cursor.execute(
+            """
+            INSERT INTO runtime.pipeline_runs
+                (run_id, idempotency_key, request_hash, profile,
+                 source_kind, source_value, execution_profile,
+                 execution_profile_hash, state, version)
+            VALUES (%s, %s, %s, 'test', 'root', %s, %s::jsonb, %s, %s, 0)
+            """,
+            (
+                f"pipeline_run_{uuid4().hex}",
+                f"migration-0013-{label}-{uuid4().hex}",
+                request.request_hash,
+                request.source_root,
+                json.dumps(profile),
+                profile_hash,
+                state,
+            ),
+        )
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            insert_profile(
+                cursor,
+                label="v4-current",
+                profile=v4.to_mapping(),
+                profile_hash=v4.canonical_hash,
+                state="accepted",
+            )
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="new v1/v2/v3 execution profile rows are forbidden",
+            ):
+                insert_profile(
+                    cursor,
+                    label="v3-new-history",
+                    profile=v3.to_mapping(),
+                    profile_hash=v3.canonical_hash,
+                    state="failed",
+                )
+
+            v4_with_legacy_policy = v4.to_mapping()
+            v4_with_legacy_policy["parse_policy"] = v3.to_mapping()["parse_policy"]
+            with pytest.raises(psycopg.errors.CheckViolation):
+                insert_profile(
+                    cursor,
+                    label="v4-legacy-policy",
+                    profile=v4_with_legacy_policy,
+                    profile_hash=v4.canonical_hash,
+                    state="accepted",
+                )
+
+            v3_with_current_policy = v3.to_mapping()
+            v3_with_current_policy["parse_policy"] = v4.to_mapping()["parse_policy"]
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="new v1/v2/v3 execution profile rows are forbidden",
+            ):
+                insert_profile(
+                    cursor,
+                    label="v3-current-policy",
+                    profile=v3_with_current_policy,
+                    profile_hash=v3.canonical_hash,
+                    state="failed",
+                )
+
+            null_schema = v4.to_mapping()
+            null_schema["schema_version"] = None
+            with pytest.raises(psycopg.errors.CheckViolation):
+                insert_profile(
+                    cursor,
+                    label="null-schema-version",
+                    profile=null_schema,
+                    profile_hash=v4.canonical_hash,
+                    state="accepted",
+                )
 
 
 def _force_terminal_command(cursor, command_id: str, outcome: str) -> str:
@@ -298,6 +404,13 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
     )
     mapping = submitted.snapshot.execution_profile.to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v2"
+    mapping["parse_policy"] = {
+        "max_observations": 64,
+        "max_response_bytes": 64_000,
+        "max_summary_characters": 512,
+        "max_total_summary_characters": 8_192,
+        "minimum_confidence": "0.80",
+    }
     del mapping["media_preflight_policy"]
     del mapping["media_preflight_policy_hash"]
     v2 = PipelineExecutionProfile.from_mapping(mapping)
@@ -309,8 +422,8 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             )
             try:
                 with pytest.raises(
-                    psycopg.errors.CheckViolation,
-                    match="pipeline_runs_execution_profile_closed_check",
+                    psycopg.errors.RaiseException,
+                    match="new v1/v2/v3 execution profile rows are forbidden",
                 ):
                     cursor.execute(
                         """
@@ -425,7 +538,8 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
         lease_id="worker-lease-3",
     )
     completed = await restarted.read_run(run_id)
-    assert completed is not None and completed.status == "succeeded"
+    assert completed is not None and completed.status == "failed"
+    assert all(command.status == "succeeded" for command in completed.commands)
     with pytest.raises(StaleRunVersionError):
         await restarted.record_result(
             run_id,
@@ -811,9 +925,7 @@ def test_0007_upgrades_active_0005_single_stage_runs_with_causal_vlm_state() -> 
                 )
 
             cursor.execute(
-                (migration_root / "0007_pipeline_stage_worker.sql").read_text(
-                    encoding="utf-8"
-                )
+                (migration_root / "0007_pipeline_stage_worker.sql").read_text(encoding="utf-8")
             )
             for (
                 run_id,
@@ -843,12 +955,8 @@ def test_0007_upgrades_active_0005_single_stage_runs_with_causal_vlm_state() -> 
                 else:
                     assert vlm is not None
                     assert vlm[0] == expected_vlm_state
-                    assert (
-                        str(vlm[1]) if vlm[1] is not None else None
-                    ) == (
-                        source_command_id
-                        if source_state in ("denied", "failed")
-                        else None
+                    assert (str(vlm[1]) if vlm[1] is not None else None) == (
+                        source_command_id if source_state in ("denied", "failed") else None
                     )
 
 
@@ -904,13 +1012,11 @@ async def test_0008_aborts_on_old_active_runs_and_marks_only_terminal_history() 
                         ),
                     )
             cursor.execute(
-                (migration_root / "0007_pipeline_stage_worker.sql").read_text(
-                    encoding="utf-8"
-                )
+                (migration_root / "0007_pipeline_stage_worker.sql").read_text(encoding="utf-8")
             )
-            profile_migration = (
-                migration_root / "0008_pipeline_execution_profile.sql"
-            ).read_text(encoding="utf-8")
+            profile_migration = (migration_root / "0008_pipeline_execution_profile.sql").read_text(
+                encoding="utf-8"
+            )
             with pytest.raises(
                 psycopg.DatabaseError,
                 match="refuses legacy accepted/running pipeline runs",
@@ -1063,9 +1169,9 @@ async def test_0012_atomically_rejects_active_historical_profiles_then_replays()
     )
     assert active_v2_command is not None
 
-    profile_migration = (
-        migration_root / "0012_pipeline_media_preflight_profile.sql"
-    ).read_text(encoding="utf-8")
+    profile_migration = (migration_root / "0012_pipeline_media_preflight_profile.sql").read_text(
+        encoding="utf-8"
+    )
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
             with pytest.raises(
@@ -1156,7 +1262,67 @@ async def test_0012_atomically_rejects_active_historical_profiles_then_replays()
         assert history.status == "failed"
         assert history.execution_profile == expected_profile
 
-    v3_run_id = await create_run("active-v3", _execution_profile())
+    v3 = _historical_execution_profile("pipeline-execution-profile-v3")
+    terminal_v3_id = await create_run("terminal-v3", v3)
+    active_v3_id = await create_run("active-v3-history", v3)
+    await fail_next(terminal_v3_id, "terminal-v3")
+    active_v3_command = await store.claim_next_pending(
+        active_v3_id,
+        expected_version=0,
+        lease_id="active-v3-history",
+    )
+    assert active_v3_command is not None
+
+    semantic_migration = (migration_root / "0013_vlm_semantic_pack_profile.sql").read_text(
+        encoding="utf-8"
+    )
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            with pytest.raises(
+                psycopg.DatabaseError,
+                match="0013 refuses accepted/running pipeline runs",
+            ):
+                cursor.execute(semantic_migration)
+            connection.rollback()
+
+    await store.record_result(
+        active_v3_id,
+        result=PipelineStageResult(active_v3_command.command_id, "failed", uuid4()),
+        expected_version=active_v3_command.version,
+        lease_id="active-v3-history",
+    )
+
+    with psycopg.connect(DSN, autocommit=True) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(semantic_migration)
+            cursor.execute(semantic_migration)
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="historical v1/v2/v3 execution profile rows are read-only",
+            ):
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_runs
+                       SET execution_profile_hash = execution_profile_hash
+                     WHERE run_id = %s
+                    """,
+                    (terminal_v2_id,),
+                )
+
+    for run_id, expected_profile in (
+        (terminal_v1_id, v1),
+        (terminal_v2_id, v2),
+        (active_v1_id, v1),
+        (active_v2_id, v2),
+        (terminal_v3_id, v3),
+        (active_v3_id, v3),
+    ):
+        history = await store.read_run(run_id)
+        assert history is not None
+        assert history.status == "failed"
+        assert history.execution_profile == expected_profile
+
+    v4_run_id = await create_run("active-v4", _execution_profile())
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1172,7 +1338,7 @@ async def test_0012_atomically_rejects_active_historical_profiles_then_replays()
                        SET execution_profile_hash = %s
                      WHERE run_id = %s
                     """,
-                    ("sha256:" + "0" * 64, v3_run_id),
+                    ("sha256:" + "0" * 64, v4_run_id),
                 )
             finally:
                 cursor.execute(
@@ -1182,7 +1348,7 @@ async def test_0012_atomically_rejects_active_historical_profiles_then_replays()
                     """
                 )
     with pytest.raises(PipelineRunValidationError, match="hash does not bind"):
-        await store.read_run(v3_run_id)
+        await store.read_run(v4_run_id)
 
 
 def _agent() -> MagicMock:
@@ -1200,9 +1366,7 @@ async def test_real_http_run_status_resume_survive_app_restart(
     headers = {"Idempotency-Key": "http-postgres-request-1"}
     payload = {"profile": "test", "source_root": str(tmp_path / "input")}
 
-    first_client = TestClient(
-        TestServer(create_app(_agent(), pipeline_run_service=first_service))
-    )
+    first_client = TestClient(TestServer(create_app(_agent(), pipeline_run_service=first_service)))
     await first_client.start_server()
     created = await first_client.post("/v1/pipeline/run", headers=headers, json=payload)
     assert created.status == 202
