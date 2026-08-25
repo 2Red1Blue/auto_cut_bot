@@ -3,3 +3,6 @@
 {"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/implement.md","reason":"Wave ordering and file ownership"}
 {"file":"packages/autocut-kernel/src/autocut_kernel/semantic_chain/production_common.py","reason":"Evaluator-owned authority model"}
 {"file":"packages/autocut-kernel/src/autocut_kernel/store/postgres.py","reason":"Exact committed reader and atomic command persistence patterns"}
+{"file":"auto_cut_bot/pipeline/vlm/prompt.py","reason":"V2 semantic contract being replaced before Stage 1-3 implementation"}
+{"file":"packages/autocut-kernel/src/autocut_kernel/vlm/models.py","reason":"Kernel-owned VLM semantic and provenance values"}
+{"file":"docs/v213-replacement-implementation-path.md","reason":"Repository-local replacement boundary and no-patch implementation order"}

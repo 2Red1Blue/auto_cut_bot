@@ -2,6 +2,11 @@
 
 > 更新: 2026-08-12 | 版本: 2.1
 
+> **历史原理说明，不是当前实现许可。** 本文保留旧 VLM-first 方案中已经验证的
+> 叙事和高光原则，但 25-stage/HITL/旧数据库与 `ac_auto_cut` 复用路径已被
+> v2.1.3 双运行时架构取代。当前实现顺序、保留/替换边界和防补丁规则见
+> [v2.1.3 replacement implementation path](./v213-replacement-implementation-path.md)。
+
 ## 核心原则
 
 ```

@@ -5,8 +5,8 @@
   "complexity": "L+",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "planning",
-  "nextAction": "Implement exact committed readers before the three commands",
+  "currentPhase": "implementation",
+  "nextAction": "Implement semantic-pack v3 as the first incompatible replacement wave",
   "createdAt": "2026-08-25T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
