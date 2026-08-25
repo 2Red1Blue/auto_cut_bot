@@ -362,6 +362,25 @@ describe("App layout", () => {
     expect(connectSpy).not.toHaveBeenCalled();
   });
 
+  it("opens a direct pipeline highlight link without adding pipeline discovery", async () => {
+    const runId = `pipeline_run_${"a".repeat(32)}`;
+    window.history.replaceState(null, "", `/#/pipeline/runs/${runId}/highlights`);
+    mockFetchRoutes({
+      "/api/settings": baseSettingsPayload(),
+      [`/api/pipeline/runs/${runId}/highlights`]: { status: "ready", items: [] },
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Highlight candidates" })).toBeInTheDocument();
+    expect(await screen.findByText(/No committed highlight candidates/i)).toBeInTheDocument();
+    expect(screen.queryByRole("navigation", { name: "Sidebar navigation" })).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/pipeline/runs/${runId}/highlights`,
+      expect.objectContaining({ headers: { Authorization: "Bearer api-tok" } }),
+    );
+  });
+
   it("toggles password visibility without changing the password", async () => {
     vi.mocked(fetchBootstrap).mockRejectedValueOnce(
       new Error("bootstrap failed: HTTP 401"),

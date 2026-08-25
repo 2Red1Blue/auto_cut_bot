@@ -20,6 +20,7 @@ import {
   fetchMcpPresets,
   fetchMarketplaceSkillTrends,
   fetchNanobotFeatures,
+  fetchPipelineHighlights,
   fetchProviderModels,
   fetchSessionAutomations,
   fetchSettingsUsage,
@@ -28,6 +29,7 @@ import {
   fetchSkills,
   fetchTrendingMarketplaceSkills,
   fetchWebuiThread,
+  isPipelineRunId,
   fetchWorkspaces,
   importMcpConfig,
   installMarketplaceSkill,
@@ -88,6 +90,30 @@ describe("webui API helpers", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("strictly validates pipeline identifiers and reads highlights through the gateway", async () => {
+    const runId = `pipeline_run_${"a".repeat(32)}`;
+    expect(isPipelineRunId(runId)).toBe(true);
+    expect(isPipelineRunId(`pipeline_run_${"A".repeat(32)}`)).toBe(false);
+    expect(isPipelineRunId("pipeline_run_short")).toBe(false);
+
+    await fetchPipelineHighlights("tok", runId);
+
+    expect(fetch).toHaveBeenCalledWith(
+      `/api/pipeline/runs/${runId}/highlights`,
+      expect.objectContaining({
+        headers: { Authorization: "Bearer tok" },
+        credentials: "same-origin",
+      }),
+    );
+  });
+
+  it("rejects malformed pipeline identifiers before making a gateway request", async () => {
+    await expect(fetchPipelineHighlights("tok", "not-a-run")).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("percent-encodes websocket keys when fetching webui-thread snapshot", async () => {

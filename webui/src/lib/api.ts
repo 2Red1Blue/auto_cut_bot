@@ -71,6 +71,55 @@ export class ApiError extends Error {
   }
 }
 
+/** The durable Pipeline identifier accepted by the read-only highlights route. */
+export const PIPELINE_RUN_ID_PATTERN = /^pipeline_run_[a-f0-9]{32}$/;
+
+export function isPipelineRunId(value: string): boolean {
+  return PIPELINE_RUN_ID_PATTERN.test(value);
+}
+
+/** Closed, display-only projection returned by the highlights gateway route. */
+export interface PipelineHighlightMeasurement {
+  kind: string;
+  value: string;
+  confidence: string;
+}
+
+export interface PipelineHighlightSemanticWindow {
+  start_tick: number;
+  end_tick: number;
+  source_time_base: {
+    numerator: number;
+    denominator: number;
+  };
+  mapping_error_bound_source_ticks: number;
+  provider_uncertainty_proxy_ticks: number;
+  provider_uncertainty_proxy_time_base: {
+    numerator: number;
+    denominator: number;
+  };
+  precision: "coarse_only";
+}
+
+export interface PipelineHighlightItem {
+  episode_index: number;
+  candidate_id: string;
+  reason: string;
+  anchor_summary: string;
+  payoff_summary: string;
+  dialogue_excerpt: string | null;
+  tags: string[];
+  narrative_functions: string[];
+  editing_modes: string[];
+  measurements: PipelineHighlightMeasurement[];
+  support_confidence: string;
+  semantic_window: PipelineHighlightSemanticWindow;
+}
+
+export type PipelineHighlightsPayload =
+  | { status: "ready"; items: PipelineHighlightItem[] }
+  | { status: "not_ready" };
+
 export interface WebUIMutationTransport {
   requestMutation<T>(
     action: string,
@@ -216,6 +265,22 @@ export async function listSessions(
       handle,
     };
   });
+}
+
+export async function fetchPipelineHighlights(
+  token: string,
+  runId: string,
+  base: string = "",
+): Promise<PipelineHighlightsPayload> {
+  if (!isPipelineRunId(runId)) {
+    throw new ApiError(400, "Invalid pipeline run identifier");
+  }
+  return request<PipelineHighlightsPayload>(
+    `${base}/api/pipeline/runs/${encodeURIComponent(runId)}/highlights`,
+    token,
+    undefined,
+    API_READ_TIMEOUT_MS,
+  );
 }
 
 /** Disk-backed WebUI display thread snapshot (separate from agent session). */

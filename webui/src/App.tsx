@@ -12,6 +12,7 @@ import { Eye, EyeOff, Moon, PanelLeft, ShieldCheck, Sun, X } from "lucide-react"
 import { useTranslation } from "react-i18next";
 import { channelUiPresentation } from "@/channel-plugins/registry";
 import { Sidebar } from "@/components/Sidebar";
+import { PipelineHighlightsPage } from "@/components/pipeline/PipelineHighlightsPage";
 import type { SidebarDeleteItem } from "@/components/ChatList";
 import type { SettingsSectionKey } from "@/components/settings/SettingsView";
 import { ThreadShell } from "@/components/thread/ThreadShell";
@@ -115,12 +116,13 @@ const TOKEN_REFRESH_MIN_DELAY_MS = 5_000;
 const PAIRING_POLL_INTERVAL_MS = 5_000;
 const PAIRING_IDLE_POLL_INTERVAL_MS = 15_000;
 const PAIRING_DISMISS_SNOOZE_MS = 30_000;
-type ShellView = "chat" | "settings" | "apps" | "automations" | "skills";
+type ShellView = "chat" | "settings" | "apps" | "automations" | "skills" | "pipeline-highlights";
 type ShellRoute = {
   view: ShellView;
   activeKey: string | null;
   settingsSection: SettingsSectionKey;
   temporary?: boolean;
+  pipelineRunId?: string;
 };
 const loadSettingsView = () => import("@/components/settings/SettingsView");
 const SettingsView = lazy(async () => {
@@ -228,6 +230,15 @@ function readShellRoute(): ShellRoute {
   if (!hash || hash === "/" || hash === "/new") return defaultShellRoute();
 
   const [path, query = ""] = hash.split("?", 2);
+  const pipelineHighlightsMatch = /^\/pipeline\/runs\/([^/]+)\/highlights$/.exec(path);
+  if (pipelineHighlightsMatch && !query) {
+    return {
+      view: "pipeline-highlights",
+      activeKey: null,
+      settingsSection: "overview",
+      pipelineRunId: pipelineHighlightsMatch[1],
+    };
+  }
   const params = new URLSearchParams(query);
   const rawSettingsSection = params.get("section");
   const settingsSection = isSettingsSectionKey(rawSettingsSection)
@@ -282,6 +293,9 @@ function readShellRoute(): ShellRoute {
 }
 
 function shellRouteHash(route: ShellRoute): string {
+  if (route.view === "pipeline-highlights") {
+    return `#/pipeline/runs/${route.pipelineRunId ?? ""}/highlights`;
+  }
   if (route.view === "chat") {
     if (route.temporary && route.activeKey?.startsWith("websocket:")) {
       const chatId = route.activeKey.slice("websocket:".length);
@@ -1049,6 +1063,9 @@ function Shell({
     initialRouteRef.current.activeKey,
   );
   const [view, setView] = useState<ShellView>(initialRouteRef.current.view);
+  const [pipelineRunId, setPipelineRunId] = useState<string>(
+    initialRouteRef.current.pipelineRunId ?? "",
+  );
   const [temporarySessions, setTemporarySessions] = useState<Record<string, ChatSummary>>({});
   const [temporaryChatEnabled, setTemporaryChatEnabled] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] =
@@ -1116,7 +1133,7 @@ function Shell({
   const effectiveRuntimeSurface =
     settingsSnapshot?.surface ?? settingsSnapshot?.runtime_surface ?? runtimeSurface;
   const showHostChrome = effectiveRuntimeSurface === "native";
-  const showMainSidebar = view !== "settings";
+  const showMainSidebar = view !== "settings" && view !== "pipeline-highlights";
   const activeTemporarySession = activeKey ? temporarySessions[activeKey] ?? null : null;
   const temporaryChatId = activeTemporarySession?.chatId ?? null;
   const temporaryChatActive = view === "chat" && temporaryChatId !== null;
@@ -1136,6 +1153,7 @@ function Shell({
     (route: ShellRoute, options?: { replace?: boolean }) => {
       setActiveKey(route.activeKey);
       setView(route.view);
+      setPipelineRunId(route.pipelineRunId ?? "");
       setSettingsInitialSection(route.settingsSection);
       writeShellRoute(route, options?.replace);
     },
@@ -1147,6 +1165,7 @@ function Shell({
       const route = readShellRoute();
       setActiveKey(route.activeKey);
       setView(route.view);
+      setPipelineRunId(route.pipelineRunId ?? "");
       setSettingsInitialSection(route.settingsSection);
       setWorkspaceError(null);
       if (route.view === "chat" && !route.activeKey) {
@@ -2483,6 +2502,10 @@ function Shell({
       });
       return;
     }
+    if (view === "pipeline-highlights") {
+      document.title = t("app.documentTitle.chat", { title: "Highlight candidates" });
+      return;
+    }
     document.title = activeSession
       ? t("app.documentTitle.chat", { title: headerTitle })
       : t("app.documentTitle.base");
@@ -2838,7 +2861,15 @@ function Shell({
                 }}
               />
             </div>
-            {view !== "chat" && (
+            {view === "pipeline-highlights" ? (
+              <div className="absolute inset-0 flex flex-col">
+                <PipelineHighlightsPage
+                  runId={pipelineRunId}
+                  token={getToken()}
+                  onBackToChat={() => navigate(defaultShellRoute())}
+                />
+              </div>
+            ) : view !== "chat" ? (
               <div className="absolute inset-0 flex flex-col">
                 <Suspense fallback={<SurfaceLoadingFallback />}>
                   <SettingsView
@@ -2860,7 +2891,7 @@ function Shell({
                   />
                 </Suspense>
               </div>
-            )}
+            ) : null}
           </main>
         </div>
 
