@@ -688,6 +688,26 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
         )
         assert unauthorized.status == 401
 
+        invalid_container = request_value.to_mapping()
+        invalid_container["container"] = {"media_type": "video/mp4", "safe_suffix": ".mov"}
+        invalid_container_raw = json.dumps(
+            invalid_container, sort_keys=True, separators=(",", ":")
+        ).encode()
+        invalid_container_headers = _headers(request_value)
+        invalid_container_headers["X-Timed-Speech-Manifest"] = base64.b64encode(
+            invalid_container_raw
+        ).decode()
+        invalid_container_headers["X-Timed-Speech-Request-SHA256"] = ns["sha"](
+            invalid_container_raw
+        )
+        rejected_container = await client.post(
+            "/v1/timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers=invalid_container_headers,
+        )
+        assert rejected_container.status == 400
+        assert service.admitted == 0
+
         malformed = response.json()
         malformed["transcript"]["words"][0]["in_tick"] = True
         raw = json.dumps(malformed, separators=(",", ":"), sort_keys=True).encode()

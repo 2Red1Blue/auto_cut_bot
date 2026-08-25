@@ -775,6 +775,7 @@ class Service:
                 "effective_max_source_bytes",
             }
             or type(container) is not dict
+            or container != {"media_type": "video/mp4", "safe_suffix": ".mp4"}
             or type(clock) is not dict
             or set(clock) != {"clock_id", "time_base", "origin_tick", "duration_tick"}
             or type(requested) is not dict
