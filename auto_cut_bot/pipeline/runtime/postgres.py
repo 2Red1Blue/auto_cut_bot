@@ -519,7 +519,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v4'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v5'
                        )
                    )
                    AND (
@@ -528,11 +528,13 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v4'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v5'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy_hash'
+                              AND profile_run.execution_profile
+                                  ? 'materialization_limits'
                        )
                    )
                    AND NOT EXISTS (

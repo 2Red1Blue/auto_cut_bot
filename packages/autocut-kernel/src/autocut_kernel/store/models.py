@@ -731,6 +731,23 @@ class MaterializationLimits:
         )
 
     @property
+    def policy_sha256(self) -> str:
+        """Hash every frozen transfer limit used to construct a command."""
+
+        return canonical_payload_hash(
+            json.dumps(
+                {
+                    "copy_chunk_bytes": self.copy_chunk_bytes,
+                    "max_source_bytes": self.max_source_bytes,
+                    "staging_quota_bytes": self.staging_quota_bytes,
+                    "timed_speech_max_request_bytes": self.timed_speech_max_request_bytes,
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
+    @property
     def effective_max_source_bytes(self) -> int:
         """The one source ceiling enforced before private staging and dispatch."""
 
@@ -761,6 +778,7 @@ class MaterializationError(RuntimeError):
             "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
             "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
             "MEDIA_MATERIALIZATION_CAPACITY_BUSY",
+            "MEDIA_MATERIALIZATION_QUOTA_CONFIGURATION_MISMATCH",
             "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
         }:
             raise ValueError("materialization failure code is unsupported")

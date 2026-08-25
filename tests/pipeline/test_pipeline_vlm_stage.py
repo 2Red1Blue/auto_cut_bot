@@ -778,6 +778,8 @@ class Provider:
 
 
 def _profile() -> PipelineExecutionProfile:
+    from autocut_kernel.store.models import MaterializationLimits
+
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(
             model_id="doubao-seed-2-1-pro-260628",
@@ -799,12 +801,19 @@ def _profile() -> PipelineExecutionProfile:
             3,
             (2, 8),
         ),
+        materialization_limits=MaterializationLimits(
+            max_source_bytes=8 * 1024 * 1024,
+            timed_speech_max_request_bytes=8 * 1024 * 1024,
+            copy_chunk_bytes=64 * 1024,
+            staging_quota_bytes=16 * 1024 * 1024,
+        ),
     )
 
 
 def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     mapping = _profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v3"
+    del mapping["materialization_limits"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -814,7 +823,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     }
     historical = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="profile v4"):
+    with pytest.raises(PipelineRunValidationError, match="profile v5"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="authorized-source"),

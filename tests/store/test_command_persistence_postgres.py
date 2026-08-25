@@ -55,7 +55,7 @@ def _hold_staging_reservation(
     """Child-process probe for the filesystem-backed quota ledger."""
 
     try:
-        lease = postgres_module._reserve_materialization_quota(Path(root), 6, 6)
+        lease = postgres_module._reserve_materialization_quota(Path(root), 6, 8)
         ready.set()  # type: ignore[union-attr]
         if not release.wait(10):  # type: ignore[union-attr]
             raise TimeoutError("parent did not release the staging reservation")
@@ -138,6 +138,10 @@ def _make_media_evidence_member(
 def migrated_database() -> None:
     assert DSN is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
+        if connection.info.dbname != "ac_autocut_verify":
+            pytest.fail(
+                "AUTOCUT_TEST_POSTGRES_DSN must name disposable ac_autocut_verify, never ac_db"
+            )
         with connection.cursor() as cursor:
             cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
             cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
@@ -1374,7 +1378,7 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
         max_source_bytes=16,
         timed_speech_max_request_bytes=16,
         copy_chunk_bytes=2,
-        staging_quota_bytes=16,
+        staging_quota_bytes=8,
     )
     process_context = multiprocessing.get_context("spawn")
     child_ready = process_context.Event()
@@ -1394,7 +1398,7 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
                 max_source_bytes=16,
                 timed_speech_max_request_bytes=16,
                 copy_chunk_bytes=2,
-                staging_quota_bytes=6,
+                staging_quota_bytes=8,
             ),
         )
     assert child_busy.value.code == "MEDIA_MATERIALIZATION_CAPACITY_BUSY"
@@ -1426,13 +1430,26 @@ def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
                 max_source_bytes=16,
                 timed_speech_max_request_bytes=16,
                 copy_chunk_bytes=2,
-                staging_quota_bytes=6,
+                staging_quota_bytes=8,
             ),
         )
     assert busy.value.code == "MEDIA_MATERIALIZATION_CAPACITY_BUSY"
     lease.close()
     reopened = competing_store.materialize_immutable_blob(job, reference, limits)
     reopened.close()
+
+    with pytest.raises(MaterializationError, match="quota does not match") as mismatch:
+        competing_store.materialize_immutable_blob(
+            job,
+            reference,
+            MaterializationLimits(
+                max_source_bytes=16,
+                timed_speech_max_request_bytes=16,
+                copy_chunk_bytes=2,
+                staging_quota_bytes=9,
+            ),
+        )
+    assert mismatch.value.code == "MEDIA_MATERIALIZATION_QUOTA_CONFIGURATION_MISMATCH"
 
     orphan = staging_root / ".autocut-media-reservations" / ("a" * 32 + ".lease")
     orphan.write_text("15\n", encoding="ascii")

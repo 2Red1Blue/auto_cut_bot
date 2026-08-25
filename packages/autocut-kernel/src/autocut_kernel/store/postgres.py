@@ -122,7 +122,32 @@ _Result = TypeVar("_Result")
 
 _MATERIALIZATION_RESERVATION_DIRECTORY = ".autocut-media-reservations"
 _MATERIALIZATION_RESERVATION_LOCK = ".autocut-media-reservations.lock"
+_MATERIALIZATION_QUOTA_CONFIGURATION = ".autocut-media-quota-bytes"
 _MATERIALIZATION_DIRECTORY_PREFIX = ".autocut-media-"
+
+
+def validate_materialization_staging_root(root: Path) -> Path:
+    """Create and verify the one private root used for verified media leases.
+
+    Composition calls this before registering any paid provider or worker.  The
+    store repeats it at use time so a later permission or symlink change cannot
+    turn a previously admitted root into an unsafe materialization target.
+    """
+
+    if not root.is_absolute():
+        raise StoreValidationError("materialization_staging_root must be absolute")
+    try:
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        root_stat = os.stat(root, follow_symlinks=False)
+    except OSError as error:
+        raise StoreValidationError("materialization_staging_root is unavailable") from error
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or stat.S_IMODE(root_stat.st_mode) != 0o700
+        or root_stat.st_uid != os.geteuid()
+    ):
+        raise StoreValidationError("materialization_staging_root must be a private 0700 directory")
+    return root
 
 
 @dataclass(slots=True)
@@ -214,6 +239,55 @@ def _reservation_bytes(reservations_fd: int, name: str) -> int:
     return value
 
 
+def _pin_materialization_quota(root_fd: int, limit: int) -> None:
+    """Bind one root to one quota under the same lock as reservations.
+
+    The capacity ledger is shared by all local workers.  Letting each worker
+    supply a different quota would make its arithmetic non-composable, so the
+    first safely configured worker writes an immutable root-local record and
+    every subsequent worker must match it exactly.
+    """
+
+    expected = f"{limit}\n".encode("ascii")
+    created = False
+    try:
+        descriptor = os.open(
+            _MATERIALIZATION_QUOTA_CONFIGURATION,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=root_fd,
+        )
+    except FileNotFoundError:
+        descriptor = os.open(
+            _MATERIALIZATION_QUOTA_CONFIGURATION,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_fd,
+        )
+        created = True
+    try:
+        record_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(record_stat.st_mode)
+            or record_stat.st_nlink != 1
+            or stat.S_IMODE(record_stat.st_mode) != 0o600
+            or record_stat.st_uid != os.geteuid()
+        ):
+            raise OSError("materialization quota configuration is unsafe")
+        if created:
+            os.write(descriptor, expected)
+            os.fsync(descriptor)
+            return
+        actual = os.read(descriptor, len(expected) + 1)
+        if os.read(descriptor, 1) or actual != expected:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_QUOTA_CONFIGURATION_MISMATCH",
+                "private media staging quota does not match the root configuration",
+                outcome="failed",
+            )
+    finally:
+        os.close(descriptor)
+
+
 def _reserve_materialization_quota(
     root: Path,
     byte_length: int,
@@ -233,6 +307,7 @@ def _reserve_materialization_quota(
     reservation_created = False
     try:
         flock(lock_fd, LOCK_EX)
+        _pin_materialization_quota(root_fd, limit)
         used = 0
         for name in os.listdir(reservations_fd):
             if not name.endswith(".lease"):
@@ -867,8 +942,8 @@ class PostgresRuntimeStore:
     ) -> None:
         if not callable(connection_factory):
             raise StoreValidationError("connection_factory must be callable")
-        if materialization_staging_root is not None and not materialization_staging_root.is_absolute():
-            raise StoreValidationError("materialization_staging_root must be absolute")
+        if materialization_staging_root is not None:
+            validate_materialization_staging_root(materialization_staging_root)
         self._connection_factory = connection_factory
         self._materialization_staging_root = materialization_staging_root
 
@@ -1367,21 +1442,13 @@ class PostgresRuntimeStore:
                 outcome="failed",
             )
         try:
-            root.mkdir(mode=0o700, parents=True, exist_ok=True)
-            root_stat = os.stat(root, follow_symlinks=False)
-        except OSError as error:
+            return validate_materialization_staging_root(root)
+        except StoreValidationError as error:
             raise MaterializationError(
                 "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
-                "private media staging is unavailable",
+                "private media staging is unavailable or unsafe",
                 outcome="failed",
             ) from error
-        if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_mode & 0o077:
-            raise MaterializationError(
-                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
-                "private media staging is unsafe",
-                outcome="failed",
-            )
-        return root
 
     def _verified_claimed_blob_ref(self, job: Job, reference: BlobRef) -> BlobRef:
         def operation(cursor: DbCursor) -> BlobRef:

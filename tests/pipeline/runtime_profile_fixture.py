@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 
 from auto_cut_bot.pipeline.media_preflight import (
@@ -98,5 +99,11 @@ def execution_profile(
             GENERATION_RETRY_STRATEGY_VERSION,
             3,
             (2, 8),
+        ),
+        materialization_limits=MaterializationLimits(
+            max_source_bytes=8 * 1024 * 1024,
+            timed_speech_max_request_bytes=8 * 1024 * 1024,
+            copy_chunk_bytes=64 * 1024,
+            staging_quota_bytes=16 * 1024 * 1024,
         ),
     )

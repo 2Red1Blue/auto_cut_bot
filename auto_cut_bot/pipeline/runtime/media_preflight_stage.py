@@ -32,7 +32,6 @@ from autocut_kernel.store import (
     SemanticInputUnavailableError,
 )
 from autocut_kernel.store.models import (
-    MaterializationLimits,
     VerifiedMaterializedBlob,
     canonical_recipe_scope,
 )
@@ -152,6 +151,7 @@ def media_preflight_kernel_idempotency_key(
     semantic_pack: PersistedVlmSemanticPack,
     producer_policy_sha256: str,
     adaptive_policy_sha256: str,
+    materialization_policy_sha256: str,
 ) -> str:
     validate_run_id(run_id)
     if type(episode_index) is not int or episode_index < 0:  # noqa: E721
@@ -161,6 +161,7 @@ def media_preflight_kernel_idempotency_key(
         "episode_index": episode_index,
         "semantic_pack_sha256": semantic_pack.semantic_pack.canonical_hash,
         "producer_policy_sha256": producer_policy_sha256,
+        "materialization_policy_sha256": materialization_policy_sha256,
         "run_id": run_id,
         "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
         "source_provenance_sha256": source_bundle.canonical_hash,
@@ -177,12 +178,9 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
-        *,
-        materialization_limits: MaterializationLimits | None = None,
     ) -> None:
         self._store = store
         self._port = port
-        self._materialization_limits = materialization_limits
         self._finalizer = FinalizeTimedMediaEvidenceBatchCommand(store)
 
     @staticmethod
@@ -201,10 +199,7 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
-        if self._materialization_limits is None:
-            raise PipelineRunValidationError(
-                "media-preflight requires explicit frozen materialization limits"
-            )
+        materialization_limits = context.execution_profile.to_materialization_limits()
         job = self._job(context)
         source_outcome = self._store.read_outcome(
             job,
@@ -289,6 +284,7 @@ class MediaPreflightPipelineStage:
                 semantic_pack=persisted,
                 producer_policy_sha256=policy.canonical_hash,
                 adaptive_policy_sha256=adaptive.canonical_hash,
+                materialization_policy_sha256=materialization_limits.policy_sha256,
             )
             requests.append(
                 PrepareTimedMediaEvidenceRequest(
@@ -308,7 +304,7 @@ class MediaPreflightPipelineStage:
                     audio_detector_sha256=episode.media_probe.audio_detector_sha256,
                     adaptive_policy=adaptive,
                     producer_policy_sha256=policy.canonical_hash,
-                    materialization_limits=self._materialization_limits,
+                    materialization_limits=materialization_limits,
                 )
             )
         if not requests:
@@ -392,9 +388,7 @@ class MediaPreflightPipelineStage:
         encoded = json.dumps(
             {
                 "producer_policy_sha256": policy.canonical_hash,
-                "materialization_policy_sha256": self._materialization_limits.evidence_policy_sha256
-                if self._materialization_limits is not None
-                else None,
+                "materialization_policy_sha256": context.execution_profile.to_materialization_limits().policy_sha256,
                 "run_id": context.run_id,
                 "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
                 "source_provenance_sha256": source_bundle.canonical_hash,

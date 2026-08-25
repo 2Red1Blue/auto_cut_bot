@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,9 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_TENANT_ID_ENV,
     PIPELINE_KERNEL_POSTGRES_DSN_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
@@ -59,6 +62,8 @@ def _catalog(path: Path) -> str:
 
 
 def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, str]:
+    staging_root = path / "verified-media-staging"
+    staging_root.mkdir(mode=0o700)
     return {
         PIPELINE_POSTGRES_DSN_ENV: "postgresql://control.invalid/runtime",
         PIPELINE_SOURCE_CATALOG_ENV: _catalog(path),
@@ -69,6 +74,15 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV: "16384",
         PIPELINE_ARK_BASE_URL_ENV: "https://ark.example.invalid/api/v3",
         PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV: json.dumps(_media_policy(path)),
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV: str(staging_root),
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV: json.dumps(
+            {
+                "max_source_bytes": 8 * 1024 * 1024,
+                "timed_speech_max_request_bytes": 8 * 1024 * 1024,
+                "copy_chunk_bytes": 64 * 1024,
+                "staging_quota_bytes": 16 * 1024 * 1024,
+            }
+        ),
     }
 
 
@@ -186,7 +200,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
 
     assert runtime is not None
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v4"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v5"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
@@ -197,6 +211,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
         tmp_path
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
+    assert str(tmp_path / "verified-media-staging") not in runtime.execution_profile.canonical_json
 
 
 def test_highlight_read_composition_uses_only_configured_read_dsns(
@@ -273,6 +288,53 @@ def test_environment_rejects_qwen_as_a_doubao_fallback(tmp_path: Path) -> None:
         PipelineRuntimeConfigurationError,
         match="Doubao/provider/media-preflight configuration",
     ):
+        compose_pipeline_runtime_from_environment(environment)
+
+
+@pytest.mark.parametrize(
+    "required_name",
+    [
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+    ],
+)
+def test_media_preflight_composition_has_no_materialization_defaults(
+    tmp_path: Path,
+    required_name: str,
+) -> None:
+    environment = _environment(tmp_path)
+    del environment[required_name]
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match=required_name):
+        compose_pipeline_runtime_from_environment(environment)
+
+
+def test_media_preflight_composition_rejects_unsafe_staging_root_before_registration(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    staging_root = Path(environment[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV])
+    os.chmod(staging_root, 0o755)
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match="private 0700"):
+        compose_pipeline_runtime_from_environment(environment)
+
+
+def test_media_preflight_composition_rejects_open_materialization_policy(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    environment[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV] = json.dumps(
+        {
+            "max_source_bytes": 8 * 1024 * 1024,
+            "timed_speech_max_request_bytes": 8 * 1024 * 1024,
+            "copy_chunk_bytes": 64 * 1024,
+            "staging_quota_bytes": 16 * 1024 * 1024,
+            "implicit_default": 1,
+        }
+    )
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match="closed materialization"):
         compose_pipeline_runtime_from_environment(environment)
 
 

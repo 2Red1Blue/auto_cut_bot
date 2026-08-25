@@ -125,6 +125,7 @@ def _historical_execution_profile(
         "max_total_summary_characters": 8_192,
         "minimum_confidence": "0.80",
     }
+    del mapping["materialization_limits"]
     if schema_version in {
         "pipeline-execution-profile-v1",
         "pipeline-execution-profile-v2",
@@ -133,6 +134,13 @@ def _historical_execution_profile(
         del mapping["media_preflight_policy_hash"]
     if schema_version == "pipeline-execution-profile-v1":
         del mapping["generation_retry_policy"]
+    return PipelineExecutionProfile.from_mapping(mapping)
+
+
+def _v4_execution_profile() -> PipelineExecutionProfile:
+    mapping = _execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v4"
+    del mapping["materialization_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -413,6 +421,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
     }
     del mapping["media_preflight_policy"]
     del mapping["media_preflight_policy_hash"]
+    del mapping["materialization_limits"]
     v2 = PipelineExecutionProfile.from_mapping(mapping)
 
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -423,7 +432,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             try:
                 with pytest.raises(
                     psycopg.errors.RaiseException,
-                    match="new v1/v2/v3 execution profile rows are forbidden",
+                    match="new v1/v2/v3/v4 execution profile rows are forbidden",
                 ):
                     cursor.execute(
                         """
@@ -1322,7 +1331,7 @@ async def test_0012_atomically_rejects_active_historical_profiles_then_replays()
         assert history.status == "failed"
         assert history.execution_profile == expected_profile
 
-    v4_run_id = await create_run("active-v4", _execution_profile())
+    v4_run_id = await create_run("active-v4", _v4_execution_profile())
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(

@@ -72,6 +72,33 @@ The complete runtime environment is:
 - `FUNASR_SHARED_TOKEN` (non-empty and sent only in loopback Authorization)
 - `FUNASR_PROFILE_JSON`
 
+## Pipeline Media Preflight composition
+
+The Pipeline worker is admitted only when it has an explicit private staging
+root and an exact closed materialization policy.  Create the root before
+starting the worker; it must be owned by the worker account, be a real
+directory (not a symlink), and have mode `0700`:
+
+```sh
+install -d -m 700 /var/lib/autocut/media-preflight-staging
+export AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGING_ROOT=/var/lib/autocut/media-preflight-staging
+export AUTO_CUT_BOT_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_JSON='{"max_source_bytes":2147483648,"timed_speech_max_request_bytes":2147483648,"copy_chunk_bytes":1048576,"staging_quota_bytes":6442450944}'
+export FUNASR_MAX_REQUEST_BYTES=2147483648
+```
+
+`timed_speech_max_request_bytes` and `FUNASR_MAX_REQUEST_BYTES` must be the
+same exact value.  The JSON has no aliases, omitted fields, or defaults; it
+must contain exactly `max_source_bytes`, `timed_speech_max_request_bytes`,
+`copy_chunk_bytes`, and `staging_quota_bytes`, all positive integers.  The
+limits are frozen into the Pipeline execution profile and Media Preflight
+command identities.  The root path is deliberately operational only and is
+never part of an evidence hash.
+
+Each shared staging root pins its first `staging_quota_bytes` in a locked,
+private root-local record.  A worker configured with a different quota fails
+before it reserves space or materializes a source.  Do not point unrelated
+deployments at the same root.
+
 The only admitted production profile is `sensevoice_word_guard_v1`. It requires
 SenseVoiceSmall `output_timestamp=True` real word pairs and independent direct
 FSMN-VAD. Missing, misaligned, non-monotonic, or out-of-clock timestamps fail

@@ -14,8 +14,10 @@ from typing import Protocol, cast
 
 import psycopg
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
-from autocut_kernel.store import PostgresRuntimeStore
+from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
+from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
+from autocut_kernel.store.postgres import validate_materialization_staging_root
 from autocut_kernel.vlm import (
     GENERATION_RETRY_STRATEGY_VERSION,
     GenerationRetryPolicy,
@@ -55,6 +57,10 @@ PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
 PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS"
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
 PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
+PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGING_ROOT"
+PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
+    "AUTO_CUT_BOT_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_JSON"
+)
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -69,6 +75,16 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+)
+_MATERIALIZATION_LIMIT_FIELDS = frozenset(
+    {
+        "copy_chunk_bytes",
+        "max_source_bytes",
+        "staging_quota_bytes",
+        "timed_speech_max_request_bytes",
+    }
 )
 _CATALOG_FIELDS = frozenset(
     {
@@ -340,10 +356,17 @@ def compose_pipeline_runtime_from_environment(
         media_policy = LocalMediaPreflightPolicy.from_mapping(
             cast(dict[str, object], decoded_media_policy)
         )
+        materialization_limits = _materialization_limits_from_json(
+            values[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV].strip()
+        )
+        staging_root = _staging_root(
+            values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip()
+        )
         execution_profile = PipelineExecutionProfile.from_policies(
             policy,
             media_policy,
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
+            materialization_limits=materialization_limits,
         )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
@@ -363,6 +386,8 @@ def compose_pipeline_runtime_from_environment(
                 project_id=project_id,
             )
         )
+    except PipelineRuntimeConfigurationError:
+        raise
     except (json.JSONDecodeError, TypeError, ValueError) as error:
         raise PipelineRuntimeConfigurationError(
             "pipeline Doubao/provider/media-preflight configuration is invalid"
@@ -375,7 +400,10 @@ def compose_pipeline_runtime_from_environment(
 
     control_store = PostgresPipelineRunStore(control_factory)
     scheduler = PostgresPipelineScheduler(control_factory)
-    kernel_store = PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory))
+    kernel_store = PostgresRuntimeStore(
+        cast(Callable[[], KernelDbConnection], kernel_factory),
+        materialization_staging_root=staging_root,
+    )
     file_cache = PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory))
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
@@ -427,6 +455,52 @@ def _catalog_text(value: object, index: int, field_name: str) -> str:
     return value
 
 
+def _materialization_limits_from_json(raw: str) -> MaterializationLimits:
+    try:
+        decoded = cast(object, json.loads(raw, object_pairs_hook=_closed_json_object))
+    except (json.JSONDecodeError, UnicodeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV} must be valid JSON"
+        ) from error
+    if type(decoded) is not dict:  # noqa: E721
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV} must be an object"
+        )
+    mapping = cast(dict[str, object], decoded)
+    if frozenset(mapping) != _MATERIALIZATION_LIMIT_FIELDS:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV} must contain only "
+            "the closed materialization-limit fields"
+        )
+    try:
+        return MaterializationLimits(
+            max_source_bytes=cast(int, mapping["max_source_bytes"]),
+            timed_speech_max_request_bytes=cast(
+                int, mapping["timed_speech_max_request_bytes"]
+            ),
+            copy_chunk_bytes=cast(int, mapping["copy_chunk_bytes"]),
+            staging_quota_bytes=cast(int, mapping["staging_quota_bytes"]),
+        )
+    except (TypeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV} is invalid"
+        ) from error
+
+
+def _staging_root(raw: str) -> Path:
+    root = Path(raw)
+    if not raw or not root.is_absolute():
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV} must be an absolute path"
+        )
+    try:
+        return validate_materialization_staging_root(root)
+    except StoreValidationError as error:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV} must be a private 0700 directory"
+        ) from error
+
+
 def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
@@ -446,6 +520,8 @@ __all__ = (
     "PIPELINE_ARK_TENANT_ID_ENV",
     "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
     "PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV",
+    "PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV",
+    "PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV",
     "PIPELINE_POSTGRES_DSN_ENV",
     "PIPELINE_SOURCE_CATALOG_ENV",
     "PIPELINE_SOURCE_REFERENCES_ENV",

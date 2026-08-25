@@ -11,6 +11,9 @@ MEDIA_PROFILE_MIGRATION = Path(
 SEMANTIC_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0013_vlm_semantic_pack_profile.sql"
 )
+MATERIALIZATION_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0014_media_preflight_materialization_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -108,3 +111,16 @@ def test_semantic_profile_migration_closes_v4_parse_policy_major() -> None:
     assert "BEFORE INSERT OR UPDATE ON runtime.pipeline_runs" in sql
     assert ") IS NOT TRUE" in sql
     assert ") IS TRUE);" in sql
+
+
+def test_materialization_profile_migration_closes_v5_limits_and_v4_history() -> None:
+    sql = MATERIALIZATION_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "0014 refuses accepted/running pipeline runs" in sql
+    assert "execution_profile_semantic_v5_is_valid" in sql
+    assert "pipeline-execution-profile-v5" in sql
+    assert "pipeline-execution-profile-v4" in sql
+    assert "materialization_limits" in sql
+    assert "copy_chunk_bytes" in sql
+    assert "timed_speech_max_request_bytes" in sql
+    assert "historical v1/v2/v3/v4 execution profile rows are read-only" in sql

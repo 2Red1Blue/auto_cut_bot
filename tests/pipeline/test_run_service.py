@@ -145,6 +145,7 @@ def _v2_execution_profile() -> PipelineExecutionProfile:
     }
     del mapping["media_preflight_policy"]
     del mapping["media_preflight_policy_hash"]
+    del mapping["materialization_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -230,6 +231,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
             profile.to_doubao_policy(),
             profile.to_media_preflight_policy(),
             retry_policy=profile.to_generation_retry_policy(),
+            materialization_limits=profile.to_materialization_limits(),
         )
         == profile
     )
@@ -243,6 +245,23 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
 
     with pytest.raises(PipelineRunValidationError, match="canonical JSON"):
         replace(profile, request_parameters_json='{ "temperature": 0 }')
+
+
+def test_execution_profile_binds_every_closed_materialization_limit() -> None:
+    profile = execution_profile()
+    mapping = profile.to_mapping()
+    limits = mapping["materialization_limits"]
+    assert isinstance(limits, dict)
+    limits["staging_quota_bytes"] = int(limits["staging_quota_bytes"]) + 1
+    changed = PipelineExecutionProfile.from_mapping(mapping)
+
+    assert changed.canonical_hash != profile.canonical_hash
+    assert changed.to_materialization_limits().staging_quota_bytes == 16 * 1024 * 1024 + 1
+
+    missing = profile.to_mapping()
+    del missing["materialization_limits"]
+    with pytest.raises(PipelineRunValidationError, match="missing fields"):
+        PipelineExecutionProfile.from_mapping(missing)
 
 
 def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() -> None:
@@ -286,6 +305,7 @@ def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -
             profile.to_doubao_policy(),
             media_preflight_policy(word_timing_capability="sentence_only"),
             retry_policy=profile.to_generation_retry_policy(),
+            materialization_limits=profile.to_materialization_limits(),
         )
 
 
