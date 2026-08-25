@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/shadow-calibration-profile/1.0.0",
+  "title": "ShadowCalibrationProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "profile_id",
+    "profile_version",
+    "profile_state",
+    "profile_contract_sha256",
+    "stage1_narrative_profile",
+    "native_timed_speech",
+    "source_clock_policy",
+    "calibration_corpus",
+    "timing_policies",
+    "capabilities",
+    "calibration_acceptance"
+  ],
+  "properties": {
+    "schema_version": {"const": "autocut-shadow-calibration-profile-v1"},
+    "contract_version": {"const": "2.1.3"},
+    "profile_id": {"const": "shadow_calibration"},
+    "profile_version": {"$ref": "#/$defs/profile_version"},
+    "profile_state": {"const": "shadow_calibration_v1"},
+    "profile_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "stage1_narrative_profile": {"$ref": "#/$defs/stage1_narrative_profile"},
+    "native_timed_speech": {"$ref": "#/$defs/native_timed_speech"},
+    "source_clock_policy": {"$ref": "#/$defs/source_clock_policy"},
+    "calibration_corpus": {"$ref": "#/$defs/calibration_corpus"},
+    "timing_policies": {"$ref": "#/$defs/timing_policies"},
+    "capabilities": {"$ref": "#/$defs/capabilities"},
+    "calibration_acceptance": {"$ref": "#/$defs/calibration_acceptance"}
+  },
+  "$defs": {
+    "safe_positive_integer": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "safe_non_negative_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "non_empty_text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\s)[\\s\\S]*\\S$"
+    },
+    "canonical_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "stage1_narrative_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_version",
+        "source_sha256",
+        "provider_id",
+        "adapter_strategy_version",
+        "model_id",
+        "prompt_version",
+        "prompt_template_sha256",
+        "response_schema_sha256",
+        "parser_strategy_version",
+        "parser_contract_sha256",
+        "request_parameters_sha256",
+        "parse_policy_sha256",
+        "retry_policy_sha256",
+        "window_sampling_policy_sha256",
+        "coverage_policy_sha256",
+        "dependency_policy_sha256",
+        "conflict_policy_sha256"
+      ],
+      "properties": {
+        "profile_id": {"const": "stage1_narrative"},
+        "profile_version": {"$ref": "#/$defs/profile_version"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_id": {"const": "doubao-ark-responses-stream"},
+        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v1"},
+        "model_id": {"const": "doubao-seed-2-1-pro-260628"},
+        "prompt_version": {"const": "vlm-semantic-pack-v3"},
+        "prompt_template_sha256": {"$ref": "#/$defs/sha256"},
+        "response_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "parser_strategy_version": {"const": "strict-semantic-pack-v3"},
+        "parser_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "request_parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "parse_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "retry_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "window_sampling_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "coverage_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "dependency_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "conflict_policy_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "native_timed_speech": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "provider_version",
+        "service_sha256",
+        "funasr_version",
+        "torch_version",
+        "device",
+        "word_timing_capability",
+        "max_request_bytes",
+        "native_port_identity_sha256",
+        "producers"
+      ],
+      "properties": {
+        "provider_id": {"const": "funasr-http-v1"},
+        "provider_version": {"const": "1.0.0"},
+        "service_sha256": {"$ref": "#/$defs/sha256"},
+        "funasr_version": {"$ref": "#/$defs/non_empty_text"},
+        "torch_version": {"$ref": "#/$defs/non_empty_text"},
+        "device": {"const": "cpu"},
+        "word_timing_capability": {"const": "required"},
+        "max_request_bytes": {"$ref": "#/$defs/safe_positive_integer"},
+        "native_port_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "producers": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {"$ref": "#/$defs/asr_producer"},
+            {"$ref": "#/$defs/vad_producer"}
+          ],
+          "items": false
+        }
+      }
+    },
+    "asr_producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "generation_policy_sha256",
+        "detector_sha256",
+        "calibration_policy_sha256",
+        "model_id",
+        "model_revision",
+        "model_sha256",
+        "inference_kind",
+        "service_sha256"
+      ],
+      "properties": {
+        "producer_kind": {"const": "asr"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_version": {"$ref": "#/$defs/non_empty_text"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "detector_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "model_id": {"const": "SenseVoiceSmall"},
+        "model_revision": {"$ref": "#/$defs/non_empty_text"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "sensevoice-word-timestamp"},
+        "service_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "vad_producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "generation_policy_sha256",
+        "detector_sha256",
+        "calibration_policy_sha256",
+        "model_id",
+        "model_revision",
+        "model_sha256",
+        "inference_kind",
+        "service_sha256"
+      ],
+      "properties": {
+        "producer_kind": {"const": "vad"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_version": {"$ref": "#/$defs/non_empty_text"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "detector_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "model_id": {"const": "fsmn-vad"},
+        "model_revision": {"$ref": "#/$defs/non_empty_text"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "fsmn-vad-direct"},
+        "service_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "source_clock_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_sha256",
+        "clock_id",
+        "time_base",
+        "origin_rule",
+        "range_rule",
+        "millisecond_conversion_rule"
+      ],
+      "properties": {
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "clock_id": {"$ref": "#/$defs/canonical_id"},
+        "time_base": {"$ref": "#/$defs/time_base"},
+        "origin_rule": {"const": "declared_source_audio_origin_tick"},
+        "range_rule": {"const": "complete_source_audio_range_only"},
+        "millisecond_conversion_rule": {"const": "floor_start_ceil_end_integer_v1"}
+      }
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": {"$ref": "#/$defs/safe_positive_integer"},
+        "denominator": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "calibration_corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["corpus_set_sha256", "members"],
+      "properties": {
+        "corpus_set_sha256": {"$ref": "#/$defs/sha256"},
+        "members": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/calibration_corpus_member"}
+        }
+      }
+    },
+    "calibration_corpus_member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "member_id",
+        "corpus_member_reference_sha256",
+        "source_id",
+        "source_sha256",
+        "source_blob_reference_sha256",
+        "expected_anchor_reference_sha256"
+      ],
+      "properties": {
+        "member_id": {"$ref": "#/$defs/canonical_id"},
+        "corpus_member_reference_sha256": {"$ref": "#/$defs/sha256"},
+        "source_id": {"$ref": "#/$defs/canonical_id"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "source_blob_reference_sha256": {"$ref": "#/$defs/sha256"},
+        "expected_anchor_reference_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "timing_policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timed_speech_policy_sha256",
+        "word_gap_policy_sha256",
+        "vad_merge_policy_sha256",
+        "alignment_policy_sha256",
+        "acceptance_policy_sha256",
+        "word_gap_ms",
+        "vad_merge_gap_ms"
+      ],
+      "properties": {
+        "timed_speech_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "word_gap_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "vad_merge_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "alignment_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "acceptance_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "word_gap_ms": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "vad_merge_gap_ms": {"$ref": "#/$defs/safe_non_negative_integer"}
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shadow_measurement",
+        "authority_registry_compile",
+        "authority_bootstrap",
+        "http_media_preflight",
+        "local_pipeline_run",
+        "local_render_qc",
+        "semantic_highlight_read",
+        "external_publication",
+        "runtime_profile_selection"
+      ],
+      "properties": {
+        "shadow_measurement": {"const": true},
+        "authority_registry_compile": {"const": false},
+        "authority_bootstrap": {"const": false},
+        "http_media_preflight": {"const": false},
+        "local_pipeline_run": {"const": false},
+        "local_render_qc": {"const": false},
+        "semantic_highlight_read": {"const": false},
+        "external_publication": {"const": false},
+        "runtime_profile_selection": {"const": false}
+      }
+    },
+    "calibration_acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aggregation_strategy",
+        "alignment_strategy",
+        "require_complete_member_set",
+        "require_zero_invalid_members",
+        "require_positive_asr_bound",
+        "require_positive_vad_bound",
+        "max_successor_attempts"
+      ],
+      "properties": {
+        "aggregation_strategy": {"const": "member-bound-calibration-statistics-v1"},
+        "alignment_strategy": {"const": "complete-ordered-one-to-one-v1"},
+        "require_complete_member_set": {"const": true},
+        "require_zero_invalid_members": {"const": true},
+        "require_positive_asr_bound": {"const": true},
+        "require_positive_vad_bound": {"const": true},
+        "max_successor_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

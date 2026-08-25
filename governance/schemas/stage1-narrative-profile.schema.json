@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/stage1-narrative-profile/1.0.0",
+  "title": "Stage1NarrativeProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "profile_id",
+    "profile_version",
+    "profile_state",
+    "provider",
+    "model",
+    "prompt",
+    "response_schema",
+    "parser",
+    "policies",
+    "capabilities"
+  ],
+  "properties": {
+    "schema_version": {"const": "autocut-stage1-narrative-profile-v1"},
+    "contract_version": {"const": "2.1.3"},
+    "profile_id": {"const": "stage1_narrative"},
+    "profile_version": {"$ref": "#/$defs/profile_version"},
+    "profile_state": {"const": "stage1_narrative_v1"},
+    "provider": {"$ref": "#/$defs/provider"},
+    "model": {"$ref": "#/$defs/model"},
+    "prompt": {"$ref": "#/$defs/prompt"},
+    "response_schema": {"$ref": "#/$defs/response_schema"},
+    "parser": {"$ref": "#/$defs/parser"},
+    "policies": {"$ref": "#/$defs/policies"},
+    "capabilities": {"$ref": "#/$defs/capabilities"}
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_id", "adapter_strategy_version", "transport"],
+      "properties": {
+        "provider_id": {"const": "doubao-ark-responses-stream"},
+        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v1"},
+        "transport": {"const": "ark_responses_streaming"}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_id"],
+      "properties": {
+        "model_id": {"const": "doubao-seed-2-1-pro-260628"}
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "template_sha256"],
+      "properties": {
+        "version": {"const": "vlm-semantic-pack-v3"},
+        "template_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "response_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_sha256"],
+      "properties": {
+        "schema_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "parser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_version", "contract_sha256"],
+      "properties": {
+        "strategy_version": {"const": "strict-semantic-pack-v3"},
+        "contract_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_parameters_sha256",
+        "parse_policy_sha256",
+        "retry_policy_sha256",
+        "window_sampling_policy_sha256",
+        "coverage_policy_sha256",
+        "dependency_policy_sha256",
+        "conflict_policy_sha256"
+      ],
+      "properties": {
+        "request_parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "parse_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "retry_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "window_sampling_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "coverage_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "dependency_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "conflict_policy_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "narrative_evidence_generation",
+        "stage1_compile",
+        "external_publication"
+      ],
+      "properties": {
+        "narrative_evidence_generation": {"const": true},
+        "stage1_compile": {"const": true},
+        "external_publication": {"const": false}
+      }
+    }
+  }
+}

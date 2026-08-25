@@ -1,0 +1,492 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schema://governance/local-run-profile/1.0.0",
+  "title": "LocalRunProfile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "profile_id",
+    "profile_version",
+    "profile_state",
+    "profile_contract_sha256",
+    "predecessor_shadow_profile",
+    "stage1_narrative_profile",
+    "native_timed_speech",
+    "source_clock_policy",
+    "timing_policies",
+    "capabilities",
+    "calibration",
+    "timed_speech_registry_entry"
+  ],
+  "properties": {
+    "schema_version": {"const": "autocut-local-run-profile-v1"},
+    "contract_version": {"const": "2.1.3"},
+    "profile_id": {"const": "local_run"},
+    "profile_version": {"$ref": "#/$defs/profile_version"},
+    "profile_state": {"const": "local_run_v1"},
+    "profile_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "predecessor_shadow_profile": {"$ref": "#/$defs/predecessor_shadow_profile"},
+    "stage1_narrative_profile": {"$ref": "#/$defs/stage1_narrative_profile"},
+    "native_timed_speech": {"$ref": "#/$defs/native_timed_speech"},
+    "source_clock_policy": {"$ref": "#/$defs/source_clock_policy"},
+    "timing_policies": {"$ref": "#/$defs/timing_policies"},
+    "capabilities": {"$ref": "#/$defs/capabilities"},
+    "calibration": {"$ref": "#/$defs/calibration"},
+    "timed_speech_registry_entry": {"$ref": "#/$defs/timed_speech_registry_entry"}
+  },
+  "$defs": {
+    "safe_positive_integer": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "safe_non_negative_integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "profile_version": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$"
+    },
+    "non_empty_text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!\\s)[\\s\\S]*\\S$"
+    },
+    "canonical_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "predecessor_shadow_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_version",
+        "source_sha256",
+        "registry_set_sha256",
+        "authority_lock_sha256"
+      ],
+      "properties": {
+        "profile_id": {"const": "shadow_calibration"},
+        "profile_version": {"$ref": "#/$defs/profile_version"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "registry_set_sha256": {"$ref": "#/$defs/sha256"},
+        "authority_lock_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage1_narrative_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "profile_id",
+        "profile_version",
+        "source_sha256",
+        "provider_id",
+        "adapter_strategy_version",
+        "model_id",
+        "prompt_version",
+        "prompt_template_sha256",
+        "response_schema_sha256",
+        "parser_strategy_version",
+        "parser_contract_sha256",
+        "request_parameters_sha256",
+        "parse_policy_sha256",
+        "retry_policy_sha256",
+        "window_sampling_policy_sha256",
+        "coverage_policy_sha256",
+        "dependency_policy_sha256",
+        "conflict_policy_sha256"
+      ],
+      "properties": {
+        "profile_id": {"const": "stage1_narrative"},
+        "profile_version": {"$ref": "#/$defs/profile_version"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "provider_id": {"const": "doubao-ark-responses-stream"},
+        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v1"},
+        "model_id": {"const": "doubao-seed-2-1-pro-260628"},
+        "prompt_version": {"const": "vlm-semantic-pack-v3"},
+        "prompt_template_sha256": {"$ref": "#/$defs/sha256"},
+        "response_schema_sha256": {"$ref": "#/$defs/sha256"},
+        "parser_strategy_version": {"const": "strict-semantic-pack-v3"},
+        "parser_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "request_parameters_sha256": {"$ref": "#/$defs/sha256"},
+        "parse_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "retry_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "window_sampling_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "coverage_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "dependency_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "conflict_policy_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "native_timed_speech": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider_id",
+        "provider_version",
+        "service_sha256",
+        "funasr_version",
+        "torch_version",
+        "device",
+        "word_timing_capability",
+        "max_request_bytes",
+        "native_port_identity_sha256",
+        "producers"
+      ],
+      "properties": {
+        "provider_id": {"const": "funasr-http-v1"},
+        "provider_version": {"const": "1.0.0"},
+        "service_sha256": {"$ref": "#/$defs/sha256"},
+        "funasr_version": {"$ref": "#/$defs/non_empty_text"},
+        "torch_version": {"$ref": "#/$defs/non_empty_text"},
+        "device": {"const": "cpu"},
+        "word_timing_capability": {"const": "required"},
+        "max_request_bytes": {"$ref": "#/$defs/safe_positive_integer"},
+        "native_port_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "producers": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {"$ref": "#/$defs/asr_run_producer"},
+            {"$ref": "#/$defs/vad_run_producer"}
+          ],
+          "items": false
+        }
+      }
+    },
+    "asr_run_producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "generation_policy_sha256",
+        "detector_sha256",
+        "calibration_policy_sha256",
+        "model_id",
+        "model_revision",
+        "model_sha256",
+        "inference_kind",
+        "service_sha256",
+        "producer_record_sha256",
+        "timing_error_bound_tick"
+      ],
+      "properties": {
+        "producer_kind": {"const": "asr"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_version": {"$ref": "#/$defs/non_empty_text"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "detector_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "model_id": {"const": "SenseVoiceSmall"},
+        "model_revision": {"$ref": "#/$defs/non_empty_text"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "sensevoice-word-timestamp"},
+        "service_sha256": {"$ref": "#/$defs/sha256"},
+        "producer_record_sha256": {"$ref": "#/$defs/sha256"},
+        "timing_error_bound_tick": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "vad_run_producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "producer_kind",
+        "producer_id",
+        "producer_version",
+        "generation_policy_sha256",
+        "detector_sha256",
+        "calibration_policy_sha256",
+        "model_id",
+        "model_revision",
+        "model_sha256",
+        "inference_kind",
+        "service_sha256",
+        "producer_record_sha256",
+        "timing_error_bound_tick"
+      ],
+      "properties": {
+        "producer_kind": {"const": "vad"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_version": {"$ref": "#/$defs/non_empty_text"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "detector_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "model_id": {"const": "fsmn-vad"},
+        "model_revision": {"$ref": "#/$defs/non_empty_text"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "fsmn-vad-direct"},
+        "service_sha256": {"$ref": "#/$defs/sha256"},
+        "producer_record_sha256": {"$ref": "#/$defs/sha256"},
+        "timing_error_bound_tick": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "source_clock_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_sha256",
+        "clock_id",
+        "time_base",
+        "origin_rule",
+        "range_rule",
+        "millisecond_conversion_rule"
+      ],
+      "properties": {
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "clock_id": {"$ref": "#/$defs/canonical_id"},
+        "time_base": {"$ref": "#/$defs/time_base"},
+        "origin_rule": {"const": "declared_source_audio_origin_tick"},
+        "range_rule": {"const": "complete_source_audio_range_only"},
+        "millisecond_conversion_rule": {"const": "floor_start_ceil_end_integer_v1"}
+      }
+    },
+    "time_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["numerator", "denominator"],
+      "properties": {
+        "numerator": {"$ref": "#/$defs/safe_positive_integer"},
+        "denominator": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "timing_policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "timed_speech_policy_sha256",
+        "word_gap_policy_sha256",
+        "vad_merge_policy_sha256",
+        "alignment_policy_sha256",
+        "acceptance_policy_sha256",
+        "word_gap_ms",
+        "vad_merge_gap_ms"
+      ],
+      "properties": {
+        "timed_speech_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "word_gap_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "vad_merge_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "alignment_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "acceptance_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "word_gap_ms": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "vad_merge_gap_ms": {"$ref": "#/$defs/safe_non_negative_integer"}
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shadow_measurement",
+        "authority_registry_compile",
+        "authority_bootstrap",
+        "http_media_preflight",
+        "local_pipeline_run",
+        "local_render_qc",
+        "semantic_highlight_read",
+        "external_publication",
+        "runtime_profile_selection"
+      ],
+      "properties": {
+        "shadow_measurement": {"const": false},
+        "authority_registry_compile": {"const": true},
+        "authority_bootstrap": {"const": true},
+        "http_media_preflight": {"const": true},
+        "local_pipeline_run": {"const": true},
+        "local_render_qc": {"const": true},
+        "semantic_highlight_read": {"const": true},
+        "external_publication": {"const": false},
+        "runtime_profile_selection": {"const": false}
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_ref",
+        "validation_receipt_ref",
+        "asr_producer_record_sha256",
+        "vad_producer_record_sha256",
+        "asr_timing_error_bound_tick",
+        "vad_timing_error_bound_tick"
+      ],
+      "properties": {
+        "record_ref": {"$ref": "#/$defs/calibration_record_ref"},
+        "validation_receipt_ref": {"$ref": "#/$defs/calibration_validation_receipt_ref"},
+        "asr_producer_record_sha256": {"$ref": "#/$defs/sha256"},
+        "vad_producer_record_sha256": {"$ref": "#/$defs/sha256"},
+        "asr_timing_error_bound_tick": {"$ref": "#/$defs/safe_positive_integer"},
+        "vad_timing_error_bound_tick": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "calibration_record_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_set_id",
+        "artifact_type",
+        "content_hash",
+        "logical_id",
+        "member_ordinal",
+        "receipt_id",
+        "revision",
+        "scope"
+      ],
+      "properties": {
+        "artifact_set_id": {"$ref": "#/$defs/uuid"},
+        "artifact_type": {"const": "calibration_record"},
+        "content_hash": {"$ref": "#/$defs/sha256"},
+        "logical_id": {"$ref": "#/$defs/non_empty_text"},
+        "member_ordinal": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "receipt_id": {"$ref": "#/$defs/uuid"},
+        "revision": {"$ref": "#/$defs/safe_positive_integer"},
+        "scope": {"$ref": "#/$defs/calibration_scope"}
+      }
+    },
+    "calibration_validation_receipt_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_set_id",
+        "artifact_type",
+        "content_hash",
+        "logical_id",
+        "member_ordinal",
+        "receipt_id",
+        "revision",
+        "scope"
+      ],
+      "properties": {
+        "artifact_set_id": {"$ref": "#/$defs/uuid"},
+        "artifact_type": {"const": "calibration_validation_receipt"},
+        "content_hash": {"$ref": "#/$defs/sha256"},
+        "logical_id": {"$ref": "#/$defs/non_empty_text"},
+        "member_ordinal": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "receipt_id": {"$ref": "#/$defs/uuid"},
+        "revision": {"$ref": "#/$defs/safe_positive_integer"},
+        "scope": {"$ref": "#/$defs/calibration_scope"}
+      }
+    },
+    "calibration_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["namespace", "kind", "key"],
+      "properties": {
+        "namespace": {"const": "autocut_authority"},
+        "kind": {"const": "calibration"},
+        "key": {"$ref": "#/$defs/non_empty_text"}
+      }
+    },
+    "timed_speech_registry_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "guard_policy",
+        "kind",
+        "profile_id",
+        "profile_version",
+        "registry_contract_sha256",
+        "transcript_requirement",
+        "vad_requirement"
+      ],
+      "properties": {
+        "capability": {"const": "known_speech_only"},
+        "guard_policy": {"$ref": "#/$defs/timed_speech_guard_policy"},
+        "kind": {"const": "sensevoice_word_guard_v1"},
+        "profile_id": {"const": "local_run"},
+        "profile_version": {"$ref": "#/$defs/profile_version"},
+        "registry_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "transcript_requirement": {"$ref": "#/$defs/asr_registry_requirement"},
+        "vad_requirement": {"$ref": "#/$defs/vad_registry_requirement"}
+      }
+    },
+    "asr_registry_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_sha256",
+        "calibration_record_sha256",
+        "clock_id",
+        "generation_policy_sha256",
+        "inference_kind",
+        "model_sha256",
+        "producer_id",
+        "producer_kind",
+        "time_base"
+      ],
+      "properties": {
+        "adapter_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_record_sha256": {"$ref": "#/$defs/sha256"},
+        "clock_id": {"$ref": "#/$defs/canonical_id"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "sensevoice-word-timestamp"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_kind": {"const": "asr"},
+        "time_base": {"$ref": "#/$defs/time_base"}
+      }
+    },
+    "vad_registry_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_sha256",
+        "calibration_record_sha256",
+        "clock_id",
+        "generation_policy_sha256",
+        "inference_kind",
+        "model_sha256",
+        "producer_id",
+        "producer_kind",
+        "time_base"
+      ],
+      "properties": {
+        "adapter_sha256": {"$ref": "#/$defs/sha256"},
+        "calibration_record_sha256": {"$ref": "#/$defs/sha256"},
+        "clock_id": {"$ref": "#/$defs/canonical_id"},
+        "generation_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "inference_kind": {"const": "fsmn-vad-direct"},
+        "model_sha256": {"$ref": "#/$defs/sha256"},
+        "producer_id": {"$ref": "#/$defs/canonical_id"},
+        "producer_kind": {"const": "vad"},
+        "time_base": {"$ref": "#/$defs/time_base"}
+      }
+    },
+    "timed_speech_guard_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_sha256",
+        "post_roll_tick",
+        "pre_roll_tick",
+        "source_audio_clock_id",
+        "source_audio_time_base",
+        "vad_merge_gap_tick",
+        "word_gap_tick"
+      ],
+      "properties": {
+        "policy_sha256": {"$ref": "#/$defs/sha256"},
+        "post_roll_tick": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "pre_roll_tick": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "source_audio_clock_id": {"$ref": "#/$defs/canonical_id"},
+        "source_audio_time_base": {"$ref": "#/$defs/time_base"},
+        "vad_merge_gap_tick": {"$ref": "#/$defs/safe_non_negative_integer"},
+        "word_gap_tick": {"$ref": "#/$defs/safe_non_negative_integer"}
+      }
+    }
+  }
+}

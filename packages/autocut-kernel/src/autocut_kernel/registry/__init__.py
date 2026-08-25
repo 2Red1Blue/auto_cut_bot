@@ -4,6 +4,16 @@ Runtime code imports resolvers from this package; it never receives registry
 payloads or committed-member references from an external run request.
 """
 
+from .authority_profiles import (
+    AUTHORITY_PROFILE_SOURCE_INVALID,
+    AuthorityProfileSourceError,
+    LocalRunProfileSource,
+    ShadowCalibrationProfileSource,
+    Stage1NarrativeProfileSource,
+    UnresolvedAuthorityProfileSourceSet,
+    decode_authority_profile_source_grammar,
+    decode_stage1_narrative_profile_source,
+)
 from .timed_speech import (
     AUTHORITY_BOOTSTRAP_CAPABILITY,
     AUTHORITY_BOOTSTRAP_PRINCIPAL,
@@ -21,13 +31,21 @@ from .timed_speech import (
 __all__ = [
     "AUTHORITY_BOOTSTRAP_CAPABILITY",
     "AUTHORITY_BOOTSTRAP_PRINCIPAL",
+    "AUTHORITY_PROFILE_SOURCE_INVALID",
     "BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND",
     "AuthorityBootstrapIdentity",
+    "AuthorityProfileSourceError",
     "AuthorityRegistrySnapshot",
     "BootstrapTimedSpeechProfileRegistryCommand",
     "BootstrapTimedSpeechProfileRegistryRequest",
     "BootstrappedTimedSpeechProfile",
+    "LocalRunProfileSource",
+    "ShadowCalibrationProfileSource",
+    "Stage1NarrativeProfileSource",
     "StoreAnchoredTimedSpeechProfileResolver",
     "TimedSpeechProfileKey",
+    "UnresolvedAuthorityProfileSourceSet",
     "VerifiedTimedSpeechAuthorityContext",
+    "decode_authority_profile_source_grammar",
+    "decode_stage1_narrative_profile_source",
 ]

@@ -1,5 +1,8 @@
 schema_version: 1.0.0
 schemas:
+  ShadowCalibrationProfile: schemas/shadow-calibration-profile.schema.json
+  LocalRunProfile: schemas/local-run-profile.schema.json
+  Stage1NarrativeProfile: schemas/stage1-narrative-profile.schema.json
   AuthorityConsumerLock: schemas/authority-consumer-lock.schema.json
   ConsumerLockPolicy: schemas/consumer-lock-policy.schema.json
   ConsumerLockReadinessReceipt: schemas/consumer-lock-readiness.schema.json
