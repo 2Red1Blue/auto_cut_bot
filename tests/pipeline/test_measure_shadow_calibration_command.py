@@ -153,10 +153,10 @@ def _anchors() -> tuple[tuple[CalibrationAnchor, ...], tuple[CalibrationAnchor, 
     )
 
 
-def _context() -> ShadowCalibrationRawContext:
+def _context(source: ShadowCalibrationSource = SOURCE) -> ShadowCalibrationRawContext:
     asr, vad = _anchors()
     return ShadowCalibrationRawContext(
-        SOURCE,
+        source,
         SOURCE_LIMITS,
         CONTAINER,
         CLOCK,
@@ -170,9 +170,9 @@ def _context() -> ShadowCalibrationRawContext:
     )
 
 
-def _invocation() -> ShadowCalibrationInvocation:
+def _invocation(source: ShadowCalibrationSource = SOURCE) -> ShadowCalibrationInvocation:
     mapping = ShadowCalibrationRequestMapping(
-        SOURCE,
+        source,
         SOURCE_LIMITS,
         CONTAINER,
         CLOCK,
@@ -188,7 +188,7 @@ def _invocation() -> ShadowCalibrationInvocation:
         (ASR_IDENTITY, VAD_IDENTITY),
     )
     return ShadowCalibrationInvocation(
-        SOURCE.corpus_member_reference_sha256, mapping.sha256, mapping, mapping.sha256
+        source.corpus_member_reference_sha256, mapping.sha256, mapping, mapping.sha256
     )
 
 
@@ -198,6 +198,36 @@ def _request() -> MeasureShadowCalibrationRequest:
         (
             ShadowCalibrationCorpusMember(
                 SOURCE.corpus_member_reference_sha256, _sha(25), _context(), _invocation()
+            ),
+        ),
+    )
+
+
+SECOND_SOURCE = ShadowCalibrationSource(
+    "corpus-0002",
+    _sha(26),
+    _sha(27),
+    "73ad6766-3a13-49c3-9186-b7ccca505053",
+    _sha(26),
+    4_096,
+    "video/mp4",
+)
+
+
+def _two_member_request() -> MeasureShadowCalibrationRequest:
+    second_context = _context(SECOND_SOURCE)
+    second_invocation = _invocation(SECOND_SOURCE)
+    return MeasureShadowCalibrationRequest(
+        _inputs(),
+        (
+            ShadowCalibrationCorpusMember(
+                SOURCE.corpus_member_reference_sha256, _sha(25), _context(), _invocation()
+            ),
+            ShadowCalibrationCorpusMember(
+                SECOND_SOURCE.corpus_member_reference_sha256,
+                _sha(28),
+                second_context,
+                second_invocation,
             ),
         ),
     )
@@ -233,7 +263,8 @@ def _measurement(
     )
 
 
-def _projection() -> ShadowCalibrationProjection:
+def _projection(invocation: ShadowCalibrationInvocation | None = None) -> ShadowCalibrationProjection:
+    request_invocation = invocation or _invocation()
     asr_anchors, vad_anchors = _anchors()
     asr = (
         ShadowCalibrationAsrObservation(
@@ -268,7 +299,7 @@ def _projection() -> ShadowCalibrationProjection:
     )
     return ShadowCalibrationProjection(
         NATIVE_IDENTITY,
-        _invocation().request_identity_sha256,
+        request_invocation.request_identity_sha256,
         asr,
         (
             ShadowCalibrationWordGapSegment("asr-segment-00000000", "a", TickRange(100, 220)),
@@ -294,12 +325,12 @@ def _projection() -> ShadowCalibrationProjection:
     )
 
 
-def _raw() -> bytes:
-    invocation = _invocation()
+def _raw(invocation: ShadowCalibrationInvocation | None = None) -> bytes:
+    request_invocation = invocation or _invocation()
     response = {
         "schema_version": SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA,
-        "request_identity_sha256": invocation.request_identity_sha256,
-        "source": SOURCE.to_response_mapping(),
+        "request_identity_sha256": request_invocation.request_identity_sha256,
+        "source": request_invocation.request_mapping.source.to_response_mapping(),
         "audio_clock": CLOCK.to_mapping(),
         "requested_range": {"in_tick": 0, "out_tick": 1_000},
         "timed_speech_policy_sha256": POLICIES.timed_speech_policy_sha256,
@@ -315,8 +346,10 @@ def _raw() -> bytes:
     return json.dumps(response, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _blob(raw: bytes | None = None) -> ShadowCalibrationRawBlob:
-    material = _raw() if raw is None else raw
+def _blob(
+    raw: bytes | None = None, invocation: ShadowCalibrationInvocation | None = None
+) -> ShadowCalibrationRawBlob:
+    material = _raw(invocation) if raw is None else raw
     return ShadowCalibrationRawBlob(
         material,
         SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE,
@@ -331,8 +364,11 @@ def _result(
     raw_blob: ShadowCalibrationRawBlob | None = None,
     projection: ShadowCalibrationProjection | None = None,
 ) -> ShadowCalibrationPortResult:
+    request_invocation = invocation or _invocation()
     return ShadowCalibrationPortResult(
-        invocation or _invocation(), raw_blob or _blob(), projection or _projection()
+        request_invocation,
+        raw_blob or _blob(invocation=request_invocation),
+        projection or _projection(request_invocation),
     )
 
 
@@ -379,6 +415,44 @@ class _Port:
     ) -> ShadowCalibrationPortResult:
         self.calls += 1
         return self.result
+
+
+@dataclass
+class _MemberPort:
+    results: dict[str, ShadowCalibrationPortResult]
+    calls: int = 0
+
+    def measure(
+        self, request: MeasureShadowCalibrationRequest, member: ShadowCalibrationCorpusMember
+    ) -> ShadowCalibrationPortResult:
+        self.calls += 1
+        return self.results[member.corpus_member_reference_sha256]
+
+
+@dataclass
+class _AmbiguousBlobWriteStore(_Store):
+    def put_immutable_blob(
+        self, job: Job, *, content: bytes, content_hash: str, media_type: str
+    ) -> BlobRef:
+        super().put_immutable_blob(
+            job, content=content, content_hash=content_hash, media_type=media_type
+        )
+        raise TimeoutError("blob write outcome is ambiguous")
+
+
+@dataclass
+class _LaterBlobFailureStore(_Store):
+    write_attempts: int = 0
+
+    def put_immutable_blob(
+        self, job: Job, *, content: bytes, content_hash: str, media_type: str
+    ) -> BlobRef:
+        self.write_attempts += 1
+        if self.write_attempts == 2:
+            raise ConnectionError("later blob write failed")
+        return super().put_immutable_blob(
+            job, content=content, content_hash=content_hash, media_type=media_type
+        )
 
 
 def _execute(result: ShadowCalibrationPortResult) -> tuple[CommandOutcome, _Store, _Port]:
@@ -497,3 +571,82 @@ def test_replay_returns_terminal_outcome_without_second_port_call_or_artifact_se
     assert first == replay
     assert port.calls == 1
     assert len(store.successes) == 1
+
+
+def test_ambiguous_blob_write_propagates_without_a_terminal_outcome() -> None:
+    request, store, port = _request(), _AmbiguousBlobWriteStore(), _Port(_result())
+
+    try:
+        MeasureShadowCalibrationCommand(store, port).execute(request)
+    except TimeoutError as error:
+        assert str(error) == "blob write outcome is ambiguous"
+    else:
+        raise AssertionError("ambiguous Store write must propagate")
+
+    assert port.calls == 1
+    assert len(store.blobs) == 1
+    assert not store.successes and not store.rejections
+    assert store.terminal is None
+
+
+def test_two_member_measurement_keeps_local_observation_ids_and_aggregates_by_member() -> None:
+    request = _two_member_request()
+    first, second = (member.native_invocation for member in request.corpus_members)
+    store = _Store()
+    port = _MemberPort(
+        {
+            first.corpus_member_reference_sha256: _result(invocation=first),
+            second.corpus_member_reference_sha256: _result(invocation=second),
+        }
+    )
+
+    outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
+
+    assert outcome.state == "succeeded"
+    assert port.calls == 2
+    assert len(store.blobs) == 2
+    results = json.loads(store.successes[0].artifacts[1].payload_json)
+    assert [
+        member["projection"]["asr_observations"][0]["observation"]["observation_id"]
+        for member in results["members"]
+    ] == ["asr-word-00000000", "asr-word-00000000"]
+    assert [
+        member["projection"]["vad_observations"][0]["observation_id"]
+        for member in results["members"]
+    ] == ["vad-segment-00000000", "vad-segment-00000000"]
+    aggregate = results["per_producer_measurements"]
+    for producer, anchor_count in (("asr", 4), ("vad", 2)):
+        assert aggregate[producer]["aggregation"] == "member-bound-calibration-statistics-v1"
+        assert aggregate[producer]["corpus_member_count"] == 2
+        assert aggregate[producer]["corpus_member_references"] == [
+            SOURCE.corpus_member_reference_sha256,
+            SECOND_SOURCE.corpus_member_reference_sha256,
+        ]
+        assert aggregate[producer]["eligible_anchor_count"] == anchor_count
+        assert aggregate[producer]["matched_anchor_count"] == anchor_count
+        assert aggregate[producer]["invalid_or_indeterminate_member_count"] == 0
+        assert "matches" not in aggregate[producer]
+
+
+def test_later_blob_failure_leaves_no_artifact_set_and_only_unreferenced_recovery_blob() -> None:
+    request = _two_member_request()
+    first, second = (member.native_invocation for member in request.corpus_members)
+    store = _LaterBlobFailureStore()
+    port = _MemberPort(
+        {
+            first.corpus_member_reference_sha256: _result(invocation=first),
+            second.corpus_member_reference_sha256: _result(invocation=second),
+        }
+    )
+
+    try:
+        MeasureShadowCalibrationCommand(store, port).execute(request)
+    except ConnectionError as error:
+        assert str(error) == "later blob write failed"
+    else:
+        raise AssertionError("Store failure must propagate")
+
+    assert port.calls == 2
+    assert len(store.blobs) == 1
+    assert not store.successes and not store.rejections
+    assert store.terminal is None

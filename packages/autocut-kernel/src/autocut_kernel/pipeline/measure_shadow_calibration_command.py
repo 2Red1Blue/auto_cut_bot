@@ -11,9 +11,7 @@ from typing import Literal, Mapping, Protocol
 from ..media import (
     CalibrationAnchor,
     CalibrationAnchorMatch,
-    CalibrationMeasurementSummary,
     CalibrationObservation,
-    CalibrationProducer,
     CalibrationRecordError,
     ProducerCalibrationMeasurement,
     ShadowCalibrationInvocation,
@@ -43,6 +41,10 @@ SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-calibration-measurement-v1"
 
 class ShadowCalibrationCommandError(ValueError):
     """Typed shadow-calibration evidence does not close over the locked request."""
+
+
+class ShadowCalibrationStoreError(RuntimeError):
+    """The Store cannot prove that its BlobRef binds the supplied raw evidence."""
 
 
 class ShadowCalibrationProducerFailureCode(str, Enum):
@@ -318,10 +320,6 @@ class MeasureShadowCalibrationCommand:
             ShadowCalibrationRawEvidenceError,
         ):
             return self._reject(claimed, "SHADOW_CALIBRATION_INVALID")
-        except ValueError:
-            return self._reject(claimed, "SHADOW_CALIBRATION_MEASUREMENT_FAILED", outcome="failed")
-        except Exception:
-            return self._reject(claimed, "SHADOW_CALIBRATION_MEASUREMENT_FAILED", outcome="failed")
         return self._store.commit_command_success(
             CommandSuccess(claimed.command_slot_id, _artifact_set_hash(artifacts), artifacts)
         )
@@ -366,7 +364,7 @@ class MeasureShadowCalibrationCommand:
             or blob.byte_length != raw_blob.byte_length
             or blob.media_type != raw_blob.media_type
         ):  # noqa: E721
-            raise ShadowCalibrationCommandError(
+            raise ShadowCalibrationStoreError(
                 "stored native response blob does not bind raw response"
             )
         return blob
@@ -378,10 +376,7 @@ class MeasureShadowCalibrationCommand:
             tuple[ShadowCalibrationInvocation, ShadowCalibrationProjection, BlobRef], ...
         ],
     ) -> tuple[ArtifactMember, ArtifactMember]:
-        inputs, summary = (
-            request.shadow_inputs,
-            _summary(tuple(projection for _, projection, _ in results)),
-        )
+        inputs = request.shadow_inputs
         manifest = _artifact(
             request.artifact_scope,
             "calibration_measurement_manifest",
@@ -428,10 +423,9 @@ class MeasureShadowCalibrationCommand:
                         request.corpus_members, results, strict=True
                     )
                 ],
-                "per_producer_measurements": {
-                    "asr": _measurement_mapping(summary.asr),
-                    "vad": _measurement_mapping(summary.vad),
-                },
+                "per_producer_measurements": _member_bound_aggregate_measurements(
+                    request.corpus_members, results
+                ),
                 "schema_version": "shadow-calibration-measurement-results-v2",
             },
         )
@@ -450,39 +444,62 @@ class MeasureShadowCalibrationCommand:
         )
 
 
-def _summary(projections: tuple[ShadowCalibrationProjection, ...]) -> CalibrationMeasurementSummary:
-    if not projections:
-        raise ShadowCalibrationCommandError("decoded calibration projections must be non-empty")
-    first = projections[0].summary
-    asr_matches = tuple(
-        match for projection in projections for match in projection.summary.asr.matches
-    )
-    vad_matches = tuple(
-        match for projection in projections for match in projection.summary.vad.matches
-    )
-    try:
-        return CalibrationMeasurementSummary(
-            ProducerCalibrationMeasurement(
-                CalibrationProducer.ASR,
-                first.asr.producer_id,
-                first.asr.inference_kind,
-                first.asr.clock_id,
-                first.asr.time_base,
-                asr_matches,
-                max(match.absolute_tick for match in asr_matches),
-            ),
-            ProducerCalibrationMeasurement(
-                CalibrationProducer.VAD,
-                first.vad.producer_id,
-                first.vad.inference_kind,
-                first.vad.clock_id,
-                first.vad.time_base,
-                vad_matches,
-                max(match.absolute_tick for match in vad_matches),
-            ),
-        )
-    except CalibrationRecordError as error:
-        raise ShadowCalibrationCommandError(str(error)) from error
+def _member_bound_aggregate_measurements(
+    members: tuple[ShadowCalibrationCorpusMember, ...],
+    results: tuple[tuple[ShadowCalibrationInvocation, ShadowCalibrationProjection, BlobRef], ...],
+) -> dict[str, dict[str, object]]:
+    """Summarize only member-local measurements; never merge local observation IDs."""
+
+    if len(members) != len(results) or not results:
+        raise ShadowCalibrationCommandError("aggregate measurements require every corpus member")
+    return {
+        "asr": _member_bound_aggregate_measurement(
+            members, tuple(projection.summary.asr for _, projection, _ in results)
+        ),
+        "vad": _member_bound_aggregate_measurement(
+            members, tuple(projection.summary.vad for _, projection, _ in results)
+        ),
+    }
+
+
+def _member_bound_aggregate_measurement(
+    members: tuple[ShadowCalibrationCorpusMember, ...],
+    measurements: tuple[ProducerCalibrationMeasurement, ...],
+) -> dict[str, object]:
+    """Return count/max statistics explicitly bound to the ordered corpus members."""
+
+    if len(members) != len(measurements) or not measurements:
+        raise ShadowCalibrationCommandError("aggregate measurement is missing a corpus member")
+    first = measurements[0]
+    if any(
+        measurement.producer != first.producer
+        or measurement.producer_id != first.producer_id
+        or measurement.inference_kind != first.inference_kind
+        or measurement.clock_id != first.clock_id
+        or measurement.time_base != first.time_base
+        for measurement in measurements[1:]
+    ):
+        raise ShadowCalibrationCommandError("member measurements drift from the locked producer")
+    return {
+        "aggregation": "member-bound-calibration-statistics-v1",
+        "absolute_maximum_tick": max(
+            measurement.absolute_maximum_tick for measurement in measurements
+        ),
+        "clock_id": first.clock_id,
+        "corpus_member_count": len(members),
+        "corpus_member_references": [
+            member.corpus_member_reference_sha256 for member in members
+        ],
+        "early_maximum_tick": max(measurement.early_maximum_tick for measurement in measurements),
+        "eligible_anchor_count": sum(len(measurement.matches) for measurement in measurements),
+        "inference_kind": first.inference_kind,
+        "invalid_or_indeterminate_member_count": 0,
+        "late_maximum_tick": max(measurement.late_maximum_tick for measurement in measurements),
+        "matched_anchor_count": sum(len(measurement.matches) for measurement in measurements),
+        "producer": first.producer.value,
+        "producer_id": first.producer_id,
+        "time_base": _time_base_mapping(first.time_base),
+    }
 
 
 def _time_base_mapping(time_base: TimeBase) -> dict[str, int]:
