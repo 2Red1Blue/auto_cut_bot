@@ -1,10 +1,12 @@
 schema_version: 1.0.0
-authority_revision: 6
+authority_revision: 7
 activation_profile_bindings:
   - task_id: 08-21-00-trellis-authority-sync
     required_profile: authority_bootstrap
   - task_id: 08-21-02-import-firewall-and-package-skeleton
     required_profile: authority_package_skeleton
+  - task_id: 08-25-lock-real-test-authority-profiles
+    required_profile: authority_bootstrap
 authorizations:
   - authorization_id: user-approved-v213-authority-bootstrap-20260821
     task_id: 08-21-00-trellis-authority-sync
@@ -16,3 +18,16 @@ authorizations:
       - {repository: ac_auto_cut, pattern: governance/**}
       - {repository: ac_auto_cut, pattern: tests/authority_consumer/**}
     approved_by: user-explicit-authorization
+  - authorization_id: user-approved-v213-local-authority-calibration-20260825
+    task_id: 08-25-lock-real-test-authority-profiles
+    task_type: authority_change
+    allowed_protected_paths:
+      - {repository: auto_cut_bot, pattern: governance/**}
+      - {repository: auto_cut_bot, pattern: tools/authority/**}
+      - {repository: auto_cut_bot, pattern: tests/authority/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/contracts/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/media/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/registry/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/store/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/migrations/**}
+    approved_by: user-explicit-approval-20260825
