@@ -16,12 +16,13 @@ from typing import cast
 from .root_evidence import (
     AudioSourceOutcome,
     EvidenceCompleteness,
+    MediaKind,
     RootMediaEvidenceBundle,
     SpeechActivitySet,
     TranscriptSet,
 )
 from .timed_evidence import CalibrationBinding
-from .types import MediaValidationError, TimeBase, canonical_sha256, sha256_prefixed
+from .types import MediaValidationError, TickRange, TimeBase, canonical_sha256, sha256_prefixed
 
 
 class Stage4PredecessorError(MediaValidationError):
@@ -46,6 +47,14 @@ class PresentationNonOverlapMedia(str, Enum):
 class PresentationNonOverlapPosition(str, Enum):
     LEADING = "leading"
     TRAILING = "trailing"
+    INTERNAL_GAP = "internal_gap"
+
+
+class PresentationSegmentContinuity(str, Enum):
+    """Whether a source-presentation segment is decoded coverage or a proved gap."""
+
+    CONTINUOUS_DECODED = "continuous_decoded"
+    DECLARED_GAP = "declared_gap"
 
 
 def _text(value: object, name: str) -> str:
@@ -149,10 +158,20 @@ class TimedSpeechProducerRequirement:
     calibration_record_sha256: str
     clock_id: str
     time_base: TimeBase
+    producer_kind: str
+    inference_kind: str
 
     def __post_init__(self) -> None:
         _text(self.producer_id, "producer requirement producer_id")
         _text(self.clock_id, "producer requirement clock_id")
+        expected_inference = {
+            "asr": "sensevoice-word-timestamp",
+            "vad": "fsmn-vad-direct",
+        }
+        if self.producer_kind not in expected_inference:
+            raise Stage4PredecessorError("producer requirement producer_kind is invalid")
+        if self.inference_kind != expected_inference[self.producer_kind]:
+            raise Stage4PredecessorError("producer requirement inference_kind is invalid")
         for name in (
             "generation_policy_sha256",
             "model_sha256",
@@ -170,6 +189,8 @@ class TimedSpeechProducerRequirement:
             "generation_policy_sha256": self.generation_policy_sha256,
             "model_sha256": self.model_sha256,
             "producer_id": self.producer_id,
+            "producer_kind": self.producer_kind,
+            "inference_kind": self.inference_kind,
             "time_base": {"denominator": self.time_base.denominator, "numerator": self.time_base.numerator},
         }
 
@@ -236,6 +257,16 @@ class TimedSpeechProfileRegistryEntry:
         if self.capability is not expected:
             raise Stage4PredecessorError("profile kind cannot claim another capability")
         if (
+            self.transcript_requirement.producer_id == self.vad_requirement.producer_id
+            or self.transcript_requirement.producer_kind != "asr"
+            or self.vad_requirement.producer_kind != "vad"
+            or self.transcript_requirement.inference_kind == self.vad_requirement.inference_kind
+            or self.transcript_requirement.model_sha256 == self.vad_requirement.model_sha256
+            or self.transcript_requirement.calibration_record_sha256
+            == self.vad_requirement.calibration_record_sha256
+        ):
+            raise Stage4PredecessorError("profile requires distinct ASR and VAD identities")
+        if (
             self.transcript_requirement.clock_id != self.vad_requirement.clock_id
             or self.transcript_requirement.time_base != self.vad_requirement.time_base
             or self.guard_policy.source_audio_clock_id != self.transcript_requirement.clock_id
@@ -283,7 +314,8 @@ def _decode_requirement(value: object, name: str) -> TimedSpeechProducerRequirem
         frozenset(
             {
                 "adapter_sha256", "calibration_record_sha256", "clock_id",
-                "generation_policy_sha256", "model_sha256", "producer_id", "time_base",
+                "generation_policy_sha256", "inference_kind", "model_sha256", "producer_id",
+                "producer_kind", "time_base",
             }
         ),
         name,
@@ -295,6 +327,8 @@ def _decode_requirement(value: object, name: str) -> TimedSpeechProducerRequirem
         generation_policy_sha256=cast(str, mapping["generation_policy_sha256"]),
         model_sha256=cast(str, mapping["model_sha256"]),
         producer_id=cast(str, mapping["producer_id"]),
+        producer_kind=cast(str, mapping["producer_kind"]),
+        inference_kind=cast(str, mapping["inference_kind"]),
         time_base=_decode_time_base(mapping["time_base"], f"{name}.time_base"),
     )
 
@@ -489,80 +523,217 @@ def admit_timed_speech_profile(
     )
 
 
-def _presentation(tick: int, origin: int, time_base: TimeBase) -> Fraction:
-    return Fraction((tick - origin) * time_base.numerator, time_base.denominator)
+@dataclass(frozen=True, slots=True)
+class PresentationTrackSegment:
+    """One source-native range and its absolute (never rebased) presentation range."""
+
+    stream_tick_range: TickRange
+    presentation_interval: RationalPresentationInterval
+    decoded_boundary_sequence_sha256: str
+    continuity: PresentationSegmentContinuity
+
+    def __post_init__(self) -> None:
+        if type(self.stream_tick_range) is not TickRange:  # noqa: E721
+            raise Stage4PredecessorError("presentation segment stream range is invalid")
+        if type(self.presentation_interval) is not RationalPresentationInterval:  # noqa: E721
+            raise Stage4PredecessorError("presentation segment interval is invalid")
+        _sha(self.decoded_boundary_sequence_sha256, "presentation segment boundary hash")
+        if type(self.continuity) is not PresentationSegmentContinuity:  # noqa: E721
+            raise Stage4PredecessorError("presentation segment continuity is invalid")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "continuity": self.continuity.value,
+            "decoded_boundary_sequence_sha256": self.decoded_boundary_sequence_sha256,
+            "presentation_interval": self.presentation_interval.to_mapping(),
+            "stream_tick_range": {
+                "end_tick": self.stream_tick_range.end_pts,
+                "start_tick": self.stream_tick_range.start_pts,
+            },
+        }
 
 
-def _presentation_partition(root: RootMediaEvidenceBundle) -> tuple[RationalPresentationInterval, tuple[PresentationNonOverlap, ...]]:
-    video = root.frame_pts_index.context
-    audio = root.audio_sample_boundaries.context
-    video_range = (_presentation(video.origin_tick, video.origin_tick, video.time_base), _presentation(video.end_tick, video.origin_tick, video.time_base))
-    audio_range = (_presentation(audio.origin_tick, audio.origin_tick, audio.time_base), _presentation(audio.end_tick, audio.origin_tick, audio.time_base))
-    common_start, common_end = max(video_range[0], audio_range[0]), min(video_range[1], audio_range[1])
-    if common_start >= common_end:
-        raise Stage4PredecessorError("A/V streams have no common presentation interval")
-    records: list[PresentationNonOverlap] = []
-    for media, bounds in ((PresentationNonOverlapMedia.AUDIO, audio_range), (PresentationNonOverlapMedia.VIDEO, video_range)):
-        if bounds[0] < common_start:
-            records.append(PresentationNonOverlap(media, PresentationNonOverlapPosition.LEADING, RationalPresentationInterval.from_fractions(bounds[0], common_start)))
-        if common_end < bounds[1]:
-            records.append(PresentationNonOverlap(media, PresentationNonOverlapPosition.TRAILING, RationalPresentationInterval.from_fractions(common_end, bounds[1])))
-    records.sort(key=lambda value: (value.media.value, value.position.value))
-    return RationalPresentationInterval.from_fractions(common_start, common_end), tuple(records)
+def _absolute_presentation(tick: int, time_base: TimeBase) -> Fraction:
+    return Fraction(tick * time_base.numerator, time_base.denominator)
+
+
+@dataclass(frozen=True, slots=True)
+class PresentationTrack:
+    """Complete source-presentation evidence for one selected decoded stream."""
+
+    media_kind: MediaKind
+    stream_index: int
+    clock_id: str
+    time_base: TimeBase
+    origin_tick: int
+    end_tick: int
+    coverage_outcome: EvidenceCompleteness
+    endpoint_proof: str
+    index_sha256: str
+    segments: tuple[PresentationTrackSegment, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.media_kind) is not MediaKind:  # noqa: E721
+            raise Stage4PredecessorError("presentation track media kind is invalid")
+        if type(self.stream_index) is not int or self.stream_index < 0:  # noqa: E721
+            raise Stage4PredecessorError("presentation track stream index is invalid")
+        _text(self.clock_id, "presentation track clock id")
+        _time_base(self.time_base, "presentation track time base")
+        if type(self.origin_tick) is not int or type(self.end_tick) is not int or self.origin_tick >= self.end_tick:  # noqa: E721
+            raise Stage4PredecessorError("presentation track source range is invalid")
+        if self.coverage_outcome is not EvidenceCompleteness.COMPLETE:
+            raise Stage4PredecessorError("presentation track must have complete coverage")
+        if self.endpoint_proof != "decoded_start_and_end":
+            raise Stage4PredecessorError("presentation track lacks decoded endpoint proof")
+        _sha(self.index_sha256, "presentation track index hash")
+        segments = tuple(self.segments)
+        if not segments or any(type(item) is not PresentationTrackSegment for item in segments):  # noqa: E721
+            raise Stage4PredecessorError("presentation track segments are invalid")
+        previous: PresentationTrackSegment | None = None
+        for segment in segments:
+            expected = RationalPresentationInterval.from_fractions(
+                _absolute_presentation(segment.stream_tick_range.start_pts, self.time_base),
+                _absolute_presentation(segment.stream_tick_range.end_pts, self.time_base),
+            )
+            if segment.presentation_interval != expected:
+                raise Stage4PredecessorError("presentation segment does not preserve source PTS")
+            if previous is not None:
+                if previous.stream_tick_range.end_pts != segment.stream_tick_range.start_pts:
+                    raise Stage4PredecessorError("presentation track has an undeclared source discontinuity")
+                if previous.presentation_interval.end != segment.presentation_interval.start:
+                    raise Stage4PredecessorError("presentation track has an unordered presentation discontinuity")
+                if previous.continuity is segment.continuity is PresentationSegmentContinuity.CONTINUOUS_DECODED:
+                    raise Stage4PredecessorError("adjacent continuous presentation segments must be merged")
+                if previous.continuity is segment.continuity is PresentationSegmentContinuity.DECLARED_GAP:
+                    raise Stage4PredecessorError("adjacent declared gaps must be merged")
+            previous = segment
+        continuous = tuple(
+            item for item in segments if item.continuity is PresentationSegmentContinuity.CONTINUOUS_DECODED
+        )
+        if not continuous or continuous[0].stream_tick_range.start_pts != self.origin_tick or continuous[-1].stream_tick_range.end_pts != self.end_tick:
+            raise Stage4PredecessorError("presentation track does not prove declared endpoints")
+        object.__setattr__(self, "segments", segments)
+
+    @property
+    def continuous_segments(self) -> tuple[PresentationTrackSegment, ...]:
+        return tuple(
+            item for item in self.segments if item.continuity is PresentationSegmentContinuity.CONTINUOUS_DECODED
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "clock_id": self.clock_id,
+            "coverage_outcome": self.coverage_outcome.value,
+            "end_tick": self.end_tick,
+            "endpoint_proof": self.endpoint_proof,
+            "index_sha256": self.index_sha256,
+            "media_kind": self.media_kind.value,
+            "origin_tick": self.origin_tick,
+            "segments": [item.to_mapping() for item in self.segments],
+            "stream_index": self.stream_index,
+            "time_base": {"denominator": self.time_base.denominator, "numerator": self.time_base.numerator},
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PresentationProbeExecution:
+    """Reproducible ffprobe execution evidence, rather than a display version string."""
+
+    probe_kind: str
+    invocation_schema_sha256: str
+    executable_sha256: str
+    version_output_sha256: str
+    normalized_output_sha256: str
+    source_input_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.probe_kind != "ffprobe-decoded-presentation-v2":
+            raise Stage4PredecessorError("presentation probe kind is unsupported")
+        for name in (
+            "invocation_schema_sha256", "executable_sha256", "version_output_sha256",
+            "normalized_output_sha256", "source_input_sha256",
+        ):
+            _sha(getattr(self, name), f"presentation probe {name}")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "executable_sha256": self.executable_sha256,
+            "invocation_schema_sha256": self.invocation_schema_sha256,
+            "normalized_output_sha256": self.normalized_output_sha256,
+            "probe_kind": self.probe_kind,
+            "source_input_sha256": self.source_input_sha256,
+            "version_output_sha256": self.version_output_sha256,
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class PresentationTimelineProbe:
-    """Probe facts bound to the exact decoded frame and sample indexes."""
+    """Closed source-prep facts consumed by preflight; no range-derived fallback exists."""
 
+    schema_version: str
     source_id: str
     source_sha256: str
-    root_evidence_sha256: str
-    frame_pts_index_sha256: str
-    audio_boundary_set_sha256: str
-    video_clock_id: str
-    video_time_base: TimeBase
-    video_origin_tick: int
-    video_end_tick: int
-    audio_clock_id: str
-    audio_time_base: TimeBase
-    audio_origin_tick: int
-    audio_end_tick: int
-    probe_tool_identity_sha256: str
-    probe_tool_version_sha256: str
-    probe_invocation_sha256: str
-    mapping_policy_sha256: str
+    source_blob_content_hash: str
+    source_blob_byte_length: int
+    source_blob_media_type: str
+    facts_compiler_id: str
+    facts_compiler_contract_sha256: str
+    probe_execution: PresentationProbeExecution
+    video: PresentationTrack
+    audio: PresentationTrack
+    frame_pts_index_set_sha256: str
+    audio_sample_boundary_set_sha256: str
+    source_proxy_timeline_map_sha256: str | None = None
+    window_manifest_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("source_id", "video_clock_id", "audio_clock_id"):
+        if self.schema_version != "presentation-map-facts-v2":
+            raise Stage4PredecessorError("presentation facts schema is unsupported")
+        for name in ("source_id", "facts_compiler_id", "source_blob_media_type"):
             _text(getattr(self, name), name)
-        for name in ("source_sha256", "root_evidence_sha256", "frame_pts_index_sha256", "audio_boundary_set_sha256", "probe_tool_identity_sha256", "probe_tool_version_sha256", "probe_invocation_sha256", "mapping_policy_sha256"):
+        for name in (
+            "source_sha256", "source_blob_content_hash", "facts_compiler_contract_sha256",
+            "frame_pts_index_set_sha256", "audio_sample_boundary_set_sha256",
+        ):
             _sha(getattr(self, name), name)
-        for name in ("video_time_base", "audio_time_base"):
-            _time_base(getattr(self, name), name)
-        for start, end, name in ((self.video_origin_tick, self.video_end_tick, "video"), (self.audio_origin_tick, self.audio_end_tick, "audio")):
-            if type(start) is not int or type(end) is not int or start >= end:  # noqa: E721
-                raise Stage4PredecessorError(f"{name} probe range is invalid")
+        if self.source_sha256 != self.source_blob_content_hash:
+            raise Stage4PredecessorError("presentation facts source blob hash does not close")
+        if type(self.source_blob_byte_length) is not int or self.source_blob_byte_length <= 0:  # noqa: E721
+            raise Stage4PredecessorError("presentation facts source blob length is invalid")
+        if type(self.probe_execution) is not PresentationProbeExecution:  # noqa: E721
+            raise Stage4PredecessorError("presentation facts probe execution is invalid")
+        if self.probe_execution.source_input_sha256 != self.source_sha256:
+            raise Stage4PredecessorError("presentation facts probe did not consume the source hash")
+        if type(self.video) is not PresentationTrack or type(self.audio) is not PresentationTrack:  # noqa: E721
+            raise Stage4PredecessorError("presentation facts tracks are invalid")
+        if self.video.media_kind is not MediaKind.VIDEO or self.audio.media_kind is not MediaKind.AUDIO:
+            raise Stage4PredecessorError("presentation facts tracks have invalid media kinds")
+        if self.video.index_sha256 != self.frame_pts_index_set_sha256 or self.audio.index_sha256 != self.audio_sample_boundary_set_sha256:
+            raise Stage4PredecessorError("presentation facts track indexes do not close")
+        optional_hashes = (self.source_proxy_timeline_map_sha256, self.window_manifest_sha256)
+        if (optional_hashes[0] is None) != (optional_hashes[1] is None):
+            raise Stage4PredecessorError("presentation facts proxy/map identities must be paired")
+        for value in optional_hashes:
+            if value is not None:
+                _sha(value, "presentation facts optional identity")
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "audio_boundary_set_sha256": self.audio_boundary_set_sha256,
-            "audio_clock_id": self.audio_clock_id,
-            "audio_end_tick": self.audio_end_tick,
-            "audio_origin_tick": self.audio_origin_tick,
-            "audio_time_base": {"denominator": self.audio_time_base.denominator, "numerator": self.audio_time_base.numerator},
-            "frame_pts_index_sha256": self.frame_pts_index_sha256,
-            "mapping_policy_sha256": self.mapping_policy_sha256,
-            "probe_invocation_sha256": self.probe_invocation_sha256,
-            "probe_tool_identity_sha256": self.probe_tool_identity_sha256,
-            "probe_tool_version_sha256": self.probe_tool_version_sha256,
-            "root_evidence_sha256": self.root_evidence_sha256,
+            "audio": self.audio.to_mapping(),
+            "audio_sample_boundary_set_sha256": self.audio_sample_boundary_set_sha256,
+            "facts_compiler_contract_sha256": self.facts_compiler_contract_sha256,
+            "facts_compiler_id": self.facts_compiler_id,
+            "frame_pts_index_set_sha256": self.frame_pts_index_set_sha256,
+            "probe_execution": self.probe_execution.to_mapping(),
+            "schema_version": self.schema_version,
             "source_id": self.source_id,
+            "source_blob_byte_length": self.source_blob_byte_length,
+            "source_blob_content_hash": self.source_blob_content_hash,
+            "source_blob_media_type": self.source_blob_media_type,
+            "source_proxy_timeline_map_sha256": self.source_proxy_timeline_map_sha256,
             "source_sha256": self.source_sha256,
-            "video_clock_id": self.video_clock_id,
-            "video_end_tick": self.video_end_tick,
-            "video_origin_tick": self.video_origin_tick,
-            "video_time_base": {"denominator": self.video_time_base.denominator, "numerator": self.video_time_base.numerator},
+            "video": self.video.to_mapping(),
+            "window_manifest_sha256": self.window_manifest_sha256,
         }
 
     @property
@@ -571,118 +742,327 @@ class PresentationTimelineProbe:
 
 
 @dataclass(frozen=True, slots=True)
-class CommittedVideoToAudioClockMapCertificate:
-    """Certificate from one probe, never a root-evidence convenience factory."""
+class AVPresentationMapSegment:
+    """One exact, gap-free intersection of a video and audio source segment."""
 
-    probe_sha256: str
+    video_tick_range: TickRange
+    audio_tick_range: TickRange
+    presentation_interval: RationalPresentationInterval
+
+    def __post_init__(self) -> None:
+        if type(self.video_tick_range) is not TickRange or type(self.audio_tick_range) is not TickRange:  # noqa: E721
+            raise Stage4PredecessorError("A/V map stream ranges are invalid")
+        if type(self.presentation_interval) is not RationalPresentationInterval:  # noqa: E721
+            raise Stage4PredecessorError("A/V map presentation interval is invalid")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "audio_tick_range": {
+                "end_tick": self.audio_tick_range.end_pts,
+                "start_tick": self.audio_tick_range.start_pts,
+            },
+            "presentation_interval": self.presentation_interval.to_mapping(),
+            "video_tick_range": {
+                "end_tick": self.video_tick_range.end_pts,
+                "start_tick": self.video_tick_range.start_pts,
+            },
+        }
+
+
+def _floor_tick_for_presentation(value: Fraction, time_base: TimeBase) -> int:
+    tick = value * time_base.denominator / time_base.numerator
+    return tick.numerator // tick.denominator
+
+
+def _ceil_tick_for_presentation(value: Fraction, time_base: TimeBase) -> int:
+    tick = value * time_base.denominator / time_base.numerator
+    return -(-tick.numerator // tick.denominator)
+
+
+def _subtract_intervals(
+    source: tuple[RationalPresentationInterval, ...],
+    covered: tuple[RationalPresentationInterval, ...],
+) -> tuple[RationalPresentationInterval, ...]:
+    result: list[RationalPresentationInterval] = []
+    for interval in source:
+        cursor = interval.start
+        for common in covered:
+            if common.end <= cursor:
+                continue
+            if common.start >= interval.end:
+                break
+            if cursor < common.start:
+                result.append(RationalPresentationInterval.from_fractions(cursor, min(common.start, interval.end)))
+            cursor = max(cursor, common.end)
+            if cursor >= interval.end:
+                break
+        if cursor < interval.end:
+            result.append(RationalPresentationInterval.from_fractions(cursor, interval.end))
+    return tuple(result)
+
+
+def _tail_position(
+    interval: RationalPresentationInterval,
+    common: tuple[RationalPresentationInterval, ...],
+) -> PresentationNonOverlapPosition:
+    if interval.end <= common[0].start:
+        return PresentationNonOverlapPosition.LEADING
+    if interval.start >= common[-1].end:
+        return PresentationNonOverlapPosition.TRAILING
+    return PresentationNonOverlapPosition.INTERNAL_GAP
+
+
+def _compile_presentation_map(
+    probe: PresentationTimelineProbe,
+) -> tuple[
+    tuple[AVPresentationMapSegment, ...],
+    tuple[RationalPresentationInterval, ...],
+    tuple[PresentationNonOverlap, ...],
+]:
+    segments: list[AVPresentationMapSegment] = []
+    for video in probe.video.continuous_segments:
+        for audio in probe.audio.continuous_segments:
+            start, end = (
+                max(video.presentation_interval.start, audio.presentation_interval.start),
+                min(video.presentation_interval.end, audio.presentation_interval.end),
+            )
+            if start >= end:
+                continue
+            presentation = RationalPresentationInterval.from_fractions(start, end)
+            segments.append(
+                AVPresentationMapSegment(
+                    TickRange(
+                        _floor_tick_for_presentation(start, probe.video.time_base),
+                        _ceil_tick_for_presentation(end, probe.video.time_base),
+                    ),
+                    TickRange(
+                        _floor_tick_for_presentation(start, probe.audio.time_base),
+                        _ceil_tick_for_presentation(end, probe.audio.time_base),
+                    ),
+                    presentation,
+                )
+            )
+    segments.sort(
+        key=lambda item: (
+            item.presentation_interval.start,
+            item.presentation_interval.end,
+            item.video_tick_range.start_pts,
+        )
+    )
+    if not segments:
+        raise Stage4PredecessorError("A/V streams have no common presentation interval")
+    common = tuple(item.presentation_interval for item in segments)
+    if any(left.end >= right.start for left, right in zip(common, common[1:], strict=False)):
+        raise Stage4PredecessorError("source segments yield overlapping or unproved adjacent A/V maps")
+    records: list[PresentationNonOverlap] = []
+    for media, track in (
+        (PresentationNonOverlapMedia.AUDIO, probe.audio),
+        (PresentationNonOverlapMedia.VIDEO, probe.video),
+    ):
+        source_intervals = tuple(item.presentation_interval for item in track.continuous_segments)
+        for tail in _subtract_intervals(source_intervals, common):
+            records.append(PresentationNonOverlap(media, _tail_position(tail, common), tail))
+    records.sort(
+        key=lambda item: (
+            item.media.value,
+            item.position.value,
+            item.presentation_interval.start,
+            item.presentation_interval.end,
+        )
+    )
+    return tuple(segments), common, tuple(records)
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedVideoToAudioClockMapCertificate:
+    """Closed piecewise equality map compiled from source-prep presentation facts."""
+
+    schema_version: str
+    certificate_compiler_id: str
+    certificate_compiler_contract_sha256: str
+    facts_sha256: str
     root_evidence_sha256: str
     frame_pts_index_sha256: str
     audio_boundary_set_sha256: str
-    mapping_policy_sha256: str
-    algorithm_version: str
-    snap_error_allowance_audio_tick: int
-    common_presentation_interval: RationalPresentationInterval
+    source_manifest_sha256: str
+    algorithm: str
+    map_segments: tuple[AVPresentationMapSegment, ...]
+    common_presentation_intervals: tuple[RationalPresentationInterval, ...]
     non_overlaps: tuple[PresentationNonOverlap, ...]
+    snap_error_allowance_audio_tick: int
+    calibration_binding_sha256: str
+    window_manifest_sha256: str | None = None
+    source_proxy_timeline_map_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("probe_sha256", "root_evidence_sha256", "frame_pts_index_sha256", "audio_boundary_set_sha256", "mapping_policy_sha256"):
+        if self.schema_version != "committed-video-to-audio-presentation-map-v2":
+            raise Stage4PredecessorError("clock map certificate schema is unsupported")
+        _text(self.certificate_compiler_id, "clock map certificate compiler")
+        for name in (
+            "certificate_compiler_contract_sha256", "facts_sha256", "root_evidence_sha256",
+            "frame_pts_index_sha256", "audio_boundary_set_sha256", "source_manifest_sha256",
+            "calibration_binding_sha256",
+        ):
             _sha(getattr(self, name), name)
-        if self.algorithm_version != "equal-presentation-time-rational-v1":
-            raise Stage4PredecessorError("clock map algorithm is not the registered rational mapper")
+        if self.algorithm != "absolute-equal-presentation-piecewise-v2":
+            raise Stage4PredecessorError("clock map algorithm is not the registered piecewise mapper")
         if type(self.snap_error_allowance_audio_tick) is not int or self.snap_error_allowance_audio_tick < 0:  # noqa: E721
             raise Stage4PredecessorError("clock map snap allowance is invalid")
-        if type(self.common_presentation_interval) is not RationalPresentationInterval:  # noqa: E721
-            raise Stage4PredecessorError("clock map common interval is invalid")
+        segments = tuple(self.map_segments)
+        if not segments or any(type(item) is not AVPresentationMapSegment for item in segments):  # noqa: E721
+            raise Stage4PredecessorError("clock map segments are invalid")
+        segment_intervals = tuple(item.presentation_interval for item in segments)
+        common = tuple(self.common_presentation_intervals)
+        if not common or any(type(item) is not RationalPresentationInterval for item in common):  # noqa: E721
+            raise Stage4PredecessorError("clock map common intervals are invalid")
+        if common != segment_intervals:
+            raise Stage4PredecessorError("clock map common intervals must exactly match map segments")
+        if tuple((item.start, item.end) for item in common) != tuple(sorted((item.start, item.end) for item in common)):
+            raise Stage4PredecessorError("clock map common intervals are not canonical")
+        if any(left.end >= right.start for left, right in zip(common, common[1:], strict=False)):
+            raise Stage4PredecessorError("clock map common intervals overlap or are adjacent")
         overlaps = tuple(self.non_overlaps)
         if any(type(item) is not PresentationNonOverlap for item in overlaps):  # noqa: E721
             raise Stage4PredecessorError("clock map non-overlaps are invalid")
-        keys = tuple((item.media.value, item.position.value) for item in overlaps)
+        keys = tuple(
+            (item.media.value, item.position.value, item.presentation_interval.start, item.presentation_interval.end)
+            for item in overlaps
+        )
         if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
             raise Stage4PredecessorError("clock map non-overlaps are not canonical")
+        optional_hashes = (self.window_manifest_sha256, self.source_proxy_timeline_map_sha256)
+        if (optional_hashes[0] is None) != (optional_hashes[1] is None):
+            raise Stage4PredecessorError("clock map proxy/map identities must be paired")
+        for value in optional_hashes:
+            if value is not None:
+                _sha(value, "clock map optional identity")
+        object.__setattr__(self, "map_segments", segments)
+        object.__setattr__(self, "common_presentation_intervals", common)
         object.__setattr__(self, "non_overlaps", overlaps)
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "algorithm_version": self.algorithm_version,
+            "algorithm": self.algorithm,
             "audio_boundary_set_sha256": self.audio_boundary_set_sha256,
-            "common_presentation_interval": self.common_presentation_interval.to_mapping(),
+            "calibration_binding_sha256": self.calibration_binding_sha256,
+            "certificate_compiler_contract_sha256": self.certificate_compiler_contract_sha256,
+            "certificate_compiler_id": self.certificate_compiler_id,
+            "common_presentation_intervals": [item.to_mapping() for item in self.common_presentation_intervals],
+            "facts_sha256": self.facts_sha256,
             "frame_pts_index_sha256": self.frame_pts_index_sha256,
-            "mapping_policy_sha256": self.mapping_policy_sha256,
+            "map_segments": [item.to_mapping() for item in self.map_segments],
             "non_overlaps": [item.to_mapping() for item in self.non_overlaps],
-            "probe_sha256": self.probe_sha256,
             "root_evidence_sha256": self.root_evidence_sha256,
+            "schema_version": self.schema_version,
             "snap_error_allowance_audio_tick": self.snap_error_allowance_audio_tick,
+            "source_manifest_sha256": self.source_manifest_sha256,
+            "source_proxy_timeline_map_sha256": self.source_proxy_timeline_map_sha256,
+            "window_manifest_sha256": self.window_manifest_sha256,
         }
 
     @property
     def canonical_hash(self) -> str:
         return canonical_sha256(self.to_mapping())
 
-    def assert_replays_probe(self, probe: PresentationTimelineProbe, root: RootMediaEvidenceBundle) -> None:
+    def assert_replays_probe(
+        self,
+        probe: PresentationTimelineProbe,
+        root: RootMediaEvidenceBundle,
+        *,
+        source_manifest_sha256: str,
+        calibration_binding: CalibrationBinding,
+    ) -> None:
         if type(probe) is not PresentationTimelineProbe or type(root) is not RootMediaEvidenceBundle:  # noqa: E721
             raise Stage4PredecessorError("clock certificate requires exact probe and root evidence")
         if (
-            self.probe_sha256 != probe.canonical_hash
+            self.facts_sha256 != probe.canonical_hash
             or self.root_evidence_sha256 != root.canonical_hash
             or self.frame_pts_index_sha256 != root.frame_pts_index.canonical_hash
             or self.audio_boundary_set_sha256 != root.audio_sample_boundaries.canonical_hash
-            or self.mapping_policy_sha256 != probe.mapping_policy_sha256
+            or self.source_manifest_sha256 != source_manifest_sha256
+            or self.calibration_binding_sha256 != calibration_binding.canonical_hash
+            or self.snap_error_allowance_audio_tick != calibration_binding.timing_error_bound_tick
+            or not calibration_binding.active
         ):
             raise Stage4PredecessorError("clock certificate does not bind the committed probe/index facts")
         video, audio = root.frame_pts_index.context, root.audio_sample_boundaries.context
         if (
-            probe.source_id, probe.source_sha256, probe.video_clock_id, probe.video_time_base, probe.video_origin_tick, probe.video_end_tick,
-            probe.audio_clock_id, probe.audio_time_base, probe.audio_origin_tick, probe.audio_end_tick,
+            probe.source_id, probe.source_sha256, probe.video.clock_id, probe.video.time_base, probe.video.origin_tick, probe.video.end_tick,
+            probe.audio.clock_id, probe.audio.time_base, probe.audio.origin_tick, probe.audio.end_tick,
         ) != (
             root.source_id, root.source_sha256, video.clock_id, video.time_base, video.origin_tick, video.end_tick,
             audio.clock_id, audio.time_base, audio.origin_tick, audio.end_tick,
         ):
             raise Stage4PredecessorError("probe does not bind the committed source clocks")
-        common, non_overlaps = _presentation_partition(root)
-        if self.common_presentation_interval != common or self.non_overlaps != non_overlaps:
+        if (
+            probe.frame_pts_index_set_sha256 != root.frame_pts_index.canonical_hash
+            or probe.audio_sample_boundary_set_sha256 != root.audio_sample_boundaries.canonical_hash
+            or probe.source_blob_content_hash != root.source_sha256
+            or probe.window_manifest_sha256 != self.window_manifest_sha256
+            or probe.source_proxy_timeline_map_sha256 != self.source_proxy_timeline_map_sha256
+            or calibration_binding.time_base != audio.time_base
+        ):
+            raise Stage4PredecessorError("probe does not close exact root/index/calibration identities")
+        segments, common, non_overlaps = _compile_presentation_map(probe)
+        if self.map_segments != segments or self.common_presentation_intervals != common or self.non_overlaps != non_overlaps:
             raise Stage4PredecessorError("clock certificate common interval/tails do not replay")
 
 
 def derive_presentation_timeline_facts(
     root: RootMediaEvidenceBundle,
     *,
-    probe_tool_identity_sha256: str,
-    probe_tool_version_sha256: str,
-    probe_invocation_sha256: str,
-    mapping_policy_sha256: str,
-    snap_error_allowance_audio_tick: int,
+    probe: PresentationTimelineProbe,
+    source_manifest_sha256: str,
+    audio_snap_calibration: CalibrationBinding,
 ) -> tuple[PresentationTimelineProbe, CommittedVideoToAudioClockMapCertificate]:
-    """Create the preflight-owned probe and certificate from actual indexes."""
+    """Compile a certificate from source-prep facts; never reconstruct facts from root ranges."""
     if type(root) is not RootMediaEvidenceBundle:  # noqa: E721
         raise Stage4PredecessorError("presentation probe requires exact root evidence")
     if root.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
         raise Stage4PredecessorError("presentation clock map requires audio boundaries")
-    video, audio = root.frame_pts_index.context, root.audio_sample_boundaries.context
-    probe = PresentationTimelineProbe(
-        root.source_id, root.source_sha256, root.canonical_hash,
-        root.frame_pts_index.canonical_hash, root.audio_sample_boundaries.canonical_hash,
-        video.clock_id, video.time_base, video.origin_tick, video.end_tick,
-        audio.clock_id, audio.time_base, audio.origin_tick, audio.end_tick,
-        probe_tool_identity_sha256, probe_tool_version_sha256, probe_invocation_sha256,
-        mapping_policy_sha256,
-    )
-    common, non_overlaps = _presentation_partition(root)
+    if type(probe) is not PresentationTimelineProbe or type(audio_snap_calibration) is not CalibrationBinding:  # noqa: E721
+        raise Stage4PredecessorError("presentation map requires exact source facts and calibration")
+    _sha(source_manifest_sha256, "presentation map source manifest hash")
+    if not audio_snap_calibration.active:
+        raise Stage4PredecessorError("presentation map calibration is inactive")
+    segments, common, non_overlaps = _compile_presentation_map(probe)
     certificate = CommittedVideoToAudioClockMapCertificate(
-        probe.canonical_hash, root.canonical_hash, root.frame_pts_index.canonical_hash,
-        root.audio_sample_boundaries.canonical_hash, mapping_policy_sha256,
-        "equal-presentation-time-rational-v1", snap_error_allowance_audio_tick,
-        common, non_overlaps,
+        "committed-video-to-audio-presentation-map-v2",
+        "autocut-kernel-presentation-map-compiler-v2",
+        probe.facts_compiler_contract_sha256,
+        probe.canonical_hash,
+        root.canonical_hash,
+        root.frame_pts_index.canonical_hash,
+        root.audio_sample_boundaries.canonical_hash,
+        source_manifest_sha256,
+        "absolute-equal-presentation-piecewise-v2",
+        segments,
+        common,
+        non_overlaps,
+        audio_snap_calibration.timing_error_bound_tick,
+        audio_snap_calibration.canonical_hash,
+        probe.window_manifest_sha256,
+        probe.source_proxy_timeline_map_sha256,
     )
-    certificate.assert_replays_probe(probe, root)
+    certificate.assert_replays_probe(
+        probe, root,
+        source_manifest_sha256=source_manifest_sha256,
+        calibration_binding=audio_snap_calibration,
+    )
     return probe, certificate
 
 
 __all__ = [
+    "AVPresentationMapSegment",
     "CommittedVideoToAudioClockMapCertificate",
     "PresentationNonOverlap",
     "PresentationNonOverlapMedia",
     "PresentationNonOverlapPosition",
+    "PresentationProbeExecution",
+    "PresentationSegmentContinuity",
     "PresentationTimelineProbe",
+    "PresentationTrack",
+    "PresentationTrackSegment",
     "RationalPresentationInterval",
     "Stage4PredecessorError",
     "TimedSpeechCapability",

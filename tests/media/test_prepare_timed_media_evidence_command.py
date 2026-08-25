@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from fractions import Fraction
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -11,8 +12,14 @@ import pytest
 from autocut_kernel.media import (
     AdaptiveEvidenceWindowPolicy,
     CalibrationBinding,
-    CommittedVideoToAudioClockMapCertificate,
     EvidenceCompleteness,
+    MediaKind,
+    PresentationProbeExecution,
+    PresentationSegmentContinuity,
+    PresentationTimelineProbe,
+    PresentationTrack,
+    PresentationTrackSegment,
+    RationalPresentationInterval,
     RootMediaEvidenceBundle,
     Stage4PredecessorError,
     TimedSpeechCapability,
@@ -25,7 +32,8 @@ from autocut_kernel.media import (
     TranscriptSourceOutcome,
     derive_presentation_timeline_facts,
 )
-from autocut_kernel.media.types import canonical_sha256
+from autocut_kernel.media.stage4_predecessor import _compile_presentation_map
+from autocut_kernel.media.types import TickRange, TimeBase, canonical_sha256
 from autocut_kernel.pipeline import (
     FinalizeTimedMediaEvidenceBatchCommand,
     FinalizeTimedMediaEvidenceBatchRequest,
@@ -34,6 +42,11 @@ from autocut_kernel.pipeline import (
     ProducedTimedMediaEvidence,
     TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
+)
+from autocut_kernel.registry import BootstrappedTimedSpeechProfile
+from autocut_kernel.registry.timed_speech import (
+    TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
+    TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
 )
 from autocut_kernel.store import (
     ArtifactScope,
@@ -67,6 +80,8 @@ class _Store:
         self.materializations: list[BlobRef] = []
         self.closed_materializations = 0
         self.registry_members: dict[CommittedArtifactMemberReference, PersistedCommittedArtifactMember] = {}
+        self.bootstrapped_reference: CommittedArtifactMemberReference | None = None
+        self.bootstrapped_entry: TimedSpeechProfileRegistryEntry | None = None
 
     def read_committed_artifact_member(
         self,
@@ -76,6 +91,15 @@ class _Store:
             return self.registry_members[reference]
         except KeyError as error:
             raise ValueError("registry member is unavailable") from error
+
+    def read_bootstrapped_timed_speech_profile(
+        self, snapshot: object
+    ) -> BootstrappedTimedSpeechProfile:
+        if self.bootstrapped_reference is None or self.bootstrapped_entry is None:
+            raise ValueError("authority anchor is unavailable")
+        return BootstrappedTimedSpeechProfile(
+            snapshot, self.bootstrapped_reference, self.bootstrapped_entry  # type: ignore[arg-type]
+        )
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         existing = self.outcomes.get(claim.idempotency_key)
@@ -173,8 +197,21 @@ class _Producer:
                 "SUBTITLE_EVIDENCE_INDETERMINATE",
                 "burned-in subtitle coverage did not close",
             )
+        transcript = replace(
+            self.bundle.transcript,
+            segments=tuple(
+                replace(segment, sentence_ids=()) for segment in self.bundle.transcript.segments
+            ),
+            sentences=(),
+            completeness=TranscriptCompleteness(
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.NOT_APPLICABLE,
+            ),
+        )
         bundle = replace(
             self.bundle,
+            transcript=transcript,
             source_manifest_sha256=request.source_manifest_sha256,
             root_input_manifest_sha256=request.root_input_manifest_sha256,
         )
@@ -188,7 +225,12 @@ class _Producer:
             bundle.visual_validity,
             bundle.subtitle_cues,
         )
-        bindings = _bindings(values)
+        bindings = tuple(
+            replace(item, calibration_record_sha256=HASH_A, detector_sha256=HASH_C)
+            if item.producer_id == bundle.speech_activity.context.producer_id
+            else item
+            for item in _bindings(values)
+        )
         return ProducedTimedMediaEvidence(
             TEST_POLICY_SHA256,
             bundle,
@@ -245,7 +287,7 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
     source_blob = BlobRef(uuid4(), SOURCE_HASH, len(b"committed source"), "video/mp4")
     store.blobs[source_blob.object_id] = b"committed source"
     template = _bundle()
-    registry = _register_sentence_profile(store, template)
+    _register_sentence_profile(store, template)
     return PrepareTimedMediaEvidenceRequest(
         job=Job("real-run-001", "shadow"),
         idempotency_key="media-preflight:episode:0",
@@ -277,33 +319,43 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             copy_chunk_bytes=128,
             staging_quota_bytes=1024,
         ),
-        timed_speech_profile_registry_entry=registry,
+        presentation_timeline_probe=_presentation_facts(template, source_blob, manifest),
     )
 
 
 def _register_sentence_profile(
     store: _Store,
     bundle: RootMediaEvidenceBundle,
-    kind: TimedSpeechProfileKind = TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1,
-    vad_calibration_record_sha256: str = HASH_C,
+    kind: TimedSpeechProfileKind = TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1,
+    vad_calibration_record_sha256: str = HASH_A,
 ) -> CommittedArtifactMemberReference:
     def requirement(
         evidence: object,
-        calibration_record_sha256: str = HASH_C,
+        calibration_record_sha256: str | None = None,
     ) -> TimedSpeechProducerRequirement:
         context = evidence.context
         return TimedSpeechProducerRequirement(
             producer_id=context.producer_id,
             generation_policy_sha256=context.generation_policy_sha256,
-            model_sha256=HASH_B,
+            model_sha256=HASH_B if evidence is bundle.transcript else HASH_C,
             adapter_sha256=HASH_A,
-            calibration_record_sha256=calibration_record_sha256,
+            calibration_record_sha256=(
+                HASH_C
+                if evidence is bundle.transcript and calibration_record_sha256 is None
+                else (HASH_A if calibration_record_sha256 is None else calibration_record_sha256)
+            ),
             clock_id=context.clock_id,
             time_base=context.time_base,
+            producer_kind="asr" if evidence is bundle.transcript else "vad",
+            inference_kind=(
+                "sensevoice-word-timestamp"
+                if evidence is bundle.transcript
+                else "fsmn-vad-direct"
+            ),
         )
 
     entry = TimedSpeechProfileRegistryEntry(
-        profile_id=kind.value,
+        profile_id=TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1.value,
         profile_version="1",
         kind=kind,
         capability=(
@@ -328,9 +380,9 @@ def _register_sentence_profile(
         receipt_id=uuid4(),
         artifact_set_id=uuid4(),
         member_ordinal=0,
-        scope=command_module.TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
-        artifact_type=command_module.TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
-        logical_id=command_module.TIMED_SPEECH_PROFILE_REGISTRY_LOGICAL_ID,
+        scope=TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
+        artifact_type=TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
+        logical_id="timed-speech/sensevoice_word_guard_v1/1",
         revision=1,
         content_hash=entry.canonical_hash,
     )
@@ -339,6 +391,8 @@ def _register_sentence_profile(
         payload_json=json.dumps(entry.to_mapping(), separators=(",", ":"), sort_keys=True),
         command_slot_id=uuid4(),
     )
+    store.bootstrapped_reference = reference
+    store.bootstrapped_entry = entry
     return reference
 
 
@@ -425,10 +479,10 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     artifacts = {item.artifact_type: json.loads(item.payload_json) for item in store.successes[0].artifacts}
     assert (
         artifacts["timed_speech_profile_admission"]["registry_member_reference"]["content_hash"]
-        == request.timed_speech_profile_registry_entry.content_hash
+        == store.bootstrapped_reference.content_hash
     )
     assert (
-        artifacts["committed_video_to_audio_clock_map_certificate"]["probe_sha256"]
+        artifacts["committed_video_to_audio_clock_map_certificate"]["facts_sha256"]
         == canonical_sha256(artifacts["presentation_timeline_probe"])
     )
     assert artifacts["committed_video_to_audio_clock_map_certificate"]["frame_pts_index_sha256"] == request.frame_pts_index.canonical_hash
@@ -457,7 +511,9 @@ def test_empty_candidate_pack_commits_explicit_empty_index() -> None:
 
 def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
     no_registry_store = _Store()
-    no_registry_request = replace(_request(no_registry_store), timed_speech_profile_registry_entry=None)
+    no_registry_request = _request(no_registry_store)
+    no_registry_store.bootstrapped_reference = None
+    no_registry_store.bootstrapped_entry = None
     no_registry_producer = _Producer(_bundle())
 
     no_registry = PrepareTimedMediaEvidenceCommand(
@@ -470,14 +526,7 @@ def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
 
     mismatch_store = _Store()
     mismatch_request = _request(mismatch_store)
-    mismatch_request = replace(
-        mismatch_request,
-        timed_speech_profile_registry_entry=_register_sentence_profile(
-            mismatch_store,
-            _bundle(),
-            vad_calibration_record_sha256=HASH_A,
-        ),
-    )
+    _register_sentence_profile(mismatch_store, _bundle(), vad_calibration_record_sha256=HASH_B)
     mismatch = PrepareTimedMediaEvidenceCommand(
         mismatch_store, _Producer(_bundle())
     ).execute(mismatch_request)
@@ -488,32 +537,68 @@ def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
 
 def test_probe_certificate_replays_exact_indexes_and_rejects_altered_identity() -> None:
     root = _bundle()
+    manifest, _, _ = _manifest_and_candidate()
+    source_blob = BlobRef(uuid4(), SOURCE_HASH, len(b"committed source"), "video/mp4")
+    probe = _presentation_facts(root, source_blob, manifest)
+    calibration = CalibrationBinding(
+        HASH_A,
+        HASH_B,
+        HASH_C,
+        root.audio_sample_boundaries.context.producer_id,
+        "fixture-v1",
+        root.audio_sample_boundaries.context.time_base,
+        1,
+        True,
+        HASH_A,
+    )
     probe, certificate = derive_presentation_timeline_facts(
         root,
-        probe_tool_identity_sha256=HASH_A,
-        probe_tool_version_sha256=HASH_B,
-        probe_invocation_sha256=HASH_C,
-        mapping_policy_sha256=HASH_A,
-        snap_error_allowance_audio_tick=1,
+        probe=probe,
+        source_manifest_sha256=HASH_B,
+        audio_snap_calibration=calibration,
     )
 
-    certificate.assert_replays_probe(probe, root)
+    certificate.assert_replays_probe(
+        probe, root, source_manifest_sha256=HASH_B, calibration_binding=calibration
+    )
     with pytest.raises(Stage4PredecessorError):
-        replace(certificate, probe_sha256=HASH_B).assert_replays_probe(probe, root)
-    with pytest.raises(Stage4PredecessorError):
-        certificate.assert_replays_probe(replace(probe, probe_tool_identity_sha256=HASH_B), root)
-    with pytest.raises(Stage4PredecessorError):
-        CommittedVideoToAudioClockMapCertificate(
-            probe_sha256=probe.canonical_hash,
-            root_evidence_sha256=root.canonical_hash,
-            frame_pts_index_sha256=root.frame_pts_index.canonical_hash,
-            audio_boundary_set_sha256=root.audio_sample_boundaries.canonical_hash,
-            mapping_policy_sha256=HASH_A,
-            algorithm_version="identity-full-duration-v1",
-            snap_error_allowance_audio_tick=0,
-            common_presentation_interval=certificate.common_presentation_interval,
-            non_overlaps=certificate.non_overlaps,
+        replace(certificate, facts_sha256=HASH_B).assert_replays_probe(
+            probe, root, source_manifest_sha256=HASH_B, calibration_binding=calibration
         )
+    with pytest.raises(Stage4PredecessorError):
+        certificate.assert_replays_probe(
+            replace(probe, facts_compiler_contract_sha256=HASH_B),
+            root,
+            source_manifest_sha256=HASH_B,
+            calibration_binding=calibration,
+        )
+    with pytest.raises(Stage4PredecessorError):
+        certificate.assert_replays_probe(
+            replace(
+                probe,
+                video=replace(
+                    probe.video,
+                    segments=(
+                        replace(probe.video.segments[0], decoded_boundary_sequence_sha256=HASH_B),
+                    ),
+                ),
+            ),
+            root,
+            source_manifest_sha256=HASH_B,
+            calibration_binding=calibration,
+        )
+    with pytest.raises(Stage4PredecessorError):
+        replace(certificate, algorithm="identity-full-duration-v1")
+
+
+def test_preflight_rejects_missing_source_presentation_facts() -> None:
+    store = _Store()
+
+    with pytest.raises(
+        command_module.TimedMediaEvidenceCommandError,
+        match="no synthetic map is permitted",
+    ):
+        replace(_request(store), presentation_timeline_probe=None)
 
 
 def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
@@ -537,12 +622,7 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
     command = PrepareTimedMediaEvidenceCommand(
         store, _Producer(replace(template, transcript=transcript))
     )
-    request = replace(
-        request,
-        timed_speech_profile_registry_entry=_register_sentence_profile(
-            store, template, TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1
-        ),
-    )
+    _register_sentence_profile(store, template, TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1)
 
     result = command.execute(request)
 
@@ -623,6 +703,118 @@ def test_service_ceiling_rejects_before_materialization_or_producer() -> None:
     assert producer.calls == 0
 
 
+def _presentation_facts(
+    bundle: RootMediaEvidenceBundle,
+    source_blob: BlobRef,
+    manifest: object,
+) -> PresentationTimelineProbe:
+    def track(media_kind: MediaKind, index_hash: str, context: object, stream_index: int) -> PresentationTrack:
+        time_base = context.time_base
+        origin, end = context.origin_tick, context.end_tick
+        return PresentationTrack(
+            media_kind=media_kind,
+            stream_index=stream_index,
+            clock_id=context.clock_id,
+            time_base=time_base,
+            origin_tick=origin,
+            end_tick=end,
+            coverage_outcome=EvidenceCompleteness.COMPLETE,
+            endpoint_proof="decoded_start_and_end",
+            index_sha256=index_hash,
+            segments=(
+                PresentationTrackSegment(
+                    TickRange(origin, end),
+                    RationalPresentationInterval.from_fractions(
+                        Fraction(origin * time_base.numerator, time_base.denominator),
+                        Fraction(end * time_base.numerator, time_base.denominator),
+                    ),
+                    HASH_A,
+                    PresentationSegmentContinuity.CONTINUOUS_DECODED,
+                ),
+            ),
+        )
+
+    return PresentationTimelineProbe(
+        schema_version="presentation-map-facts-v2",
+        source_id=bundle.source_id,
+        source_sha256=source_blob.content_hash,
+        source_blob_content_hash=source_blob.content_hash,
+        source_blob_byte_length=source_blob.byte_length,
+        source_blob_media_type=source_blob.media_type,
+        facts_compiler_id="fixture-source-prep-v2",
+        facts_compiler_contract_sha256=HASH_A,
+        probe_execution=PresentationProbeExecution(
+            "ffprobe-decoded-presentation-v2", HASH_A, HASH_B, HASH_C, HASH_A, source_blob.content_hash
+        ),
+        video=track(
+            MediaKind.VIDEO,
+            bundle.frame_pts_index.canonical_hash,
+            bundle.frame_pts_index.context,
+            0,
+        ),
+        audio=track(
+            MediaKind.AUDIO,
+            bundle.audio_sample_boundaries.canonical_hash,
+            bundle.audio_sample_boundaries.context,
+            1,
+        ),
+        frame_pts_index_set_sha256=bundle.frame_pts_index.canonical_hash,
+        audio_sample_boundary_set_sha256=bundle.audio_sample_boundaries.canonical_hash,
+        source_proxy_timeline_map_sha256=manifest.timeline_map.canonical_hash,
+        window_manifest_sha256=manifest.canonical_hash,
+    )
+
+
+def _vector_track(
+    media_kind: MediaKind,
+    time_base: TimeBase,
+    origin_tick: int,
+    end_tick: int,
+    segments: tuple[tuple[int, int, PresentationSegmentContinuity], ...],
+) -> PresentationTrack:
+    return PresentationTrack(
+        media_kind=media_kind,
+        stream_index=0 if media_kind is MediaKind.VIDEO else 1,
+        clock_id=f"vector-{media_kind.value}",
+        time_base=time_base,
+        origin_tick=origin_tick,
+        end_tick=end_tick,
+        coverage_outcome=EvidenceCompleteness.COMPLETE,
+        endpoint_proof="decoded_start_and_end",
+        index_sha256=HASH_A if media_kind is MediaKind.VIDEO else HASH_B,
+        segments=tuple(
+            PresentationTrackSegment(
+                TickRange(start, end),
+                RationalPresentationInterval.from_fractions(
+                    Fraction(start * time_base.numerator, time_base.denominator),
+                    Fraction(end * time_base.numerator, time_base.denominator),
+                ),
+                HASH_C,
+                continuity,
+            )
+            for start, end, continuity in segments
+        ),
+    )
+
+
+def _vector_facts(video: PresentationTrack, audio: PresentationTrack) -> PresentationTimelineProbe:
+    return PresentationTimelineProbe(
+        "presentation-map-facts-v2",
+        "vector-source",
+        SOURCE_HASH,
+        SOURCE_HASH,
+        1,
+        "video/mp4",
+        "vector-source-prep-v2",
+        HASH_A,
+        PresentationProbeExecution(
+            "ffprobe-decoded-presentation-v2", HASH_A, HASH_B, HASH_C, HASH_A, SOURCE_HASH
+        ),
+        video,
+        audio,
+        video.index_sha256,
+        audio.index_sha256,
+    )
 def test_cancellation_releases_the_claim_owned_materialization() -> None:
     store = _Store()
     producer = _CancellingProducer(_bundle())
@@ -686,3 +878,110 @@ def test_batch_receipt_is_committed_only_after_rereading_exact_child() -> None:
     assert result.outcome.state == "succeeded"
     assert result.artifact is not None
     assert result.artifact.artifact_type == "timed_media_evidence_batch"
+
+
+def test_presentation_map_preserves_unequal_nonzero_source_pts() -> None:
+    facts = _vector_facts(
+        _vector_track(
+            MediaKind.VIDEO,
+            TimeBase(1, 90_000),
+            90,
+            270,
+            ((90, 270, PresentationSegmentContinuity.CONTINUOUS_DECODED),),
+        ),
+        _vector_track(
+            MediaKind.AUDIO,
+            TimeBase(1, 48_000),
+            48,
+            144,
+            ((48, 144, PresentationSegmentContinuity.CONTINUOUS_DECODED),),
+        ),
+    )
+
+    segments, common, tails = _compile_presentation_map(facts)
+
+    assert segments[0].video_tick_range == TickRange(90, 270)
+    assert segments[0].audio_tick_range == TickRange(48, 144)
+    assert common == (RationalPresentationInterval.from_fractions(Fraction(1, 1000), Fraction(3, 1000)),)
+    assert tails == ()
+
+
+def test_presentation_map_records_exact_tails_without_stretching() -> None:
+    facts = _vector_facts(
+        _vector_track(
+            MediaKind.VIDEO,
+            TimeBase(1, 90_000),
+            0,
+            270,
+            ((0, 270, PresentationSegmentContinuity.CONTINUOUS_DECODED),),
+        ),
+        _vector_track(
+            MediaKind.AUDIO,
+            TimeBase(1, 48_000),
+            48,
+            96,
+            ((48, 96, PresentationSegmentContinuity.CONTINUOUS_DECODED),),
+        ),
+    )
+
+    segments, common, tails = _compile_presentation_map(facts)
+
+    assert len(segments) == 1
+    assert common == (RationalPresentationInterval.from_fractions(Fraction(1, 1000), Fraction(2, 1000)),)
+    assert [item.to_mapping() for item in tails] == [
+        {
+            "media": "video",
+            "position": "leading",
+            "presentation_interval": RationalPresentationInterval.from_fractions(
+                Fraction(0), Fraction(1, 1000)
+            ).to_mapping(),
+        },
+        {
+            "media": "video",
+            "position": "trailing",
+            "presentation_interval": RationalPresentationInterval.from_fractions(
+                Fraction(2, 1000), Fraction(3, 1000)
+            ).to_mapping(),
+        },
+    ]
+
+
+def test_presentation_map_keeps_declared_gaps_and_rejects_unproved_discontinuity() -> None:
+    video = _vector_track(
+        MediaKind.VIDEO,
+        TimeBase(1, 90_000),
+        0,
+        270,
+        (
+            (0, 90, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+            (90, 180, PresentationSegmentContinuity.DECLARED_GAP),
+            (180, 270, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+        ),
+    )
+    audio = _vector_track(
+        MediaKind.AUDIO,
+        TimeBase(1, 48_000),
+        0,
+        144,
+        (
+            (0, 48, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+            (48, 96, PresentationSegmentContinuity.DECLARED_GAP),
+            (96, 144, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+        ),
+    )
+
+    segments, common, tails = _compile_presentation_map(_vector_facts(video, audio))
+
+    assert len(segments) == len(common) == 2
+    assert tails == ()
+    with pytest.raises(Stage4PredecessorError, match="undeclared source discontinuity"):
+        _vector_track(
+            MediaKind.VIDEO,
+            TimeBase(1, 90_000),
+            0,
+            270,
+            (
+                (0, 90, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+                (180, 270, PresentationSegmentContinuity.CONTINUOUS_DECODED),
+            ),
+        )
