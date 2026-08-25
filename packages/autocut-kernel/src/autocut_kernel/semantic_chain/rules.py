@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .authority import require_sha256
+
 RuleStatus = Literal["indeterminate", "pass", "fail"]
 
 
@@ -15,6 +17,18 @@ class _RuleResult:
     rule_id: str
     status: RuleStatus
     subject_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.rule_id not in {
+            "semantic_analysis_authorization",
+            "semantic_input_resolution",
+            "semantic_conflict_free",
+            "coverage_universe_complete",
+        }:
+            raise ValueError("rule identifier is unsupported")
+        if self.status not in {"indeterminate", "pass", "fail"}:
+            raise ValueError("rule status is unsupported")
+        require_sha256(self.subject_sha256, "rule subject")
 
     def to_mapping(self) -> dict[str, str]:
         return {
