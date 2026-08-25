@@ -44,6 +44,7 @@ from autocut_kernel.media.types import TickRange, canonical_sha256
 from autocut_kernel.physical_edit import (
     CandidatePairLimitError,
     ClockMapOutcome,
+    DialogueRequirement,
     ExactAvSpanPolicy,
     ExactAvSpanRequest,
     ExactSpanValidationError,
@@ -51,6 +52,9 @@ from autocut_kernel.physical_edit import (
     NonOverlapPosition,
     PresentationNonOverlap,
     PresentationTimeRange,
+    TimedSpeechGuardPolicy,
+    TimedSpeechProfile,
+    TimedSpeechProfileKind,
     VideoClockRange,
     VideoToAudioClockMapCertificate,
     compile_exact_av_span,
@@ -436,7 +440,7 @@ def _request(bundle: RootMediaEvidenceBundle) -> ExactAvSpanRequest:
         context.time_base,
         TickRange(context.origin_tick + 60, context.origin_tick + 120),
     )
-    return ExactAvSpanRequest(desired, anchor, 40)
+    return ExactAvSpanRequest(desired, anchor, 40, DialogueRequirement.NOT_REQUIRED)
 
 
 def _clock_map(
@@ -459,12 +463,21 @@ def _clock_map(
     return VideoToAudioClockMapCertificate.from_root_evidence(bundle)
 
 
-def _policy(**changes: int | bool) -> ExactAvSpanPolicy:
-    values: dict[str, int | bool] = {
+def _policy(**changes: object) -> ExactAvSpanPolicy:
+    values: dict[str, object] = {
         "candidate_cartesian_limit": 1_000,
         "endpoint_stability_video_tick": 1,
         "subtitle_clearance_floor_video_tick": 1,
         "av_sync_tolerance_audio_tick": 0,
+        "timed_speech_profile": TimedSpeechProfile(
+            TimedSpeechProfileKind.SENTENCE_BOUNDARY_GUARD_V1,
+            "sentence-boundary-test",
+            "1.0.0",
+            HASH_A,
+            HASH_B,
+            "sha256:" + "c" * 64,
+        ),
+        "timed_speech_guard_policy": TimedSpeechGuardPolicy(0, 0, 0, 0),
         "require_audio": True,
     }
     values.update(changes)
@@ -667,7 +680,12 @@ def test_vlm_contract_cannot_be_used_as_endpoint_or_root_input() -> None:
     bundle = _bundle()
     forged_vlm_interval = object.__new__(MappedSourceInterval)
     with pytest.raises(ExactSpanValidationError, match="VideoClockRange"):
-        ExactAvSpanRequest(forged_vlm_interval, _request(bundle).anchor_video_range, 20)  # type: ignore[arg-type]
+        ExactAvSpanRequest(
+            forged_vlm_interval,
+            _request(bundle).anchor_video_range,
+            20,
+            DialogueRequirement.NOT_REQUIRED,
+        )  # type: ignore[arg-type]
     with pytest.raises(ExactSpanValidationError, match="RootMediaEvidenceBundle"):
         compile_exact_av_span(
             _request(bundle),

@@ -1,5 +1,19 @@
 """Pure physical-edit domain operations."""
 
+from .dialogue_guard import (
+    DialogueGuardError,
+    DialogueGuardIndeterminateError,
+    DialogueGuardKind,
+    DialogueRequirement,
+    ProtectedAudioRange,
+    SourceDialogueGuardEvidence,
+    TimedSpeechGuardPolicy,
+    TimedSpeechProfile,
+    TimedSpeechProfileKind,
+    derive_dialogue_guard,
+    derive_utterance_ranges,
+    merge_vad_ranges,
+)
 from .exact_span import (
     BoundaryProof,
     CandidatePairLimitError,
@@ -30,6 +44,10 @@ __all__ = [
     "CanonicalExactAvSpanCompiler",
     "ClockMapOutcome",
     "DialogueIntegrityProof",
+    "DialogueGuardError",
+    "DialogueGuardIndeterminateError",
+    "DialogueGuardKind",
+    "DialogueRequirement",
     "ExactAvSpanPolicy",
     "ExactAvSpanRequest",
     "ExactAvSpanResult",
@@ -41,9 +59,17 @@ __all__ = [
     "NoLegalSpanError",
     "PresentationNonOverlap",
     "PresentationTimeRange",
+    "ProtectedAudioRange",
+    "SourceDialogueGuardEvidence",
     "SpanSelectionPolicy",
     "VideoClockRange",
     "VideoToAudioClockMapCertificate",
     "compile_exact_av_span",
+    "derive_dialogue_guard",
+    "derive_utterance_ranges",
+    "merge_vad_ranges",
     "select_exact_span",
+    "TimedSpeechGuardPolicy",
+    "TimedSpeechProfile",
+    "TimedSpeechProfileKind",
 ]

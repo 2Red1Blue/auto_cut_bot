@@ -15,7 +15,6 @@ from typing import Iterable
 from ..media.root_evidence import (
     AudioSourceOutcome,
     CoverageOutcome,
-    EvidenceCompleteness,
     MediaKind,
     RootMediaEvidenceBundle,
     VisualClassification,
@@ -29,6 +28,14 @@ from ..media.types import (
     canonical_sha256,
     require_pts,
     sha256_prefixed,
+)
+from .dialogue_guard import (
+    DialogueGuardError,
+    DialogueRequirement,
+    SourceDialogueGuardEvidence,
+    TimedSpeechGuardPolicy,
+    TimedSpeechProfile,
+    derive_dialogue_guard,
 )
 
 
@@ -101,6 +108,7 @@ class ExactAvSpanRequest:
     desired_video_range: VideoClockRange
     anchor_video_range: VideoClockRange
     minimum_video_duration_tick: int
+    dialogue_requirement: DialogueRequirement
 
     def __post_init__(self) -> None:
         if type(self.desired_video_range) is not VideoClockRange:  # noqa: E721
@@ -126,12 +134,15 @@ class ExactAvSpanRequest:
         minimum = require_pts(self.minimum_video_duration_tick, "minimum_video_duration_tick")
         if minimum <= 0:
             raise ExactSpanValidationError("minimum_video_duration_tick must be positive")
+        if type(self.dialogue_requirement) is not DialogueRequirement:  # noqa: E721
+            raise ExactSpanValidationError("dialogue_requirement must be explicit and closed")
 
     def to_mapping(self) -> dict[str, object]:
         return {
             "desired_video_range": self.desired_video_range.to_mapping(),
             "anchor_video_range": self.anchor_video_range.to_mapping(),
             "minimum_video_duration_tick": self.minimum_video_duration_tick,
+            "dialogue_requirement": self.dialogue_requirement.value,
         }
 
     @property
@@ -422,6 +433,8 @@ class ExactAvSpanPolicy:
     endpoint_stability_video_tick: int
     subtitle_clearance_floor_video_tick: int
     av_sync_tolerance_audio_tick: int
+    timed_speech_profile: TimedSpeechProfile
+    timed_speech_guard_policy: TimedSpeechGuardPolicy
     require_audio: bool = True
     forbidden_visual_classes: tuple[VisualClassification, ...] = _DEFAULT_FORBIDDEN
 
@@ -438,6 +451,10 @@ class ExactAvSpanPolicy:
                 raise ExactSpanValidationError(f"{field_name} must be {qualifier}")
         if type(self.require_audio) is not bool:  # noqa: E721
             raise ExactSpanValidationError("require_audio must be a boolean")
+        if type(self.timed_speech_profile) is not TimedSpeechProfile:  # noqa: E721
+            raise ExactSpanValidationError("an explicit timed speech profile is required")
+        if type(self.timed_speech_guard_policy) is not TimedSpeechGuardPolicy:  # noqa: E721
+            raise ExactSpanValidationError("an explicit timed speech guard policy is required")
         forbidden = tuple(self.forbidden_visual_classes)
         canonical = tuple(item for item in VisualClassification if item in forbidden)
         if (
@@ -457,6 +474,8 @@ class ExactAvSpanPolicy:
             "endpoint_stability_video_tick": self.endpoint_stability_video_tick,
             "subtitle_clearance_floor_video_tick": self.subtitle_clearance_floor_video_tick,
             "av_sync_tolerance_audio_tick": self.av_sync_tolerance_audio_tick,
+            "timed_speech_profile": self.timed_speech_profile.to_mapping(),
+            "timed_speech_guard_policy": self.timed_speech_guard_policy.to_mapping(),
             "require_audio": self.require_audio,
             "forbidden_visual_classes": [item.value for item in self.forbidden_visual_classes],
         }
@@ -510,6 +529,7 @@ class BoundaryProof:
 
 @dataclass(frozen=True, slots=True)
 class DialogueIntegrityProof:
+    source_dialogue_guard_evidence: SourceDialogueGuardEvidence
     transcript_set_sha256: str
     speech_activity_set_sha256: str
     checked_word_count: int
@@ -520,6 +540,7 @@ class DialogueIntegrityProof:
 
     def to_mapping(self) -> dict[str, object]:
         return {
+            "source_dialogue_guard_evidence": self.source_dialogue_guard_evidence.to_mapping(),
             "transcript_set_sha256": self.transcript_set_sha256,
             "speech_activity_set_sha256": self.speech_activity_set_sha256,
             "checked_word_count": self.checked_word_count,
@@ -620,15 +641,23 @@ def _validate_production_inputs(
     ):
         if coverage.outcome is not CoverageOutcome.COMPLETE:
             raise ExactSpanValidationError("exact compilation requires complete evidence")
-    if any(
-        item is not EvidenceCompleteness.COMPLETE
-        for item in (
-            evidence.transcript.completeness.word,
-            evidence.transcript.completeness.sentence,
-        )
-    ):
-        raise ExactSpanValidationError("word and sentence transcript evidence must be complete")
     clock_map.assert_complete_for(evidence)
+
+
+def _derive_guard_or_reject(
+    request: ExactAvSpanRequest,
+    evidence: RootMediaEvidenceBundle,
+    policy: ExactAvSpanPolicy,
+) -> SourceDialogueGuardEvidence:
+    try:
+        return derive_dialogue_guard(
+            evidence,
+            policy.timed_speech_profile,
+            policy.timed_speech_guard_policy,
+            request.dialogue_requirement,
+        )
+    except DialogueGuardError as error:
+        raise ExactSpanValidationError(str(error)) from error
 
 
 def _visual_stable(
@@ -672,13 +701,8 @@ def _subtitle_clear(
     )
 
 
-def _dialogue_clear(evidence: RootMediaEvidenceBundle, endpoint: int) -> bool:
-    protected = (
-        tuple((item.in_tick, item.out_tick) for item in evidence.transcript.words)
-        + tuple((item.in_tick, item.out_tick) for item in evidence.transcript.sentences)
-        + tuple((item.in_tick, item.out_tick) for item in evidence.speech_activity.segments)
-    )
-    return not any(start < endpoint < end for start, end in protected)
+def _dialogue_clear(guard: SourceDialogueGuardEvidence, endpoint: int) -> bool:
+    return not any(item.in_tick < endpoint < item.out_tick for item in guard.protected_ranges)
 
 
 def _map_matches(
@@ -722,6 +746,7 @@ def compile_exact_av_span(
 ) -> ExactAvSpanResult:
     """Exhaust the bounded four-endpoint domain and select its canonical minimum."""
     _validate_production_inputs(request, evidence, clock_map, policy)
+    dialogue_guard = _derive_guard_or_reject(request, evidence, policy)
     desired = request.desired_video_range.tick_range
     anchor = request.anchor_video_range.tick_range
     frame_index = evidence.frame_pts_index.pts_index
@@ -771,12 +796,12 @@ def compile_exact_av_span(
             if not _subtitle_clear(evidence, video_out, policy):
                 continue
             for audio_in in audio_starts:
-                if not _dialogue_clear(evidence, audio_in):
+                if not _dialogue_clear(dialogue_guard, audio_in):
                     continue
                 if not _map_matches(clock_map, video_in, audio_in, tolerance):
                     continue
                 for audio_out in audio_ends:
-                    if audio_in >= audio_out or not _dialogue_clear(evidence, audio_out):
+                    if audio_in >= audio_out or not _dialogue_clear(dialogue_guard, audio_out):
                         continue
                     if not _map_matches(clock_map, video_out, audio_out, tolerance):
                         continue
@@ -805,6 +830,7 @@ def compile_exact_av_span(
         clock_map.canonical_hash,
     )
     dialogue_proof = DialogueIntegrityProof(
+        dialogue_guard,
         evidence.transcript.canonical_hash,
         evidence.speech_activity.canonical_hash,
         len(evidence.transcript.words),
