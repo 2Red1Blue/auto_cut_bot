@@ -215,6 +215,18 @@ def is_sha256(value: object) -> bool:
     )
 
 
+def strict_json_loads(value: str | bytes) -> object:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        decoded: dict[str, object] = {}
+        for key, item in pairs:
+            if key in decoded:
+                raise ValueError("duplicate JSON object key")
+            decoded[key] = item
+        return decoded
+
+    return json.loads(value, object_pairs_hook=reject_duplicate_keys)
+
+
 def tick(ms: int, tb: dict[str, int], end: bool) -> int:
     v = Fraction(ms, 1000) * tb["denominator"] / tb["numerator"]
     return -((-v.numerator) // v.denominator) if end else v.numerator // v.denominator
@@ -480,7 +492,10 @@ def vad(
 
 class Service:
     def __init__(self, resource_reader: ResourceReader = system_resource_snapshot) -> None:
-        profile = json.loads(os.environ["FUNASR_PROFILE_JSON"])
+        try:
+            profile = strict_json_loads(os.environ["FUNASR_PROFILE_JSON"])
+        except ValueError as error:
+            raise RuntimeError("FUNASR_PROFILE_JSON contains duplicate JSON object keys") from error
         if type(profile) is not dict:
             raise RuntimeError("FUNASR_PROFILE_JSON must be an object")
         self.profile = cast(dict[str, object], profile)
@@ -581,6 +596,17 @@ class Service:
             raise RuntimeError("profile schema is not closed")
         if not calibration_profile and not is_sha256(self.profile["profile_calibration_sha256"]):
             raise RuntimeError("normal profile calibration identity is invalid")
+        if calibration_profile and any(
+            not is_sha256(self.profile[key])
+            for key in (
+                "service_sha256",
+                "native_port_identity_sha256",
+                "timed_speech_policy_sha256",
+                "word_gap_policy_sha256",
+                "vad_merge_policy_sha256",
+            )
+        ):
+            raise RuntimeError("shadow profile identity hash is invalid")
         if self.profile["max_request_bytes"] != self.max_request:
             raise RuntimeError("FUNASR_MAX_REQUEST_BYTES does not match the measured profile")
         if self.profile["word_timing_capability"] != "required":
@@ -651,6 +677,21 @@ class Service:
             actual["detector_sha256"] = detector_hash(actual, measured)
             if actual != raw:
                 raise RuntimeError(f"measured {kind} identity mismatch")
+            if calibration_profile and (
+                type(actual["producer_id"]) is not str
+                or not actual["producer_id"]
+                or any(
+                    not is_sha256(actual[key])
+                    for key in (
+                        "generation_policy_sha256",
+                        "detector_sha256",
+                        "calibration_policy_sha256",
+                        "model_sha256",
+                        "service_sha256",
+                    )
+                )
+            ):
+                raise RuntimeError(f"measured {kind} shadow identity is invalid")
             if not calibration_profile and (
                 not is_sha256(actual["calibration_record_sha256"])
                 or type(actual["timing_error_bound_tick"]) is not int
@@ -658,6 +699,8 @@ class Service:
             ):
                 raise RuntimeError(f"measured {kind} calibration identity is invalid")
             identities.append(actual)
+        if calibration_profile and identities[0]["producer_id"] == identities[1]["producer_id"]:
+            raise RuntimeError("shadow producer IDs must be distinct")
         for key, actual in measured.items():
             if key != "producers" and actual != self.profile[key]:
                 raise RuntimeError(f"measured profile identity mismatch {key}")
@@ -1075,8 +1118,13 @@ class Service:
         supplied = req.headers.get("Authorization", "")
         if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
             raise web.HTTPUnauthorized(text="unauthorized")
+        if (
+            self.measured_profile is None
+            or self.measured_profile["schema_version"] != SHADOW_CALIBRATION_PROFILE_SCHEMA
+        ):
+            raise web.HTTPConflict(text="shadow calibration profile is unavailable")
         try:
-            decoded = json.loads(
+            decoded = strict_json_loads(
                 base64.b64decode(req.headers["X-Shadow-Calibration-Manifest"], validate=True)
             )
             m = self.validate_shadow_calibration_manifest_schema(decoded)
@@ -1144,8 +1192,13 @@ class Service:
         supplied = req.headers.get("Authorization", "")
         if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
             raise web.HTTPUnauthorized(text="unauthorized")
+        if (
+            self.measured_profile is None
+            or self.measured_profile["schema_version"] != NORMAL_PROFILE_SCHEMA
+        ):
+            raise web.HTTPConflict(text="timed speech evidence profile is unavailable")
         try:
-            decoded = json.loads(
+            decoded = strict_json_loads(
                 base64.b64decode(req.headers["X-Timed-Speech-Manifest"], validate=True)
             )
             m = self.validate_manifest_schema(decoded)

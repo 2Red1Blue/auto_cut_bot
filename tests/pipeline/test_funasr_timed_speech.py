@@ -28,6 +28,7 @@ from auto_cut_bot.pipeline.media_preflight import (
 from auto_cut_bot.pipeline.media_preflight.speech_port import SENSEVOICE_WORD_GUARD_PROFILE
 
 H = "sha256:" + "1" * 64
+ZERO_SHA256 = "sha256:" + "0" * 64
 
 
 def producer(kind: str) -> TimedSpeechExpectedProducer:
@@ -360,6 +361,16 @@ def _shadow_calibration_headers(
         "X-Shadow-Calibration-Manifest": base64.b64encode(raw).decode(),
         "X-Shadow-Calibration-Request-SHA256": "sha256:" + hashlib.sha256(raw).hexdigest(),
     }
+
+
+def _with_duplicate_schema_version(value: dict[str, object]) -> bytes:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return (
+        '{"schema_version":'
+        + json.dumps(value["schema_version"], separators=(",", ":"))
+        + ","
+        + raw[1:]
+    ).encode()
 
 
 class _StaticTransport:
@@ -784,6 +795,18 @@ async def test_real_http_boundary_loads_streams_authenticates_and_strictly_decod
         )
         assert unauthorized.status == 401
 
+        duplicate_manifest_headers = _headers(request_value)
+        duplicate_manifest_headers["X-Timed-Speech-Manifest"] = base64.b64encode(
+            _with_duplicate_schema_version(request_value.to_mapping())
+        ).decode()
+        duplicate_manifest = await client.post(
+            "/v1/timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers=duplicate_manifest_headers,
+        )
+        assert duplicate_manifest.status == 400
+        assert service.admitted == 0
+
         invalid_container = request_value.to_mapping()
         invalid_container["container"] = {"media_type": "video/mp4", "safe_suffix": ".mov"}
         invalid_container_raw = json.dumps(
@@ -902,7 +925,8 @@ async def test_shadow_calibration_raw_envelope_closes_over_native_request_withou
     assert all("calibration_record_sha256" not in item for item in profile["producers"])
     assert all("timing_error_bound_tick" not in item for item in profile["producers"])
     _service_environment(monkeypatch, profile, asr, vad)
-    client = TestClient(TestServer(ns["create_app"](ns["Service"]())))
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
     await client.start_server()
     try:
         manifest, body = _shadow_calibration_manifest(tmp_path, profile)
@@ -942,6 +966,27 @@ async def test_shadow_calibration_raw_envelope_closes_over_native_request_withou
         assert "profile_calibration_sha256" not in encoded
         assert "timing_error_bound_tick" not in encoded
 
+        duplicate_headers = _shadow_calibration_headers(manifest)
+        duplicate_headers["X-Shadow-Calibration-Manifest"] = base64.b64encode(
+            _with_duplicate_schema_version(manifest)
+        ).decode()
+        duplicate_manifest = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=duplicate_headers,
+        )
+        assert duplicate_manifest.status == 400
+        assert service.admitted == 0
+
+        normal_request = request(tmp_path)
+        denied_normal = await client.post(
+            "/v1/timed-speech-evidence",
+            data=normal_request.source_path.read_bytes(),
+            headers=_headers(normal_request),
+        )
+        assert denied_normal.status == 409
+        assert service.admitted == 0
+
         extra = dict(manifest)
         extra["profile_calibration_sha256"] = H
         rejected_extra = await client.post(
@@ -964,6 +1009,46 @@ async def test_shadow_calibration_raw_envelope_closes_over_native_request_withou
 
 
 @pytest.mark.asyncio
+async def test_shadow_profile_rejects_duplicate_json_zero_hash_and_equal_producer_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+
+    duplicate_profile = _shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, duplicate_profile, asr, vad)
+    monkeypatch.setenv(
+        "FUNASR_PROFILE_JSON", _with_duplicate_schema_version(duplicate_profile).decode()
+    )
+    with pytest.raises(RuntimeError, match="duplicate JSON object keys"):
+        ns["Service"]()
+
+    zero_hash_profile = _shadow_calibration_profile(ns, asr, vad)
+    zero_hash_profile["producers"][0]["calibration_policy_sha256"] = ZERO_SHA256
+    _service_environment(monkeypatch, zero_hash_profile, asr, vad)
+    with pytest.raises(RuntimeError, match="shadow identity is invalid"):
+        await ns["Service"]().load()
+
+    duplicate_id_profile = _shadow_calibration_profile(ns, asr, vad)
+    duplicate_id_profile["producers"][1]["producer_id"] = "asr"
+    _service_environment(monkeypatch, duplicate_id_profile, asr, vad)
+    with pytest.raises(RuntimeError, match="producer IDs must be distinct"):
+        await ns["Service"]().load()
+
+    unsupported_timing_profile = _shadow_calibration_profile(ns, asr, vad)
+    unsupported_timing_profile["word_timing_capability"] = "sentence_only"
+    _service_environment(monkeypatch, unsupported_timing_profile, asr, vad)
+    with pytest.raises(RuntimeError, match="requires real word timestamps"):
+        await ns["Service"]().load()
+
+
+@pytest.mark.asyncio
 async def test_shadow_calibration_endpoint_rejects_ordinary_calibrated_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -977,7 +1062,8 @@ async def test_shadow_calibration_endpoint_rejects_ordinary_calibrated_profile(
     (vad / "model.pt").write_bytes(b"vad")
     normal_profile = _service_profile(ns, asr, vad)
     _service_environment(monkeypatch, normal_profile, asr, vad)
-    client = TestClient(TestServer(ns["create_app"](ns["Service"]())))
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
     await client.start_server()
     try:
         shadow_profile = _shadow_calibration_profile(ns, asr, vad)
@@ -988,6 +1074,7 @@ async def test_shadow_calibration_endpoint_rejects_ordinary_calibrated_profile(
             headers=_shadow_calibration_headers(manifest),
         )
         assert response.status == 409
+        assert service.admitted == 0
     finally:
         await client.close()
 
