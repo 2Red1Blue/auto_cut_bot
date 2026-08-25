@@ -188,7 +188,7 @@ def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> Non
             )
             with pytest.raises(
                 psycopg.errors.RaiseException,
-                match="new v1/v2/v3 execution profile rows are forbidden",
+                match="new v1/v2/v3/v4 execution profile rows are forbidden",
             ):
                 insert_profile(
                     cursor,
@@ -213,7 +213,7 @@ def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> Non
             v3_with_current_policy["parse_policy"] = v4.to_mapping()["parse_policy"]
             with pytest.raises(
                 psycopg.errors.RaiseException,
-                match="new v1/v2/v3 execution profile rows are forbidden",
+                match="new v1/v2/v3/v4 execution profile rows are forbidden",
             ):
                 insert_profile(
                     cursor,
