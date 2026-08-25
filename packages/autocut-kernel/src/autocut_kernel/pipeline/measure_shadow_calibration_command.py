@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal, Mapping, Protocol
+from typing import Protocol
+from uuid import UUID
 
 from ..media import (
     CalibrationAnchor,
@@ -24,16 +25,19 @@ from ..media import (
 )
 from ..media.types import TickRange, canonical_sha256, sha256_prefixed
 from ..store import (
-    ArtifactMember,
-    ArtifactScope,
-    BlobRef,
     CommandClaim,
     CommandOutcome,
-    CommandRejection,
-    CommandSuccess,
     Job,
+    ShadowMeasurementAttempt,
+    ShadowMeasurementMemberLease,
+    ShadowMeasurementMemberPlan,
+    ShadowMeasurementPlan,
+    ShadowMeasurementRecoveryLease,
+    ShadowMeasurementRetryAuthorization,
+    ShadowMeasurementStagedResponse,
+    ShadowMeasurementTerminalDenialRequest,
+    ShadowMeasurementTerminalDenialResult,
 )
-from ..store.models import canonical_payload_hash
 
 MEASURE_SHADOW_CALIBRATION_COMMAND = "MeasureShadowCalibrationCommand@2.1.3"
 SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-calibration-measurement-v1"
@@ -242,11 +246,6 @@ class MeasureShadowCalibrationRequest:
     def idempotency_key(self) -> str:
         return f"shadow-calibration:{self.calibration_run_key}"
 
-    @property
-    def artifact_scope(self) -> ArtifactScope:
-        return ArtifactScope("autocut_calibration", "shadow_run", self.calibration_run_key)
-
-
 @dataclass(frozen=True, slots=True)
 class ShadowCalibrationPortResult:
     """Port echo plus raw bytes and an untrusted claimed projection, never matches."""
@@ -271,12 +270,44 @@ class ShadowCalibrationMeasurementPort(Protocol):
 
 
 class ShadowCalibrationMeasurementStore(Protocol):
-    def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
-    def put_immutable_blob(
-        self, job: Job, *, content: bytes, content_hash: str, media_type: str
-    ) -> BlobRef: ...
-    def commit_command_success(self, success: CommandSuccess) -> CommandOutcome: ...
-    def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome: ...
+    def claim_or_read_shadow_measurement_attempt(
+        self, claim: CommandClaim, plan: ShadowMeasurementPlan
+    ) -> ShadowMeasurementAttempt: ...
+    def acquire_shadow_measurement_member_lease(
+        self, attempt_id: UUID, member_reference_sha256: str, *, expected_version: int
+    ) -> ShadowMeasurementMemberLease | None: ...
+    def stage_shadow_measurement_member_response(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        lease_token: str,
+        staged: ShadowMeasurementStagedResponse,
+    ) -> ShadowMeasurementAttempt: ...
+    def acquire_shadow_measurement_recovery_lease(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> ShadowMeasurementRecoveryLease | None: ...
+    def mark_shadow_measurement_member_indeterminate(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        recovery_lease_token: str,
+        code: str = "NATIVE_OUTCOME_UNKNOWN",
+    ) -> ShadowMeasurementAttempt: ...
+    def reserve_shadow_measurement_successor(
+        self,
+        previous_attempt_id: UUID,
+        authorization: ShadowMeasurementRetryAuthorization,
+    ) -> ShadowMeasurementAttempt: ...
+    def finalize_shadow_measurement_success(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> CommandOutcome: ...
+    def commit_shadow_measurement_terminal_denial(
+        self, request: ShadowMeasurementTerminalDenialRequest
+    ) -> ShadowMeasurementTerminalDenialResult: ...
 
 
 class MeasureShadowCalibrationCommand:
@@ -287,42 +318,177 @@ class MeasureShadowCalibrationCommand:
     ) -> None:
         self._store, self._port = store, port
 
-    def execute(self, request: MeasureShadowCalibrationRequest) -> CommandOutcome:
+    def execute(
+        self,
+        request: MeasureShadowCalibrationRequest,
+        *,
+        retry_authorization: ShadowMeasurementRetryAuthorization | None = None,
+    ) -> CommandOutcome:
         if type(request) is not MeasureShadowCalibrationRequest:  # noqa: E721
             raise ShadowCalibrationCommandError(
                 "request must be an exact MeasureShadowCalibrationRequest"
             )
-        claimed = self._store.claim_command(
-            CommandClaim(
-                request.job,
-                request.idempotency_key,
-                MEASURE_SHADOW_CALIBRATION_COMMAND,
-                request.request_hash,
+        if retry_authorization is not None and type(retry_authorization) is not ShadowMeasurementRetryAuthorization:  # noqa: E721
+            raise ShadowCalibrationCommandError("retry_authorization must be exact when supplied")
+        plan = self._plan(request)
+        attempt = self._store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+        if attempt.outcome.state != "running":
+            return attempt.outcome
+        if attempt.state == "indeterminate":
+            if retry_authorization is None:
+                return attempt.outcome
+            attempt = self._store.reserve_shadow_measurement_successor(
+                attempt.attempt_id, retry_authorization
+            )
+        return self._collect_or_finalize(request, attempt)
+
+    @staticmethod
+    def _plan(request: MeasureShadowCalibrationRequest) -> ShadowMeasurementPlan:
+        claim = CommandClaim(
+            request.job,
+            request.idempotency_key,
+            MEASURE_SHADOW_CALIBRATION_COMMAND,
+            request.request_hash,
+        )
+        return ShadowMeasurementPlan(
+            claim,
+            _json(request.canonical_payload()),
+            tuple(
+                ShadowMeasurementMemberPlan(
+                    member.corpus_member_reference_sha256,
+                    ordinal,
+                    _json(_invocation_mapping(member.native_invocation)),
+                    _json(_raw_context_mapping(member.raw_context)),
+                    member.expected_anchor_reference_sha256,
+                )
+                for ordinal, member in enumerate(request.corpus_members)
+            ),
+        )
+
+    def _collect_or_finalize(
+        self, request: MeasureShadowCalibrationRequest, attempt: ShadowMeasurementAttempt
+    ) -> CommandOutcome:
+        """Advance only durable pending/staged state; never repeat an invoking call."""
+
+        if attempt.state == "committed" or attempt.outcome.state != "running":
+            return attempt.outcome
+        if attempt.state == "ready":
+            return self._store.finalize_shadow_measurement_success(
+                attempt.attempt_id, expected_version=attempt.version
+            )
+        if attempt.state == "indeterminate":
+            return attempt.outcome
+
+        for member in attempt.members:
+            if member.state == "staged":
+                continue
+            if member.state == "invoking":
+                return self._recover_unknown_member(attempt, member.corpus_member_reference_sha256)
+            if member.state == "indeterminate":
+                return attempt.outcome
+            lease = self._store.acquire_shadow_measurement_member_lease(
+                attempt.attempt_id,
+                member.corpus_member_reference_sha256,
+                expected_version=member.version,
+            )
+            if lease is None:
+                return attempt.outcome
+            # The Store transitions to invoking before this call. Any exception that
+            # prevents a durable stage is deliberately non-terminal: recovery must
+            # classify it as unknown after lease expiry instead of guessing whether
+            # native inference began.
+            try:
+                result = self._port.measure(request, request.corpus_members[member.member_ordinal])
+                _, projection, raw_blob = self._decode_port_result(
+                    request, request.corpus_members[member.member_ordinal], result
+                )
+            except ShadowCalibrationProducerError as error:
+                if error.code is ShadowCalibrationProducerFailureCode.REJECTED:
+                    return self._terminal_deny(
+                        attempt, lease, member.corpus_member_reference_sha256, error.code.value
+                    )
+                # A known unavailable port has no Store-supported release operation
+                # in this protocol version. Return its running aggregate; recovery
+                # alone decides whether the leased call later becomes unknown.
+                return attempt.outcome
+            except (
+                CalibrationRecordError,
+                ShadowCalibrationCommandError,
+                ShadowCalibrationRawEvidenceError,
+            ):
+                return self._terminal_deny(
+                    attempt,
+                    lease,
+                    member.corpus_member_reference_sha256,
+                    "SHADOW_CALIBRATION_INVALID",
+                )
+            attempt = self._store.stage_shadow_measurement_member_response(
+                attempt.attempt_id,
+                member.corpus_member_reference_sha256,
+                expected_version=lease.member.version,
+                lease_token=lease.lease_token,
+                staged=ShadowMeasurementStagedResponse(
+                    raw_blob.raw,
+                    raw_blob.content_sha256,
+                    raw_blob.media_type,
+                    _json(_projection_mapping(projection)),
+                ),
+            )
+            if attempt.state == "ready":
+                return self._store.finalize_shadow_measurement_success(
+                    attempt.attempt_id, expected_version=attempt.version
+                )
+        return attempt.outcome
+
+    def _terminal_deny(
+        self,
+        attempt: ShadowMeasurementAttempt,
+        lease: ShadowMeasurementMemberLease,
+        member_reference_sha256: str,
+        failure_code: str,
+    ) -> CommandOutcome:
+        """Commit decoder-proven invalid evidence through the shadow-only Store path."""
+
+        denial = self._store.commit_shadow_measurement_terminal_denial(
+            ShadowMeasurementTerminalDenialRequest(
+                attempt.attempt_id,
+                attempt.command_slot_id,
+                attempt.job,
+                attempt.plan_hash,
+                member_reference_sha256,
+                lease.attempt_version,
+                lease.member.version,
+                lease.lease_token,
+                failure_code,
+                _json({"reason": "decoder-proven shadow native evidence is invalid"}),
             )
         )
-        if not claimed.is_fresh_claim:
-            return claimed
-        try:
-            decoded = tuple(
-                self._decode_port_result(request, member, self._port.measure(request, member))
-                for member in request.corpus_members
-            )
-            results = tuple(
-                (invocation, projection, self._persist_raw_native_response(request, blob))
-                for invocation, projection, blob in decoded
-            )
-            artifacts = self._artifacts(request, results)
-        except ShadowCalibrationProducerError as error:
-            return self._reject(claimed, error.code.value)
-        except (
-            CalibrationRecordError,
-            ShadowCalibrationCommandError,
-            ShadowCalibrationRawEvidenceError,
-        ):
-            return self._reject(claimed, "SHADOW_CALIBRATION_INVALID")
-        return self._store.commit_command_success(
-            CommandSuccess(claimed.command_slot_id, _artifact_set_hash(artifacts), artifacts)
+        return denial.outcome
+
+    def _recover_unknown_member(
+        self, attempt: ShadowMeasurementAttempt, member_reference_sha256: str
+    ) -> CommandOutcome:
+        """Conservatively mark expired invocation state indeterminate, never replay it."""
+
+        member = next(
+            item
+            for item in attempt.members
+            if item.corpus_member_reference_sha256 == member_reference_sha256
         )
+        if member.lease_expires_at is None or member.lease_expires_at > datetime.now(timezone.utc):
+            return attempt.outcome
+        recovery = self._store.acquire_shadow_measurement_recovery_lease(
+            attempt.attempt_id, expected_version=attempt.version
+        )
+        if recovery is None:
+            return attempt.outcome
+        self._store.mark_shadow_measurement_member_indeterminate(
+            attempt.attempt_id,
+            member_reference_sha256,
+            expected_version=member.version,
+            recovery_lease_token=recovery.lease_token,
+        )
+        return attempt.outcome
 
     @staticmethod
     def _decode_port_result(
@@ -349,157 +515,6 @@ class MeasureShadowCalibrationCommand:
             )
         return result.invocation, decoded.projection, result.raw_blob
 
-    def _persist_raw_native_response(
-        self, request: MeasureShadowCalibrationRequest, raw_blob: ShadowCalibrationRawBlob
-    ) -> BlobRef:
-        blob = self._store.put_immutable_blob(
-            request.job,
-            content=raw_blob.raw,
-            content_hash=raw_blob.content_sha256,
-            media_type=raw_blob.media_type,
-        )
-        if (
-            type(blob) is not BlobRef
-            or blob.content_hash != raw_blob.content_sha256
-            or blob.byte_length != raw_blob.byte_length
-            or blob.media_type != raw_blob.media_type
-        ):  # noqa: E721
-            raise ShadowCalibrationStoreError(
-                "stored native response blob does not bind raw response"
-            )
-        return blob
-
-    @staticmethod
-    def _artifacts(
-        request: MeasureShadowCalibrationRequest,
-        results: tuple[
-            tuple[ShadowCalibrationInvocation, ShadowCalibrationProjection, BlobRef], ...
-        ],
-    ) -> tuple[ArtifactMember, ArtifactMember]:
-        inputs = request.shadow_inputs
-        manifest = _artifact(
-            request.artifact_scope,
-            "calibration_measurement_manifest",
-            "measurement-manifest",
-            {
-                "alignment_policy_sha256": inputs.alignment_policy_sha256,
-                "acceptance_policy_sha256": inputs.acceptance_policy_sha256,
-                "calibration_corpus_set_sha256": inputs.calibration_corpus_set_sha256,
-                "measurement_request_sha256": request.request_hash,
-                "native_invocations": [
-                    {
-                        "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
-                        "native_invocation": _invocation_mapping(invocation),
-                        "native_response_blob": _blob_mapping(blob),
-                    }
-                    for member, (invocation, _, blob) in zip(
-                        request.corpus_members, results, strict=True
-                    )
-                ],
-                "native_port_identity_sha256": inputs.native_port_identity_sha256,
-                "registry_snapshot_sha256": inputs.registry_snapshot_sha256,
-                "schema_version": "shadow-calibration-measurement-manifest-v2",
-                "shadow_profile_source_sha256": inputs.profile_source_sha256,
-                "vad_merge_policy_sha256": inputs.vad_merge_policy_sha256,
-                "word_gap_policy_sha256": inputs.word_gap_policy_sha256,
-            },
-        )
-        result = _artifact(
-            request.artifact_scope,
-            "calibration_measurement_results",
-            "measurement-results",
-            {
-                "measurement_manifest_sha256": manifest.content_hash,
-                "members": [
-                    {
-                        "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
-                        "expected_anchor_reference_sha256": member.expected_anchor_reference_sha256,
-                        "native_invocation": _invocation_mapping(invocation),
-                        "native_response_blob": _blob_mapping(blob),
-                        "native_response_sha256": blob.content_hash,
-                        "projection": _projection_mapping(projection),
-                    }
-                    for member, (invocation, projection, blob) in zip(
-                        request.corpus_members, results, strict=True
-                    )
-                ],
-                "per_producer_measurements": _member_bound_aggregate_measurements(
-                    request.corpus_members, results
-                ),
-                "schema_version": "shadow-calibration-measurement-results-v2",
-            },
-        )
-        return manifest, result
-
-    def _reject(
-        self, claimed: CommandOutcome, code: str, *, outcome: Literal["denied", "failed"] = "denied"
-    ) -> CommandOutcome:
-        return self._store.commit_command_rejection(
-            CommandRejection(
-                claimed.command_slot_id,
-                code,
-                _json({"reason": _safe_failure_detail(code), "stage": "shadow_calibration"}),
-                outcome,
-            )
-        )
-
-
-def _member_bound_aggregate_measurements(
-    members: tuple[ShadowCalibrationCorpusMember, ...],
-    results: tuple[tuple[ShadowCalibrationInvocation, ShadowCalibrationProjection, BlobRef], ...],
-) -> dict[str, dict[str, object]]:
-    """Summarize only member-local measurements; never merge local observation IDs."""
-
-    if len(members) != len(results) or not results:
-        raise ShadowCalibrationCommandError("aggregate measurements require every corpus member")
-    return {
-        "asr": _member_bound_aggregate_measurement(
-            members, tuple(projection.summary.asr for _, projection, _ in results)
-        ),
-        "vad": _member_bound_aggregate_measurement(
-            members, tuple(projection.summary.vad for _, projection, _ in results)
-        ),
-    }
-
-
-def _member_bound_aggregate_measurement(
-    members: tuple[ShadowCalibrationCorpusMember, ...],
-    measurements: tuple[ProducerCalibrationMeasurement, ...],
-) -> dict[str, object]:
-    """Return count/max statistics explicitly bound to the ordered corpus members."""
-
-    if len(members) != len(measurements) or not measurements:
-        raise ShadowCalibrationCommandError("aggregate measurement is missing a corpus member")
-    first = measurements[0]
-    if any(
-        measurement.producer != first.producer
-        or measurement.producer_id != first.producer_id
-        or measurement.inference_kind != first.inference_kind
-        or measurement.clock_id != first.clock_id
-        or measurement.time_base != first.time_base
-        for measurement in measurements[1:]
-    ):
-        raise ShadowCalibrationCommandError("member measurements drift from the locked producer")
-    return {
-        "aggregation": "member-bound-calibration-statistics-v1",
-        "absolute_maximum_tick": max(
-            measurement.absolute_maximum_tick for measurement in measurements
-        ),
-        "clock_id": first.clock_id,
-        "corpus_member_count": len(members),
-        "corpus_member_references": [
-            member.corpus_member_reference_sha256 for member in members
-        ],
-        "early_maximum_tick": max(measurement.early_maximum_tick for measurement in measurements),
-        "eligible_anchor_count": sum(len(measurement.matches) for measurement in measurements),
-        "inference_kind": first.inference_kind,
-        "invalid_or_indeterminate_member_count": 0,
-        "late_maximum_tick": max(measurement.late_maximum_tick for measurement in measurements),
-        "matched_anchor_count": sum(len(measurement.matches) for measurement in measurements),
-        "producer": first.producer.value,
-        "producer_id": first.producer_id,
-        "time_base": _time_base_mapping(first.time_base),
-    }
 
 
 def _time_base_mapping(time_base: TimeBase) -> dict[str, int]:
@@ -614,57 +629,5 @@ def _raw_context_mapping(context: ShadowCalibrationRawContext) -> dict[str, obje
     }
 
 
-def _blob_mapping(blob: BlobRef) -> dict[str, object]:
-    return {
-        "byte_length": blob.byte_length,
-        "content_hash": blob.content_hash,
-        "media_type": blob.media_type,
-        "object_id": str(blob.object_id),
-    }
-
-
-def _artifact(
-    scope: ArtifactScope, artifact_type: str, logical_id: str, payload: Mapping[str, object]
-) -> ArtifactMember:
-    payload_json = _json(payload)
-    return ArtifactMember(
-        artifact_type, logical_id, 1, scope, canonical_payload_hash(payload_json), payload_json
-    )
-
-
-def _artifact_set_hash(artifacts: tuple[ArtifactMember, ...]) -> str:
-    members = [
-        {
-            "artifact_type": item.artifact_type,
-            "content_hash": item.content_hash,
-            "logical_id": item.logical_id,
-            "payload_json": json.loads(item.payload_json),
-            "revision": item.revision,
-            "scope": {
-                "key": item.scope.key,
-                "kind": item.scope.kind,
-                "namespace": item.scope.namespace,
-            },
-        }
-        for item in artifacts
-    ]
-    return "sha256:" + hashlib.sha256(_json(members).encode()).hexdigest()
-
-
 def _json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def _safe_failure_detail(code: str) -> str:
-    details = {
-        "SHADOW_CALIBRATION_INVALID": "shadow calibration evidence was rejected",
-        "SHADOW_CALIBRATION_MEASUREMENT_FAILED": "shadow calibration measurement failed",
-        ShadowCalibrationProducerFailureCode.REJECTED.value: "native calibration measurement was rejected",
-        ShadowCalibrationProducerFailureCode.UNAVAILABLE.value: "native calibration measurement was unavailable",
-    }
-    try:
-        return details[code]
-    except KeyError as error:
-        raise ShadowCalibrationCommandError(
-            "shadow calibration failure code is not allowlisted"
-        ) from error

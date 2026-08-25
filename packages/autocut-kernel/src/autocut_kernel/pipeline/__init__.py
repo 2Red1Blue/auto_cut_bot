@@ -29,6 +29,8 @@ from .measure_shadow_calibration_command import (
     ShadowCalibrationPortResult,
     ShadowCalibrationProducerError,
     ShadowCalibrationProducerFailureCode,
+    ShadowMeasurementRetryAuthorization,
+    ShadowMeasurementTerminalDenialRequest,
 )
 from .prepare_timed_media_evidence_command import (
     PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND,
@@ -84,6 +86,8 @@ __all__ = [
     "ShadowCalibrationPortResult",
     "ShadowCalibrationProducerFailureCode",
     "ShadowCalibrationProducerError",
+    "ShadowMeasurementRetryAuthorization",
+    "ShadowMeasurementTerminalDenialRequest",
     "ShadowCalibrationInputs",
     "PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND",
     "TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION",

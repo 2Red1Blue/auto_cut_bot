@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
+import pytest
 from autocut_kernel.media import (
     SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE,
     SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA,
@@ -37,14 +39,22 @@ from autocut_kernel.pipeline import (
     ShadowCalibrationCorpusMember,
     ShadowCalibrationInputs,
     ShadowCalibrationPortResult,
+    ShadowCalibrationProducerError,
+    ShadowCalibrationProducerFailureCode,
 )
 from autocut_kernel.store import (
     BlobRef,
     CommandClaim,
     CommandOutcome,
-    CommandRejection,
-    CommandSuccess,
-    Job,
+    ShadowMeasurementAttempt,
+    ShadowMeasurementMember,
+    ShadowMeasurementMemberLease,
+    ShadowMeasurementPlan,
+    ShadowMeasurementRecoveryLease,
+    ShadowMeasurementRetryAuthorization,
+    ShadowMeasurementStagedResponse,
+    ShadowMeasurementTerminalDenialRequest,
+    ShadowMeasurementTerminalDenialResult,
 )
 
 
@@ -374,35 +384,228 @@ def _result(
 
 @dataclass
 class _Store:
-    slot_id: UUID = field(default_factory=uuid4)
-    terminal: CommandOutcome | None = None
-    claims: list[CommandClaim] = field(default_factory=list)
-    successes: list[CommandSuccess] = field(default_factory=list)
-    rejections: list[CommandRejection] = field(default_factory=list)
+    attempts: dict[UUID, ShadowMeasurementAttempt] = field(default_factory=dict)
+    initial_attempt_id: UUID | None = None
     blobs: list[BlobRef] = field(default_factory=list)
+    finalizations: int = 0
+    denials: list[ShadowMeasurementTerminalDenialRequest] = field(default_factory=list)
+    stage_timeout_after_commit: bool = False
 
-    def claim_command(self, claim: CommandClaim) -> CommandOutcome:
-        self.claims.append(claim)
-        if self.terminal is not None:
-            return self.terminal
-        return CommandOutcome(self.slot_id, "running", is_fresh_claim=True)
+    def claim_or_read_shadow_measurement_attempt(
+        self, claim: CommandClaim, plan: ShadowMeasurementPlan
+    ) -> ShadowMeasurementAttempt:
+        if self.initial_attempt_id is not None:
+            return self.attempts[self.initial_attempt_id]
+        attempt_id, slot_id = uuid4(), uuid4()
+        members = tuple(
+            ShadowMeasurementMember(
+                attempt_id,
+                member.corpus_member_reference_sha256,
+                member.member_ordinal,
+                member.invocation_json,
+                member.context_json,
+                member.expected_anchor_reference_sha256,
+                "pending",
+                0,
+            )
+            for member in plan.members
+        )
+        attempt = ShadowMeasurementAttempt(
+            attempt_id,
+            slot_id,
+            claim.job,
+            claim.request_hash,
+            plan.canonical_plan_json,
+            1,
+            None,
+            "prepared",
+            0,
+            members,
+            CommandOutcome(slot_id, "running", is_fresh_claim=True),
+        )
+        self.attempts[attempt_id] = attempt
+        self.initial_attempt_id = attempt_id
+        return attempt
 
-    def put_immutable_blob(
-        self, job: Job, *, content: bytes, content_hash: str, media_type: str
-    ) -> BlobRef:
-        blob = BlobRef(uuid4(), content_hash, len(content), media_type)
+    @staticmethod
+    def _replace_member(
+        attempt: ShadowMeasurementAttempt, member: ShadowMeasurementMember
+    ) -> tuple[ShadowMeasurementMember, ...]:
+        return tuple(
+            member if item.corpus_member_reference_sha256 == member.corpus_member_reference_sha256 else item
+            for item in attempt.members
+        )
+
+    def acquire_shadow_measurement_member_lease(
+        self, attempt_id: UUID, member_reference_sha256: str, *, expected_version: int
+    ) -> ShadowMeasurementMemberLease | None:
+        attempt = self.attempts[attempt_id]
+        member = next(item for item in attempt.members if item.corpus_member_reference_sha256 == member_reference_sha256)
+        if attempt.state not in ("prepared", "collecting") or member.state != "pending" or member.version != expected_version:
+            return None
+        leased = replace(
+            member,
+            state="invoking",
+            version=member.version + 1,
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        current = replace(
+            attempt,
+            state="collecting",
+            version=attempt.version + 1,
+            members=self._replace_member(attempt, leased),
+        )
+        self.attempts[attempt_id] = current
+        return ShadowMeasurementMemberLease(leased, current.version, f"lease:{member.member_ordinal}")
+
+    def stage_shadow_measurement_member_response(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        lease_token: str,
+        staged: ShadowMeasurementStagedResponse,
+    ) -> ShadowMeasurementAttempt:
+        attempt = self.attempts[attempt_id]
+        member = next(item for item in attempt.members if item.corpus_member_reference_sha256 == member_reference_sha256)
+        assert member.state == "invoking" and member.version == expected_version
+        blob = BlobRef(uuid4(), staged.content_hash, len(staged.raw_bytes), staged.media_type)
         self.blobs.append(blob)
-        return blob
+        persisted = replace(
+            member,
+            state="staged",
+            version=member.version + 1,
+            raw_blob=blob,
+            projection_json=staged.projection_json,
+            lease_expires_at=None,
+        )
+        members = self._replace_member(attempt, persisted)
+        current = replace(
+            attempt,
+            state="ready" if all(item.state == "staged" for item in members) else "collecting",
+            version=attempt.version + 1,
+            members=members,
+        )
+        self.attempts[attempt_id] = current
+        if self.stage_timeout_after_commit:
+            self.stage_timeout_after_commit = False
+            raise TimeoutError("stage commit response was lost")
+        return current
 
-    def commit_command_success(self, success: CommandSuccess) -> CommandOutcome:
-        self.successes.append(success)
-        self.terminal = CommandOutcome(success.command_slot_id, "succeeded")
-        return self.terminal
+    def acquire_shadow_measurement_recovery_lease(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> ShadowMeasurementRecoveryLease | None:
+        attempt = self.attempts[attempt_id]
+        if attempt.version != expected_version:
+            return None
+        current = replace(
+            attempt,
+            version=attempt.version + 1,
+            recovery_lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        )
+        self.attempts[attempt_id] = current
+        return ShadowMeasurementRecoveryLease(current, "recovery")
 
-    def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome:
-        self.rejections.append(rejection)
-        self.terminal = CommandOutcome(rejection.command_slot_id, rejection.outcome)
-        return self.terminal
+    def mark_shadow_measurement_member_indeterminate(
+        self,
+        attempt_id: UUID,
+        member_reference_sha256: str,
+        *,
+        expected_version: int,
+        recovery_lease_token: str,
+        code: str = "NATIVE_OUTCOME_UNKNOWN",
+    ) -> ShadowMeasurementAttempt:
+        attempt = self.attempts[attempt_id]
+        member = next(item for item in attempt.members if item.corpus_member_reference_sha256 == member_reference_sha256)
+        assert code == "NATIVE_OUTCOME_UNKNOWN" and member.state == "invoking" and member.version == expected_version
+        indeterminate = replace(member, state="indeterminate", version=member.version + 1, lease_expires_at=None)
+        current = replace(
+            attempt,
+            state="indeterminate",
+            version=attempt.version + 1,
+            members=self._replace_member(attempt, indeterminate),
+            recovery_lease_expires_at=None,
+        )
+        self.attempts[attempt_id] = current
+        return current
+
+    def reserve_shadow_measurement_successor(
+        self,
+        previous_attempt_id: UUID,
+        authorization: ShadowMeasurementRetryAuthorization,
+    ) -> ShadowMeasurementAttempt:
+        previous = self.attempts[previous_attempt_id]
+        assert previous.state == "indeterminate" and authorization.predecessor_plan_hash == previous.plan_hash
+        attempt_id, slot_id = uuid4(), uuid4()
+        members = tuple(
+            ShadowMeasurementMember(
+                attempt_id,
+                member.corpus_member_reference_sha256,
+                member.member_ordinal,
+                member.invocation_json,
+                member.context_json,
+                member.expected_anchor_reference_sha256,
+                "pending",
+                0,
+            )
+            for member in previous.members
+        )
+        successor = ShadowMeasurementAttempt(
+            attempt_id,
+            slot_id,
+            previous.job,
+            previous.plan_hash,
+            previous.canonical_plan_json,
+            previous.attempt_ordinal + 1,
+            previous.attempt_id,
+            "prepared",
+            0,
+            members,
+            CommandOutcome(slot_id, "running", is_fresh_claim=True),
+        )
+        self.attempts[attempt_id] = successor
+        return successor
+
+    def finalize_shadow_measurement_success(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> CommandOutcome:
+        attempt = self.attempts[attempt_id]
+        assert attempt.state == "ready" and attempt.version == expected_version
+        self.finalizations += 1
+        outcome = CommandOutcome(attempt.command_slot_id, "succeeded")
+        self.attempts[attempt_id] = replace(attempt, state="committed", version=attempt.version + 1, outcome=outcome)
+        return outcome
+
+    def commit_shadow_measurement_terminal_denial(
+        self, request: ShadowMeasurementTerminalDenialRequest
+    ) -> ShadowMeasurementTerminalDenialResult:
+        attempt = self.attempts[request.attempt_id]
+        member = next(
+            item
+            for item in attempt.members
+            if item.corpus_member_reference_sha256 == request.member_reference_sha256
+        )
+        assert (
+            attempt.state == "collecting"
+            and request.expected_attempt_version == attempt.version
+            and member.state == "invoking"
+            and request.expected_member_version == member.version
+            and all(item.state == "pending" for item in attempt.members if item != member)
+        )
+        self.denials.append(request)
+        outcome = CommandOutcome(attempt.command_slot_id, "denied", failure_code=request.failure_code)
+        closed = replace(
+            attempt,
+            state="indeterminate",
+            version=attempt.version + 1,
+            members=self._replace_member(
+                attempt, replace(member, state="indeterminate", version=member.version + 1, lease_expires_at=None)
+            ),
+            outcome=outcome,
+        )
+        self.attempts[attempt.attempt_id] = closed
+        return ShadowMeasurementTerminalDenialResult(closed, outcome)
 
 
 @dataclass
@@ -430,223 +633,155 @@ class _MemberPort:
 
 
 @dataclass
-class _AmbiguousBlobWriteStore(_Store):
-    def put_immutable_blob(
-        self, job: Job, *, content: bytes, content_hash: str, media_type: str
-    ) -> BlobRef:
-        super().put_immutable_blob(
-            job, content=content, content_hash=content_hash, media_type=media_type
-        )
-        raise TimeoutError("blob write outcome is ambiguous")
+class _UnavailablePort:
+    calls: int = 0
+
+    def measure(
+        self, request: MeasureShadowCalibrationRequest, member: ShadowCalibrationCorpusMember
+    ) -> ShadowCalibrationPortResult:
+        self.calls += 1
+        raise ShadowCalibrationProducerError(ShadowCalibrationProducerFailureCode.UNAVAILABLE)
 
 
-@dataclass
-class _LaterBlobFailureStore(_Store):
-    write_attempts: int = 0
-
-    def put_immutable_blob(
-        self, job: Job, *, content: bytes, content_hash: str, media_type: str
-    ) -> BlobRef:
-        self.write_attempts += 1
-        if self.write_attempts == 2:
-            raise ConnectionError("later blob write failed")
-        return super().put_immutable_blob(
-            job, content=content, content_hash=content_hash, media_type=media_type
-        )
-
-
-def _execute(result: ShadowCalibrationPortResult) -> tuple[CommandOutcome, _Store, _Port]:
-    request, store, port = _request(), _Store(), _Port(result)
-    return MeasureShadowCalibrationCommand(store, port).execute(request), store, port
-
-
-def test_decoder_verified_raw_evidence_commits_exactly_two_ordered_non_authority_artifacts() -> (
-    None
-):
-    request, store, port = _request(), _Store(), _Port(_result())
-
-    outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
-
-    assert outcome.state == "succeeded"
-    assert port.calls == 1
-    assert len(store.blobs) == 1
-    success = store.successes[0]
-    assert [item.artifact_type for item in success.artifacts] == [
-        "calibration_measurement_manifest",
-        "calibration_measurement_results",
-    ]
-    assert [item.logical_id for item in success.artifacts] == [
-        "measurement-manifest",
-        "measurement-results",
-    ]
-    assert all(
-        item.revision == 1 and item.scope.namespace != "autocut_authority"
-        for item in success.artifacts
-    )
-    manifest, results = (json.loads(item.payload_json) for item in success.artifacts)
-    assert (
-        manifest["native_invocations"][0]["native_invocation"]["request_mapping_sha256"]
-        == _invocation().request_mapping_sha256
-    )
-    assert (
-        manifest["native_invocations"][0]["native_response_blob"]["content_hash"]
-        == store.blobs[0].content_hash
-    )
-    projection = results["members"][0]["projection"]
-    assert projection["asr_observations"][0]["text"] == "a"
-    assert projection["word_gap_segments"] == [
+def _member_port(request: MeasureShadowCalibrationRequest) -> _MemberPort:
+    return _MemberPort(
         {
-            "observed_range": {"in_tick": 100, "out_tick": 220},
-            "segment_id": "asr-segment-00000000",
-            "text": "a",
-        },
-        {
-            "observed_range": {"in_tick": 400, "out_tick": 560},
-            "segment_id": "asr-segment-00000001",
-            "text": "b",
-        },
-    ]
-
-
-def test_altered_port_projection_is_denied_before_any_blob_or_artifact_set() -> None:
-    projection = _projection()
-    altered = replace(
-        projection,
-        word_gap_segments=(
-            ShadowCalibrationWordGapSegment("asr-segment-00000000", "ab", TickRange(100, 560)),
-        ),
-    )
-
-    outcome, store, _ = _execute(_result(projection=altered))
-
-    assert outcome.state == "denied"
-    assert store.rejections[0].failure_code == "SHADOW_CALIBRATION_INVALID"
-    assert not store.blobs and not store.successes
-
-
-def test_altered_raw_envelope_is_denied_before_any_blob_or_artifact_set() -> None:
-    payload = json.loads(_raw())
-    payload["asr_native_output"][0]["timestamp"][0] = [101, 220]
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-
-    outcome, store, _ = _execute(_result(raw_blob=_blob(raw)))
-
-    assert outcome.state == "denied"
-    assert not store.blobs and not store.successes
-
-
-def test_altered_port_invocation_is_denied_before_any_blob_or_artifact_set() -> None:
-    invocation = _invocation()
-    other_mapping = replace(invocation.request_mapping, max_response_bytes=32_769)
-    altered = ShadowCalibrationInvocation(
-        SOURCE.corpus_member_reference_sha256,
-        other_mapping.sha256,
-        other_mapping,
-        other_mapping.sha256,
-    )
-
-    outcome, store, _ = _execute(_result(invocation=altered))
-
-    assert outcome.state == "denied"
-    assert not store.blobs and not store.successes
-
-
-def test_old_generic_raw_response_is_not_accepted_as_calibration_evidence() -> None:
-    generic = b'{"native":"response"}'
-
-    outcome, store, _ = _execute(_result(raw_blob=_blob(generic)))
-
-    assert outcome.state == "denied"
-    assert store.rejections[0].failure_code == "SHADOW_CALIBRATION_INVALID"
-    assert not store.blobs and not store.successes
-
-
-def test_replay_returns_terminal_outcome_without_second_port_call_or_artifact_set() -> None:
-    request, store, port = _request(), _Store(), _Port(_result())
-    command = MeasureShadowCalibrationCommand(store, port)
-
-    first = command.execute(request)
-    replay = command.execute(request)
-
-    assert first == replay
-    assert port.calls == 1
-    assert len(store.successes) == 1
-
-
-def test_ambiguous_blob_write_propagates_without_a_terminal_outcome() -> None:
-    request, store, port = _request(), _AmbiguousBlobWriteStore(), _Port(_result())
-
-    try:
-        MeasureShadowCalibrationCommand(store, port).execute(request)
-    except TimeoutError as error:
-        assert str(error) == "blob write outcome is ambiguous"
-    else:
-        raise AssertionError("ambiguous Store write must propagate")
-
-    assert port.calls == 1
-    assert len(store.blobs) == 1
-    assert not store.successes and not store.rejections
-    assert store.terminal is None
-
-
-def test_two_member_measurement_keeps_local_observation_ids_and_aggregates_by_member() -> None:
-    request = _two_member_request()
-    first, second = (member.native_invocation for member in request.corpus_members)
-    store = _Store()
-    port = _MemberPort(
-        {
-            first.corpus_member_reference_sha256: _result(invocation=first),
-            second.corpus_member_reference_sha256: _result(invocation=second),
+            member.corpus_member_reference_sha256: _result(invocation=member.native_invocation)
+            for member in request.corpus_members
         }
     )
+
+
+def test_fresh_measurement_stages_decoder_verified_evidence_then_finalizes() -> None:
+    request, store = _two_member_request(), _Store()
+    port = _member_port(request)
 
     outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
 
     assert outcome.state == "succeeded"
     assert port.calls == 2
     assert len(store.blobs) == 2
-    results = json.loads(store.successes[0].artifacts[1].payload_json)
-    assert [
-        member["projection"]["asr_observations"][0]["observation"]["observation_id"]
-        for member in results["members"]
-    ] == ["asr-word-00000000", "asr-word-00000000"]
-    assert [
-        member["projection"]["vad_observations"][0]["observation_id"]
-        for member in results["members"]
-    ] == ["vad-segment-00000000", "vad-segment-00000000"]
-    aggregate = results["per_producer_measurements"]
-    for producer, anchor_count in (("asr", 4), ("vad", 2)):
-        assert aggregate[producer]["aggregation"] == "member-bound-calibration-statistics-v1"
-        assert aggregate[producer]["corpus_member_count"] == 2
-        assert aggregate[producer]["corpus_member_references"] == [
-            SOURCE.corpus_member_reference_sha256,
-            SECOND_SOURCE.corpus_member_reference_sha256,
-        ]
-        assert aggregate[producer]["eligible_anchor_count"] == anchor_count
-        assert aggregate[producer]["matched_anchor_count"] == anchor_count
-        assert aggregate[producer]["invalid_or_indeterminate_member_count"] == 0
-        assert "matches" not in aggregate[producer]
+    assert store.finalizations == 1
+    assert all(member.state == "staged" for member in store.attempts[store.initial_attempt_id].members)  # type: ignore[index]
 
 
-def test_later_blob_failure_leaves_no_artifact_set_and_only_unreferenced_recovery_blob() -> None:
-    request = _two_member_request()
+def test_staged_recovery_reads_durable_member_without_duplicate_port_call() -> None:
+    request, store = _two_member_request(), _Store(stage_timeout_after_commit=True)
+    port = _member_port(request)
+    command = MeasureShadowCalibrationCommand(store, port)
+
+    try:
+        command.execute(request)
+    except TimeoutError as error:
+        assert str(error) == "stage commit response was lost"
+    else:
+        raise AssertionError("ambiguous stage result must propagate")
+    replay = command.execute(request)
+
+    assert replay.state == "succeeded"
+    assert port.calls == 2
+    assert store.finalizations == 1
+    assert len(store.blobs) == 2
+
+
+def test_terminal_invalid_native_evidence_uses_the_shadow_store_denial_path() -> None:
+    request, store = _request(), _Store()
+    payload = json.loads(_raw())
+    payload["asr_native_output"][0]["timestamp"][0] = [101, 220]
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    port = _Port(_result(raw_blob=_blob(raw)))
+
+    outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
+
+    assert outcome.state == "denied"
+    assert [denial.failure_code for denial in store.denials] == ["SHADOW_CALIBRATION_INVALID"]
+    assert not store.blobs and store.finalizations == 0
+
+
+def test_expired_unknown_invocation_becomes_indeterminate_without_automatic_retry() -> None:
+    request, store = _request(), _Store()
+    port = _Port(_result())
+    command = MeasureShadowCalibrationCommand(store, port)
+    attempt = store.claim_or_read_shadow_measurement_attempt(
+        MeasureShadowCalibrationCommand._plan(request).claim, MeasureShadowCalibrationCommand._plan(request)
+    )
+    lease = store.acquire_shadow_measurement_member_lease(
+        attempt.attempt_id,
+        attempt.members[0].corpus_member_reference_sha256,
+        expected_version=attempt.members[0].version,
+    )
+    assert lease is not None
+    current = store.attempts[attempt.attempt_id]
+    expired_member = replace(current.members[0], lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    store.attempts[attempt.attempt_id] = replace(current, members=(expired_member,))
+
+    outcome = command.execute(request)
+
+    assert outcome.state == "running"
+    assert port.calls == 0
+    assert store.attempts[attempt.attempt_id].state == "indeterminate"
+    assert command.execute(request).state == "running"
+    assert port.calls == 0
+    assert len(store.attempts) == 1
+
+
+def test_known_unavailable_port_is_non_terminal_and_leaves_recovery_to_the_store() -> None:
+    request, store, port = _request(), _Store(), _UnavailablePort()
+
+    outcome = MeasureShadowCalibrationCommand(store, port).execute(request)
+
+    attempt = store.attempts[store.initial_attempt_id]  # type: ignore[index]
+    assert outcome.state == "running"
+    assert port.calls == 1
+    assert attempt.state == "collecting"
+    assert attempt.members[0].state == "invoking"
+    assert not store.denials and not store.blobs
+
+
+def test_explicit_retry_authorization_creates_successor_attempt() -> None:
+    request, store = _request(), _Store()
+    port = _Port(_result())
+    command = MeasureShadowCalibrationCommand(store, port)
+    plan = MeasureShadowCalibrationCommand._plan(request)
+    attempt = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
+    lease = store.acquire_shadow_measurement_member_lease(
+        attempt.attempt_id, attempt.members[0].corpus_member_reference_sha256, expected_version=0
+    )
+    assert lease is not None
+    current = store.attempts[attempt.attempt_id]
+    store.attempts[attempt.attempt_id] = replace(
+        current,
+        members=(replace(current.members[0], lease_expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)),),
+    )
+    assert command.execute(request).state == "running"
+
+    outcome = command.execute(
+        request,
+        retry_authorization=ShadowMeasurementRetryAuthorization(_sha(99), request.request_hash),
+    )
+
+    successor = next(item for item in store.attempts.values() if item.previous_attempt_id == attempt.attempt_id)
+    assert outcome.state == "succeeded"
+    assert successor.attempt_ordinal == 2
+    assert successor.previous_attempt_id == attempt.attempt_id
+    assert port.calls == 1
+
+
+def test_two_member_failure_after_first_stage_never_finalizes_partial_artifact_set() -> None:
+    request, store = _two_member_request(), _Store()
     first, second = (member.native_invocation for member in request.corpus_members)
-    store = _LaterBlobFailureStore()
     port = _MemberPort(
         {
             first.corpus_member_reference_sha256: _result(invocation=first),
             second.corpus_member_reference_sha256: _result(invocation=second),
         }
     )
+    store.stage_timeout_after_commit = True
+    command = MeasureShadowCalibrationCommand(store, port)
+    with pytest.raises(TimeoutError):
+        command.execute(request)
 
-    try:
-        MeasureShadowCalibrationCommand(store, port).execute(request)
-    except ConnectionError as error:
-        assert str(error) == "later blob write failed"
-    else:
-        raise AssertionError("Store failure must propagate")
-
-    assert port.calls == 2
-    assert len(store.blobs) == 1
-    assert not store.successes and not store.rejections
-    assert store.terminal is None
+    attempt = store.attempts[store.initial_attempt_id]  # type: ignore[index]
+    assert attempt.members[0].state == "staged"
+    assert attempt.members[1].state == "pending"
+    assert store.finalizations == 0
