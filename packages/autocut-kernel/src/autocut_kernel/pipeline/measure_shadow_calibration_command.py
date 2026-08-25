@@ -21,6 +21,7 @@ from ..media.types import canonical_sha256, sha256_prefixed
 from ..store import (
     ArtifactMember,
     ArtifactScope,
+    BlobRef,
     CommandClaim,
     CommandOutcome,
     CommandRejection,
@@ -37,30 +38,33 @@ class ShadowCalibrationCommandError(ValueError):
     """Typed shadow-calibration evidence does not close over the locked request."""
 
 
-class ShadowCalibrationProducerError(RuntimeError):
-    """A stable native-port terminal outcome after the command has claimed its slot."""
+class ShadowCalibrationProducerFailureCode(str, Enum):
+    """The only native-port failures safe to persist in a terminal receipt."""
 
-    def __init__(
-        self,
-        code: str,
-        detail: str,
-        *,
-        outcome: Literal["denied", "failed"] = "denied",
-    ) -> None:
-        if type(code) is not str or not code.strip() or type(detail) is not str or not detail.strip():  # noqa: E721
-            raise ValueError("producer failure requires closed diagnostics")
-        if outcome not in ("denied", "failed"):
-            raise ValueError("producer failure outcome is invalid")
-        super().__init__(detail)
+    REJECTED = "SHADOW_CALIBRATION_NATIVE_REJECTED"
+    UNAVAILABLE = "SHADOW_CALIBRATION_NATIVE_UNAVAILABLE"
+
+
+class ShadowCalibrationProducerError(RuntimeError):
+    """A closed native-port terminal outcome after the command has claimed its slot."""
+
+    def __init__(self, code: ShadowCalibrationProducerFailureCode) -> None:
+        if type(code) is not ShadowCalibrationProducerFailureCode:  # noqa: E721
+            raise ValueError("producer failure code must be exact")
+        super().__init__(code.value)
         self.code = code
-        self.detail = detail
-        self.outcome: Literal["denied", "failed"] = outcome
 
 
 class ShadowCalibrationCoverage(str, Enum):
     COMPLETE = "complete"
     INDETERMINATE = "indeterminate"
     PARTIAL = "partial"
+
+
+class ShadowCalibrationNativeResponseMediaType(str, Enum):
+    """The sole raw native-response encoding accepted by this measurement boundary."""
+
+    JSON = "application/vnd.autocut.funasr-native-response+json"
 
 
 def _text(value: object, field_name: str) -> str:
@@ -108,8 +112,8 @@ def _matches(value: object, field_name: str) -> tuple[CalibrationAnchorMatch, ..
 
 
 @dataclass(frozen=True, slots=True)
-class LockedShadowCalibrationInputs:
-    """Frozen source-derived identities and the one shared source-audio clock."""
+class ShadowCalibrationInputs:
+    """Frozen non-authority inputs; a future source compiler is the authority boundary."""
 
     profile_source_sha256: str
     registry_snapshot_sha256: str
@@ -135,13 +139,13 @@ class LockedShadowCalibrationInputs:
             "alignment_policy_sha256",
             "acceptance_policy_sha256",
         ):
-            _sha(getattr(self, name), f"locked_inputs.{name}")
-        _text(self.asr_producer_id, "locked_inputs.asr_producer_id")
-        _text(self.vad_producer_id, "locked_inputs.vad_producer_id")
+            _sha(getattr(self, name), f"shadow_inputs.{name}")
+        _text(self.asr_producer_id, "shadow_inputs.asr_producer_id")
+        _text(self.vad_producer_id, "shadow_inputs.vad_producer_id")
         if self.asr_producer_id == self.vad_producer_id:
             raise ShadowCalibrationCommandError("locked inputs require distinct ASR and VAD producers")
-        _text(self.source_clock_id, "locked_inputs.source_clock_id")
-        _time_base(self.source_time_base, "locked_inputs.source_time_base")
+        _text(self.source_clock_id, "shadow_inputs.source_clock_id")
+        _time_base(self.source_time_base, "shadow_inputs.source_time_base")
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -180,12 +184,12 @@ class ShadowCalibrationCorpusMember:
 class MeasureShadowCalibrationRequest:
     """Closed administrative request; its slot and scope derive only from locked values."""
 
-    locked_inputs: LockedShadowCalibrationInputs
+    shadow_inputs: ShadowCalibrationInputs
     corpus_members: tuple[ShadowCalibrationCorpusMember, ...]
 
     def __post_init__(self) -> None:
-        if type(self.locked_inputs) is not LockedShadowCalibrationInputs:  # noqa: E721
-            raise ShadowCalibrationCommandError("request.locked_inputs must be exact")
+        if type(self.shadow_inputs) is not ShadowCalibrationInputs:  # noqa: E721
+            raise ShadowCalibrationCommandError("request.shadow_inputs must be exact")
         if type(self.corpus_members) is not tuple or not self.corpus_members:  # noqa: E721
             raise ShadowCalibrationCommandError("request.corpus_members must be a non-empty tuple")
         if any(type(item) is not ShadowCalibrationCorpusMember for item in self.corpus_members):  # noqa: E721
@@ -194,8 +198,8 @@ class MeasureShadowCalibrationRequest:
         if len(references) != len(set(references)):
             raise ShadowCalibrationCommandError("request.corpus_members must not duplicate members")
         for member in self.corpus_members:
-            self._validate_anchors(member.asr_anchors, CalibrationProducer.ASR, self.locked_inputs.asr_producer_id)
-            self._validate_anchors(member.vad_anchors, CalibrationProducer.VAD, self.locked_inputs.vad_producer_id)
+            self._validate_anchors(member.asr_anchors, CalibrationProducer.ASR, self.shadow_inputs.asr_producer_id)
+            self._validate_anchors(member.vad_anchors, CalibrationProducer.VAD, self.shadow_inputs.vad_producer_id)
 
     def _validate_anchors(
         self,
@@ -207,8 +211,8 @@ class MeasureShadowCalibrationRequest:
             if (
                 anchor.producer is not producer
                 or anchor.producer_id != producer_id
-                or anchor.clock_id != self.locked_inputs.source_clock_id
-                or anchor.time_base != self.locked_inputs.source_time_base
+                or anchor.clock_id != self.shadow_inputs.source_clock_id
+                or anchor.time_base != self.shadow_inputs.source_time_base
             ):
                 raise ShadowCalibrationCommandError("corpus anchors do not bind locked producer clock")
 
@@ -224,7 +228,7 @@ class MeasureShadowCalibrationRequest:
                 }
                 for member in self.corpus_members
             ],
-            "locked_inputs": self.locked_inputs.to_mapping(),
+            "shadow_inputs": self.shadow_inputs.to_mapping(),
             "measurement_protocol": SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL,
         }
 
@@ -254,14 +258,20 @@ class ShadowCalibrationPortResult:
     """Typed direct-native observations for exactly one locked corpus member."""
 
     corpus_member_reference_sha256: str
-    native_response_sha256: str
+    raw_native_response: bytes
+    raw_native_response_media_type: ShadowCalibrationNativeResponseMediaType
+    reported_native_identity_sha256: str
     coverage: ShadowCalibrationCoverage
     asr_matches: tuple[CalibrationAnchorMatch, ...]
     vad_matches: tuple[CalibrationAnchorMatch, ...]
 
     def __post_init__(self) -> None:
         _sha(self.corpus_member_reference_sha256, "port_result.corpus_member_reference_sha256")
-        _sha(self.native_response_sha256, "port_result.native_response_sha256")
+        if type(self.raw_native_response) is not bytes or not self.raw_native_response:  # noqa: E721
+            raise ShadowCalibrationCommandError("port_result.raw_native_response must be non-empty bytes")
+        if type(self.raw_native_response_media_type) is not ShadowCalibrationNativeResponseMediaType:  # noqa: E721
+            raise ShadowCalibrationCommandError("port_result.raw_native_response_media_type must be exact")
+        _sha(self.reported_native_identity_sha256, "port_result.reported_native_identity_sha256")
         if type(self.coverage) is not ShadowCalibrationCoverage:  # noqa: E721
             raise ShadowCalibrationCommandError("port_result.coverage must be exact")
         _matches(self.asr_matches, "port_result.asr_matches")
@@ -280,6 +290,15 @@ class ShadowCalibrationMeasurementPort(Protocol):
 
 class ShadowCalibrationMeasurementStore(Protocol):
     def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
+
+    def put_immutable_blob(
+        self,
+        job: Job,
+        *,
+        content: bytes,
+        content_hash: str,
+        media_type: str,
+    ) -> BlobRef: ...
 
     def commit_command_success(self, success: CommandSuccess) -> CommandOutcome: ...
 
@@ -312,19 +331,23 @@ class MeasureShadowCalibrationCommand:
             return claimed
         try:
             results = tuple(
-                self._validate_port_result(request, member, self._port.measure(request, member))
+                (
+                    result := self._validate_port_result(request, member, self._port.measure(request, member)),
+                    self._persist_raw_native_response(request, result),
+                )
                 for member in request.corpus_members
             )
             artifacts = self._artifacts(request, results)
         except ShadowCalibrationProducerError as error:
-            return self._reject(claimed, error.code, error.detail, outcome=error.outcome)
-        except (CalibrationRecordError, ShadowCalibrationCommandError, ValueError) as error:
-            return self._reject(claimed, "SHADOW_CALIBRATION_INVALID", str(error))
+            return self._reject(claimed, error.code.value)
+        except (CalibrationRecordError, ShadowCalibrationCommandError):
+            return self._reject(claimed, "SHADOW_CALIBRATION_INVALID")
+        except ValueError:
+            return self._reject(claimed, "SHADOW_CALIBRATION_MEASUREMENT_FAILED", outcome="failed")
         except Exception:
             return self._reject(
                 claimed,
-                "SHADOW_CALIBRATION_INFRASTRUCTURE_FAILED",
-                "shadow calibration native measurement failed",
+                "SHADOW_CALIBRATION_MEASUREMENT_FAILED",
                 outcome="failed",
             )
         return self._store.commit_command_success(
@@ -347,7 +370,9 @@ class MeasureShadowCalibrationCommand:
             raise ShadowCalibrationCommandError("native ASR observations do not exactly match expected anchors")
         if tuple(match.anchor for match in result.vad_matches) != member.vad_anchors:
             raise ShadowCalibrationCommandError("native VAD observations do not exactly match expected anchors")
-        inputs = request.locked_inputs
+        inputs = request.shadow_inputs
+        if result.reported_native_identity_sha256 != inputs.native_port_identity_sha256:
+            raise ShadowCalibrationCommandError("native port identity does not match shadow inputs")
         for matches, producer, producer_id in (
             (result.asr_matches, CalibrationProducer.ASR, inputs.asr_producer_id),
             (result.vad_matches, CalibrationProducer.VAD, inputs.vad_producer_id),
@@ -362,14 +387,35 @@ class MeasureShadowCalibrationCommand:
                     raise ShadowCalibrationCommandError("native match does not bind locked producer clock")
         return result
 
+    def _persist_raw_native_response(
+        self,
+        request: MeasureShadowCalibrationRequest,
+        result: ShadowCalibrationPortResult,
+    ) -> BlobRef:
+        content_hash = _sha256_bytes(result.raw_native_response)
+        blob = self._store.put_immutable_blob(
+            request.job,
+            content=result.raw_native_response,
+            content_hash=content_hash,
+            media_type=result.raw_native_response_media_type.value,
+        )
+        if (
+            type(blob) is not BlobRef  # noqa: E721
+            or blob.content_hash != content_hash
+            or blob.byte_length != len(result.raw_native_response)
+            or blob.media_type != result.raw_native_response_media_type.value
+        ):
+            raise ShadowCalibrationCommandError("stored native response blob does not bind raw response")
+        return blob
+
     @staticmethod
     def _artifacts(
         request: MeasureShadowCalibrationRequest,
-        results: tuple[ShadowCalibrationPortResult, ...],
+        results: tuple[tuple[ShadowCalibrationPortResult, BlobRef], ...],
     ) -> tuple[ArtifactMember, ArtifactMember]:
-        inputs = request.locked_inputs
-        asr_matches = tuple(match for result in results for match in result.asr_matches)
-        vad_matches = tuple(match for result in results for match in result.vad_matches)
+        inputs = request.shadow_inputs
+        asr_matches = tuple(match for result, _ in results for match in result.asr_matches)
+        vad_matches = tuple(match for result, _ in results for match in result.vad_matches)
         summary = CalibrationMeasurementSummary(
             ProducerCalibrationMeasurement(
                 CalibrationProducer.ASR,
@@ -396,6 +442,13 @@ class MeasureShadowCalibrationCommand:
             "calibration_corpus_set_sha256": inputs.calibration_corpus_set_sha256,
             "measurement_request_sha256": request.request_hash,
             "native_port_identity_sha256": inputs.native_port_identity_sha256,
+            "native_response_blobs": [
+                {
+                    "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
+                    "native_response_blob": _blob_mapping(blob),
+                }
+                for member, (_, blob) in zip(request.corpus_members, results, strict=True)
+            ],
             "registry_snapshot_sha256": inputs.registry_snapshot_sha256,
             "schema_version": "shadow-calibration-measurement-manifest-v1",
             "shadow_profile_source_sha256": inputs.profile_source_sha256,
@@ -415,10 +468,11 @@ class MeasureShadowCalibrationCommand:
                     "asr_observation": [_match_mapping(match) for match in result.asr_matches],
                     "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
                     "expected_anchor_reference_sha256": member.expected_anchor_reference_sha256,
-                    "native_response_sha256": result.native_response_sha256,
+                    "native_response_blob": _blob_mapping(blob),
+                    "reported_native_identity_sha256": result.reported_native_identity_sha256,
                     "vad_observation": [_match_mapping(match) for match in result.vad_matches],
                 }
-                for member, result in zip(request.corpus_members, results, strict=True)
+                for member, (result, blob) in zip(request.corpus_members, results, strict=True)
             ],
             "per_producer_measurements": {
                 "asr": _measurement_mapping(summary.asr),
@@ -438,7 +492,6 @@ class MeasureShadowCalibrationCommand:
         self,
         claimed: CommandOutcome,
         code: str,
-        detail: str,
         *,
         outcome: Literal["denied", "failed"] = "denied",
     ) -> CommandOutcome:
@@ -446,7 +499,7 @@ class MeasureShadowCalibrationCommand:
             CommandRejection(
                 claimed.command_slot_id,
                 code,
-                _json({"stage": "shadow_calibration"}),
+                _json({"reason": _safe_failure_detail(code), "stage": "shadow_calibration"}),
                 outcome,
             )
         )
@@ -503,6 +556,15 @@ def _time_base_mapping(time_base: TimeBase) -> dict[str, int]:
     return {"denominator": time_base.denominator, "numerator": time_base.numerator}
 
 
+def _blob_mapping(blob: BlobRef) -> dict[str, object]:
+    return {
+        "byte_length": blob.byte_length,
+        "content_hash": blob.content_hash,
+        "media_type": blob.media_type,
+        "object_id": str(blob.object_id),
+    }
+
+
 def _artifact(
     scope: ArtifactScope,
     artifact_type: str,
@@ -541,3 +603,20 @@ def _artifact_set_hash(artifacts: tuple[ArtifactMember, ...]) -> str:
 
 def _json(payload: object) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+def _safe_failure_detail(code: str) -> str:
+    details = {
+        "SHADOW_CALIBRATION_INVALID": "shadow calibration evidence was rejected",
+        "SHADOW_CALIBRATION_MEASUREMENT_FAILED": "shadow calibration measurement failed",
+        ShadowCalibrationProducerFailureCode.REJECTED.value: "native calibration measurement was rejected",
+        ShadowCalibrationProducerFailureCode.UNAVAILABLE.value: "native calibration measurement was unavailable",
+    }
+    try:
+        return details[code]
+    except KeyError as error:
+        raise ShadowCalibrationCommandError("shadow calibration failure code is not allowlisted") from error
