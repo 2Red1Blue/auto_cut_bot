@@ -12,19 +12,26 @@
    `semantic_chain/{authority,rules,stage1,stage2,stage3}.py` plus three thin
    commands.  Rules start indeterminate and become pass only after an evaluator
    performs the named check.
-5. Implement `BuildNarrativeGraph` against the exact committed upstream batch;
+5. Before Stage 1 business code, correct the shared owners once: rename and
+   strengthen the VLM aggregate as an exact `vlm_semantic_pack_set`, return the
+   typed SourceOperationGrant from the committed reader, move cross-window
+   continuity diagnostics out of Store, generalize generation persistence by a
+   closed execution kind, replace pre-commit ArtifactRef identities, and remove
+   default-pass Rule helpers.  Do not add consumer aliases or command-name
+   whitelists.
+6. Implement `BuildNarrativeGraph` against the exact committed upstream batch;
    strict-global coverage is the only first-slice policy.
-6. Implement `CompileStoryPortfolio`; editing modes and semantic measurements
+7. Implement `CompileStoryPortfolio`; editing modes and semantic measurements
    come only from the committed v3 candidate hypothesis, while all physical
    feasibility remains deferred to Stage 4.
-7. Implement one unpartitioned, all-or-nothing
+8. Implement one unpartitioned, all-or-nothing
    `BuildEditorialBlueprint` batch with a single evaluator-owned Admission.
-8. Add exact Stage 1/2/3 output readers and PostgreSQL restart/replay tests.
-9. Switch Pipeline and Agent runtimes to the three shared commands. The unused
+9. Add exact Stage 1/2/3 output readers and PostgreSQL restart/replay tests.
+10. Switch Pipeline and Agent runtimes to the three shared commands. The unused
    fixture semantic command, v2 adapter, production mega-facade and dead
    Stage 1-3 prototype were removed at the v3 contract cutover; runtimes remain
    fail-closed until the replacement commands exist.
-10. Run one real committed Doubao episode to admitted Blueprint, prove the
+11. Run one real committed Doubao episode to admitted Blueprint, prove the
     semantic compiler cannot reach Transcript/VAD/physical endpoints, and run
     two independent adversarial reviews before Stage 4 begins.
 
