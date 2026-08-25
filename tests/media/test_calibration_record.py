@@ -167,3 +167,39 @@ def test_invalid_type_time_base_and_producer_identities_are_rejected() -> None:
     )
     with pytest.raises(CalibrationRecordError, match="must be distinct"):
         CalibrationRecord(asr, vad)
+
+
+def test_record_rejects_producer_measurements_on_different_source_time_bases() -> None:
+    asr = _measurement(
+        CalibrationProducer.ASR,
+        "sensevoice-asr",
+        (_match(CalibrationProducer.ASR, "sensevoice-asr", TickRange(10, 20), TickRange(9, 20)),),
+    )
+    vad_match = CalibrationAnchorMatch(
+        CalibrationAnchor(
+            "vad-anchor",
+            CalibrationProducer.VAD,
+            "fsmn-vad",
+            TimeBase(1, 90_000),
+            TickRange(30, 40),
+        ),
+        CalibrationObservation(
+            "vad-observation",
+            CalibrationProducer.VAD,
+            "fsmn-vad",
+            "fsmn-vad-direct",
+            TimeBase(1, 90_000),
+            TickRange(31, 40),
+        ),
+    )
+    vad = ProducerCalibrationMeasurement(
+        CalibrationProducer.VAD,
+        "fsmn-vad",
+        "fsmn-vad-direct",
+        TimeBase(1, 90_000),
+        (vad_match,),
+        1,
+    )
+
+    with pytest.raises(CalibrationRecordError, match="time_base values must agree"):
+        CalibrationRecord(asr, vad)

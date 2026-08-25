@@ -204,3 +204,5 @@ class CalibrationRecord:
             raise CalibrationRecordError("record.vad must use the VAD producer")
         if self.asr.producer_id == self.vad.producer_id:
             raise CalibrationRecordError("record ASR and VAD producer_id values must be distinct")
+        if self.asr.time_base != self.vad.time_base:
+            raise CalibrationRecordError("record ASR and VAD time_base values must agree")
