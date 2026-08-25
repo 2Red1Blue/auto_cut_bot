@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
 from autocut_kernel.source_manifest import SourceOperationPolicy
 from psycopg import OperationalError
 from runtime_profile_fixture import media_preflight_policy
@@ -89,6 +90,13 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
 def _media_policy(path: Path) -> dict[str, object]:
     del path
     return media_preflight_policy().to_mapping()
+
+
+def _authority_snapshot() -> AuthorityRegistrySnapshot:
+    return AuthorityRegistrySnapshot(
+        "sha256:" + "a" * 64,
+        TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
+    )
 
 
 def test_closed_source_catalog_requires_an_exact_path_and_preserves_identity(
@@ -196,7 +204,9 @@ def test_source_catalog_rejects_open_or_incomplete_entries(catalog: str) -> None
 def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     tmp_path: Path,
 ) -> None:
-    runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
+    runtime = compose_pipeline_runtime_from_environment(
+        _environment(tmp_path), authority_snapshot=_authority_snapshot()
+    )
 
     assert runtime is not None
     assert runtime.execution_profile.kind == "doubao_vlm"
@@ -241,7 +251,9 @@ def test_highlight_read_composition_uses_only_configured_read_dsns(
 def test_direct_v3_profile_cannot_relabel_v4_parse_fields_as_executable(
     tmp_path: Path,
 ) -> None:
-    runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
+    runtime = compose_pipeline_runtime_from_environment(
+        _environment(tmp_path), authority_snapshot=_authority_snapshot()
+    )
     assert runtime is not None
     profile = runtime.execution_profile
 
@@ -258,7 +270,9 @@ def test_environment_uses_registered_ark_base_url_when_not_overridden(
     environment = _environment(tmp_path)
     del environment[PIPELINE_ARK_BASE_URL_ENV]
 
-    runtime = compose_pipeline_runtime_from_environment(environment)
+    runtime = compose_pipeline_runtime_from_environment(
+        environment, authority_snapshot=_authority_snapshot()
+    )
 
     assert runtime is not None
 
@@ -288,7 +302,7 @@ def test_environment_rejects_qwen_as_a_doubao_fallback(tmp_path: Path) -> None:
         PipelineRuntimeConfigurationError,
         match="Doubao/provider/media-preflight configuration",
     ):
-        compose_pipeline_runtime_from_environment(environment)
+        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
 
 
 @pytest.mark.parametrize(
@@ -306,7 +320,7 @@ def test_media_preflight_composition_has_no_materialization_defaults(
     del environment[required_name]
 
     with pytest.raises(PipelineRuntimeConfigurationError, match=required_name):
-        compose_pipeline_runtime_from_environment(environment)
+        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
 
 
 def test_media_preflight_composition_rejects_unsafe_staging_root_before_registration(
@@ -317,7 +331,7 @@ def test_media_preflight_composition_rejects_unsafe_staging_root_before_registra
     os.chmod(staging_root, 0o755)
 
     with pytest.raises(PipelineRuntimeConfigurationError, match="private 0700"):
-        compose_pipeline_runtime_from_environment(environment)
+        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
 
 
 def test_media_preflight_composition_rejects_open_materialization_policy(
@@ -335,7 +349,18 @@ def test_media_preflight_composition_rejects_open_materialization_policy(
     )
 
     with pytest.raises(PipelineRuntimeConfigurationError, match="closed materialization"):
-        compose_pipeline_runtime_from_environment(environment)
+        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
+
+
+def test_runtime_requires_an_injected_non_placeholder_authority_snapshot(tmp_path: Path) -> None:
+    with pytest.raises(PipelineRuntimeConfigurationError, match="injected verified timed-speech"):
+        compose_pipeline_runtime_from_environment(_environment(tmp_path))
+
+    with pytest.raises(ValueError, match="placeholder hash"):
+        AuthorityRegistrySnapshot(
+            "sha256:" + "0" * 64,
+            TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
+        )
 
 
 @pytest.mark.asyncio

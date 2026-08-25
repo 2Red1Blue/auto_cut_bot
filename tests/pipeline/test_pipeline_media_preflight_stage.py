@@ -11,10 +11,8 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from autocut_kernel.registry.timed_speech import (
-    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
-    StoreAnchoredTimedSpeechProfileResolver,
-)
+from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
+from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
 from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
@@ -60,6 +58,10 @@ except ModuleNotFoundError:
 DSN = os.environ.get("AUTOCUT_TEST_POSTGRES_DSN")
 VERIFY_POSTGRES_DSN = "postgresql://ac_user:ac_password_2026@127.0.0.1:5433/ac_autocut_verify"
 MIGRATIONS = Path("packages/autocut-kernel/migrations")
+AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
+    "sha256:" + "a" * 64,
+    TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
+)
 
 
 def _fixture_policy(**changes: object) -> LocalMediaPreflightPolicy:
@@ -557,7 +559,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     first_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
-        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
+        StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT),
     )
     if scenario in ("missing-render-grant", "missing-semantic-grant"):
         missing_purpose = (
@@ -599,7 +601,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     restarted_stage = MediaPreflightPipelineStage(
         restarted_kernel_store,
         must_not_detect,  # type: ignore[arg-type]
-        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
+        StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT),
     )
     replay = await restarted_stage.reconcile(
         PipelineStageContext(
@@ -623,7 +625,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
 
 
 def test_media_preflight_stage_constructor_requires_an_explicit_resolver() -> None:
-    resolver = StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT)
+    resolver = StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT)
 
     stage = MediaPreflightPipelineStage(
         object(),  # type: ignore[arg-type]

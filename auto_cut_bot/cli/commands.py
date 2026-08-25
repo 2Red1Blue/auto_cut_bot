@@ -73,7 +73,9 @@ from auto_cut_bot.cli.webui_support import (  # noqa: E402
 from auto_cut_bot.config.paths import get_workspace_path  # noqa: E402
 from auto_cut_bot.config.schema import Config  # noqa: E402
 from auto_cut_bot.security.network import is_loopback_host  # noqa: E402
-from auto_cut_bot.utils.helpers import sanitize_surrogates as _sanitize_surrogates  # noqa: E402,F401
+from auto_cut_bot.utils.helpers import (  # noqa: E402
+    sanitize_surrogates as _sanitize_surrogates,  # noqa: F401
+)
 from auto_cut_bot.utils.helpers import (  # noqa: E402
     sync_workspace_templates,
 )
@@ -88,6 +90,16 @@ app = typer.Typer(
     help=f"{__logo__} auto_cut_bot - Personal AI Assistant",
     no_args_is_help=True,
 )
+
+
+def _register_authority_bootstrap_command() -> None:
+    """Keep the authority-only command out of the ordinary CLI import graph."""
+    from auto_cut_bot.cli.authority_bootstrap import register_authority_bootstrap_command
+
+    register_authority_bootstrap_command(app)
+
+
+_register_authority_bootstrap_command()
 
 console = Console()
 
@@ -120,7 +132,12 @@ def onboard(
     non_interactive_refresh: bool = typer.Option(False, "--refresh", help="Refresh config, preserving existing settings without prompting"),
 ):
     """Initialize auto_cut_bot configuration and workspace."""
-    from auto_cut_bot.config.loader import get_config_path, load_config, save_config, set_config_path
+    from auto_cut_bot.config.loader import (
+        get_config_path,
+        load_config,
+        save_config,
+        set_config_path,
+    )
     from auto_cut_bot.config.schema import Config
 
     explicit_config = config is not None

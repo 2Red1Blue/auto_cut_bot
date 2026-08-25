@@ -89,7 +89,7 @@ BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'timed speech authority anchors are immutable';
     END IF;
-    SELECT regexp_replace(artifact.logical_id, '^timed-speech/([^/]+)/([^/]+)$', '\\1@\\2')
+    SELECT regexp_replace(artifact.logical_id, '^timed-speech/([^/]+)/([^/]+)$', '\1@\2')
       INTO expected_profile_key
       FROM runtime.command_receipts AS receipt
       JOIN runtime.command_slots AS slot ON slot.command_slot_id = receipt.command_slot_id

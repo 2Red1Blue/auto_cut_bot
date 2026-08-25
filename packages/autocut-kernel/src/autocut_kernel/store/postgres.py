@@ -1141,6 +1141,19 @@ class PostgresRuntimeStore:
                 )
                 self._read_bootstrapped_timed_speech_profile(cursor, snapshot)
                 return replay
+            cursor.execute(
+                """
+                SELECT registry_set_sha256, content_hash
+                  FROM runtime.timed_speech_profile_anchors
+                 WHERE profile_key = %s
+                 FOR UPDATE
+                """,
+                (key.value,),
+            )
+            if cursor.fetchone() is not None:
+                raise IdempotencyConflictError(
+                    "timed speech profile is already anchored to another authority snapshot"
+                )
             outcome = self._write_success(cursor, success, job_id)
             if outcome.receipt_id is None or outcome.artifact_set_id is None:
                 raise StoreValidationError("bootstrap success lost its immutable result identity")

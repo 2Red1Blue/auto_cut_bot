@@ -80,17 +80,10 @@ class AuthorityRegistrySnapshot:
 
     def __post_init__(self) -> None:
         _sha(self.registry_set_sha256, "registry_set_sha256")
+        if self.registry_set_sha256 == "sha256:" + "0" * 64:
+            raise TimedSpeechRegistryError("registry_set_sha256 must not be the placeholder hash")
         if type(self.enabled_profile) is not TimedSpeechProfileKey:  # noqa: E721
             raise TimedSpeechRegistryError("enabled_profile must be an exact TimedSpeechProfileKey")
-
-
-# This is intentionally only the authority *locator*, not a profile payload.
-# Production still fails closed until the matching anchor/member was created by
-# the protected bootstrap command.
-DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +148,38 @@ class BootstrapTimedSpeechProfileRegistryRequest:
             TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
             self.entry.canonical_hash,
             payload_json,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedTimedSpeechAuthorityContext:
+    """A deployment-selected profile from a verified authority source.
+
+    This context is an application-composition input, never a Pipeline request
+    field. The authority/admin loader constructs it from a locked, compiled
+    authority source before it can reach bootstrap or runtime composition.
+    """
+
+    snapshot: AuthorityRegistrySnapshot
+    entry: TimedSpeechProfileRegistryEntry
+
+    def __post_init__(self) -> None:
+        if type(self.snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
+            raise TimedSpeechRegistryError("authority context requires a verified snapshot")
+        if type(self.entry) is not TimedSpeechProfileRegistryEntry:  # noqa: E721
+            raise TimedSpeechRegistryError("authority context requires an exact profile entry")
+        if TimedSpeechProfileKey(self.entry.profile_id, self.entry.profile_version) != self.snapshot.enabled_profile:
+            raise TimedSpeechRegistryError("authority context profile does not match its snapshot")
+
+    def bootstrap_request(self) -> BootstrapTimedSpeechProfileRegistryRequest:
+        """Build the sole immutable writer request from this authority context."""
+        return BootstrapTimedSpeechProfileRegistryRequest(
+            AuthorityBootstrapIdentity(
+                AUTHORITY_BOOTSTRAP_PRINCIPAL,
+                AUTHORITY_BOOTSTRAP_CAPABILITY,
+            ),
+            self.snapshot,
+            self.entry,
         )
 
 

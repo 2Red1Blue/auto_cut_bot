@@ -51,9 +51,12 @@ from autocut_kernel.pipeline import (
     TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
 )
-from autocut_kernel.registry import BootstrappedTimedSpeechProfile
+from autocut_kernel.registry import (
+    AuthorityRegistrySnapshot,
+    BootstrappedTimedSpeechProfile,
+    TimedSpeechProfileKey,
+)
 from autocut_kernel.registry.timed_speech import (
-    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
     TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
     TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
     StoreAnchoredTimedSpeechProfileResolver,
@@ -90,6 +93,11 @@ from autocut_kernel.vlm import (
 )
 from test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
 from test_timed_evidence import _bindings, _manifest_and_candidate
+
+AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
+    "sha256:" + "a" * 64,
+    TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
+)
 
 TEST_POLICY_JSON = json.dumps(
     {"policy_id": "fixture-policy"},
@@ -706,7 +714,7 @@ def _command(store: _Store, producer: object) -> PrepareTimedMediaEvidenceComman
     return PrepareTimedMediaEvidenceCommand(
         store,
         producer,  # type: ignore[arg-type]
-        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
+        StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT),
     )
 
 

@@ -8,7 +8,6 @@ from .timed_speech import (
     AUTHORITY_BOOTSTRAP_CAPABILITY,
     AUTHORITY_BOOTSTRAP_PRINCIPAL,
     BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
-    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
     AuthorityBootstrapIdentity,
     AuthorityRegistrySnapshot,
     BootstrappedTimedSpeechProfile,
@@ -16,13 +15,13 @@ from .timed_speech import (
     BootstrapTimedSpeechProfileRegistryRequest,
     StoreAnchoredTimedSpeechProfileResolver,
     TimedSpeechProfileKey,
+    VerifiedTimedSpeechAuthorityContext,
 )
 
 __all__ = [
     "AUTHORITY_BOOTSTRAP_CAPABILITY",
     "AUTHORITY_BOOTSTRAP_PRINCIPAL",
     "BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND",
-    "DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT",
     "AuthorityBootstrapIdentity",
     "AuthorityRegistrySnapshot",
     "BootstrapTimedSpeechProfileRegistryCommand",
@@ -30,4 +29,5 @@ __all__ = [
     "BootstrappedTimedSpeechProfile",
     "StoreAnchoredTimedSpeechProfileResolver",
     "TimedSpeechProfileKey",
+    "VerifiedTimedSpeechAuthorityContext",
 ]

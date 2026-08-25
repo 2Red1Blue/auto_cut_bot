@@ -20,6 +20,7 @@ from autocut_kernel.registry import (
     BootstrapTimedSpeechProfileRegistryCommand,
     BootstrapTimedSpeechProfileRegistryRequest,
     TimedSpeechProfileKey,
+    VerifiedTimedSpeechAuthorityContext,
 )
 from autocut_kernel.registry.timed_speech import (
     AUTHORITY_BOOTSTRAP_JOB,
@@ -123,6 +124,20 @@ def test_bootstrap_uses_fixed_identity_and_profile_specific_member() -> None:
     artifact = store.commits[0][0].artifacts[0]
     assert artifact.logical_id == "timed-speech/sensevoice_word_guard_v1/1"
     assert artifact.content_hash == request.entry.canonical_hash
+
+
+def test_verified_authority_context_only_bootstraps_its_exact_profile() -> None:
+    context = VerifiedTimedSpeechAuthorityContext(_request().snapshot, _request().entry)
+
+    request = context.bootstrap_request()
+
+    assert request.snapshot == context.snapshot
+    assert request.entry == context.entry
+    with pytest.raises(ValueError, match="placeholder hash"):
+        AuthorityRegistrySnapshot(
+            "sha256:" + "0" * 64,
+            TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
+        )
 
 
 @pytest.mark.parametrize("kwargs", ({"same_model": True}, {"same_calibration": True}))

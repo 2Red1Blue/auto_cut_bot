@@ -14,11 +14,11 @@ from typing import Protocol, cast
 
 import psycopg
 from autocut_kernel.registry import (
-    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
+    AuthorityRegistrySnapshot,
     StoreAnchoredTimedSpeechProfileResolver,
 )
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
-from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
+from autocut_kernel.store import PostgresRuntimeStore, RuntimeStoreError, StoreValidationError
 from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
 from autocut_kernel.store.postgres import validate_materialization_staging_root
@@ -268,8 +268,16 @@ class PipelineRuntime:
     service: DurablePipelineRunService
     worker: DurablePipelineWorker
     execution_profile: PipelineExecutionProfile
+    authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver
+    authority_store: PostgresRuntimeStore
 
     async def startup_reconstruct(self) -> tuple[str, ...]:
+        try:
+            await asyncio.to_thread(self.authority_profile_resolver.resolve, self.authority_store)
+        except (RuntimeStoreError, StoreValidationError, ValueError, TypeError) as error:
+            raise PipelineRuntimeConfigurationError(
+                "pipeline runtime authority bootstrap anchor is unavailable"
+            ) from error
         return await self.worker.startup_reconstruct()
 
     async def run_forever(
@@ -322,8 +330,15 @@ def compose_pipeline_highlight_read_service_from_environment(
 
 def compose_pipeline_runtime_from_environment(
     environ: Mapping[str, str] | None = None,
+    *,
+    authority_snapshot: AuthorityRegistrySnapshot | None = None,
 ) -> PipelineRuntime | None:
-    """Compose the paid runtime, rejecting every partial configuration."""
+    """Compose the paid runtime, rejecting every partial configuration.
+
+    The authority snapshot is a deployment injection from a verified authority
+    source. It is deliberately not environment JSON and cannot be selected by
+    a Pipeline HTTP request.
+    """
     values = os.environ if environ is None else environ
     relevant = _REQUIRED_ENVIRONMENT + (
         PIPELINE_KERNEL_POSTGRES_DSN_ENV,
@@ -335,6 +350,10 @@ def compose_pipeline_runtime_from_environment(
     if missing:
         raise PipelineRuntimeConfigurationError(
             "pipeline runtime configuration is incomplete; missing: " + ", ".join(missing)
+        )
+    if type(authority_snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
+        raise PipelineRuntimeConfigurationError(
+            "pipeline runtime requires an injected verified timed-speech authority snapshot"
         )
 
     control_dsn = values[PIPELINE_POSTGRES_DSN_ENV].strip()
@@ -412,10 +431,11 @@ def compose_pipeline_runtime_from_environment(
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     vlm_stage = VlmPipelineStage(kernel_store, provider)
+    authority_profile_resolver = StoreAnchoredTimedSpeechProfileResolver(authority_snapshot)
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(),
-        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
+        authority_profile_resolver,
     )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
@@ -443,7 +463,13 @@ def compose_pipeline_runtime_from_environment(
         runner=runner,
         reconciler=reconciler,
     )
-    return PipelineRuntime(service, worker, execution_profile)
+    return PipelineRuntime(
+        service,
+        worker,
+        execution_profile,
+        authority_profile_resolver,
+        kernel_store,
+    )
 
 
 def compose_pipeline_run_service_from_environment() -> PipelineRunService | None:
