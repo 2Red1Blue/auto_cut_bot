@@ -358,7 +358,9 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         source_manifest_receipt_id=receipt_id,
         source_manifest_artifact_set_id=artifact_set_id,
         source_manifest_command_slot_id=command_slot_id,
-        source_provenance_sha256=HASH_A,
+        source_provenance_sha256=canonical_sha256(
+            _persisted_source_manifest_provenance_mapping(store.source_manifest)
+        ),
         window_manifest=manifest,
         semantic_pack=semantic_pack,
         frame_pts_index=manifest.frame_pts_index_set,
@@ -382,6 +384,33 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             staging_quota_bytes=1024,
         ),
     )
+
+
+def _persisted_source_manifest_provenance_mapping(
+    persisted: PersistedWholeSeriesSourceManifest,
+) -> dict[str, object]:
+    reference = persisted.reference
+    return {
+        "artifact_reference": {
+            "artifact_type": reference.artifact_type,
+            "content_hash": reference.content_hash,
+            "logical_id": reference.logical_id,
+            "revision": reference.revision,
+            "scope": {
+                "key": reference.scope.key,
+                "kind": reference.scope.kind,
+                "namespace": reference.scope.namespace,
+            },
+        },
+        "artifact_set_id": str(persisted.artifact_set_id),
+        "command_slot_id": str(persisted.command_slot_id),
+        "kernel_job_id": str(persisted.job_id),
+        "receipt_id": str(persisted.receipt_id),
+        "source_job": {
+            "job_key": persisted.source_job.job_key,
+            "profile": persisted.source_job.profile,
+        },
+    }
 
 
 def _command(store: _Store, producer: object) -> PrepareTimedMediaEvidenceCommand:
@@ -682,6 +711,22 @@ def test_preflight_denies_mismatched_source_member_or_absent_episode_before_work
 
     assert producer.calls == 0
     assert store.materializations == []
+
+
+def test_preflight_rejects_forged_source_provenance_before_claim_or_work() -> None:
+    store = _Store()
+    request = _request(store)
+    producer = _Producer(_bundle())
+
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="provenance"):
+        _command(store, producer).execute(
+            replace(request, source_provenance_sha256="sha256:" + "f" * 64)
+        )
+
+    assert store.outcomes == {}
+    assert store.materializations == []
+    assert store.successes == []
+    assert producer.calls == 0
 
 
 def test_command_requires_an_explicit_store_anchored_resolver() -> None:

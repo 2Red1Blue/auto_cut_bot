@@ -11,6 +11,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from autocut_kernel.registry.timed_speech import (
+    DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT,
+    StoreAnchoredTimedSpeechProfileResolver,
+)
 from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
@@ -48,8 +52,13 @@ from auto_cut_bot.pipeline.source_prep.probe import (
     FFprobeSourceMediaPort,
 )
 
-psycopg = pytest.importorskip("psycopg")
+try:
+    import psycopg
+except ModuleNotFoundError:
+    psycopg = None
+
 DSN = os.environ.get("AUTOCUT_TEST_POSTGRES_DSN")
+VERIFY_POSTGRES_DSN = "postgresql://ac_user:ac_password_2026@127.0.0.1:5433/ac_autocut_verify"
 MIGRATIONS = Path("packages/autocut-kernel/migrations")
 
 
@@ -308,6 +317,7 @@ def _frozen_policy(source: Path) -> LocalMediaPreflightPolicy:
 
 def _artifact_identity(command_name: str) -> tuple[str, str]:
     assert DSN is not None
+    assert psycopg is not None
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -327,6 +337,7 @@ def _artifact_identity(command_name: str) -> tuple[str, str]:
 
 def _forge_semantic_pack_with_recomputed_member_and_set_hash() -> None:
     assert DSN is not None
+    assert psycopg is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -407,7 +418,10 @@ def _forge_semantic_pack_with_recomputed_member_and_set_hash() -> None:
 
 
 @pytest.mark.skipif(
-    not DSN or shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    psycopg is None
+    or DSN != VERIFY_POSTGRES_DSN
+    or shutil.which("ffmpeg") is None
+    or shutil.which("ffprobe") is None,
     reason="disposable PostgreSQL, ffmpeg and ffprobe are required",
 )
 @pytest.mark.asyncio
@@ -421,6 +435,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert DSN is not None
+    assert psycopg is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
@@ -437,6 +452,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     request = PipelineRunRequest("test", source_root=str(source_root.resolve()))
 
     def factory():
+        assert psycopg is not None
         return psycopg.connect(DSN)
 
     run_store = PostgresPipelineRunStore(factory)
@@ -541,6 +557,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     first_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
+        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
     )
     if scenario in ("missing-render-grant", "missing-semantic-grant"):
         missing_purpose = (
@@ -582,6 +599,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     restarted_stage = MediaPreflightPipelineStage(
         restarted_kernel_store,
         must_not_detect,  # type: ignore[arg-type]
+        StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT),
     )
     replay = await restarted_stage.reconcile(
         PipelineStageContext(
@@ -602,6 +620,24 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         restarted_snapshot.execution_profile.to_media_preflight_policy().canonical_hash
         == frozen_policy.canonical_hash
     )
+
+
+def test_media_preflight_stage_constructor_requires_an_explicit_resolver() -> None:
+    resolver = StoreAnchoredTimedSpeechProfileResolver(DEFAULT_TIMED_SPEECH_AUTHORITY_SNAPSHOT)
+
+    stage = MediaPreflightPipelineStage(
+        object(),  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        resolver,
+    )
+
+    assert isinstance(stage, MediaPreflightPipelineStage)
+    with pytest.raises(PipelineRunValidationError, match="explicit authority profile resolver"):
+        MediaPreflightPipelineStage(
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+        )
 
 
 def test_media_preflight_context_rejects_historical_v3_profile() -> None:

@@ -700,6 +700,12 @@ class PrepareTimedMediaEvidenceCommand:
                     "committed source manifest member does not match the requested immutable handle"
                 )
             decoded = decode_source_manifest(persisted.payload_json, persisted.proxy_blobs)
+            if request.source_provenance_sha256 != canonical_sha256(
+                _persisted_source_manifest_provenance_mapping(persisted)
+            ):
+                raise TimedMediaEvidenceCommandError(
+                    "requested source provenance does not match the committed source manifest"
+                )
             episode = decoded.episodes[request.episode_index]
             probe = episode.media_probe.presentation_timeline_probe
             if probe is None:
@@ -1155,6 +1161,34 @@ def _blob_mapping(reference: BlobRef) -> dict[str, object]:
         "content_hash": reference.content_hash,
         "media_type": reference.media_type,
         "object_id": str(reference.object_id),
+    }
+
+
+def _persisted_source_manifest_provenance_mapping(
+    persisted: PersistedWholeSeriesSourceManifest,
+) -> dict[str, object]:
+    """Return the exact source-prep provenance mapping retained by the Store."""
+
+    reference = persisted.reference
+    source_job = persisted.source_job
+    if type(source_job) is not Job:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("committed source manifest has no source Job")
+    return {
+        "artifact_reference": {
+            "artifact_type": reference.artifact_type,
+            "content_hash": reference.content_hash,
+            "logical_id": reference.logical_id,
+            "revision": reference.revision,
+            "scope": _scope_mapping(reference.scope),
+        },
+        "artifact_set_id": str(persisted.artifact_set_id),
+        "command_slot_id": str(persisted.command_slot_id),
+        "kernel_job_id": str(persisted.job_id),
+        "receipt_id": str(persisted.receipt_id),
+        "source_job": {
+            "job_key": source_job.job_key,
+            "profile": source_job.profile,
+        },
     }
 
 
