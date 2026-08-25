@@ -21,6 +21,9 @@ from autocut_kernel.pipeline import (
     TimedMediaEvidenceProducerError,
     TimedMediaEvidenceStore,
 )
+from autocut_kernel.registry import (
+    StoreAnchoredTimedSpeechProfileResolver,
+)
 from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
@@ -178,9 +181,15 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
+        authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver,
     ) -> None:
         self._store = store
         self._port = port
+        if type(authority_profile_resolver) is not StoreAnchoredTimedSpeechProfileResolver:  # noqa: E721
+            raise PipelineRunValidationError(
+                "media-preflight requires an explicit authority profile resolver"
+            )
+        self._authority_profile_resolver = authority_profile_resolver
         self._finalizer = FinalizeTimedMediaEvidenceBatchCommand(store)
 
     @staticmethod
@@ -340,6 +349,7 @@ class MediaPreflightPipelineStage:
         command = PrepareTimedMediaEvidenceCommand(
             self._store,
             _ClaimOwnedLocalProducer(self._port, policy),
+            self._authority_profile_resolver,
         )
         children: list[TimedMediaEvidenceBatchChild] = []
         for request in requests:
