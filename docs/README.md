@@ -11,6 +11,7 @@ Repository docs follow the current source tree and can be newer than the latest 
 | Terminals, Python, or API keys are new to you | [Beginner walkthrough](./start-without-technical-background.md) | The browser can send `Hello!` and receive a reply |
 | You are comfortable running commands | [Install and Quick Start](./quick-start.md) | `nanobot status` is healthy and the WebUI or CLI can get one reply |
 | Something already failed | [Troubleshooting](./troubleshooting.md) | You have isolated the problem to install, config, model, gateway, channel, or tool access |
+| Continue v2.1.3 development on a desktop | [v2.1.3 desktop quick-start](./v213-desktop-e2e-runbook.md) | The correct branch, dependencies and local services are ready |
 
 The recommended first-run path is:
 

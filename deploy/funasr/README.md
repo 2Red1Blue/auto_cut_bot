@@ -193,5 +193,5 @@ ffprobe -v error -select_streams a:0 \
 curl --fail --max-time 60 -H "Authorization: Bearer $FUNASR_SHARED_TOKEN" \
   -H "X-Timed-Speech-Manifest: $MANIFEST_BASE64" \
   -H "X-Timed-Speech-Request-SHA256: $REQUEST_SHA256" \
-  --data-binary "@$SMOKE_MP4" http://127.0.0.1:8765/v1/timed-speech-evidence
+  --data-binary "@$SMOKE_MP4" http://127.0.0.1:18765/v1/timed-speech-evidence
 ```
