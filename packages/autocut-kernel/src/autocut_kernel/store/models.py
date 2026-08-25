@@ -6,7 +6,8 @@ import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal, cast
+from pathlib import Path
+from typing import Literal, Protocol, cast
 from uuid import UUID
 
 from ..source_manifest import SourceOperationGrant
@@ -690,6 +691,72 @@ class BlobRef:
         if type(self.byte_length) is not int or self.byte_length < 0:  # noqa: E721
             raise StoreValidationError("blob.byte_length must be a non-negative integer")
         _text(self.media_type, "blob.media_type")
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializationLimits:
+    """Explicit bounded-transfer controls for one timed-media command."""
+
+    max_source_bytes: int
+    copy_chunk_bytes: int
+    staging_quota_bytes: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "max_source_bytes",
+            "copy_chunk_bytes",
+            "staging_quota_bytes",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:  # noqa: E721
+                raise StoreValidationError(f"{field_name} must be a positive integer")
+        if self.copy_chunk_bytes > self.max_source_bytes:
+            raise StoreValidationError("copy_chunk_bytes must not exceed max_source_bytes")
+
+    @property
+    def evidence_policy_sha256(self) -> str:
+        """Hash the frozen source ceiling, excluding host-only controls."""
+
+        return canonical_payload_hash(
+            json.dumps(
+                {"max_source_bytes": self.max_source_bytes},
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+
+
+class VerifiedMaterializedBlob(Protocol):
+    """One command-private, verified immutable BlobRef lease."""
+
+    reference: BlobRef
+    path: Path
+
+    def close(self) -> None:
+        """Idempotently remove private bytes and release the quota lease."""
+
+
+class MaterializationError(RuntimeError):
+    """Closed failure from bounded private source materialization."""
+
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        outcome: Literal["denied", "failed"],
+    ) -> None:
+        if code not in {
+            "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
+            "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
+            "MEDIA_MATERIALIZATION_CAPACITY_BUSY",
+            "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+        }:
+            raise ValueError("materialization failure code is unsupported")
+        self.code = code
+        self.detail = detail
+        self.outcome: Literal["denied", "failed"] = outcome
+        super().__init__(detail)
 
 
 @dataclass(frozen=True, slots=True)

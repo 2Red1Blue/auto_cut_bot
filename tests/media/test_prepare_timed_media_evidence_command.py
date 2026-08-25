@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import autocut_kernel.pipeline.prepare_timed_media_evidence_command as command_module
@@ -35,6 +36,7 @@ from autocut_kernel.store import (
     CommandSuccess,
     Job,
 )
+from autocut_kernel.store.models import MaterializationLimits
 from test_root_evidence import HASH_A, HASH_B, SOURCE_HASH, _bundle
 from test_timed_evidence import _bindings, _manifest_and_candidate
 
@@ -52,6 +54,8 @@ class _Store:
         self.successes: list[CommandSuccess] = []
         self.rejections: list[CommandRejection] = []
         self.blobs: dict[UUID, bytes] = {}
+        self.materializations: list[BlobRef] = []
+        self.closed_materializations = 0
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         existing = self.outcomes.get(claim.idempotency_key)
@@ -64,8 +68,15 @@ class _Store:
     def read_outcome(self, _: Job, idempotency_key: str) -> CommandOutcome | None:
         return self.outcomes.get(idempotency_key)
 
-    def read_immutable_blob(self, _: Job, reference: BlobRef) -> bytes:
-        return self.blobs[reference.object_id]
+    def materialize_immutable_blob(
+        self,
+        _: Job,
+        reference: BlobRef,
+        limits: MaterializationLimits,
+    ) -> _Lease:
+        assert reference.byte_length <= limits.max_source_bytes
+        self.materializations.append(reference)
+        return _Lease(reference, self)
 
     def put_immutable_blob(
         self,
@@ -111,6 +122,19 @@ class _Store:
         raise AssertionError("unknown command slot")
 
 
+class _Lease:
+    def __init__(self, reference: BlobRef, store: _Store) -> None:
+        self.reference = reference
+        self.path = Path("/private/verified/source.mp4")
+        self._store = store
+        self._closed = False
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._store.closed_materializations += 1
+
+
 class _Producer:
     def __init__(self, bundle: RootMediaEvidenceBundle, *, fail: bool = False) -> None:
         self.bundle = bundle
@@ -120,10 +144,10 @@ class _Producer:
     def prepare(
         self,
         request: PrepareTimedMediaEvidenceRequest,
-        source_bytes: bytes,
+        source: _Lease,
     ) -> ProducedTimedMediaEvidence:
         self.calls += 1
-        assert source_bytes == b"committed source"
+        assert source.reference == request.source_blob
         if self.fail:
             raise TimedMediaEvidenceProducerError(
                 "SUBTITLE_EVIDENCE_INDETERMINATE",
@@ -158,29 +182,40 @@ class _BusyOnceProducer(_Producer):
     def prepare(
         self,
         request: PrepareTimedMediaEvidenceRequest,
-        source_bytes: bytes,
+        source: _Lease,
     ) -> ProducedTimedMediaEvidence:
         if self.calls == 0:
             self.calls += 1
             raise TimedMediaEvidenceProducerError(
                 "TIMED_SPEECH_BUSY", "admission capacity is full", outcome="failed"
             )
-        return super().prepare(request, source_bytes)
+        return super().prepare(request, source)
 
 
 class _UnknownResultProducer(_Producer):
     def prepare(
         self,
         request: PrepareTimedMediaEvidenceRequest,
-        source_bytes: bytes,
+        source: _Lease,
     ) -> ProducedTimedMediaEvidence:
-        del request, source_bytes
+        del request, source
         self.calls += 1
         raise TimedMediaEvidenceProducerError(
             "TIMED_SPEECH_RESULT_UNKNOWN",
             "transport ended after request admission",
             outcome="failed",
         )
+
+
+class _CancellingProducer(_Producer):
+    def prepare(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+        source: _Lease,
+    ) -> ProducedTimedMediaEvidence:
+        del request, source
+        self.calls += 1
+        raise KeyboardInterrupt
 
 
 def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMediaEvidenceRequest:
@@ -215,6 +250,11 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             2,
         ),
         producer_policy_sha256=TEST_POLICY_SHA256,
+        materialization_limits=MaterializationLimits(
+            max_source_bytes=1024,
+            copy_chunk_bytes=128,
+            staging_quota_bytes=1024,
+        ),
     )
 
 
@@ -287,6 +327,8 @@ def test_command_commits_conjunctive_evidence_once_and_replay_skips_producer() -
     assert first.candidate_count == 1
     assert replay.outcome.state == "succeeded"
     assert producer.calls == 1
+    assert len(store.materializations) == 1
+    assert store.closed_materializations == 1
     assert len(store.successes) == 1
     assert {item.artifact_type for item in store.successes[0].artifacts} == {
         "candidate_timed_evidence_index",
@@ -368,6 +410,41 @@ def test_command_retries_busy_once_but_never_retries_unknown_result(
     assert unknown_result.outcome.failure_code == "TIMED_SPEECH_RESULT_UNKNOWN"
     assert unknown.calls == 1
     assert waits == [1]
+    assert len(busy_store.materializations) == 1
+    assert busy_store.closed_materializations == 1
+    assert unknown_store.closed_materializations == 1
+
+
+def test_declared_oversize_is_rejected_before_materialization_or_producer() -> None:
+    store = _Store()
+    request = replace(
+        _request(store),
+        materialization_limits=MaterializationLimits(
+            max_source_bytes=1,
+            copy_chunk_bytes=1,
+            staging_quota_bytes=1,
+        ),
+    )
+    producer = _Producer(_bundle())
+
+    result = PrepareTimedMediaEvidenceCommand(store, producer).execute(request)
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.failure_code == "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED"
+    assert store.materializations == []
+    assert producer.calls == 0
+
+
+def test_cancellation_releases_the_claim_owned_materialization() -> None:
+    store = _Store()
+    producer = _CancellingProducer(_bundle())
+
+    with pytest.raises(KeyboardInterrupt):
+        PrepareTimedMediaEvidenceCommand(store, producer).execute(_request(store))
+
+    assert producer.calls == 1
+    assert len(store.materializations) == 1
+    assert store.closed_materializations == 1
 
 
 def test_command_rejects_producer_that_replaces_committed_physical_detector() -> None:

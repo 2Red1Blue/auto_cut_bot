@@ -7,9 +7,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
-import tempfile
-from pathlib import Path
 from typing import Protocol
 
 from autocut_kernel.pipeline import (
@@ -34,7 +31,11 @@ from autocut_kernel.store import (
     PersistedVlmSemanticPack,
     SemanticInputUnavailableError,
 )
-from autocut_kernel.store.models import canonical_recipe_scope
+from autocut_kernel.store.models import (
+    MaterializationLimits,
+    VerifiedMaterializedBlob,
+    canonical_recipe_scope,
+)
 
 from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightError,
@@ -75,7 +76,7 @@ class MediaPreflightPipelineStore(SourcePrepStore, TimedMediaEvidenceStore, Prot
 
 
 class _ClaimOwnedLocalProducer:
-    """Materialize exact Store bytes privately only after the Kernel claim."""
+    """Adapt a Kernel-owned verified-file lease to the local detector port."""
 
     def __init__(
         self,
@@ -88,45 +89,30 @@ class _ClaimOwnedLocalProducer:
     def prepare(
         self,
         request: PrepareTimedMediaEvidenceRequest,
-        source_bytes: bytes,
+        source: VerifiedMaterializedBlob,
     ) -> ProducedTimedMediaEvidence:
-        actual_hash = "sha256:" + hashlib.sha256(source_bytes).hexdigest()
-        if actual_hash != request.source_blob.content_hash:
+        if source.reference != request.source_blob:
             raise TimedMediaEvidenceProducerError(
                 "COMMITTED_SOURCE_BLOB_MISMATCH",
-                "Store source bytes do not match their immutable identity",
+                "Kernel materialization does not match the committed BlobRef",
             )
         try:
-            with tempfile.TemporaryDirectory(prefix="autocut-media-preflight-") as directory:
-                path = Path(directory).resolve(strict=True) / "source.mp4"
-                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                try:
-                    with os.fdopen(descriptor, "wb", closefd=True) as target:
-                        target.write(source_bytes)
-                        target.flush()
-                        os.fsync(target.fileno())
-                except BaseException:
-                    try:
-                        os.close(descriptor)
-                    except OSError:
-                        pass
-                    raise
-                local = self._port.prepare(
-                    LocalMediaPreflightRequest(
-                        source_path=path,
-                        episode_id=f"episode-{request.episode_index:04d}",
-                        source_id=request.window_manifest.source_id,
-                        source_sha256=request.window_manifest.source_sha256,
-                        source_provenance_sha256=request.source_provenance_sha256,
-                        source_manifest_sha256=request.source_manifest_sha256,
-                        root_input_manifest_sha256=request.root_input_manifest_sha256,
-                        frame_pts_index=request.frame_pts_index,
-                        audio_sample_boundaries=request.audio_sample_boundaries,
-                        frame_detector_sha256=request.frame_detector_sha256,
-                        audio_detector_sha256=request.audio_detector_sha256,
-                        policy=self._policy,
-                    )
+            local = self._port.prepare(
+                LocalMediaPreflightRequest(
+                    source_path=source.path,
+                    episode_id=f"episode-{request.episode_index:04d}",
+                    source_id=request.window_manifest.source_id,
+                    source_sha256=request.window_manifest.source_sha256,
+                    source_provenance_sha256=request.source_provenance_sha256,
+                    source_manifest_sha256=request.source_manifest_sha256,
+                    root_input_manifest_sha256=request.root_input_manifest_sha256,
+                    frame_pts_index=request.frame_pts_index,
+                    audio_sample_boundaries=request.audio_sample_boundaries,
+                    frame_detector_sha256=request.frame_detector_sha256,
+                    audio_detector_sha256=request.audio_detector_sha256,
+                    policy=self._policy,
                 )
+            )
         except LocalMediaToolError as error:
             raise TimedMediaEvidenceProducerError(
                 error.code,
@@ -187,9 +173,12 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
+        *,
+        materialization_limits: MaterializationLimits | None = None,
     ) -> None:
         self._store = store
         self._port = port
+        self._materialization_limits = materialization_limits
         self._finalizer = FinalizeTimedMediaEvidenceBatchCommand(store)
 
     @staticmethod
@@ -208,6 +197,10 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
+        if self._materialization_limits is None:
+            raise PipelineRunValidationError(
+                "media-preflight requires explicit frozen materialization limits"
+            )
         job = self._job(context)
         source_outcome = self._store.read_outcome(
             job,
@@ -311,6 +304,7 @@ class MediaPreflightPipelineStage:
                     audio_detector_sha256=episode.media_probe.audio_detector_sha256,
                     adaptive_policy=adaptive,
                     producer_policy_sha256=policy.canonical_hash,
+                    materialization_limits=self._materialization_limits,
                 )
             )
         if not requests:
@@ -394,6 +388,9 @@ class MediaPreflightPipelineStage:
         encoded = json.dumps(
             {
                 "producer_policy_sha256": policy.canonical_hash,
+                "materialization_policy_sha256": self._materialization_limits.evidence_policy_sha256
+                if self._materialization_limits is not None
+                else None,
                 "run_id": context.run_id,
                 "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
                 "source_provenance_sha256": source_bundle.canonical_hash,

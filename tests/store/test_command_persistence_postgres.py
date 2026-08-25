@@ -9,6 +9,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from autocut_kernel.store import (
@@ -33,6 +34,7 @@ from autocut_kernel.store import (
     RecipeReference,
     RecipeUnavailableError,
 )
+from autocut_kernel.store.models import MaterializationError, MaterializationLimits
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -1327,6 +1329,56 @@ def test_blob_bytes_are_verified_immutable_and_claimable_by_multiple_jobs() -> N
                     (b"tampered", first.object_id),
                 )
             connection.rollback()
+
+
+def test_bounded_materialization_streams_exact_job_claim_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert DSN is not None
+    staging_root = tmp_path / "verified-media"
+    store = PostgresRuntimeStore(
+        lambda: psycopg.connect(DSN), materialization_staging_root=staging_root
+    )
+    job = Job("bounded-materialization-owner", "test")
+    content = b"abcdef"
+    reference = store.put_immutable_blob(
+        job,
+        content=content,
+        content_hash="sha256:" + hashlib.sha256(content).hexdigest(),
+        media_type="video/mp4",
+    )
+    limits = MaterializationLimits(16, 2, 16)
+    calls: list[tuple[int, int]] = []
+    original_read = store._read_immutable_blob_chunk
+
+    def recorded_read(object_id: UUID, offset: int, size: int) -> bytes:
+        calls.append((offset, size))
+        return original_read(object_id, offset, size)
+
+    monkeypatch.setattr(store, "_read_immutable_blob_chunk", recorded_read)
+    lease = store.materialize_immutable_blob(job, reference, limits)
+    assert lease.path.read_bytes() == content
+    assert calls == [(0, 2), (2, 2), (4, 2), (6, 1)]
+    assert lease.path.stat().st_mode & 0o777 == 0o400
+    lease.close()
+    assert not staging_root.exists() or list(staging_root.iterdir()) == []
+
+    with pytest.raises(MaterializationError, match="integrity") as foreign:
+        store.materialize_immutable_blob(
+            Job("bounded-materialization-other-job", "test"), reference, limits
+        )
+    assert foreign.value.code == "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED"
+
+    def corrupting_read(object_id: UUID, offset: int, size: int) -> bytes:
+        chunk = original_read(object_id, offset, size)
+        return b"X" * len(chunk) if offset == 2 else chunk
+
+    monkeypatch.setattr(store, "_read_immutable_blob_chunk", corrupting_read)
+    with pytest.raises(MaterializationError, match="integrity") as corrupt:
+        store.materialize_immutable_blob(job, reference, limits)
+    assert corrupt.value.code == "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED"
+    assert list(staging_root.iterdir()) == []
 
 
 def test_same_generation_request_reserves_once_even_concurrently() -> None:

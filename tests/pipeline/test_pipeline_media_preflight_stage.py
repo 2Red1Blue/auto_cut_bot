@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
-from autocut_kernel.store.models import canonical_payload_hash
+from autocut_kernel.store.models import MaterializationLimits, canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
 from runtime_profile_fixture import execution_profile, media_preflight_policy
 from test_local_media_preflight import _SpeechPort
@@ -440,7 +440,16 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         return psycopg.connect(DSN)
 
     run_store = PostgresPipelineRunStore(factory)
-    kernel_store = PostgresRuntimeStore(factory)
+    materialization_root = tmp_path / "verified-media-staging"
+    materialization_limits = MaterializationLimits(
+        max_source_bytes=8 * 1024 * 1024,
+        copy_chunk_bytes=1024,
+        staging_quota_bytes=8 * 1024 * 1024,
+    )
+    kernel_store = PostgresRuntimeStore(
+        factory,
+        materialization_staging_root=materialization_root,
+    )
     run_id = f"pipeline_run_{uuid4().hex}"
     claimed = await run_store.claim_run(
         run_id=run_id,
@@ -537,12 +546,11 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     first_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
+        materialization_limits=materialization_limits,
     )
     if scenario in ("missing-render-grant", "missing-semantic-grant"):
         missing_purpose = (
-            "render_source"
-            if scenario == "missing-render-grant"
-            else "semantic_analysis"
+            "render_source" if scenario == "missing-render-grant" else "semantic_analysis"
         )
         with pytest.raises(PipelineRunValidationError, match=missing_purpose):
             await first_stage.execute(media_context)
@@ -566,7 +574,10 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     assert batch_identity[0] == str(first.receipt_id)
 
     restarted_run_store = PostgresPipelineRunStore(factory)
-    restarted_kernel_store = PostgresRuntimeStore(factory)
+    restarted_kernel_store = PostgresRuntimeStore(
+        factory,
+        materialization_staging_root=materialization_root,
+    )
     restarted_snapshot = await restarted_run_store.read_run(claimed.snapshot.run_id)
     assert restarted_snapshot is not None
     persisted_command = restarted_snapshot.commands[2]
@@ -577,6 +588,7 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     restarted_stage = MediaPreflightPipelineStage(
         restarted_kernel_store,
         must_not_detect,  # type: ignore[arg-type]
+        materialization_limits=materialization_limits,
     )
     replay = await restarted_stage.reconcile(
         PipelineStageContext(

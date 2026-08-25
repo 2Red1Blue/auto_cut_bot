@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import mkdtemp
+from threading import RLock
 from typing import Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
@@ -72,6 +77,8 @@ from .models import (
     GenerationAttempt,
     Job,
     JobProfile,
+    MaterializationError,
+    MaterializationLimits,
     MediaEvidenceReference,
     PersistedMediaEvidence,
     PersistedMediaOutputs,
@@ -81,6 +88,7 @@ from .models import (
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     SourceWindowIdentity,
+    VerifiedMaterializedBlob,
     VlmBatchRequestPolicy,
     VlmRequestRecordReference,
     VlmSemanticPackReference,
@@ -112,6 +120,63 @@ class DbConnection(Protocol):
 
 
 _Result = TypeVar("_Result")
+
+_MATERIALIZATION_QUOTA_LOCK = RLock()
+_MATERIALIZATION_QUOTA_USED: dict[Path, int] = {}
+
+
+def _reserve_materialization_quota(root: Path, byte_length: int, limit: int) -> None:
+    with _MATERIALIZATION_QUOTA_LOCK:
+        used = _MATERIALIZATION_QUOTA_USED.get(root, 0)
+        if byte_length > limit or used + byte_length > limit:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_CAPACITY_BUSY",
+                "private media staging capacity is unavailable",
+                outcome="failed",
+            )
+        _MATERIALIZATION_QUOTA_USED[root] = used + byte_length
+
+
+def _release_materialization_quota(root: Path, byte_length: int) -> None:
+    with _MATERIALIZATION_QUOTA_LOCK:
+        remaining = _MATERIALIZATION_QUOTA_USED.get(root, 0) - byte_length
+        if remaining < 0:
+            raise RuntimeError("materialization quota lease was released more than once")
+        if remaining:
+            _MATERIALIZATION_QUOTA_USED[root] = remaining
+        else:
+            _MATERIALIZATION_QUOTA_USED.pop(root, None)
+
+
+@dataclass(slots=True)
+class _VerifiedMaterializedBlob:
+    reference: BlobRef
+    path: Path
+    _directory: Path
+    _root: Path
+    _closed: bool = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            directory_fd = os.open(
+                self._directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            try:
+                os.unlink("source.mp4", dir_fd=directory_fd)
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            os.rmdir(self._directory)
+        except OSError as error:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging cleanup failed",
+                outcome="failed",
+            ) from error
+        _release_materialization_quota(self._root, self.reference.byte_length)
 
 
 def _text(value: object) -> str:
@@ -644,10 +709,18 @@ def _strict_source_windows(
 class PostgresRuntimeStore:
     """Persist one Job's idempotent commands, receipts and immutable artifacts."""
 
-    def __init__(self, connection_factory: Callable[[], DbConnection]) -> None:
+    def __init__(
+        self,
+        connection_factory: Callable[[], DbConnection],
+        *,
+        materialization_staging_root: Path | None = None,
+    ) -> None:
         if not callable(connection_factory):
             raise StoreValidationError("connection_factory must be callable")
+        if materialization_staging_root is not None and not materialization_staging_root.is_absolute():
+            raise StoreValidationError("materialization_staging_root must be absolute")
         self._connection_factory = connection_factory
+        self._materialization_staging_root = materialization_staging_root
 
     # ------------------------------------------------------------------
     # claim_command
@@ -1026,6 +1099,190 @@ class PostgresRuntimeStore:
             return content
 
         return self._transaction(operation)
+
+    def materialize_immutable_blob(
+        self,
+        job: Job,
+        reference: BlobRef,
+        limits: MaterializationLimits,
+    ) -> VerifiedMaterializedBlob:
+        """Boundedly stream an exact Job-owned BlobRef into a sealed private file."""
+
+        if type(reference) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("reference must be an exact BlobRef")
+        if type(limits) is not MaterializationLimits:  # noqa: E721
+            raise StoreValidationError("limits must be exact MaterializationLimits")
+        if reference.byte_length > limits.max_source_bytes:
+            raise MaterializationError(
+                "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
+                "committed source exceeds the frozen source-byte limit",
+                outcome="denied",
+            )
+        root = self._materialization_root()
+        try:
+            durable = self._verified_claimed_blob_ref(job, reference)
+        except BlobIntegrityError as error:
+            raise MaterializationError(
+                "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
+                "committed source BlobRef integrity verification failed",
+                outcome="failed",
+            ) from error
+        except RuntimeStoreError as error:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging is unavailable",
+                outcome="failed",
+            ) from error
+
+        _reserve_materialization_quota(root, durable.byte_length, limits.staging_quota_bytes)
+        directory: Path | None = None
+        descriptor: int | None = None
+        try:
+            directory = Path(mkdtemp(prefix=".autocut-media-", dir=root))
+            os.chmod(directory, 0o700)
+            directory_stat = os.stat(directory, follow_symlinks=False)
+            if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_mode & 0o077:
+                raise OSError("private staging directory is unsafe")
+            directory_fd = os.open(
+                directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            try:
+                descriptor = os.open(
+                    "source.mp4",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+            finally:
+                os.close(directory_fd)
+
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < durable.byte_length:
+                expected = min(limits.copy_chunk_bytes, durable.byte_length - offset)
+                chunk = self._read_immutable_blob_chunk(durable.object_id, offset, expected)
+                if len(chunk) != expected:
+                    raise BlobIntegrityError("immutable blob stream ended before its declared length")
+                digest.update(chunk)
+                written = 0
+                while written < len(chunk):
+                    written += os.write(descriptor, chunk[written:])
+                offset += len(chunk)
+            if self._read_immutable_blob_chunk(durable.object_id, offset, 1):
+                raise BlobIntegrityError("immutable blob stream exceeded its declared length")
+            if "sha256:" + digest.hexdigest() != durable.content_hash:
+                raise BlobIntegrityError("immutable blob stream failed exact digest verification")
+            os.fsync(descriptor)
+            source_stat = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(source_stat.st_mode)
+                or source_stat.st_nlink != 1
+                or source_stat.st_size != durable.byte_length
+            ):
+                raise BlobIntegrityError("private materialization is not one sealed regular file")
+            os.fchmod(descriptor, 0o400)
+            os.close(descriptor)
+            descriptor = None
+            return _VerifiedMaterializedBlob(durable, directory / "source.mp4", directory, root)
+        except BlobIntegrityError as error:
+            if self._discard_partial_materialization(directory, descriptor):
+                _release_materialization_quota(root, durable.byte_length)
+            raise MaterializationError(
+                "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
+                "committed source BlobRef integrity verification failed",
+                outcome="failed",
+            ) from error
+        except Exception as error:
+            if self._discard_partial_materialization(directory, descriptor):
+                _release_materialization_quota(root, durable.byte_length)
+            if isinstance(error, MaterializationError):
+                raise
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging is unavailable",
+                outcome="failed",
+            ) from error
+
+    def _materialization_root(self) -> Path:
+        root = self._materialization_staging_root
+        if root is None:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging is not configured",
+                outcome="failed",
+            )
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            root_stat = os.stat(root, follow_symlinks=False)
+        except OSError as error:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging is unavailable",
+                outcome="failed",
+            ) from error
+        if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_mode & 0o077:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "private media staging is unsafe",
+                outcome="failed",
+            )
+        return root
+
+    def _verified_claimed_blob_ref(self, job: Job, reference: BlobRef) -> BlobRef:
+        def operation(cursor: DbCursor) -> BlobRef:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                raise BlobIntegrityError("blob Job does not exist")
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            return self._claimed_blob_ref(
+                cursor, UUID(str(job_id)), reference, field_name="immutable"
+            )
+
+        return self._transaction(operation)
+
+    def _read_immutable_blob_chunk(self, object_id: UUID, offset: int, size: int) -> bytes:
+        def operation(cursor: DbCursor) -> bytes:
+            cursor.execute(
+                """
+                SELECT substring(content_bytes FROM %s FOR %s)
+                  FROM storage.blob_objects
+                 WHERE object_id = %s
+                """,
+                (offset + 1, size, object_id),
+            )
+            row = cursor.fetchone()
+            if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+                raise BlobIntegrityError("immutable blob bytes are unavailable")
+            if isinstance(row[0], memoryview):
+                return row[0].tobytes()
+            return bytes(row[0])
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _discard_partial_materialization(directory: Path | None, descriptor: int | None) -> bool:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if directory is None:
+            return True
+        try:
+            source = directory / "source.mp4"
+            if source.exists() or source.is_symlink():
+                source.unlink()
+            directory.rmdir()
+            return True
+        except OSError:
+            # Retain the logical quota reservation when private cleanup fails.
+            return False
 
     # ------------------------------------------------------------------
     # durable provider generation attempts

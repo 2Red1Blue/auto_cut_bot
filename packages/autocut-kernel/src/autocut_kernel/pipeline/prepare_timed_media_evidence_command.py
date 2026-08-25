@@ -43,7 +43,12 @@ from ..store import (
     CommandSuccess,
     Job,
 )
-from ..store.models import canonical_recipe_scope
+from ..store.models import (
+    MaterializationError,
+    MaterializationLimits,
+    VerifiedMaterializedBlob,
+    canonical_recipe_scope,
+)
 from ..vlm import VlmSemanticPack, WindowManifest
 
 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
@@ -116,7 +121,7 @@ class TimedMediaEvidenceProducerPort(Protocol):
     def prepare(
         self,
         request: PrepareTimedMediaEvidenceRequest,
-        source_bytes: bytes,
+        source: VerifiedMaterializedBlob,
     ) -> ProducedTimedMediaEvidence: ...
 
 
@@ -125,7 +130,12 @@ class TimedMediaEvidenceStore(Protocol):
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
 
-    def read_immutable_blob(self, job: Job, reference: BlobRef) -> bytes: ...
+    def materialize_immutable_blob(
+        self,
+        job: Job,
+        reference: BlobRef,
+        limits: MaterializationLimits,
+    ) -> VerifiedMaterializedBlob: ...
 
     def put_immutable_blob(
         self,
@@ -161,6 +171,7 @@ class PrepareTimedMediaEvidenceRequest:
     audio_detector_sha256: str
     adaptive_policy: AdaptiveEvidenceWindowPolicy
     producer_policy_sha256: str
+    materialization_limits: MaterializationLimits
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job or type(self.source_blob) is not BlobRef:  # noqa: E721
@@ -194,6 +205,8 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("physical detector identities must be sha256")
         if type(self.adaptive_policy) is not AdaptiveEvidenceWindowPolicy:  # noqa: E721
             raise TimedMediaEvidenceCommandError("adaptive_policy must be exact")
+        if type(self.materialization_limits) is not MaterializationLimits:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("materialization_limits must be exact")
         manifest = self.window_manifest
         if (
             manifest.source_sha256 != self.source_blob.content_hash
@@ -215,6 +228,8 @@ class PrepareTimedMediaEvidenceRequest:
                 "frame_detector_sha256": self.frame_detector_sha256,
                 "semantic_pack_sha256": self.semantic_pack.canonical_hash,
                 "producer_policy_sha256": self.producer_policy_sha256,
+                "materialization_policy_sha256": self.materialization_limits.evidence_policy_sha256,
+                "max_source_bytes": self.materialization_limits.max_source_bytes,
                 "source_blob": _blob_mapping(self.source_blob),
                 "source_manifest_sha256": self.source_manifest_sha256,
                 "source_provenance_sha256": self.source_provenance_sha256,
@@ -237,6 +252,8 @@ class PrepareTimedMediaEvidenceRequest:
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
             "semantic_pack_sha256": self.semantic_pack.canonical_hash,
             "producer_policy_sha256": self.producer_policy_sha256,
+            "materialization_policy_sha256": self.materialization_limits.evidence_policy_sha256,
+            "max_source_bytes": self.materialization_limits.max_source_bytes,
             "root_input_manifest_sha256": self.root_input_manifest_sha256,
             "source_blob": _blob_mapping(self.source_blob),
             "source_manifest_sha256": self.source_manifest_sha256,
@@ -425,12 +442,22 @@ class PrepareTimedMediaEvidenceCommand:
         )
         if not claimed.is_fresh_claim:
             return PrepareTimedMediaEvidenceResult(claimed)
+        source: VerifiedMaterializedBlob | None = None
         try:
-            source_bytes = self._store.read_immutable_blob(request.job, request.source_blob)
+            if request.source_blob.byte_length > request.materialization_limits.max_source_bytes:
+                raise TimedMediaEvidenceProducerError(
+                    "MEDIA_SOURCE_BYTE_LIMIT_EXCEEDED",
+                    "committed source exceeds the frozen source-byte limit",
+                )
+            source = self._store.materialize_immutable_blob(
+                request.job,
+                request.source_blob,
+                request.materialization_limits,
+            )
             busy_attempts = 0
             while True:
                 try:
-                    produced = self._producer.prepare(request, source_bytes)
+                    produced = self._producer.prepare(request, source)
                     break
                 except TimedMediaEvidenceProducerError as error:
                     if (
@@ -443,6 +470,8 @@ class PrepareTimedMediaEvidenceCommand:
             self._validate_produced(request, produced)
             plans, candidates = self._close_candidates(request, produced)
             artifacts = self._persist_artifacts(request, produced, plans, candidates)
+            source.close()
+            source = None
             outcome = self._store.commit_command_success(
                 CommandSuccess(claimed.command_slot_id, _artifact_set_hash(artifacts), artifacts)
             )
@@ -452,6 +481,10 @@ class PrepareTimedMediaEvidenceCommand:
                 len(candidates),
             )
         except TimedMediaEvidenceProducerError as error:
+            return PrepareTimedMediaEvidenceResult(
+                self._reject(claimed, error.code, error.detail, outcome=error.outcome)
+            )
+        except MaterializationError as error:
             return PrepareTimedMediaEvidenceResult(
                 self._reject(claimed, error.code, error.detail, outcome=error.outcome)
             )
@@ -468,6 +501,9 @@ class PrepareTimedMediaEvidenceCommand:
                     outcome="failed",
                 )
             )
+        finally:
+            if source is not None:
+                source.close()
 
     @staticmethod
     def _validate_produced(
