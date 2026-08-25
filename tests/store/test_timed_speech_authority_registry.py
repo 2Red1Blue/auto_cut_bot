@@ -25,10 +25,12 @@ from autocut_kernel.registry import (
 from autocut_kernel.registry.timed_speech import (
     AUTHORITY_BOOTSTRAP_JOB,
     BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
+    TimedSpeechRegistryError,
 )
 from autocut_kernel.store import (
     CommandClaim,
     CommandOutcome,
+    CommandRejection,
     CommandSuccess,
     CommittedArtifactMemberReference,
 )
@@ -79,6 +81,7 @@ class _BootstrapStore:
     def __init__(self) -> None:
         self.claims: list[CommandClaim] = []
         self.commits: list[tuple[CommandSuccess, AuthorityRegistrySnapshot]] = []
+        self.rejections: list[CommandRejection] = []
         self.outcome = CommandOutcome(uuid4(), "running", is_fresh_claim=True)
         self.resolved: BootstrappedTimedSpeechProfile | None = None
 
@@ -98,6 +101,10 @@ class _BootstrapStore:
         assert self.resolved is not None
         assert self.resolved.snapshot == snapshot
         return self.resolved
+
+    def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome:
+        self.rejections.append(rejection)
+        return CommandOutcome(rejection.command_slot_id, "denied", receipt_id=uuid4())
 
 
 def _request() -> BootstrapTimedSpeechProfileRegistryRequest:
@@ -124,6 +131,24 @@ def test_bootstrap_uses_fixed_identity_and_profile_specific_member() -> None:
     artifact = store.commits[0][0].artifacts[0]
     assert artifact.logical_id == "timed-speech/sensevoice_word_guard_v1/1"
     assert artifact.content_hash == request.entry.canonical_hash
+
+
+def test_post_claim_deterministic_validation_error_is_terminal_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = _BootstrapStore()
+    request = _request()
+
+    def invalid_artifact(_request: BootstrapTimedSpeechProfileRegistryRequest):
+        raise TimedSpeechRegistryError("invalid")
+
+    monkeypatch.setattr(BootstrapTimedSpeechProfileRegistryRequest, "artifact", invalid_artifact)
+
+    result = BootstrapTimedSpeechProfileRegistryCommand(store).execute(request)
+
+    assert result.state == "denied"
+    assert store.rejections[0].failure_code == "AUTHORITY_BOOTSTRAP_VALIDATION_FAILED"
+    assert store.commits == []
 
 
 def test_verified_authority_context_only_bootstraps_its_exact_profile() -> None:

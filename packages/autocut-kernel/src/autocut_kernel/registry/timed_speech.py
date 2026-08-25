@@ -19,6 +19,7 @@ from ..store.models import (
     ArtifactScope,
     CommandClaim,
     CommandOutcome,
+    CommandRejection,
     CommandSuccess,
     CommittedArtifactMemberReference,
     Job,
@@ -253,6 +254,8 @@ class AuthorityBootstrapStore(AuthorityRegistryStore, Protocol):
         snapshot: AuthorityRegistrySnapshot,
     ) -> CommandOutcome: ...
 
+    def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome: ...
+
 
 class BootstrapTimedSpeechProfileRegistryCommand:
     """The protected writer.  Runtime composition must never invoke this."""
@@ -276,23 +279,32 @@ class BootstrapTimedSpeechProfileRegistryCommand:
             # anchor has been removed or altered after the Receipt was written.
             self._store.read_bootstrapped_timed_speech_profile(request.snapshot)
             return claimed
-        artifact = request.artifact()
-        set_hash = canonical_sha256(
-            [
-                {
-                    "artifact_type": artifact.artifact_type,
-                    "content_hash": artifact.content_hash,
-                    "logical_id": artifact.logical_id,
-                    "payload_json": json.loads(artifact.payload_json),
-                    "revision": artifact.revision,
-                    "scope": {
-                        "key": artifact.scope.key,
-                        "kind": artifact.scope.kind,
-                        "namespace": artifact.scope.namespace,
-                    },
-                }
-            ]
-        )
+        try:
+            artifact = request.artifact()
+            set_hash = canonical_sha256(
+                [
+                    {
+                        "artifact_type": artifact.artifact_type,
+                        "content_hash": artifact.content_hash,
+                        "logical_id": artifact.logical_id,
+                        "payload_json": json.loads(artifact.payload_json),
+                        "revision": artifact.revision,
+                        "scope": {
+                            "key": artifact.scope.key,
+                            "kind": artifact.scope.kind,
+                            "namespace": artifact.scope.namespace,
+                        },
+                    }
+                ]
+            )
+        except TimedSpeechRegistryError:
+            return self._store.commit_command_rejection(
+                CommandRejection(
+                    claimed.command_slot_id,
+                    "AUTHORITY_BOOTSTRAP_VALIDATION_FAILED",
+                    '{"stage":"authority_bootstrap"}',
+                )
+            )
         return self._store.commit_timed_speech_profile_bootstrap(
             CommandSuccess(claimed.command_slot_id, set_hash, (artifact,)), request.snapshot
         )
