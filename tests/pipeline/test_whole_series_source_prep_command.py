@@ -57,6 +57,14 @@ from auto_cut_bot.pipeline.source_prep.command import (
 from auto_cut_bot.pipeline.source_prep.models import SeriesCensusError, SeriesSource
 from auto_cut_bot.pipeline.source_prep.probe import SourceMediaEvidenceError
 
+try:
+    import psycopg
+except ModuleNotFoundError:
+    psycopg = None
+
+
+VERIFY_POSTGRES_DSN = "postgresql://ac_user:ac_password_2026@127.0.0.1:5433/ac_autocut_verify"
+
 
 class Store:
     def __init__(self) -> None:
@@ -530,7 +538,8 @@ def test_running_claim_recomputes_census_and_rejects_changed_request_hash(
 
 
 @pytest.mark.skipif(
-    not os.environ.get("AUTOCUT_TEST_POSTGRES_DSN")
+    psycopg is None
+    or os.environ.get("AUTOCUT_TEST_POSTGRES_DSN") != VERIFY_POSTGRES_DSN
     or shutil.which("ffmpeg") is None
     or shutil.which("ffprobe") is None,
     reason="disposable PostgreSQL, ffmpeg and ffprobe are required",
@@ -538,8 +547,6 @@ def test_running_claim_recomputes_census_and_rejects_changed_request_hash(
 def test_crash_after_partial_blob_concurrent_exact_replays_converge(
     tmp_path: Path,
 ) -> None:
-    import psycopg
-
     dsn = os.environ["AUTOCUT_TEST_POSTGRES_DSN"]
     with psycopg.connect(dsn, autocommit=True) as connection:
         with connection.cursor() as cursor:
@@ -594,12 +601,10 @@ def test_crash_after_partial_blob_concurrent_exact_replays_converge(
 
 
 @pytest.mark.skipif(
-    not os.environ.get("AUTOCUT_TEST_POSTGRES_DSN"),
-    reason="set AUTOCUT_TEST_POSTGRES_DSN for disposable PostgreSQL integration",
+    psycopg is None or os.environ.get("AUTOCUT_TEST_POSTGRES_DSN") != VERIFY_POSTGRES_DSN,
+    reason="set AUTOCUT_TEST_POSTGRES_DSN to the dedicated ac_autocut_verify database",
 )
 def test_real_episode_persists_receipt_artifact_set_blob_and_replays(tmp_path: Path) -> None:
-    import psycopg
-
     dsn = os.environ["AUTOCUT_TEST_POSTGRES_DSN"]
     with psycopg.connect(dsn, autocommit=True) as connection:
         with connection.cursor() as cursor:

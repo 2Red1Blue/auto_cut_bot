@@ -5,7 +5,6 @@ import json
 from dataclasses import replace
 from fractions import Fraction
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import autocut_kernel.pipeline.prepare_timed_media_evidence_command as command_module
@@ -20,6 +19,7 @@ from autocut_kernel.media import (
     PresentationTimelineProbe,
     PresentationTrack,
     PresentationTrackSegment,
+    PTSIndex,
     RationalPresentationInterval,
     RootMediaEvidenceBundle,
     Stage4PredecessorError,
@@ -33,8 +33,15 @@ from autocut_kernel.media import (
     TranscriptSourceOutcome,
     derive_presentation_timeline_facts,
 )
+from autocut_kernel.media.ffprobe_port import ProbeResult
 from autocut_kernel.media.stage4_predecessor import _compile_presentation_map
-from autocut_kernel.media.types import TickRange, TimeBase, canonical_sha256
+from autocut_kernel.media.types import (
+    TickRange,
+    TimeBase,
+    ToolEvidence,
+    VideoStreamEvidence,
+    canonical_sha256,
+)
 from autocut_kernel.pipeline import (
     FinalizeTimedMediaEvidenceBatchCommand,
     FinalizeTimedMediaEvidenceBatchRequest,
@@ -51,6 +58,16 @@ from autocut_kernel.registry.timed_speech import (
     TIMED_SPEECH_PROFILE_REGISTRY_SCOPE,
     StoreAnchoredTimedSpeechProfileResolver,
 )
+from autocut_kernel.source_manifest import (
+    DecodedBlobRef,
+    DecodedMediaProbe,
+    DecodedSeriesSource,
+    DecodedSourceEpisode,
+    DecodedSourceManifest,
+    SourceOperationGrant,
+    SourceOperationPolicy,
+    identity_frame_index,
+)
 from autocut_kernel.store import (
     ArtifactScope,
     BlobRef,
@@ -65,6 +82,12 @@ from autocut_kernel.store import (
     WholeSeriesSourceManifestReference,
 )
 from autocut_kernel.store.models import MaterializationLimits, canonical_payload_hash
+from autocut_kernel.vlm import (
+    ProxyTimelineMap,
+    WindowFrameSample,
+    WindowManifestSet,
+    WindowProxyBlobRef,
+)
 from test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
 from test_timed_evidence import _bindings, _manifest_and_candidate
 
@@ -88,7 +111,6 @@ class _Store:
         self.bootstrapped_reference: CommittedArtifactMemberReference | None = None
         self.bootstrapped_entry: TimedSpeechProfileRegistryEntry | None = None
         self.source_manifest: PersistedWholeSeriesSourceManifest | None = None
-        self.source_decoded: object | None = None
 
     def read_whole_series_source_manifest(
         self, _: Job, artifact_set_id: UUID
@@ -180,17 +202,6 @@ class _Store:
         raise AssertionError("unknown command slot")
 
 
-def _decode_test_source_manifest(payload_json: str, _: tuple[object, ...]) -> object:
-    try:
-        return _TEST_SOURCE_MANIFESTS[payload_json]
-    except KeyError as error:
-        raise AssertionError("unexpected test source manifest payload") from error
-
-
-_TEST_SOURCE_MANIFESTS: dict[str, object] = {}
-command_module.decode_source_manifest = _decode_test_source_manifest  # type: ignore[assignment]
-
-
 class _Lease:
     def __init__(self, reference: BlobRef, store: _Store) -> None:
         self.reference = reference
@@ -222,10 +233,13 @@ class _Producer:
                 "SUBTITLE_EVIDENCE_INDETERMINATE",
                 "burned-in subtitle coverage did not close",
             )
+        root_template = _rebind_root_bundle(
+            self.bundle, request.frame_pts_index, request.audio_sample_boundaries
+        )
         transcript = replace(
-            self.bundle.transcript,
+            root_template.transcript,
             segments=tuple(
-                replace(segment, sentence_ids=()) for segment in self.bundle.transcript.segments
+                replace(segment, sentence_ids=()) for segment in root_template.transcript.segments
             ),
             sentences=(),
             completeness=TranscriptCompleteness(
@@ -235,7 +249,7 @@ class _Producer:
             ),
         )
         bundle = replace(
-            self.bundle,
+            root_template,
             transcript=transcript,
             source_manifest_sha256=request.source_manifest_sha256,
             root_input_manifest_sha256=request.root_input_manifest_sha256,
@@ -312,19 +326,24 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
     source_blob = BlobRef(uuid4(), SOURCE_HASH, len(b"committed source"), "video/mp4")
     store.blobs[source_blob.object_id] = b"committed source"
     template = _bundle()
-    _register_sentence_profile(store, template)
+    manifest, semantic_pack, persisted_payload_json, canonical_template = _canonical_v2_source_manifest(
+        manifest,
+        semantic_pack,
+        template,
+        source_blob,
+    )
+    _register_sentence_profile(store, canonical_template)
     job = Job("real-run-001", "shadow")
-    payload_json = "{}"
     reference = WholeSeriesSourceManifestReference(
         ArtifactScope("pipeline", "job", job.job_key),
         "whole_series_source_manifest",
         1,
-        canonical_payload_hash(payload_json),
+        canonical_payload_hash(persisted_payload_json),
     )
     receipt_id, artifact_set_id, command_slot_id = uuid4(), uuid4(), uuid4()
     store.source_manifest = PersistedWholeSeriesSourceManifest(
         reference,
-        payload_json,
+        persisted_payload_json,
         (source_blob,),
         uuid4(),
         receipt_id,
@@ -332,21 +351,6 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         command_slot_id,
         job,
     )
-    store.source_decoded = SimpleNamespace(
-        episodes=(
-            SimpleNamespace(
-                proxy_blob=source_blob,
-                manifest=manifest,
-                media_probe=SimpleNamespace(
-                    audio_sample_boundaries=template.audio_sample_boundaries,
-                    frame_detector_sha256=HASH_B,
-                    audio_detector_sha256=HASH_B,
-                    presentation_timeline_probe=_presentation_facts(template, source_blob, manifest),
-                ),
-            ),
-        )
-    )
-    _TEST_SOURCE_MANIFESTS[payload_json] = store.source_decoded
     return PrepareTimedMediaEvidenceRequest(
         job=job,
         idempotency_key="media-preflight:episode:0",
@@ -364,7 +368,7 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         window_manifest=manifest,
         semantic_pack=semantic_pack,
         frame_pts_index=manifest.frame_pts_index_set,
-        audio_sample_boundaries=template.audio_sample_boundaries,
+        audio_sample_boundaries=canonical_template.audio_sample_boundaries,
         frame_detector_sha256=HASH_B,
         audio_detector_sha256=HASH_B,
         adaptive_policy=AdaptiveEvidenceWindowPolicy(
@@ -383,6 +387,291 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             copy_chunk_bytes=128,
             staging_quota_bytes=1024,
         ),
+    )
+
+
+def _canonical_v2_source_manifest(
+    manifest: object,
+    semantic_pack: object,
+    template: RootMediaEvidenceBundle,
+    source_blob: BlobRef,
+) -> tuple[object, object, str, RootMediaEvidenceBundle]:
+    """Build a persisted V2 source payload accepted by the production decoder."""
+    assert hasattr(manifest, "source_time_base")
+    source = DecodedSeriesSource(
+        "episode.mp4",
+        template.source_id,
+        source_blob.content_hash,
+        source_blob.byte_length,
+    )
+    video_range = TickRange(0, 100)
+    probe = ProbeResult(
+        VideoStreamEvidence(0, "h264", 96, 64, manifest.source_time_base),
+        PTSIndex((0, 25, 50, 75)),
+        ToolEvidence("ffprobe", "fixture-v2", HASH_A),
+    )
+    media_probe = DecodedMediaProbe(
+        source,
+        probe,
+        video_range,
+        _canonical_audio_boundaries(template),
+        HASH_B,
+        HASH_B,
+    )
+    frame_index = identity_frame_index(media_probe)
+    canonical_manifest = replace(
+        manifest,
+        source_clock_id=frame_index.context.clock_id,
+        source_range=video_range,
+        core_range=video_range,
+        frame_pts_index_set=frame_index,
+        proxy_blob_ref=WindowProxyBlobRef(
+            str(source_blob.object_id),
+            source_blob.content_hash,
+            source_blob.byte_length,
+            source_blob.media_type,
+        ),
+        timeline_map=ProxyTimelineMap.translation(
+            time_base=manifest.source_time_base,
+            proxy_range=TickRange(0, video_range.duration_pts),
+            source_start_pts=video_range.start_pts,
+        ),
+        frame_samples=tuple(
+            WindowFrameSample(tick, tick, HASH_C) for tick in probe.pts_index.ticks
+        ),
+    )
+    manifest_set = WindowManifestSet(
+        canonical_manifest.source_id,
+        canonical_manifest.source_clock_id,
+        canonical_manifest.source_sha256,
+        canonical_manifest.stream_index,
+        canonical_manifest.source_time_base,
+        canonical_manifest.source_range,
+        (canonical_manifest,),
+    )
+    presentation = _canonical_presentation_facts(
+        _rebind_root_bundle(template, frame_index, media_probe.audio_sample_boundaries),
+        source_blob,
+        canonical_manifest,
+        probe.pts_index.ticks,
+    )
+    media_probe = replace(
+        media_probe,
+        presentation_timeline_probe=presentation,
+        presentation_video_frame_boundaries=((0, 25), (25, 50), (50, 75), (75, 100)),
+        presentation_audio_frame_boundaries=((0, 50), (50, 100)),
+    )
+    canonical_pack = _pack_for_manifest(semantic_pack, canonical_manifest.canonical_hash)
+    decoded = DecodedSourceManifest(
+        SourceOperationGrant(
+            SourceOperationPolicy("fixture-authority", "fixture-series", 1, ("semantic_analysis",)),
+            "all_or_nothing",
+            (source,),
+        ),
+        (
+            DecodedSourceEpisode(
+                media_probe,
+                DecodedBlobRef(
+                    source_blob.object_id,
+                    source_blob.content_hash,
+                    source_blob.byte_length,
+                    source_blob.media_type,
+                ),
+                canonical_manifest,
+                manifest_set,
+            ),
+        ),
+    )
+    canonical_template = _rebind_root_bundle(
+        template, frame_index, media_probe.audio_sample_boundaries
+    )
+    return (
+        canonical_manifest,
+        canonical_pack,
+        json.dumps(decoded.to_mapping(), separators=(",", ":"), sort_keys=True),
+        canonical_template,
+    )
+
+
+def _pack_for_manifest(semantic_pack: object, manifest_sha256: str) -> object:
+    def with_manifest_hash(item: object) -> object:
+        return replace(
+            item,
+            support=replace(item.support, core_owner_window_manifest_sha256=manifest_sha256),
+        )
+
+    return replace(
+        semantic_pack,
+        window_manifest_sha256=manifest_sha256,
+        entities=tuple(with_manifest_hash(item) for item in semantic_pack.entities),
+        facts=tuple(with_manifest_hash(item) for item in semantic_pack.facts),
+        events=tuple(with_manifest_hash(item) for item in semantic_pack.events),
+        candidate_hypotheses=tuple(
+            with_manifest_hash(item) for item in semantic_pack.candidate_hypotheses
+        ),
+    )
+
+
+def _canonical_presentation_facts(
+    bundle: RootMediaEvidenceBundle,
+    source_blob: BlobRef,
+    manifest: object,
+    video_pts: tuple[int, ...],
+) -> PresentationTimelineProbe:
+    def track(
+        media_kind: MediaKind,
+        index_hash: str,
+        context: object,
+        stream_index: int,
+        boundaries: tuple[tuple[int, int], ...],
+    ) -> PresentationTrack:
+        time_base = context.time_base
+        origin, end = context.origin_tick, context.end_tick
+        return PresentationTrack(
+            media_kind=media_kind,
+            stream_index=stream_index,
+            clock_id=(f"video-stream-{stream_index}" if media_kind is MediaKind.VIDEO else f"audio-stream-{stream_index}"),
+            time_base=time_base,
+            origin_tick=origin,
+            end_tick=end,
+            coverage_outcome=EvidenceCompleteness.COMPLETE,
+            endpoint_proof="decoded_start_and_end",
+            index_sha256=index_hash,
+            segments=(
+                PresentationTrackSegment(
+                    TickRange(origin, end),
+                    RationalPresentationInterval.from_fractions(
+                        Fraction(origin * time_base.numerator, time_base.denominator),
+                        Fraction(end * time_base.numerator, time_base.denominator),
+                    ),
+                    canonical_sha256(
+                        {
+                            "boundaries": [
+                                {"end_tick": boundary_end, "start_tick": start}
+                                for start, boundary_end in boundaries
+                            ],
+                            "kind": "decoded-continuous-run-v2",
+                        }
+                    ),
+                    PresentationSegmentContinuity.CONTINUOUS_DECODED,
+                ),
+            ),
+        )
+
+    video_boundaries = tuple(
+        (start, end) for start, end in zip(video_pts, (*video_pts[1:], 100), strict=True)
+    )
+    audio_boundaries = ((0, 50), (50, 100))
+    return PresentationTimelineProbe(
+        schema_version="presentation-map-facts-v2",
+        source_id=bundle.source_id,
+        source_sha256=source_blob.content_hash,
+        source_blob_content_hash=source_blob.content_hash,
+        source_blob_byte_length=source_blob.byte_length,
+        source_blob_media_type=source_blob.media_type,
+        facts_compiler_id="fixture-source-prep-v2",
+        facts_compiler_contract_sha256=HASH_A,
+        probe_execution=PresentationProbeExecution(
+            "ffprobe-decoded-presentation-v2", HASH_A, HASH_B, HASH_C, HASH_A, source_blob.content_hash
+        ),
+        video=track(
+            MediaKind.VIDEO,
+            manifest.frame_pts_index_set.canonical_hash,
+            manifest.frame_pts_index_set.context,
+            0,
+            video_boundaries,
+        ),
+        audio=track(
+            MediaKind.AUDIO,
+            bundle.audio_sample_boundaries.canonical_hash,
+            bundle.audio_sample_boundaries.context,
+            1,
+            audio_boundaries,
+        ),
+        frame_pts_index_set_sha256=manifest.frame_pts_index_set.canonical_hash,
+        audio_sample_boundary_set_sha256=bundle.audio_sample_boundaries.canonical_hash,
+        source_proxy_timeline_map_sha256=manifest.timeline_map.canonical_hash,
+        window_manifest_sha256=manifest.canonical_hash,
+    )
+
+
+def _canonical_audio_boundaries(bundle: RootMediaEvidenceBundle) -> object:
+    context = replace(bundle.audio_sample_boundaries.context, clock_id="audio-stream-1")
+    return replace(
+        bundle.audio_sample_boundaries,
+        context=context,
+        coverage=replace(bundle.audio_sample_boundaries.coverage, clock_id=context.clock_id),
+        points=tuple(
+            replace(point, clock_id=context.clock_id)
+            for point in bundle.audio_sample_boundaries.points
+        ),
+    )
+
+
+def _rebind_root_bundle(
+    bundle: RootMediaEvidenceBundle,
+    frame_index: object,
+    audio_boundaries: object,
+) -> RootMediaEvidenceBundle:
+    video_context = frame_index.context
+    audio_context = audio_boundaries.context
+
+    def video_record(record: object) -> object:
+        return replace(record, clock_id=video_context.clock_id)
+
+    def audio_record(record: object) -> object:
+        return replace(record, clock_id=audio_context.clock_id)
+
+    shots = replace(
+        bundle.shot_boundaries,
+        context=replace(bundle.shot_boundaries.context, clock_id=video_context.clock_id),
+        coverage=replace(bundle.shot_boundaries.coverage, clock_id=video_context.clock_id),
+        frame_pts_index_set_sha256=frame_index.canonical_hash,
+        points=tuple(video_record(point) for point in bundle.shot_boundaries.points),
+    )
+    scenes = replace(
+        bundle.scene_boundaries,
+        context=replace(bundle.scene_boundaries.context, clock_id=video_context.clock_id),
+        coverage=replace(bundle.scene_boundaries.coverage, clock_id=video_context.clock_id),
+        frame_pts_index_set_sha256=frame_index.canonical_hash,
+        points=tuple(video_record(point) for point in bundle.scene_boundaries.points),
+    )
+    transcript = replace(
+        bundle.transcript,
+        context=replace(bundle.transcript.context, clock_id=audio_context.clock_id),
+        coverage=replace(bundle.transcript.coverage, clock_id=audio_context.clock_id),
+        segments=tuple(audio_record(item) for item in bundle.transcript.segments),
+        words=tuple(audio_record(item) for item in bundle.transcript.words),
+        sentences=tuple(audio_record(item) for item in bundle.transcript.sentences),
+    )
+    speech = replace(
+        bundle.speech_activity,
+        context=replace(bundle.speech_activity.context, clock_id=audio_context.clock_id),
+        coverage=replace(bundle.speech_activity.coverage, clock_id=audio_context.clock_id),
+        segments=tuple(audio_record(item) for item in bundle.speech_activity.segments),
+    )
+    visual = replace(
+        bundle.visual_validity,
+        context=replace(bundle.visual_validity.context, clock_id=video_context.clock_id),
+        coverage=replace(bundle.visual_validity.coverage, clock_id=video_context.clock_id),
+        intervals=tuple(video_record(item) for item in bundle.visual_validity.intervals),
+    )
+    subtitles = replace(
+        bundle.subtitle_cues,
+        context=replace(bundle.subtitle_cues.context, clock_id=video_context.clock_id),
+        coverage=replace(bundle.subtitle_cues.coverage, clock_id=video_context.clock_id),
+        cues=tuple(video_record(item) for item in bundle.subtitle_cues.cues),
+    )
+    return replace(
+        bundle,
+        frame_pts_index=frame_index,
+        shot_boundaries=shots,
+        scene_boundaries=scenes,
+        audio_sample_boundaries=audio_boundaries,
+        transcript=transcript,
+        speech_activity=speech,
+        visual_validity=visual,
+        subtitle_cues=subtitles,
     )
 
 
@@ -429,25 +718,28 @@ def _register_sentence_profile(
 ) -> CommittedArtifactMemberReference:
     def requirement(
         evidence: object,
+        *,
+        producer_kind: str,
         calibration_record_sha256: str | None = None,
     ) -> TimedSpeechProducerRequirement:
         context = evidence.context
+        is_asr = producer_kind == "asr"
         return TimedSpeechProducerRequirement(
             producer_id=context.producer_id,
             generation_policy_sha256=context.generation_policy_sha256,
-            model_sha256=HASH_B if evidence is bundle.transcript else HASH_C,
+            model_sha256=HASH_B if is_asr else HASH_C,
             adapter_sha256=HASH_A,
             calibration_record_sha256=(
                 HASH_C
-                if evidence is bundle.transcript and calibration_record_sha256 is None
+                if is_asr and calibration_record_sha256 is None
                 else (HASH_A if calibration_record_sha256 is None else calibration_record_sha256)
             ),
             clock_id=context.clock_id,
             time_base=context.time_base,
-            producer_kind="asr" if evidence is bundle.transcript else "vad",
+            producer_kind=producer_kind,
             inference_kind=(
                 "sensevoice-word-timestamp"
-                if evidence is bundle.transcript
+                if is_asr
                 else "fsmn-vad-direct"
             ),
         )
@@ -461,8 +753,12 @@ def _register_sentence_profile(
             if kind is TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1
             else TimedSpeechCapability.COMPLETE_DIALOGUE
         ),
-        transcript_requirement=requirement(bundle.transcript),
-        vad_requirement=requirement(bundle.speech_activity, vad_calibration_record_sha256),
+        transcript_requirement=requirement(bundle.transcript, producer_kind="asr"),
+        vad_requirement=requirement(
+            bundle.speech_activity,
+            producer_kind="vad",
+            calibration_record_sha256=vad_calibration_record_sha256,
+        ),
         guard_policy=TimedSpeechGuardPolicy(
             policy_sha256=HASH_A,
             source_audio_clock_id=bundle.transcript.context.clock_id,
@@ -685,14 +981,40 @@ def test_probe_certificate_replays_exact_indexes_and_rejects_altered_identity() 
         replace(certificate, algorithm="identity-full-duration-v1")
 
 
-def test_preflight_rejects_missing_source_presentation_facts() -> None:
+def test_preflight_real_decoder_rejects_v1_source_manifest_before_claim_or_work() -> None:
     store = _Store()
     request = _request(store)
-    assert store.source_decoded is not None
-    store.source_decoded.episodes[0].media_probe.presentation_timeline_probe = None
+    assert store.source_manifest is not None
+    persisted_payload = json.loads(store.source_manifest.payload_json)
+    persisted_probe = persisted_payload["episodes"][0]["media_probe"]
+    persisted_probe.pop("presentation_timeline_probe")
+    persisted_probe.pop("decoded_video_frame_boundaries")
+    persisted_probe.pop("decoded_audio_frame_boundaries")
+    payload_json = json.dumps(persisted_payload, separators=(",", ":"), sort_keys=True)
+    reference = replace(
+        store.source_manifest.reference,
+        content_hash=canonical_payload_hash(payload_json),
+    )
+    store.source_manifest = replace(
+        store.source_manifest,
+        reference=reference,
+        payload_json=payload_json,
+    )
+    request = replace(
+        request,
+        source_manifest_reference=reference,
+        source_provenance_sha256=canonical_sha256(
+            _persisted_source_manifest_provenance_mapping(store.source_manifest)
+        ),
+    )
+    producer = _Producer(_bundle())
 
-    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="presentation"):
-        _command(store, _Producer(_bundle())).execute(request)
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="invalid for V2"):
+        _command(store, producer).execute(request)
+
+    assert store.outcomes == {}
+    assert store.materializations == []
+    assert producer.calls == 0
     with pytest.raises(TypeError, match="presentation_timeline_probe"):
         replace(_request(store), presentation_timeline_probe=None)
 
@@ -752,8 +1074,17 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
         (),
         (),
     )
+    nonlexical_template = _rebind_root_bundle(
+        replace(template, transcript=transcript),
+        request.frame_pts_index,
+        request.audio_sample_boundaries,
+    )
     command = _command(store, _Producer(replace(template, transcript=transcript)))
-    _register_sentence_profile(store, template, TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1)
+    _register_sentence_profile(
+        store,
+        nonlexical_template,
+        TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1,
+    )
 
     result = command.execute(request)
 
