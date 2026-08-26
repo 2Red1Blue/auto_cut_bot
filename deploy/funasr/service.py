@@ -50,6 +50,9 @@ from autocut_kernel.media.shadow_local_service_profile import (
     build_shadow_local_service_profile,
     decode_shadow_local_service_profile,
 )
+from autocut_kernel.media.timing_compatibility import (
+    build_timing_compatibility_profile,
+)
 from autocut_kernel.media.types import TimeBase
 from funasr import AutoModel
 
@@ -64,6 +67,7 @@ RESOURCE_PRESSURE_TEXT = "resource-pressure"
 CANONICAL_SINGLETON_LOCK_PATH = Path("/tmp").resolve(strict=True) / "autocut-funasr-service.lock"
 NORMAL_PROFILE_SCHEMA = "funasr-measured-profile-v1"
 SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-shadow-calibration-profile-v1"
+CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-cuda-shadow-calibration-profile-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
 _InferenceResult = TypeVar("_InferenceResult")
@@ -593,6 +597,111 @@ def detector_hash(identity: dict[str, object], profile: dict[str, object]) -> st
     )
 
 
+def cuda_device_identity() -> dict[str, str]:
+    """Return the measured CUDA runtime identity; CPU fallback is never valid here."""
+    cuda = getattr(torch, "cuda", None)
+    version = getattr(getattr(torch, "version", None), "cuda", None)
+    available = getattr(cuda, "is_available", None)
+    capability = getattr(cuda, "get_device_capability", None)
+    if (
+        not callable(available)
+        or available() is not True
+        or type(version) is not str
+        or re.fullmatch(r"[0-9]{1,2}\.[0-9]{1,2}", version) is None
+        or not callable(capability)
+    ):
+        raise RuntimeError("CUDA runtime identity is unavailable")
+    measured = capability()
+    if (
+        type(measured) is not tuple
+        or len(measured) != 2
+        or any(type(value) is not int or value < 0 for value in measured)
+    ):
+        raise RuntimeError("CUDA compute capability is unavailable")
+    return {
+        "device_class": "cuda",
+        "cuda_runtime_version": version,
+        "gpu_compute_capability": f"{measured[0]}.{measured[1]}",
+    }
+
+
+def cuda_decoder_identity_sha256() -> str:
+    """Measure decoder inputs while excluding the audit-only service source hash."""
+    identity = decoder_identity()
+    return sha(canon({key: value for key, value in identity.items() if key != "service_sha256"}))
+
+
+def cuda_resampling_identity_sha256() -> str:
+    """The raw shadow endpoint delegates decoding/resampling to the fixed native provider."""
+    return sha(canon({"schema_version": "funasr-native-resampling-v1", "mode": "native"}))
+
+
+def cuda_inference_identity(identity: dict[str, object], profile: dict[str, object]) -> str:
+    """Derive the CUDA producer identity from values that can change emitted timings."""
+    return sha(
+        canon(
+            {
+                "schema_version": "funasr-cuda-inference-identity-v1",
+                "producer_kind": identity["producer_kind"],
+                "producer_id": identity["producer_id"],
+                "producer_version": identity["producer_version"],
+                "model_id": identity["model_id"],
+                "model_revision": identity["model_revision"],
+                "model_sha256": identity["model_sha256"],
+                "inference_kind": identity["inference_kind"],
+                "funasr_version": profile["funasr_version"],
+                "torch_version": profile["torch_version"],
+                "device": profile["device"],
+                "timed_speech_policy_sha256": profile["timed_speech_policy_sha256"],
+                "vad_merge_policy_sha256": profile["vad_merge_policy_sha256"],
+            }
+        )
+    )
+
+
+def cuda_detector_hash(identity: dict[str, object], profile: dict[str, object]) -> str:
+    """Retain detector provenance without letting audit-only source bytes change compatibility."""
+    return sha(
+        canon(
+            {
+                "schema_version": "funasr-cuda-detector-identity-v1",
+                "producer_kind": identity["producer_kind"],
+                "producer_id": identity["producer_id"],
+                "producer_version": identity["producer_version"],
+                "generation_policy_sha256": identity["generation_policy_sha256"],
+                "calibration_policy_sha256": identity["calibration_policy_sha256"],
+                "inference_identity_sha256": identity["inference_identity_sha256"],
+                "timed_speech_policy_sha256": profile["timed_speech_policy_sha256"],
+            }
+        )
+    )
+
+
+def cuda_native_port_identity(profile: dict[str, object], producers: list[dict[str, object]]) -> str:
+    """Bind the native raw protocol, deliberately excluding audit-only build identities."""
+    fields = (
+        "schema_version", "provider_id", "provider_version", "funasr_version", "torch_version",
+        "device", "word_timing_capability", "max_request_bytes", "timed_speech_policy_sha256",
+        "word_gap_policy_sha256", "vad_merge_policy_sha256", "utterance_gap_milliseconds",
+        "vad_merge_gap_milliseconds",
+    )
+    return sha(
+        canon(
+            {
+                **{field: profile[field] for field in fields},
+                "producers": [
+                    {
+                        key: value
+                        for key, value in producer.items()
+                        if key not in {"service_sha256", "build_audit_sha256"}
+                    }
+                    for producer in producers
+                ],
+            }
+        )
+    )
+
+
 def coverage(m: dict[str, object], outcome: str) -> dict[str, object]:
     s = cast(dict[str, object], m["source"])
     c = cast(dict[str, object], m["audio_clock"])
@@ -822,11 +931,206 @@ class Service:
             )
         return snapshot
 
+    async def _start_model(self, device: str, asr_path: Path, vad_path: Path) -> None:
+        await self.require_resources(self.startup_min_available)
+        self.singleton.acquire()
+        model_task: asyncio.Task[Any] = asyncio.create_task(
+            asyncio.to_thread(
+                AutoModel,
+                model=str(asr_path),
+                vad_model=str(vad_path),
+                device=device,
+                disable_update=True,
+                disable_pbar=True,
+            )
+        )
+        try:
+            cancelled = False
+            # Cancelling the coroutine cannot stop the native constructor. Keep
+            # the singleton until that same task finishes, including repeated
+            # cancellation while draining. Worker failures still surface below.
+            while not model_task.done():
+                try:
+                    await asyncio.shield(model_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.model = model_task.result()
+            if cancelled:
+                raise asyncio.CancelledError
+            devices = (module_device(self.model.model), module_device(self.model.vad_model))
+            if devices != (device, device):
+                raise RuntimeError("model parameter device mismatch")
+        except BaseException:
+            self.model = None
+            self.singleton.release()
+            raise
+
+    async def _load_cuda_shadow_profile(self, asr_path: Path, vad_path: Path) -> None:
+        """Validate the distinct CUDA shadow grammar without enabling normal routes."""
+        fields = {
+            "schema_version", "provider_id", "provider_version", "build_audit_sha256",
+            "funasr_version", "torch_version", "device",
+            "word_timing_capability", "max_request_bytes", "native_port_identity_sha256",
+            "timing_engine_compatibility_version", "timing_compatibility_sha256",
+            "timed_speech_policy_sha256", "word_gap_policy_sha256",
+            "vad_merge_policy_sha256", "utterance_gap_milliseconds",
+            "vad_merge_gap_milliseconds", "producers",
+        }
+        if set(self.profile) != fields:
+            raise RuntimeError("CUDA shadow profile schema is not closed")
+        for key, value in (
+            ("provider_id", PROVIDER_ID),
+            ("provider_version", PROVIDER_VERSION),
+            ("word_timing_capability", "required"),
+        ):
+            if self.profile[key] != value:
+                raise RuntimeError(f"CUDA shadow profile {key} is invalid")
+        if self.profile["max_request_bytes"] != self.max_request:
+            raise RuntimeError("FUNASR_MAX_REQUEST_BYTES does not match the measured profile")
+        if any(
+            not is_sha256(self.profile[key])
+            for key in (
+                "build_audit_sha256", "native_port_identity_sha256",
+                "timing_compatibility_sha256",
+                "timed_speech_policy_sha256", "word_gap_policy_sha256", "vad_merge_policy_sha256",
+            )
+        ):
+            raise RuntimeError("CUDA shadow profile identity hash is invalid")
+        if (
+            type(self.profile["utterance_gap_milliseconds"]) is not int
+            or type(self.profile["vad_merge_gap_milliseconds"]) is not int
+            or cast(int, self.profile["utterance_gap_milliseconds"]) < 0
+            or cast(int, self.profile["vad_merge_gap_milliseconds"]) < 0
+        ):
+            raise RuntimeError("CUDA shadow timing policy is invalid")
+        declared = self.profile["producers"]
+        producer_fields = {
+            "producer_kind", "producer_id", "producer_version", "generation_policy_sha256",
+            "detector_sha256", "calibration_policy_sha256", "model_id", "model_revision",
+            "model_sha256", "service_sha256", "build_audit_sha256", "inference_kind",
+            "inference_identity_sha256",
+        }
+        if type(declared) is not list or len(declared) != 2:
+            raise RuntimeError("CUDA shadow profile must contain ASR and VAD producers")
+        measured_base: dict[str, object] = {
+            **{
+                key: value
+                for key, value in self.profile.items()
+                if key not in {"producers", "timing_compatibility_sha256"}
+            },
+            "service_sha256": service_hash(),
+            "build_audit_sha256": service_hash(),
+            "funasr_version": importlib.metadata.version("funasr"),
+            "torch_version": torch.__version__,
+        }
+        expected_models = (
+            ("asr", ASR_MODEL_ID, asr_path, ASR_INFERENCE_KIND),
+            ("vad", VAD_MODEL_ID, vad_path, VAD_INFERENCE_KIND),
+        )
+        measured_producers: list[dict[str, object]] = []
+        envelope_producers: list[dict[str, object]] = []
+        for raw, (kind, model_id, path, inference_kind) in zip(declared, expected_models, strict=True):
+            if type(raw) is not dict or set(raw) != producer_fields:
+                raise RuntimeError("CUDA shadow producer profile schema is not closed")
+            actual = {
+                **cast(dict[str, object], raw),
+                "producer_kind": kind,
+                "model_id": model_id,
+                "model_revision": path.name,
+                "model_sha256": await asyncio.to_thread(tree_hash, path),
+                "service_sha256": measured_base["service_sha256"],
+                "build_audit_sha256": measured_base["build_audit_sha256"],
+                "inference_kind": inference_kind,
+            }
+            actual["inference_identity_sha256"] = cuda_inference_identity(actual, measured_base)
+            actual["detector_sha256"] = cuda_detector_hash(actual, measured_base)
+            if actual != raw:
+                raise RuntimeError(f"measured CUDA {kind} identity mismatch")
+            if any(
+                not is_sha256(actual[key])
+                for key in (
+                    "generation_policy_sha256", "detector_sha256", "calibration_policy_sha256",
+                    "model_sha256", "service_sha256", "build_audit_sha256",
+                    "inference_identity_sha256",
+                )
+            ):
+                raise RuntimeError(f"measured CUDA {kind} identity is invalid")
+            measured_producers.append(actual)
+            envelope_producers.append(
+                {
+                    key: value
+                    for key, value in actual.items()
+                    if key not in {"build_audit_sha256", "inference_identity_sha256"}
+                }
+            )
+        if measured_producers[0]["producer_id"] == measured_producers[1]["producer_id"]:
+            raise RuntimeError("CUDA shadow producer IDs must be distinct")
+        actual_native_identity = cuda_native_port_identity(measured_base, measured_producers)
+        if actual_native_identity != self.profile["native_port_identity_sha256"]:
+            raise RuntimeError("measured CUDA shadow native identity mismatch")
+        actual_compatibility = build_timing_compatibility_profile(
+            {
+                "schema_version": "timing-compatibility-profile-v1",
+                "timing_engine_compatibility_version": self.profile[
+                    "timing_engine_compatibility_version"
+                ],
+                "build_audit_sha256": measured_base["build_audit_sha256"],
+                "runtime": {
+                    "funasr_version": measured_base["funasr_version"],
+                    "torch_version": measured_base["torch_version"],
+                    "device": cuda_device_identity(),
+                },
+                "decode": {
+                    "decoder_identity_sha256": await asyncio.to_thread(cuda_decoder_identity_sha256),
+                    "resampling_identity_sha256": cuda_resampling_identity_sha256(),
+                    "native_protocol_identity_sha256": actual_native_identity,
+                },
+                "policies": {
+                    "word_timestamp_policy_sha256": measured_base["timed_speech_policy_sha256"],
+                    "vad_merge_policy_sha256": measured_base["vad_merge_policy_sha256"],
+                },
+                "producers": [
+                    {
+                        "producer_kind": item["producer_kind"],
+                        "producer_id": item["producer_id"],
+                        "producer_version": item["producer_version"],
+                        "model_id": item["model_id"],
+                        "model_revision": item["model_revision"],
+                        "model_sha256": item["model_sha256"],
+                        "inference_identity_sha256": item["inference_identity_sha256"],
+                    }
+                    for item in measured_producers
+                ],
+            }
+        )
+        if actual_compatibility.timing_compatibility_sha256 != self.profile[
+            "timing_compatibility_sha256"
+        ]:
+            raise RuntimeError("measured CUDA timing compatibility identity mismatch")
+        if (
+            measured_base["build_audit_sha256"] != self.profile["build_audit_sha256"]
+        ):
+            raise RuntimeError("measured CUDA build audit identity mismatch")
+        measured = {
+            **measured_base,
+            "native_port_identity_sha256": actual_native_identity,
+            "timing_compatibility": actual_compatibility.to_mapping(),
+            "producers": measured_producers,
+        }
+        await self._start_model("cuda", asr_path, vad_path)
+        self.measured_profile = measured
+        self.identities = envelope_producers
+        self.measured = sha(canon(measured))
+        self.ready = True
+
     async def load(self) -> None:
         a = Path(os.environ["FUNASR_ASR_MODEL_PATH"]).resolve(strict=True)
         v = Path(os.environ["FUNASR_VAD_MODEL_PATH"]).resolve(strict=True)
         if not a.is_dir() or not v.is_dir():
             raise RuntimeError("model paths must be directories")
+        if self.profile.get("schema_version") == CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA:
+            await self._load_cuda_shadow_profile(a, v)
+            return
         normal_profile_fields = {
             "schema_version",
             "provider_id",
@@ -1021,38 +1325,7 @@ class Service:
                 or measured_native_identity != self.profile["native_port_identity_sha256"]
             ):
                 raise RuntimeError("measured shadow native identity mismatch")
-        await self.require_resources(self.startup_min_available)
-        self.singleton.acquire()
-        model_task: asyncio.Task[Any] = asyncio.create_task(
-            asyncio.to_thread(
-                AutoModel,
-                model=str(a),
-                vad_model=str(v),
-                device=self.profile["device"],
-                disable_update=True,
-                disable_pbar=True,
-            )
-        )
-        try:
-            cancelled = False
-            # Cancelling the coroutine cannot stop the native constructor. Keep
-            # the singleton until that same task finishes, including repeated
-            # cancellation while draining. Worker failures still surface below.
-            while not model_task.done():
-                try:
-                    await asyncio.shield(model_task)
-                except asyncio.CancelledError:
-                    cancelled = True
-            self.model = model_task.result()
-            if cancelled:
-                raise asyncio.CancelledError
-            devices = (module_device(self.model.model), module_device(self.model.vad_model))
-            if devices != (self.profile["device"], self.profile["device"]):
-                raise RuntimeError("model parameter device mismatch")
-        except BaseException:
-            self.model = None
-            self.singleton.release()
-            raise
+        await self._start_model(cast(str, self.profile["device"]), a, v)
         measured["producers"] = identities
         self.measured_profile = measured
         self.identities = identities
@@ -1267,7 +1540,10 @@ class Service:
     def validate_shadow_calibration_manifest_identity(self, manifest: dict[str, object]) -> None:
         if self.measured_profile is None:
             raise web.HTTPServiceUnavailable()
-        if self.measured_profile["schema_version"] != SHADOW_CALIBRATION_PROFILE_SCHEMA:
+        if self.measured_profile["schema_version"] not in {
+            SHADOW_CALIBRATION_PROFILE_SCHEMA,
+            CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA,
+        }:
             raise web.HTTPConflict(text="shadow calibration profile is unavailable")
         limits = cast(dict[str, int], manifest["source_byte_limits"])
         if (
@@ -1467,7 +1743,8 @@ class Service:
             raise web.HTTPUnauthorized(text="unauthorized")
         if (
             self.measured_profile is None
-            or self.measured_profile["schema_version"] != SHADOW_CALIBRATION_PROFILE_SCHEMA
+            or self.measured_profile["schema_version"]
+            not in {SHADOW_CALIBRATION_PROFILE_SCHEMA, CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA}
         ):
             raise web.HTTPConflict(text="shadow calibration profile is unavailable")
         try:

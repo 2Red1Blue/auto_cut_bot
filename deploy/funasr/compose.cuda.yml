@@ -1,0 +1,14 @@
+# Shadow-only CUDA overlay.  Compose merges every network, mount, filesystem,
+# capability, and no-new-privileges guard from compose.yml unchanged.
+services:
+  funasr:
+    build:
+      dockerfile: deploy/funasr/Dockerfile.cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu

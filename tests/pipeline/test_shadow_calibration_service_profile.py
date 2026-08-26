@@ -434,6 +434,9 @@ def test_cuda_shadow_projection_emits_audit_and_derived_compatibility_only_for_s
     assert payload["timing_compatibility_sha256"] == (
         profile.timing_compatibility.timing_compatibility_sha256
     )
+    assert payload["timing_engine_compatibility_version"] == (
+        profile.timing_compatibility.timing_engine_compatibility_version
+    )
     assert payload["device"] == {
         "device_class": "cuda",
         "cuda_runtime_version": "12.8",

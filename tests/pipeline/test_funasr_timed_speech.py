@@ -152,6 +152,10 @@ class _AutoModel:
         return [{"value": [[50, 250]]}]
 
 
+class _CudaAutoModel(_AutoModel):
+    actual_device = "cuda"
+
+
 class _BlockingAutoModel(_AutoModel):
     started = threading.Event()
     release = threading.Event()
@@ -292,6 +296,102 @@ def _shadow_calibration_profile(
     profile["native_port_identity_sha256"] = ns["sha"](
         ns["canon"]({**profile, "producers": producers})
     )
+    return profile
+
+
+def _cuda_shadow_calibration_profile(
+    ns: dict[str, object], asr_path: Path, vad_path: Path
+) -> dict[str, object]:
+    lock_path = asr_path.parents[2] / "funasr-service.lock"
+    ns["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
+    ns["Service"].__init__.__globals__["CANONICAL_SINGLETON_LOCK_PATH"] = lock_path
+    torch = ns["torch"]
+    torch.version = SimpleNamespace(cuda="12.8")
+    torch.cuda = SimpleNamespace(
+        is_available=lambda: True,
+        get_device_capability=lambda: (8, 9),
+    )
+    ns["Service"]._load_cuda_shadow_profile.__globals__["cuda_decoder_identity_sha256"] = lambda: H
+    profile: dict[str, object] = {
+        "schema_version": "funasr-cuda-shadow-calibration-profile-v1",
+        "provider_id": "funasr-http-v1",
+        "provider_version": "1.0.0",
+        "build_audit_sha256": ns["service_hash"](),
+        "funasr_version": "test",
+        "torch_version": "test",
+        "device": {
+            "device_class": "cuda",
+            "cuda_runtime_version": "12.8",
+            "gpu_compute_capability": "8.9",
+        },
+        "word_timing_capability": "required",
+        "max_request_bytes": 1_000_000,
+        "timed_speech_policy_sha256": H,
+        "word_gap_policy_sha256": H,
+        "vad_merge_policy_sha256": H,
+        "utterance_gap_milliseconds": 700,
+        "vad_merge_gap_milliseconds": 350,
+    }
+    producers: list[dict[str, object]] = []
+    for kind, model_id, path, inference_kind in (
+        ("asr", "SenseVoiceSmall", asr_path, "sensevoice-word-timestamp"),
+        ("vad", "fsmn-vad", vad_path, "fsmn-vad-direct"),
+    ):
+        identity: dict[str, object] = {
+            "producer_kind": kind,
+            "producer_id": kind,
+            "producer_version": "1",
+            "generation_policy_sha256": H,
+            "detector_sha256": H,
+            "calibration_policy_sha256": H,
+            "model_id": model_id,
+            "model_revision": path.name,
+            "model_sha256": ns["tree_hash"](path),
+            "service_sha256": profile["build_audit_sha256"],
+            "build_audit_sha256": profile["build_audit_sha256"],
+            "inference_kind": inference_kind,
+            "inference_identity_sha256": H,
+        }
+        identity["inference_identity_sha256"] = ns["cuda_inference_identity"](identity, profile)
+        identity["detector_sha256"] = ns["cuda_detector_hash"](identity, profile)
+        producers.append(identity)
+    profile["producers"] = producers
+    profile["native_port_identity_sha256"] = ns["cuda_native_port_identity"](profile, producers)
+    compatibility = ns["build_timing_compatibility_profile"](
+        {
+            "schema_version": "timing-compatibility-profile-v1",
+            "timing_engine_compatibility_version": "funasr-cuda-timing-v1",
+            "build_audit_sha256": profile["build_audit_sha256"],
+            "runtime": {
+                "funasr_version": profile["funasr_version"],
+                "torch_version": profile["torch_version"],
+                "device": ns["cuda_device_identity"](),
+            },
+            "decode": {
+                "decoder_identity_sha256": H,
+                "resampling_identity_sha256": ns["cuda_resampling_identity_sha256"](),
+                "native_protocol_identity_sha256": profile["native_port_identity_sha256"],
+            },
+            "policies": {
+                "word_timestamp_policy_sha256": profile["timed_speech_policy_sha256"],
+                "vad_merge_policy_sha256": profile["vad_merge_policy_sha256"],
+            },
+            "producers": [
+                {
+                    key: identity[key]
+                    for key in (
+                        "producer_kind", "producer_id", "producer_version", "model_id",
+                        "model_revision", "model_sha256", "inference_identity_sha256",
+                    )
+                }
+                for identity in producers
+            ],
+        }
+    )
+    profile["timing_engine_compatibility_version"] = (
+        compatibility.timing_engine_compatibility_version
+    )
+    profile["timing_compatibility_sha256"] = compatibility.timing_compatibility_sha256
     return profile
 
 
@@ -1038,6 +1138,97 @@ async def test_shadow_calibration_raw_envelope_closes_over_native_request_withou
         assert rejected_partial.status == 400
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cuda_shadow_profile_is_raw_endpoint_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _CudaAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        assert service.measured_profile["schema_version"] == profile["schema_version"]
+        assert service.measured_profile["build_audit_sha256"] == ns["service_hash"]()
+        assert (
+            service.measured_profile["timing_compatibility"]["timing_compatibility_sha256"]
+            == profile["timing_compatibility_sha256"]
+        )
+        assert all(
+            set(identity)
+            == {
+                "producer_kind", "producer_id", "producer_version", "generation_policy_sha256",
+                "detector_sha256", "calibration_policy_sha256", "model_id", "model_revision",
+                "model_sha256", "service_sha256", "inference_kind",
+            }
+            for identity in service.identities
+        )
+
+        normal_request = request(tmp_path)
+        normal = await client.post(
+            "/v1/timed-speech-evidence",
+            data=normal_request.source_path.read_bytes(),
+            headers=_headers(normal_request),
+        )
+        assert normal.status == 409
+        local_window = await client.post(
+            "/v2/timed-speech-window",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert local_window.status == 409
+
+        manifest, body = _shadow_calibration_manifest(tmp_path, profile)
+        manifest["expected_producers"] = service.identities
+        raw = await client.post(
+            "/v1/shadow-calibration-funasr-raw",
+            data=body,
+            headers=_shadow_calibration_headers(manifest),
+        )
+        assert raw.status == 200
+        assert (await raw.json())["producer_identities"] == service.identities
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cuda_shadow_profile_rejects_fallback_and_identity_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    with pytest.raises(RuntimeError, match="model parameter device mismatch"):
+        await ns["Service"]().load()
+
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    profile["build_audit_sha256"] = H
+    _service_environment(monkeypatch, profile, asr, vad)
+    with pytest.raises(RuntimeError, match="build audit identity mismatch"):
+        await ns["Service"]().load()
+
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    ns["torch"].cuda.is_available = lambda: False
+    _service_environment(monkeypatch, profile, asr, vad)
+    with pytest.raises(RuntimeError, match="CUDA runtime identity is unavailable"):
+        await ns["Service"]().load()
 
 
 @pytest.mark.asyncio

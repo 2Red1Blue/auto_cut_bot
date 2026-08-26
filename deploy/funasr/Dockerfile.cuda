@@ -1,0 +1,35 @@
+FROM python:3.13.13-slim-bookworm AS cpython
+
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        ffmpeg \
+        libsndfile1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 funasr
+
+# Copy the exact CPython 3.13.13 runtime from the official image.  Ubuntu 24.04
+# supplies only Python 3.12 by default; no distro package or fallback interpreter
+# participates in this image.
+COPY --from=cpython /usr/local /usr/local
+
+WORKDIR /service
+
+COPY deploy/funasr/requirements.cuda.lock ./requirements.cuda.lock
+RUN python -m pip install --no-cache-dir -r requirements.cuda.lock
+
+COPY packages/autocut-kernel /build/autocut-kernel
+RUN python -m pip install --no-cache-dir /build/autocut-kernel
+
+COPY deploy/funasr/service.py ./service.py
+
+USER funasr
+EXPOSE 8765
+CMD ["python", "service.py"]

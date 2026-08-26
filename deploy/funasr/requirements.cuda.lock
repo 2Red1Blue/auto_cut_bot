@@ -1,0 +1,12 @@
+# CUDA 12.8 / CPython 3.13.13 shadow-calibration image lock.
+# The separate PyTorch CUDA index is required: do not substitute CPU wheels.
+--extra-index-url https://download.pytorch.org/whl/cu128
+aiohttp==3.14.3
+av==18.1.0
+funasr==1.4.1
+modelscope==1.39.1
+numpy==2.4.6
+scipy==1.18.0
+soundfile==0.14.0
+torch==2.11.0+cu128
+torchaudio==2.11.0+cu128

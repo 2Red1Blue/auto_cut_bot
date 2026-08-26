@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend/deployment/authority",
-  "currentPhase": "implementation",
-  "nextAction": "Wire the verified timing-compatibility identity through CUDA shadow authority and service deployment, without widening normal timed-speech admission.",
+  "currentPhase": "review",
+  "nextAction": "Deploy the committed CUDA shadow-calibration image on the PC, create a fresh current-source shadow profile, then run independent calibration.",
   "branch": "feat/v213-contract-codegen"
 }

@@ -129,6 +129,7 @@ def build_funasr_cuda_shadow_service_profile(
         )
     projected = {
         **native_projection,
+        "timing_engine_compatibility_version": compatibility.timing_engine_compatibility_version,
         "timing_compatibility_sha256": compatibility.timing_compatibility_sha256,
     }
     return json.dumps(
