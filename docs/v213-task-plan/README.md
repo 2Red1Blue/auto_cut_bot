@@ -34,9 +34,10 @@ authority implementation
 `08-25-lock-real-test-authority-profiles` 是当前真实运行的前置任务。Shadow/local-run
 Profile 的源语法和 decoder 已实现；它们仍是 unresolved grammar，不是运行许可。
 `08-21-05-media-preflight-calibration` 已补齐测量 v3、CalibrationRecord、数据库原子
-写入和独立验证命令。相关合并测试为 310 passed、1 skipped（数据库用例已执行）；
+写入、独立验证命令和 local-run 可直接消费的记录读取接口。相关合并测试为
+324 passed、零 skipped（包括显式启用的数据库用例）；
 详见该任务的 [分块审查记录](08-21-05-media-preflight-calibration/review-calibration-phase2-slices.md)。
-尚须完成消费者接线、真实 native 校准、权威源/lock 部署和真实 HTTP 单集运行。
+尚须完成真实 native 测量适配器/校准、权威源/lock 部署、运行时接线和真实 HTTP 单集运行。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。

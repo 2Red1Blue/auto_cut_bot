@@ -208,3 +208,11 @@ bytes (`BlobIntegrityError`, denied) from bytes becoming unavailable after the
 exact owner/metadata claim was established (`BlobUnavailableError`, failed).
 An ambiguous success-commit exception is never converted into a new rejection;
 the subsequent request must reconcile the authoritative receipt.
+
+The accepted-record consumer API takes only the exact aggregate and validation
+member references plus expected shadow-source and registry-snapshot hashes.
+It verifies the four-member payload/anchor/terminal-validator closure without
+requiring measurement Receipt/Set UUIDs absent from `LocalRunCalibration`.
+The private writer-replay path additionally verifies its complete
+`CalibrationValidationBinding` and request hash. Neither API selects a latest
+logical head or reconstructs missing input references by guessing.

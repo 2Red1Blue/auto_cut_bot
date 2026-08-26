@@ -91,7 +91,7 @@ PostgreSQL 16, not skipped. Ruff and explicit source basedpyright passed.
 
 Commit: `5ce28fb6` (Store + independent validator + recovery correction).
 
-## Consumer-read integration — repair in progress
+## Consumer-read integration — ALLOW
 
 A follow-up integration check found the first public anchor reader required
 `CalibrationValidationBinding`, including measurement Receipt/Set UUIDs that
@@ -100,5 +100,19 @@ mandatory for write/replay, but consumers must use only exact accepted
 aggregate/validation references and the expected profile-source/registry
 hashes. The Store must still revalidate the four members, successful validator
 provenance and immutable anchor. It must not ask consumers to invent missing
-measurement refs or fall back to a logical head. This API adjustment is in
-progress; it changes no persisted schema or authority acceptance rule.
+measurement refs or fall back to a logical head. The API adjustment is now
+implemented and tested; it changes no persisted schema or authority acceptance
+rule. Store tests cover direct `LocalRunCalibration` consumption and thirteen
+reference/hash/scope substitutions.
+
+Final combined verification with the opt-in media PostgreSQL test explicitly
+enabled: **324 passed, zero skipped**, in 7.67 seconds. Ruff and explicit source
+basedpyright also passed. This includes one real PostgreSQL transaction
+integration using synthetic native-output fixtures, not a real new FunASR
+inference or a completed real HTTP Pipeline run.
+
+Independent reviewer: `calibration_contract`, read-only diff and shared-closure
+inspection, Ruff/basedpyright/diff checks; no new blocker. The public reader
+uses only existing local-run fields, while writer replay retains its full
+request binding. The temporary PostgreSQL verification services are stopped
+after validation; no Podman application database is stopped or reset.
