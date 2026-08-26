@@ -26,8 +26,10 @@ Next implementation: [Stage3 production wave](stage3-production-wave.md). The
 exact committed Stage2 input reader and typed Blueprint draft/parser are
 implemented. Complete contexts (2d0cd511), Blueprint projection/3N member closure
 (7643723c) and rational editorial timing (77390e9d) are also delivered. Material
-combination feasibility, independent Admission/Command/Runtime and real acceptance
-remain open; do not confuse pending business members with admitted Blueprints.
+combination feasibility (5718d7fc/b5b1a125) and full generation policy/request
+(a45a57e4) are now delivered too, with final2472 pure semantic/architecture tests.
+Independent Admission/Command/Runtime and real acceptance remain open; do not
+confuse pending business members or positive witnesses with admitted Blueprints.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。

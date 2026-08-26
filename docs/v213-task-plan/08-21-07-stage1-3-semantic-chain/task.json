@@ -28,10 +28,10 @@
     "stage3_current_wave": "stage3-production-wave.md",
     "stage3_input_checkpoint": "b4568448",
     "stage3_draft_checkpoint": "b5798b6c",
-    "stage3_compilation_checkpoints": ["77390e9d", "2d0cd511", "7643723c"],
-    "stage3_local_scope": "Exact input reader/draft parser plus deduplicated full contexts, strict Blueprint projection, 3N pending business members and rational intent timing delivered and independently reviewed. New scoped tests: context84, Blueprint20, members27, timing18. No Stage3 admission or persistence: material alternative/function/reuse feasibility, independent Admission, audited Command/exact replay and Runtime remain open.",
+    "stage3_compilation_checkpoints": ["77390e9d", "2d0cd511", "7643723c", "5718d7fc", "b5b1a125", "a45a57e4"],
+    "stage3_local_scope": "Reader/draft/context/Blueprint/3N/timing plus exact subset-cover search, full Event carry and material/function/Source reuse feasibility, explicit policy and complete generation request delivered. Independent reviews ALLOW; final2472 semantic/architecture passed. New tests search26/outcome16/feasibility46/request-policy34/crossflow6 are included. No Stage3 Admission, persisted Command or HTTP registration yet; no real DB/provider run.",
     "stage2_local_scope": "Kernel Command plus local-run-v3/profile-v7 HTTP runtime delivered. Independent resource/adapter/core reviews ALLOW. Final Runtime regression299passed, source/resource413passed, packaging20passed, media2purepassed; DB/media65 collected only. Ruff and production types clean. No real DB/provider or complete-run success claim.",
-    "stage2_next": "Stage3 full-batch material feasibility and independent Admission, frozen generation request/durable Command/exact replay; then Runtime and Stage4/Render/QC integration.",
+    "stage2_next": "Stage3 independent Admission, audited durable Command with atomic3N+1 and exact replay; then shared HTTP/Agent adapters and Stage4/Render/QC integration. Material domain and generation request are already delivered, not a new discovery task.",
     "remote_acceptance": "Not executed on this workstation; database, real model and full Pipeline acceptance remain open."
   }
 }

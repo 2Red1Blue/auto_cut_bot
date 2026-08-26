@@ -129,7 +129,7 @@ before accepting Stage3 edits. Reuse the current agents rather than spawning
 another team. Deliver coherent tested commits throughout; do not wait for the
 whole pipeline to become runnable before saving code.
 
-## Acceptance still to prove
+## Acceptance checklist (delivery evidence below; Runtime and real acceptance open)
 
 - Actual Stage2 reader and mixed Job/Receipt/Set/raw tamper negatives, no side effects.
 - Two-or-more Story frozen batch, no skipped Story/Beat/requirement.
@@ -195,7 +195,8 @@ context/compilation progress and remaining execution work are recorded below.
   a capability field. Preserve span intent for Stage4 evidence/endpoint checks.
 
 These are pure compilation slices, not a Stage3 Admission or Runtime activation.
-Durable 3N+1 commit, full material feasibility and real acceptance remain open.
+Durable 3N+1 commit and real acceptance remain open; material feasibility is
+delivered in the execution slice recorded at the end of this document.
 
 Business composition uses `compose_editorial_business_members(contexts,
 projection)` and the strict `decode_editorial_business_members(members,
@@ -229,9 +230,8 @@ are rejected; a substituted VLM request or raw semantic owner cannot hide behind
 a recomputed context hash. Tests include fully rehashed DAGs so failure cannot
 be credited merely to a stale outer hash.
 
-Still open: material alternative coverage/function eligibility and full-batch
-Source reuse search; independent SemanticFeasibilityAdmission; generation policy
-and durable request; audited Command and exact 3N+1 replay; HTTP/Agent Runtime;
+Still open: independent SemanticFeasibilityAdmission; audited Command and exact
+3N+1 replay; HTTP/Agent Runtime;
 remote DB/provider acceptance. No Stage3 admitted output, real model execution,
 database transaction or whole-run success is claimed by these pure slices.
 
@@ -240,3 +240,97 @@ Delivery commits: 2d0cd511 (context), 7643723c (Blueprint and 3N members),
 Scoped independent review accepted context84/Blueprint20/members27/timing18
 tests; these are subsets, not additional end-to-end acceptance counts. Changed
 production typing, Ruff and diff checks passed. No local DB/model/service ran.
+
+## Material search and generation request execution slice
+
+The material search universe is built from the exact selected Stage2 Proposal
+support, not unrestricted Catalog candidates. Every declared alternative pool
+member must resolve to an eligible RequirementAlternativeProof and support the
+Beat narrative function. Unknown or ineligible references are explicit errors,
+not silently removed; context-only event edges never count as coverage.
+Required events must be covered by the
+selected nonempty subset's directly supported events; all mandatory material
+facts remain protected by the upstream support proofs.
+
+The bounded canonical order is frozen: requirements follow Story/Beat/requirement
+order, alternatives are sorted by exact alternative key, and each pool's subsets
+are visited by cardinality then lexicographic candidate key. all_of creates one
+slot for each alternative; one_of creates one slot permitting exactly one whole
+alternative. Source ownership is joint over all slots: reuse within a Story is
+allowed, cross-Story reuse follows the frozen Job policy. Every inspected subset
+is charged, including rejected coverage/source choices. Exhaustion is
+indeterminate with no partial witness, never infeasible or successful fallback.
+The independent positive verifier checks complete assignment, event coverage
+and Source ownership directly; canonicality/negative claims require evaluator
+recomputation, not the witness verifier.
+
+EditorialFeasibilityPolicy binds strategy_version and max_search_states.
+Stage3CommandPolicy additionally freezes explicit generation, draft, context,
+Blueprint strategy, revision, request-byte budget and finite retry policy.
+BuildEditorialBlueprintRequest binds the complete Stage2 request and succeeded
+Job/slot/Receipt/Set identity. Preparation includes the full deduplicated context
+and exact response schema in the streaming Doubao request. Preparing bytes
+does not prove commitment; only the exact reader and future Command own that
+boundary. No physical span choice, Store write or Runtime success is added here.
+
+### Full-event evidence correction
+
+Stage2 material eligibility proves required Facts, not complete Event carry.
+A candidate may overlap an Event while carrying only the required Fact. Stage3
+therefore rebuilds candidate-to-Event coverage edges from the exact raw pack,
+EventCard and Source timeline: map the raw Event interval again, verify its
+owner/range identity, then require the whole Event outer uncertainty interval
+inside the candidate's conservative guaranteed-inner interval. Reuse
+decode_candidate_source_context and conservative_support_bounds; no local
+translation approximation. The first strategy does not join two half-events
+into a complete Event proof. A legal pool candidate with no such coverage edge
+can remain in the pool but contributes no event coverage.
+
+The feasibility API additionally requires actual CommittedSemanticInputs and
+the frozen JobPolicy, whose hash must match the Portfolio. Stage1/Stage2 value
+objects alone do not contain the actual timeline or Source reuse policy.
+Every Beat preference must belong to that Beat's eligible alternative pool;
+being somewhere in the Catalog is insufficient. Preference order is soft and
+does not change this strategy's canonical material search order.
+
+## Material feasibility and generation-request delivery
+
+Delivered and independently reviewed:
+
+- 5718d7fc: lazy bounded whole-alternative subset-cover search, direct positive
+  witness verifier, shared succeeded predecessor outcome codec. The shared
+  codec preserves Job/slot/Receipt/Set identity; transport freshness does not
+  change durable request bytes.
+- b5b1a125: exact Stage2 eligible pool plus actual raw Source/Event/Fact proof,
+  complete-event coverage, Beat function/preferences, taint, frozen Source
+  restrictions and whole-batch reuse. Exact rational timing witnesses use
+  canonical reduced positive decimal strings, not rounded JSON numbers.
+- a45a57e4: Stage3CommandPolicy, BuildEditorialBlueprintRequest and
+  prepare_stage3_request with complete context, strict response schema, exact
+  whole-body byte limit, full Stage2 request/outcome and all policy hashes.
+  Request preparation has no provider call or Store write.
+
+The feasibility result's input_binding_sha256 is a domain-separated feasibility
+binding over actual Source/aggregate/predecessors/projection/policy. It is not
+the generation context input binding; future Admission must bind and check both,
+not compare these different domains as if they were the same hash.
+
+Independent review caught and closed two concrete issues in this wave: an
+eligible Fact-carrying candidate need not carry the whole Event; predecessor
+record/value types must be checked before accessing their fields. Actual
+strict-admitted in-memory Stage1/2 fixtures exercise the first distinction.
+A positive witness is independently checked without the solvers; a negative
+conclusion, canonical first-choice and examined-state counts still require
+recomputation by the future Admission owner.
+
+Final regression: 2472 semantic-chain/architecture tests passed. New scoped
+tests (included in that total): search26, outcome16, feasibility46,
+request-policy34 and crossflow6. Small search oracle enumerates 1024 cases;
+large-pool/deep-stack tests check bounded lazy execution. Ruff, changed production
+typing and diff checks passed. No local DB, model, service or real Pipeline ran.
+
+Next is independent batch SemanticFeasibilityAdmission, the audited
+BuildEditorialBlueprintCommand, atomic3N+1/exact replay and HTTP registration.
+Reuse the delivered readers/context/request/material owners; do not re-open
+this as another design/discovery wave. Then continue Stage4/Recipe/Render/local
+QC, Agent conformance and remote actual acceptance. Task07 remains in progress.

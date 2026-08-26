@@ -1,4 +1,25 @@
-# Latest review: Stage 3 compilation slices (2026-08-26)
+# Latest review: Stage 3 material and request slices (2026-08-26)
+
+Scoped independent ALLOW: search/outcome5718d7fc, materialb5b1a125 and
+request/policya45a57e4. Final2472 semantic-chain/architecture tests passed;
+Ruff, production typing and diff checks clean. New128 tests are included in
+that total: search26/outcome16/material46/request-policy34/crossflow6.
+
+Real finding fixed: Stage2 Fact eligibility does not prove full Event carry.
+The Stage3 domain independently remaps actual raw Event outer bounds and
+requires containment in candidate conservative inner bounds. Two half-events
+cannot be stitched into a full-event witness. Invalid unselected one_of pool
+candidates fail too; valid zero-contribution candidates remain with no coverage.
+Request review additionally fixed exact predecessor type checks before field
+access. No private decoder clone: Stage2/3 now share succeeded outcome transport.
+
+Independent reviewer ran52 material/crossflow tests and77 search/Stage2 request
+tests; root separately reviewed request/policy and ran the final full regression.
+These are overlapping scoped checks, not extra real end-to-end acceptance.
+No local DB/provider/model/service execution. Task07 remains open: independent
+Admission, audited Command/3N+1/exact replay, Runtime and downstream/remote work.
+
+## Earlier review: Stage 3 compilation slices (2026-08-26)
 
 Stage2 Runtime/local-run v3/profile v7 delivery is recorded in
 `docs/v213-task-plan/08-21-07-stage1-3-semantic-chain/stage2-runtime-wave.md`.
