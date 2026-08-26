@@ -34,6 +34,7 @@ from ..media import (
     derive_presentation_timeline_facts,
     plan_candidate_evidence_window,
 )
+from ..media.audio_stream_facts import AudioStreamFacts
 from ..media.root_evidence import CanonicalEvidence
 from ..media.timed_evidence import validate_calibration_bindings
 from ..media.types import canonical_sha256
@@ -372,6 +373,17 @@ class ResolvedPrepareTimedMediaEvidenceRequest:
 
     request: PrepareTimedMediaEvidenceRequest
     presentation_timeline_probe: PresentationTimelineProbe
+    # New local consumers need measured native layout. Keep this optional leaf
+    # out of the old canonical payload; local lifecycle identity binds it itself.
+    audio_stream_facts: AudioStreamFacts | None = None
+
+    def __post_init__(self) -> None:
+        if self.audio_stream_facts is not None:
+            if type(self.audio_stream_facts) is not AudioStreamFacts:
+                raise TimedMediaEvidenceCommandError("resolved audio facts must be exact")
+            self.audio_stream_facts.assert_matches(
+                self.presentation_timeline_probe, self.request.audio_sample_boundaries,
+            )
 
     @property
     def job(self) -> Job:
@@ -854,7 +866,7 @@ def resolve_committed_timed_media_request(
                 child.reference.revision)
         ):
             raise TimedMediaEvidenceCommandError("committed VLM pack does not bind the exact Source/episode/request owner")
-        return ResolvedPrepareTimedMediaEvidenceRequest(request, facts)
+        return ResolvedPrepareTimedMediaEvidenceRequest(request, facts, episode.media_probe.audio_stream_facts)
     except IndexError as error:
         raise TimedMediaEvidenceCommandError(
             "requested source episode is absent from the committed source manifest"
