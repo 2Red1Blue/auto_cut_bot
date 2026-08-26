@@ -33,7 +33,7 @@ from auto_cut_bot.pipeline.runtime import (
 from tests.pipeline.runtime_profile_fixture import (
     execution_profile as frozen_execution_profile,
 )
-from tests.pipeline.runtime_profile_fixture import media_preflight_policy
+from tests.pipeline.runtime_profile_fixture import media_preflight_policy, stage3_command_policy
 
 
 class FakeRunStore:
@@ -56,17 +56,19 @@ class FakeRunStore:
             if existing.request_hash != request_hash:
                 raise IdempotencyConflictError("idempotency key already binds another request")
             return RunClaim(existing, replayed=True)
+        # These are control-plane test plans, not semantic acceptance evidence.
+        stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
+        if execution_profile.schema_version == "pipeline-execution-profile-v2":
+            stages = ("source_prep", "vlm")
+        elif execution_profile.schema_version == "pipeline-execution-profile-v5":
+            stages = ("source_prep", "vlm", "media_preflight")
         snapshot = PipelineRunSnapshot(
             run_id=run_id,
             request=request,
             request_hash=request_hash,
             status="accepted",
-            commands=(
-                PipelineCommand("command-1", "source_prep", "pending"),
-                PipelineCommand("command-2", "vlm", "pending"),
-                PipelineCommand("command-3", "stage1_narrative", "pending"),
-                PipelineCommand("command-4", "media_preflight", "pending"),
-            ),
+            commands=tuple(PipelineCommand(f"command-{index}", stage, "pending")
+                           for index, stage in enumerate(stages, start=1)),
             version=0,
             execution_profile=execution_profile,
         )
@@ -150,6 +152,7 @@ def _v2_execution_profile() -> PipelineExecutionProfile:
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -170,6 +173,7 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     mapping["schema_version"] = "pipeline-execution-profile-v5"
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -234,10 +238,13 @@ async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
     assert first.snapshot.execution_profile == profile
     assert first.snapshot.execution_profile_hash == profile.canonical_hash
     assert first.snapshot.to_mapping()["execution_profile_hash"] == profile.canonical_hash
+    assert tuple(command.stage for command in first.snapshot.commands) == (
+        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight",
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model_kind", ("vlm", "stage1"))
+@pytest.mark.parametrize("model_kind", ("vlm", "stage1", "stage2", "stage3"))
 async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default(model_kind) -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
@@ -248,6 +255,18 @@ async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_de
         policy = first_profile.build_stage1_command_policy()
         changed_profile = frozen_execution_profile(stage1_policy=replace(
             policy, generation=replace(policy.generation, model_id="different-stage1-model"),
+        ))
+    elif model_kind == "stage2":
+        first_profile = execution_profile()
+        policy = first_profile.build_stage2_command_policy()
+        changed_profile = frozen_execution_profile(stage2_policy=replace(
+            policy, generation=replace(policy.generation, model_id="different-stage2-model"),
+        ))
+    elif model_kind == "stage3":
+        first_profile = execution_profile()
+        policy = first_profile.build_stage3_command_policy()
+        changed_profile = frozen_execution_profile(stage3_policy=replace(
+            policy, generation=replace(policy.generation, model_id="different-stage3-model"),
         ))
     first_service = DurablePipelineRunService(
         store,
@@ -291,6 +310,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
             materialization_limits=profile.to_materialization_limits(),
             stage1_policy=profile.build_stage1_command_policy(),
             stage2_policy=profile.build_stage2_command_policy(),
+            stage3_policy=stage3_command_policy(),
         )
         == profile
     )
@@ -324,7 +344,7 @@ def test_execution_profile_binds_every_closed_materialization_limit() -> None:
 
 
 def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() -> None:
-    v4 = execution_profile()
+    current = execution_profile()
     v2 = _v2_execution_profile()
     v1_mapping = v2.to_mapping()
     v1_mapping["schema_version"] = "pipeline-execution-profile-v1"
@@ -336,7 +356,7 @@ def test_execution_profile_v1_remains_one_attempt_and_v2_binds_retry_budget() ->
     assert v1.to_generation_retry_policy().backoff_seconds == ()
     assert v2.to_generation_retry_policy().max_attempts == 3
     assert v2.to_generation_retry_policy().backoff_seconds == (2, 8)
-    assert v4.to_media_preflight_policy().canonical_hash == v4.media_preflight_policy_hash
+    assert current.to_media_preflight_policy().canonical_hash == current.media_preflight_policy_hash
     with pytest.raises(PipelineRunValidationError, match="no frozen media-preflight"):
         v2.to_media_preflight_policy()
     assert v1.canonical_hash != v2.canonical_hash
@@ -367,6 +387,7 @@ def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -
             materialization_limits=profile.to_materialization_limits(),
             stage1_policy=profile.build_stage1_command_policy(),
             stage2_policy=profile.build_stage2_command_policy(),
+            stage3_policy=stage3_command_policy(),
         )
 
 
@@ -845,7 +866,7 @@ async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(oper
     snapshot = replace(_snapshot(command), execution_profile=_v5_execution_profile())
     store = NoStore()
     execute_stage, reconcile_stage = FakeStage(), FakeReconcileStage()
-    with pytest.raises(PipelineRunValidationError, match="profile v6 or v7"):
+    with pytest.raises(PipelineRunValidationError, match="profile v6, v7 or v8"):
         if operation == "execute":
             runner = PipelineStageRunner(
                 PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)), store,

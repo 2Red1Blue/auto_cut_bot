@@ -53,6 +53,7 @@ from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage
 from .stage1_narrative_stage import Stage1NarrativePipelineStage
 from .stage2_portfolio_stage import Stage2PortfolioPipelineStage
+from .stage3_blueprint_stage import Stage3BlueprintPipelineStage
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
 from .vlm_stage import VlmPipelineStage
 from .worker import DurablePipelineWorker
@@ -386,6 +387,7 @@ def compose_pipeline_runtime_from_environment(
         authority_profile_resolver = load_installed_local_run_resolver()
         stage1_policy = authority_profile_resolver.resource.narrative.command_policy
         stage2_policy = authority_profile_resolver.resource.local_run.stage2_command_policy
+        stage3_policy = authority_profile_resolver.resource.local_run.stage3_command_policy
         execution_profile = PipelineExecutionProfile.from_policies(
             policy,
             media_policy,
@@ -393,6 +395,7 @@ def compose_pipeline_runtime_from_environment(
             materialization_limits=materialization_limits,
             stage1_policy=stage1_policy,
             stage2_policy=stage2_policy,
+            stage3_policy=stage3_policy,
         )
         validate_installed_vlm_policy(
             authority_profile_resolver.resource.narrative,
@@ -457,6 +460,13 @@ def compose_pipeline_runtime_from_environment(
         ),
         max_request_bytes=stage2_policy.max_prompt_bytes,
     )
+    blueprint_provider = DoubaoDraftProvider(
+        ArkResponsesTransportConfig(
+            provider_config.api_key, provider_config.base_url,
+            provider_config.timeout_seconds, stage3_policy.draft_policy.max_response_bytes,
+        ),
+        max_request_bytes=stage3_policy.max_prompt_bytes,
+    )
     vlm_stage = VlmPipelineStage(
         kernel_store,
         provider,
@@ -473,11 +483,15 @@ def compose_pipeline_runtime_from_environment(
     portfolio_stage = Stage2PortfolioPipelineStage(
         kernel_store, portfolio_provider, installed_profile=authority_profile_resolver.resource,
     )
+    blueprint_stage = Stage3BlueprintPipelineStage(
+        kernel_store, blueprint_provider, installed_profile=authority_profile_resolver.resource,
+    )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
         ("stage1_narrative", narrative_stage),
         ("stage2_portfolio", portfolio_stage),
+        ("stage3_blueprint", blueprint_stage),
         ("media_preflight", media_preflight_stage),
     )
     runner = PipelineStageRunner(registry, control_store)
@@ -487,6 +501,7 @@ def compose_pipeline_runtime_from_environment(
         ("vlm", vlm_stage),
         ("stage1_narrative", narrative_stage),
         ("stage2_portfolio", portfolio_stage),
+        ("stage3_blueprint", blueprint_stage),
         ("media_preflight", media_preflight_stage),
     )
     service = DurablePipelineRunService(

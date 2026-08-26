@@ -57,6 +57,37 @@ def migrated_database() -> None:
                 cursor.execute(migration.read_text(encoding="utf-8"))
 
 
+@pytest.mark.parametrize(
+    ("path", "value"),
+    (
+        (("draft_policy", "max_response_bytes"), None),
+        (("context_policy", "max_batch_context_bytes"), None),
+        (("generation", "model_id"), None),
+        (("generation", "max_output_tokens"), 0.5),
+        (("draft_policy", "max_response_bytes"), 0.5),
+        (("context_policy", "max_source_members"), True),
+        (("feasibility_policy", "max_search_states"), -1),
+        (("retry_policy", "max_attempts"), 0),
+        (("retry_policy", "backoff_seconds"), [0.5]),
+        (("retry_policy", "backoff_seconds"), [2**53]),
+    ),
+)
+def test_0021_sql_guard_rejects_nested_stage3_policy_invalid_leaves(path, value) -> None:
+    """Remote-only executable SQL guard; collection never contacts PostgreSQL."""
+    assert DSN is not None
+    profile = frozen_execution_profile().to_mapping()
+    nested = profile["stage3_command_policy"]
+    for key in path[:-1]:
+        nested = nested[key]
+    nested[path[-1]] = value
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT runtime.execution_profile_semantic_v8_is_valid(%s::jsonb, 'accepted')",
+            (json.dumps(profile),),
+        )
+        assert cursor.fetchone() == (False,)
+
+
 def _composition(source_root: Path, *additional_source_roots: Path):
     assert DSN is not None
 
@@ -124,6 +155,7 @@ def _historical_execution_profile(
     mapping["schema_version"] = schema_version
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -148,6 +180,7 @@ def _v4_execution_profile() -> PipelineExecutionProfile:
     mapping["schema_version"] = "pipeline-execution-profile-v4"
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     del mapping["materialization_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
@@ -157,6 +190,7 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     mapping["schema_version"] = "pipeline-execution-profile-v5"
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -164,6 +198,14 @@ def _v6_execution_profile() -> PipelineExecutionProfile:
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v6"
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
+    return PipelineExecutionProfile.from_mapping(mapping)
+
+
+def _v7_execution_profile() -> PipelineExecutionProfile:
+    mapping = _execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v7"
+    del mapping["stage3_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -226,7 +268,7 @@ def test_0019_sql_guard_closes_every_policy_object(path, mutation) -> None:
     for key in path:
         target = target[key]
     if mutation == "missing":
-        # Keep v7 so the policy CHECK, not historical-version trigger, denies.
+        # Keep v8 so the closed-policy CHECK, not the historical-version trigger, denies.
         target.pop("stage1_command_policy" if not path else next(iter(target)))
     else:
         target["unregistered"] = True
@@ -240,31 +282,32 @@ def test_current_sql_null_cannot_escape_closed_policy_guard() -> None:
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT runtime.stage1_command_policy_shape_is_valid(NULL)")
         assert cursor.fetchone() == (False,)
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v7 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v8 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, None)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7])
 def test_current_sql_guard_rejects_new_old_profiles_even_with_valid_old_policy(version) -> None:
     assert DSN is not None
     profile = (
         _historical_execution_profile(f"pipeline-execution-profile-v{version}")
         if version <= 3 else _v4_execution_profile() if version == 4
-        else _v5_execution_profile() if version == 5 else _v6_execution_profile()
+        else _v5_execution_profile() if version == 5 else _v6_execution_profile() if version == 6
+        else _v7_execution_profile()
     )
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v7 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v8 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, profile.to_mapping())
 
 
-def test_current_sql_guard_accepts_v7_but_freezes_complete_policy_and_hash() -> None:
+def test_current_sql_guard_accepts_v8_but_freezes_complete_policy_and_hash() -> None:
     assert DSN is not None
     original = _execution_profile()
     changed = _execution_profile(stage1_revision=2)
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         run_id = _insert_profile_for_guard(cursor, original.to_mapping())
         cursor.execute(
-            "SELECT runtime.execution_profile_semantic_v7_is_valid(%s::jsonb, 'accepted')",
+            "SELECT runtime.execution_profile_semantic_v8_is_valid(%s::jsonb, 'accepted')",
             (original.canonical_json,),
         )
         assert cursor.fetchone() == (True,)
@@ -487,6 +530,71 @@ def test_0020_migration_rejects_active_v6_and_keeps_terminal_history_read_only()
                 (json.dumps(mapping["stage2_command_policy"]),),
             )
             assert cursor.fetchone() == (expected,)
+
+
+def test_0021_migration_rejects_active_v7_and_keeps_terminal_history_read_only() -> None:
+    """Remote-only upgrade coverage for the v8 boundary; never run without DSN."""
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+    migration_sql = (migration_root / "0021_stage3_pipeline_profile.sql").read_text(encoding="utf-8")
+    profile = _v7_execution_profile()
+
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+        for migration in sorted(migration_root.glob("*.sql")):
+            if migration.name >= "0021_stage3_pipeline_profile.sql":
+                break
+            cursor.execute(migration.read_text(encoding="utf-8"))
+        with connection.transaction():
+            run_id = _insert_profile_for_guard(cursor, profile.to_mapping())
+
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        active_history = cursor.fetchone()
+        with pytest.raises(psycopg.errors.RaiseException, match="0021 refuses accepted/running pre-v8 runs"):
+            cursor.execute(migration_sql)
+        connection.rollback()
+        cursor.execute("SELECT to_regprocedure('runtime.stage3_command_policy_shape_is_valid(jsonb)')")
+        assert cursor.fetchone() == (None,)
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        assert cursor.fetchone() == active_history
+
+        with connection.transaction():
+            cursor.execute(
+                """UPDATE runtime.pipeline_runs SET state = 'failed', version = version + 1,
+                    updated_at = transaction_timestamp() WHERE run_id = %s""",
+                (run_id,),
+            )
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        terminal_history = cursor.fetchone()
+        assert json.loads(terminal_history[0]) == profile.to_mapping()
+
+        cursor.execute(migration_sql)
+        cursor.execute(
+            """SELECT runtime.execution_profile_semantic_v8_is_valid(execution_profile, state)
+                 FROM runtime.pipeline_runs WHERE run_id = %s""",
+            (run_id,),
+        )
+        assert cursor.fetchone() == (True,)
+        with pytest.raises(psycopg.errors.RaiseException, match="historical pre-v8 execution profile rows are read-only"):
+            cursor.execute(
+                "UPDATE runtime.pipeline_runs SET execution_profile_hash = execution_profile_hash WHERE run_id = %s",
+                (run_id,),
+            )
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        assert cursor.fetchone() == terminal_history
 
 
 def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> None:
@@ -781,6 +889,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     v2 = PipelineExecutionProfile.from_mapping(mapping)
 
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -791,7 +900,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             try:
                 with pytest.raises(
                     psycopg.errors.RaiseException,
-                    match="new pre-v7 execution profile rows are forbidden",
+                    match="new pre-v8 execution profile rows are forbidden",
                 ):
                     cursor.execute(
                         """

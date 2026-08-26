@@ -80,6 +80,7 @@ from tests.pipeline.runtime_profile_fixture import (
     media_preflight_policy,
     stage1_command_policy,
     stage2_command_policy,
+    stage3_command_policy,
 )
 
 RUN_ID = "pipeline_run_" + "a" * 32
@@ -813,6 +814,7 @@ def _profile() -> PipelineExecutionProfile:
         ),
         stage1_policy=stage1_command_policy(),
         stage2_policy=stage2_command_policy(),
+        stage3_policy=stage3_command_policy(),
     )
 
 
@@ -822,6 +824,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -831,7 +834,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     }
     historical = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="profile v7"):
+    with pytest.raises(PipelineRunValidationError, match="profile v8"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="authorized-source"),

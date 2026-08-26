@@ -20,6 +20,9 @@ STAGE1_PROFILE_MIGRATION = Path(
 STAGE2_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0020_stage2_pipeline_profile.sql"
 )
+STAGE3_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0021_stage3_pipeline_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -189,7 +192,25 @@ def test_stage2_profile_migration_closes_v7_and_preserves_terminal_history() -> 
     assert "INSERT INTO runtime.pipeline_commands" not in sql
 
 
-def test_new_run_sql_has_ordered_stage2_and_current_profile_claim_predicates() -> None:
+def test_stage3_profile_migration_closes_v8_and_preserves_terminal_history() -> None:
+    sql = STAGE3_PROFILE_MIGRATION.read_text(encoding="utf-8")
+    for text in (
+        "0021 refuses accepted/running pre-v8 runs",
+        "runtime.execution_profile_semantic_v8_is_valid",
+        "runtime.stage3_command_policy_shape_is_valid",
+        "profile_value - 'stage3_command_policy'",
+        "runtime.execution_profile_semantic_v7_is_valid(profile_value, run_state)",
+        "historical pre-v8 execution profile rows are read-only",
+        "new pre-v8 execution profile rows are forbidden",
+        "stage3_command_policy", "draft_policy", "context_policy", "feasibility_policy", "retry_policy",
+        "LANGUAGE plpgsql", "jsonb_typeof", "jsonb_array_elements",
+        "^[1-9][0-9]{0,15}$", "^(0|[1-9][0-9]{0,15})$",
+        "max_response_bytes", "max_search_states", "max_source_members",
+    ):
+        assert text in sql
+
+
+def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -> None:
     """Inspect the actual emitted-query source; never open a DB connection."""
     from inspect import getsource
 
@@ -199,13 +220,14 @@ def test_new_run_sql_has_ordered_stage2_and_current_profile_claim_predicates() -
     start = source.index("INSERT INTO runtime.pipeline_commands")
     insert = source[start:source.index("self._insert_outbox", start)]
     for ordinal, stage in enumerate(
-        ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
+        ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
     ):
         assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
-    assert insert.count("uuid4(), run_id") == 5
-    assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio')" in source
-    assert "->> 'schema_version' = 'pipeline-execution-profile-v7'" in source
+    assert insert.count("uuid4(), run_id") == 6
+    assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
+    assert "->> 'schema_version' = 'pipeline-execution-profile-v8'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source
     assert "profile_run.execution_profile ? 'stage2_command_policy'" in source
+    assert "profile_run.execution_profile ? 'stage3_command_policy'" in source
     assert "predecessor.ordinal < candidate.ordinal" in source
     assert "predecessor.state <> 'succeeded'" in source

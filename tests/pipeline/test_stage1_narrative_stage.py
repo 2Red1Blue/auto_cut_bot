@@ -266,6 +266,7 @@ def _context(*, stage1_policy: Stage1CommandPolicy | None = None,
         materialization_limits=base.to_materialization_limits(),
         stage1_policy=policy,
         stage2_policy=base.build_stage2_command_policy() if stage2_policy is None else stage2_policy,
+        stage3_policy=base.build_stage3_command_policy(),
     )
     return PipelineStageContext(
         RUN_ID,

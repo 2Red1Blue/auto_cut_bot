@@ -220,7 +220,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime is not None
     assert runtime.authority_profile_resolver is fake_installed_loader
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v7"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v8"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
@@ -241,9 +241,12 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime.execution_profile.build_stage2_command_policy() == (
         fake_installed_loader.resource.local_run.stage2_command_policy
     )
+    assert runtime.execution_profile.build_stage3_command_policy() == (
+        fake_installed_loader.resource.local_run.stage3_command_policy
+    )
 
 
-def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and_media(
+def test_composition_registers_three_semantic_commands_between_vlm_and_media(
     tmp_path, monkeypatch, fake_installed_loader,
 ):
     from autocut_kernel.pipeline.build_narrative_graph_command import BuildNarrativeGraphCommand
@@ -251,6 +254,7 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
     from auto_cut_bot.pipeline.runtime import composition
     from auto_cut_bot.pipeline.runtime.stage1_narrative_stage import Stage1NarrativePipelineStage
     from auto_cut_bot.pipeline.runtime.stage2_portfolio_stage import Stage2PortfolioPipelineStage
+    from auto_cut_bot.pipeline.runtime.stage3_blueprint_stage import Stage3BlueprintPipelineStage
     from auto_cut_bot.pipeline.vlm import ark_responses_transport
     from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
 
@@ -259,10 +263,27 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
 
     monkeypatch.setattr(composition.psycopg, "connect", forbidden)
     monkeypatch.setattr(ark_responses_transport, "create_ark_client", forbidden)
+    original = fake_installed_loader.resource
+    one = original.narrative.command_policy
+    two = original.local_run.stage2_command_policy
+    three = original.local_run.stage3_command_policy
+    # Distinct limits make cross-stage wiring mistakes observable, rather than
+    # comparing three identical synthetic defaults with themselves.
+    resource = synthetic_installed_resource(
+        command_policy=replace(one, draft_policy=replace(
+            one.draft_policy, max_prompt_bytes=2_100_000, max_response_bytes=1_100_000,
+        )),
+        stage2_command_policy=replace(two, max_prompt_bytes=2_200_000,
+                                      draft_policy=replace(two.draft_policy, max_response_bytes=1_200_000)),
+        stage3_command_policy=replace(three, max_prompt_bytes=2_300_000,
+                                      draft_policy=replace(three.draft_policy, max_response_bytes=1_300_000)),
+    )
+    fake_installed_loader = InstalledLocalRunProfileResolver(resource)
+    monkeypatch.setattr(composition, "load_installed_local_run_resolver", lambda: fake_installed_loader)
     runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
     assert runtime is not None
     registry = runtime.worker._runner._registry
-    assert registry.stage_names == ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
+    assert registry.stage_names == ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
     for name in registry.stage_names:
         assert runtime.worker._reconciler._require(name) is registry.require(name)
     stage = registry.require("stage1_narrative")
@@ -290,6 +311,21 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
     assert portfolio_provider.strategy_version == portfolio_policy.generation.adapter_strategy_version
     assert portfolio_provider._max_request_bytes == portfolio_policy.max_prompt_bytes
     assert portfolio_provider._transport._config.max_stream_bytes == portfolio_policy.draft_policy.max_response_bytes
+    from autocut_kernel.pipeline.build_editorial_blueprint_command import (
+        BuildEditorialBlueprintCommand,
+    )
+    blueprint = registry.require("stage3_blueprint")
+    assert type(blueprint) is Stage3BlueprintPipelineStage
+    assert type(blueprint._command) is BuildEditorialBlueprintCommand
+    assert blueprint._installed_profile is fake_installed_loader.resource
+    assert blueprint._store is runtime.authority_store
+    blueprint_provider = blueprint._command._generation._provider
+    blueprint_policy = runtime.execution_profile.build_stage3_command_policy()
+    assert type(blueprint_provider) is DoubaoDraftProvider
+    assert blueprint_provider is not portfolio_provider and blueprint_provider is not provider
+    assert blueprint_provider.strategy_version == blueprint_policy.generation.adapter_strategy_version
+    assert blueprint_provider._max_request_bytes == blueprint_policy.max_prompt_bytes
+    assert blueprint_provider._transport._config.max_stream_bytes == blueprint_policy.draft_policy.max_response_bytes
 
 
 @pytest.mark.parametrize("mutation", ("vlm-model", "vlm-parameters", "media-model", "request-limit"))

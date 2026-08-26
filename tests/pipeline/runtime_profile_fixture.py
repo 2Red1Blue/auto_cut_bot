@@ -3,6 +3,10 @@ from __future__ import annotations
 from autocut_kernel.semantic_chain.candidate_catalog import CandidateCatalogPolicy
 from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
+from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
+from autocut_kernel.semantic_chain.editorial_context_models import EditorialContextPolicy
+from autocut_kernel.semantic_chain.editorial_draft import EditorialDraftPolicy
+from autocut_kernel.semantic_chain.editorial_feasibility import EditorialFeasibilityPolicy
 from autocut_kernel.semantic_chain.stage1_command_policy import (
     Stage1CommandPolicy,
     Stage1GenerationPolicy,
@@ -166,12 +170,28 @@ def stage2_command_policy() -> Stage2CommandPolicy:
     )
 
 
+def stage3_command_policy() -> Stage3CommandPolicy:
+    return Stage3CommandPolicy(
+        1,
+        Stage1GenerationPolicy("doubao-ark-text-responses-stream", "synthetic-stage3-model",
+                               "synthetic-stage3-prompt-v1", "Build all frozen editorial Blueprints.",
+                               "doubao-ark-text-responses-stream-v1", 1024, "0.5"),
+        64_000,
+        EditorialDraftPolicy("bytes", 64_000, 24, 4, 8, 16, 8, 32, 8, 64, 16, 256, 16, 32, 512, 8_192),
+        EditorialContextPolicy("unpartitioned-batch-v1", "bytes", 64_000, 64_000, 100),
+        EditorialFeasibilityPolicy("editorial-material-feasibility-v1", 1_000),
+        GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 2, (1,)),
+        "unpartitioned-batch-v1",
+    )
+
+
 def execution_profile(
     *,
     model_id: str = "doubao-seed-2-1-pro-260628",
     media_policy: LocalMediaPreflightPolicy | None = None,
     stage1_policy: Stage1CommandPolicy | None = None,
     stage2_policy: Stage2CommandPolicy | None = None,
+    stage3_policy: Stage3CommandPolicy | None = None,
 ) -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(model_id=model_id),
@@ -189,4 +209,5 @@ def execution_profile(
         ),
         stage1_policy=stage1_command_policy() if stage1_policy is None else stage1_policy,
         stage2_policy=stage2_command_policy() if stage2_policy is None else stage2_policy,
+        stage3_policy=stage3_command_policy() if stage3_policy is None else stage3_policy,
     )

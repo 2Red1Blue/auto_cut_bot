@@ -22,9 +22,10 @@ from tests.pipeline.runtime_profile_fixture import (
     execution_profile,
     stage1_command_policy,
     stage2_command_policy,
+    stage3_command_policy,
 )
 
-STAGES = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
+STAGES = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
 RUN_ID = "pipeline_run_" + "1" * 32
 
 
@@ -33,16 +34,17 @@ def _historical_v5():
     wire["schema_version"] = "pipeline-execution-profile-v5"
     del wire["stage1_command_policy"]
     del wire["stage2_command_policy"]
+    del wire["stage3_command_policy"]
     # Historical v1 adapter bytes remain history, not a silent v2 upgrade.
     wire["adapter_strategy_version"] = "doubao-ark-files-responses-stream-v1"
     wire["request_parameters"]["adapter_strategy_version"] = wire["adapter_strategy_version"]
     return wire, PipelineExecutionProfile.from_mapping(wire)
 
 
-def test_v7_round_trips_complete_immutable_stage1_policy_without_defaults():
+def test_v8_round_trips_complete_immutable_stage1_policy_without_defaults():
     policy = stage1_command_policy()
     profile = execution_profile(stage1_policy=policy)
-    assert profile.schema_version == "pipeline-execution-profile-v7"
+    assert profile.schema_version == "pipeline-execution-profile-v8"
     assert profile.to_mapping()["stage1_command_policy"] == policy.to_mapping()
     assert profile.build_stage1_command_policy() == policy
     assert type(profile.build_stage1_command_policy()) is Stage1CommandPolicy
@@ -122,14 +124,14 @@ def test_stage1_policy_requires_all_sections(field):
 
 
 @pytest.mark.parametrize("invalid", [None, {}, [], "{}", True])
-def test_v6_requires_complete_object_policy(invalid):
+def test_v8_requires_complete_object_policy(invalid):
     wire = execution_profile().to_mapping()
     wire["stage1_command_policy"] = invalid
     with pytest.raises(PipelineRunValidationError):
         PipelineExecutionProfile.from_mapping(wire)
 
 
-def test_v6_cannot_omit_policy_or_supply_noncanonical_embedded_json():
+def test_v8_cannot_omit_policy_or_supply_noncanonical_embedded_json():
     profile = execution_profile()
     wire = profile.to_mapping()
     del wire["stage1_command_policy"]
@@ -151,11 +153,17 @@ def test_from_policies_requires_explicit_typed_stage_policies():
         PipelineExecutionProfile.from_policies(
             profile.to_doubao_policy(), profile.to_media_preflight_policy(), **arguments,
         )
+    with pytest.raises(TypeError, match="stage3_policy"):
+        PipelineExecutionProfile.from_policies(
+            profile.to_doubao_policy(), profile.to_media_preflight_policy(),
+            **arguments, stage1_policy=stage1_command_policy(), stage2_policy=stage2_command_policy(),
+        )
     with pytest.raises(PipelineRunValidationError, match="exact Stage1CommandPolicy"):
         PipelineExecutionProfile.from_policies(
             profile.to_doubao_policy(), profile.to_media_preflight_policy(),
             **arguments, stage1_policy=stage1_command_policy().to_mapping(),
             stage2_policy=stage2_command_policy(),
+            stage3_policy=stage3_command_policy(),
         )
 
 
@@ -163,6 +171,7 @@ def _historical_v6():
     wire = execution_profile().to_mapping()
     wire["schema_version"] = "pipeline-execution-profile-v6"
     del wire["stage2_command_policy"]
+    del wire["stage3_command_policy"]
     return wire, PipelineExecutionProfile.from_mapping(wire)
 
 
@@ -191,7 +200,7 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
         historical.build_stage2_command_policy()
     with pytest.raises(PipelineRunValidationError, match="read-only"):
         historical.to_doubao_policy()
-    with pytest.raises(PipelineRunValidationError, match="profile v7"):
+    with pytest.raises(PipelineRunValidationError, match="profile v8"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="synthetic-source"),
@@ -200,22 +209,22 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
         )
 
 
-@pytest.mark.parametrize("stage", ["vlm", "stage1_narrative", "stage2_portfolio", "media_preflight"])
+@pytest.mark.parametrize("stage", ["vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight"])
 @pytest.mark.parametrize("status", ["pending", "indeterminate"])
 def test_historical_v5_cannot_form_execute_or_reconcile_context(stage, status):
     _, historical = _historical_v5()
-    with pytest.raises(PipelineRunValidationError, match="profile v7"):
+    with pytest.raises(PipelineRunValidationError, match="profile v8"):
         PipelineStageContext(
             RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
             PipelineCommand("command-history", stage, status), historical,
         )
 
 
-def test_partial_five_stage_plan_still_cannot_claim_whole_run_success():
+def test_partial_six_stage_plan_still_cannot_claim_whole_run_success():
     rows = [(stage, "succeeded") for stage in STAGES]
     assert postgres._PIPELINE_SUCCESS_TERMINAL_STAGE is None
     assert postgres._terminal_run_state(rows) == "failed"
-    assert postgres._terminal_run_state(rows[:4] + [("media_preflight", "pending")]) == "running"
+    assert postgres._terminal_run_state(rows[:-1] + [("media_preflight", "pending")]) == "running"
     request = PipelineRunRequest("test", source_reference="synthetic-source")
     snapshot = PipelineRunSnapshot(
         RUN_ID, request, request.request_hash, "failed",
@@ -242,3 +251,22 @@ def test_historical_v6_four_stage_completion_remains_fail_closed_history():
         historical,
     )
     assert snapshot.status == "failed"
+
+
+def test_historical_v7_five_stage_completion_does_not_gain_stage3_or_whole_run_success():
+    mapping = execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v7"
+    del mapping["stage3_command_policy"]
+    historical = PipelineExecutionProfile.from_mapping(mapping)
+    stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
+    request = PipelineRunRequest("test", source_reference="synthetic-source")
+    snapshot = PipelineRunSnapshot(
+        RUN_ID, request, request.request_hash, "failed",
+        tuple(PipelineCommand(f"historical-{index}", stage, "succeeded", uuid4())
+              for index, stage in enumerate(stages)),
+        1, historical,
+    )
+    assert snapshot.execution_profile.to_mapping() == mapping
+    assert tuple(command.stage for command in snapshot.commands) == stages
+    assert snapshot.status == "failed"
+    assert historical.stage3_command_policy_json is None
