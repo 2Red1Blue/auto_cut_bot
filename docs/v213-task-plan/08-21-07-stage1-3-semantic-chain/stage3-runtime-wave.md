@@ -91,4 +91,3 @@ framework, legacy bridge or parallel semantic authority.
 
 This file freezes the next implementation slice; it does not claim HTTP Stage3
 is implemented or remotely verified.
-

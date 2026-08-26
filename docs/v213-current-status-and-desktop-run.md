@@ -41,8 +41,9 @@ Authority、Profile 或 CalibrationRecord。
   不执行或重建替代 Stage 1 产物。真实模型/数据库验收仍留给台式机。
 - Stage 3 已交付精确前驱读取、蓝图草案解析、完整去重证据上下文、蓝图编译、
   每故事三成员组装/严格读取、有理数时长一致性、完整事件覆盖与跨 Story 素材组合校验，
-  以及完整生成请求和显式策略。相关语义/架构回归 2472 项通过，完成独立审查。
-  这还不是获准 Blueprint；独立准入、持久化命令和 Runtime 尚待接入。
+  以及完整生成请求和显式策略。独立批次准入、持久化生成 Command、完整 3N+1
+  原子提交接口与精确重放也已交付：181aceef / 05f3dd5e，完成独立审查。
+  最新纯语义回归 2601 项通过；尚不代表真实数据库或模型验收。HTTP v8 接线正在推进。
   当前设计与进度见 [Stage 3 实现波次](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-production-wave.md)。
 
 上述描述表示“已实现并经过单元/契约测试”，不表示“已经成功跑完一部真实剧”。
@@ -57,7 +58,7 @@ Authority、Profile 或 CalibrationRecord。
    calibration，独立验证非零误差界，再生成受保护的 local-run Profile。没有该
    Profile，服务应拒绝普通 Media Preflight，这是预期行为。
 3. **Stage 1–3 语义链**：Stage 1 的本地实现已交付，仍需真实模型/数据库验收；下一项
-   开发是 Stage 3 Blueprint 的已提交命令链；Stage 2 HTTP 接线还需台式机验真。
+   开发是 Stage 3 Blueprint 的 HTTP 调度接线；Stage 1–3 共享命令均需台式机验真。
 4. **真实一集 Stage 4**：以 admitted Blueprint 与完整 ASR/VAD MediaEvidence 编译
    ExactSpan/Recipe；只输出本地 Artifact/Receipt，不发布。
 5. **本地 Render 与 Publication QC**：由已提交 Recipe 渲染，完成结构、媒体、编辑
@@ -136,7 +137,7 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧下一步是 Stage 3 Blueprint；不再把已完成的 Stage 1/2 Command 当作待设计任务。
+代码侧正在接 Stage 3 HTTP；不再把已完成的 Stage 1–3 Command 当作待设计任务。
 台式机侧准备真实模型、校准、narrative/shadow v2、local-run v3 及 reviewed Stage 1/2 策略，运行单集并
 检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。
 之后接 Stage 4/Render/QC，再扩到全剧。当前目标仍只产出本地文件。

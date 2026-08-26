@@ -2,6 +2,11 @@
 
 ## Status and scope
 
+Current delivery: shared generation audit c4829b3a, independent batch Admission
+181aceef and durable 3N+1 Command/exact replay 05f3dd5e are implemented and
+independently reviewed. The [HTTP Runtime wave](stage3-runtime-wave.md) is now
+in progress; remote database/provider/full-Pipeline acceptance remains open.
+
 Task07 remains in progress. Stage1 and Stage2 have production Kernel Commands;
 this wave implements Stage3, not a second semantic pipeline. Start with the
 exact input reader while the Stage2 Runtime wave receives final verification.
@@ -230,10 +235,10 @@ are rejected; a substituted VLM request or raw semantic owner cannot hide behind
 a recomputed context hash. Tests include fully rehashed DAGs so failure cannot
 be credited merely to a stale outer hash.
 
-Still open: independent SemanticFeasibilityAdmission; audited Command and exact
-3N+1 replay; HTTP/Agent Runtime;
-remote DB/provider acceptance. No Stage3 admitted output, real model execution,
-database transaction or whole-run success is claimed by these pure slices.
+At this historical pure-compilation checkpoint Admission/Command were still
+open; they are now delivered below. HTTP/Agent Runtime and remote DB/provider
+acceptance remain open. No real model execution, database transaction or
+whole-run success is claimed by the pure slices.
 
 Delivery commits: 2d0cd511 (context), 7643723c (Blueprint and 3N members),
 77390e9d (timing). Final semantic-chain/architecture regression: 2344 passed.
@@ -329,11 +334,10 @@ request-policy34 and crossflow6. Small search oracle enumerates 1024 cases;
 large-pool/deep-stack tests check bounded lazy execution. Ruff, changed production
 typing and diff checks passed. No local DB, model, service or real Pipeline ran.
 
-Next is independent batch SemanticFeasibilityAdmission, the audited
-BuildEditorialBlueprintCommand, atomic3N+1/exact replay and HTTP registration.
-Reuse the delivered readers/context/request/material owners; do not re-open
-this as another design/discovery wave. Then continue Stage4/Recipe/Render/local
-QC, Agent conformance and remote actual acceptance. Task07 remains in progress.
+The subsequent Admission and audited atomic3N+1 Command/exact replay are now
+delivered below. HTTP registration is in progress, reusing these owners rather
+than another discovery wave. Then continue Stage4/Recipe/Render/local QC,
+Agent conformance and remote actual acceptance. Task07 remains in progress.
 
 ## Independent Admission and durable Command execution wave
 
@@ -397,3 +401,21 @@ for all three semantic Commands; Stage1/2 migrate to that owner in this wave.
 Previous failed raw bytes need integrity checks, not successful-draft parsing.
 No local DB, real provider, Runtime success or full-Pipeline claim follows from
 the in-memory Command tests. Remote transaction/restart acceptance remains open.
+
+## Admission and durable Command delivery
+
+- c4829b3a: shared immutable request/response and complete retry-chain audit;
+  Stage1/2 migrated without changing transport recovery. 99 focused tests.
+- 181aceef: independent full-batch evaluator and closed Admission/3N+1 decoder.
+  151 focused tests (105 new plus feasibility46). Known-negative evidence cannot
+  retain corresponding pass; physical requirements cannot be silently rewritten.
+- 05f3dd5e: BuildEditorialBlueprintCommand, one atomic complete batch and exact
+  stored-output replay. 18 focused tests cover two Stories, crashes, finite
+  transport recovery, semantic denial and rehashed tampering.
+- 2b98a8d7: shared Stage2 request reconstruction for downstream Runtime consumers;
+  39 Stage1/2 adapter tests, no predecessor execution or replacement.
+
+Each slice passed independent read-only review, scoped Ruff and production
+typing. Counts overlap and are not real-run acceptance. The Runtime wave now
+adds explicit Stage3 policy to local-run/profile and registers the same Command;
+it must not claim full success before Stage4/Render/local QC are integrated.

@@ -222,15 +222,15 @@ uv run auto_cut_bot serve \
 - Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；
 - Stage 3 的前驱读取、草案解析、证据上下文、蓝图编译、三成员组装、完整事件/素材组合
-  校验及完整生成请求纯函数（2472 项语义/架构回归通过）；
-  尚未接入最终准入、数据库提交或 HTTP 调度，不能用它声明脚本阶段成功；
+  校验、完整生成请求、独立批次准入和持久化 Command；完整 3N+1 提交/重放接口已交付，
+  最新纯语义回归 2601 项通过，实际 PostgreSQL/模型验收未执行；HTTP v8 接线正在推进；
 - HTTP 新任务的 `source_prep → vlm → stage1_narrative → stage2_portfolio → media_preflight` 调度；
 - 本地测试和 Podman 部署文件。
 
 尚未闭合：
 
 1. Authority bootstrap 与真实运行 Profile；
-2. Stage 1/2 的真实模型/数据库验收，以及 Stage 3 Blueprint 脚本链；
+2. Stage 1–3 的真实模型/数据库验收，以及 Stage 3 HTTP 接线；
 3. Stage 4 到 Recipe 的真实整集组合；
 4. FFmpeg Render 与本地 Publication QC；
 5. 一个真实剧集的 HTTP 端到端运行；

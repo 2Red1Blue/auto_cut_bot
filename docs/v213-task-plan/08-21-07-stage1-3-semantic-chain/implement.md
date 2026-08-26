@@ -28,8 +28,11 @@ implemented. Complete contexts (2d0cd511), Blueprint projection/3N member closur
 (7643723c) and rational editorial timing (77390e9d) are also delivered. Material
 combination feasibility (5718d7fc/b5b1a125) and full generation policy/request
 (a45a57e4) are now delivered too, with final2472 pure semantic/architecture tests.
-Independent Admission/Command/Runtime and real acceptance remain open; do not
-confuse pending business members or positive witnesses with admitted Blueprints.
+Independent Admission (181aceef), shared audit (c4829b3a) and audited atomic3N+1
+Command/replay (05f3dd5e) are now delivered and independently reviewed. See
+[Stage3 Runtime wave](stage3-runtime-wave.md) for current HTTP resource/profile/
+adapter ownership. Runtime integration and actual remote acceptance remain open;
+pure positive witnesses alone still do not grant execution permission.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。
