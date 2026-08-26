@@ -38,29 +38,23 @@ from .build_narrative_graph_request import (
     prepare_stage1_request,
 )
 from .draft_generation_lifecycle import (
+    CommittedDraftAuditStore,
     DraftExecutionPlan,
     DraftGenerationLifecycle,
-    assert_draft_attempt,
-    read_draft_request_bytes,
+    read_committed_draft_audit,
+    read_draft_response_bytes,
 )
-from .generate_vlm_evidence_command import GenerationStore
 
 COMMAND_NAME = "BuildNarrativeGraphCommand"
 
 
-class NarrativeGraphStore(GenerationStore, Protocol):
+class NarrativeGraphStore(CommittedDraftAuditStore, Protocol):
     def read_committed_semantic_inputs(self, request: CommittedSemanticInputsRequest) -> CommittedSemanticInputs: ...
 
     def read_committed_artifact_set(
         self, job: Job, *, command_slot_id: UUID, receipt_id: UUID, artifact_set_id: UUID,
         expected_request_hash: str, expected_command_name: str, expected_execution_kind: str,
     ) -> PersistedCommittedArtifactSet: ...
-
-    def read_committed_generation_attempt_chain(
-        self, job: Job, *, command_slot_id: UUID, receipt_id: UUID, artifact_set_id: UUID,
-        expected_request_hash: str,
-    ) -> tuple[GenerationAttempt, ...]: ...
-
 
 @dataclass(frozen=True, slots=True)
 class PersistedNarrativeGraphSet:
@@ -111,20 +105,7 @@ def read_committed_narrative_graph(
     )
     if record.job_id != outcome.job_id:
         raise ValueError("Stage 1 outcome Job differs from committed result")
-    chain = store.read_committed_generation_attempt_chain(
-        request.job, command_slot_id=outcome.command_slot_id, receipt_id=outcome.receipt_id,
-        artifact_set_id=outcome.artifact_set_id, expected_request_hash=prepared.request_hash,
-    )
-    if not chain or chain[-1].state != "committed":
-        raise ValueError("Stage 1 has no committed generation audit")
-    for attempt in chain:
-        assert_draft_attempt(plan, outcome, attempt)
-        read_draft_request_bytes(store, plan, attempt)
-    final = chain[-1]
-    if (final.receipt_id != outcome.receipt_id or final.artifact_set_id != outcome.artifact_set_id
-            or final.raw_response is None or final.raw_response.media_type != "application/json"):
-        raise ValueError("Stage 1 raw response is not bound to this committed result")
-    raw = store.read_immutable_blob(request.job, final.raw_response)
+    chain, raw = read_committed_draft_audit(store, plan, outcome)
     values = decode_stage1_members(record.artifacts, scope=request.artifact_scope)
     draft = decode_stage1_draft(raw, inputs=inputs, policy=request.draft_policy)
     checks = evaluate_stage1_business_members(
@@ -172,11 +153,7 @@ class BuildNarrativeGraphCommand:
     ) -> BuildNarrativeGraphResult:
         request = prepared.request
         plan = _execution_plan(prepared)
-        assert_draft_attempt(plan, outcome, attempt)
-        read_draft_request_bytes(self._store, plan, attempt)
-        if attempt.raw_response is None or attempt.raw_response.media_type != "application/json":
-            raise ValueError("Stage 1 compilation requires its durable raw response")
-        raw = self._store.read_immutable_blob(request.job, attempt.raw_response)
+        raw = read_draft_response_bytes(self._store, plan, outcome, attempt)
         try:
             draft = decode_stage1_draft(raw, inputs=inputs, policy=request.draft_policy)
             compilation = compile_stage1_coverage(

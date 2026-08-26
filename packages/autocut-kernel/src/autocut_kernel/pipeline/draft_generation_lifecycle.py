@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Protocol
+from uuid import UUID
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash, sha256_bytes
 from ..semantic_chain.draft_provider import DraftDispatchRequest, DraftProviderPort
@@ -29,6 +30,7 @@ from ..vlm.provider_port import (
     ProviderReconcileQuery,
 )
 from ..vlm.retry_policy import GenerationRetryPolicy
+from .committed_outcome import succeeded_outcome_mapping
 from .generate_vlm_evidence_command import GenerationStore
 
 
@@ -149,6 +151,69 @@ def read_draft_request_bytes(
 ) -> None:
     if store.read_immutable_blob(plan.job, attempt.request_payload) != plan.request_payload:
         raise ValueError("durable generation request differs from its frozen plan")
+
+
+class CommittedDraftAuditStore(GenerationStore, Protocol):
+    def read_committed_generation_attempt_chain(
+        self, job: Job, *, command_slot_id: UUID, receipt_id: UUID, artifact_set_id: UUID,
+        expected_request_hash: str,
+    ) -> tuple[GenerationAttempt, ...]: ...
+
+
+def read_draft_response_bytes(
+    store: GenerationStore, plan: DraftExecutionPlan, outcome: CommandOutcome,
+    attempt: GenerationAttempt,
+) -> bytes:
+    """Audit the actual immutable request/response, without parsing draft meaning."""
+    assert_draft_attempt(plan, outcome, attempt)
+    read_draft_request_bytes(store, plan, attempt)
+    reference = attempt.raw_response
+    if reference is None or reference.media_type != "application/json":
+        raise ValueError("generation requires the exact durable raw JSON response")
+    raw = store.read_immutable_blob(plan.job, reference)
+    if (type(raw) is not bytes or sha256_bytes(raw) != reference.content_hash  # noqa: E721
+            or len(raw) != reference.byte_length):
+        raise ValueError("generation raw response differs from its audited Blob")
+    return raw
+
+
+def read_committed_draft_audit(
+    store: CommittedDraftAuditStore, plan: DraftExecutionPlan, outcome: CommandOutcome,
+) -> tuple[tuple[GenerationAttempt, ...], bytes]:
+    """Replay the whole committed retry chain and return only its final raw draft.
+
+    Earlier failed attempts can retain invalid/partial model output. Verify all
+    such immutable bytes but never parse them as successful business meaning.
+    This function performs reads only; it cannot claim, regenerate or repair.
+    """
+    succeeded_outcome_mapping(outcome)
+    # The closed transport check above requires all four canonical UUID values.
+    if outcome.receipt_id is None or outcome.artifact_set_id is None:
+        raise ValueError("committed generation lacks its exact Receipt/Set")
+    chain = store.read_committed_generation_attempt_chain(
+        plan.job, command_slot_id=outcome.command_slot_id, receipt_id=outcome.receipt_id,
+        artifact_set_id=outcome.artifact_set_id, expected_request_hash=plan.request_hash,
+    )
+    if (type(chain) is not tuple or not chain or len(chain) > plan.retry_policy.max_attempts  # noqa: E721
+            or any(type(attempt) is not GenerationAttempt for attempt in chain)
+            or len({attempt.attempt_id for attempt in chain}) != len(chain)
+            or chain[-1].state != "committed"):
+        raise ValueError("generation has no complete committed attempt audit")
+    for ordinal, attempt in enumerate(chain, start=1):
+        assert_draft_attempt(plan, outcome, attempt)
+        if (attempt.attempt_ordinal != ordinal
+                or attempt.previous_attempt_id != (None if ordinal == 1 else chain[ordinal - 2].attempt_id)
+                or (ordinal < len(chain) and (attempt.state != "failed" or attempt.failure_disposition != "retryable"))):
+            raise ValueError("generation audit is not a complete ordered retry chain")
+        if ordinal < len(chain):
+            if attempt.raw_response is None:
+                read_draft_request_bytes(store, plan, attempt)
+            else:
+                read_draft_response_bytes(store, plan, outcome, attempt)
+    final = chain[-1]
+    if final.receipt_id != outcome.receipt_id or final.artifact_set_id != outcome.artifact_set_id:
+        raise ValueError("final generation Attempt belongs to another committed result")
+    return chain, read_draft_response_bytes(store, plan, outcome, final)
 
 
 class DraftGenerationLifecycle:
@@ -397,9 +462,12 @@ class DraftGenerationLifecycle:
 
 
 __all__ = [
+    "CommittedDraftAuditStore",
     "DraftExecutionPlan",
     "DraftExecutionState",
     "DraftGenerationLifecycle",
     "assert_draft_attempt",
+    "read_committed_draft_audit",
     "read_draft_request_bytes",
+    "read_draft_response_bytes",
 ]

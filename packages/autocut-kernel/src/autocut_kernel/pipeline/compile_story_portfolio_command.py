@@ -35,8 +35,8 @@ from .compile_story_portfolio_request import (
 from .draft_generation_lifecycle import (
     DraftExecutionPlan,
     DraftGenerationLifecycle,
-    assert_draft_attempt,
-    read_draft_request_bytes,
+    read_committed_draft_audit,
+    read_draft_response_bytes,
 )
 from .story_design_inputs import CommittedStoryDesignInputs, read_committed_story_design_inputs
 
@@ -77,22 +77,6 @@ def _inputs(store: NarrativeGraphStore, request: CompileStoryPortfolioRequest) -
     return read_committed_story_design_inputs(
         store, stage1_request=request.stage1_request, stage1_outcome=request.stage1_outcome,
     )
-
-
-def _audited_raw(
-    store: NarrativeGraphStore, prepared: PreparedStage2Request,
-    outcome: CommandOutcome, attempt: GenerationAttempt,
-) -> bytes:
-    plan = _plan(prepared)
-    assert_draft_attempt(plan, outcome, attempt)
-    read_draft_request_bytes(store, plan, attempt)
-    reference = attempt.raw_response
-    if reference is None or reference.media_type != "application/json":
-        raise ValueError("Stage 2 requires the exact durable raw JSON response")
-    raw = store.read_immutable_blob(prepared.request.job, reference)
-    if sha256_bytes(raw) != reference.content_hash or len(raw) != reference.byte_length:
-        raise ValueError("Stage 2 raw response differs from its audited Blob")
-    return raw
 
 
 def _evaluate(
@@ -139,29 +123,7 @@ def read_committed_story_portfolio(
             or record.artifact_set_id != outcome.artifact_set_id or record.request_hash != prepared.request_hash
             or record.command_name != COMMAND_NAME or record.execution_kind != "generation"):
         raise ValueError("Stage 2 committed result differs from the exact requested identity")
-    chain = store.read_committed_generation_attempt_chain(
-        request.job, command_slot_id=outcome.command_slot_id, receipt_id=outcome.receipt_id,
-        artifact_set_id=outcome.artifact_set_id, expected_request_hash=prepared.request_hash,
-    )
-    if not chain or chain[-1].state != "committed":
-        raise ValueError("Stage 2 has no committed generation audit")
-    plan = _plan(prepared)
-    for ordinal, attempt in enumerate(chain, start=1):
-        assert_draft_attempt(plan, outcome, attempt)
-        read_draft_request_bytes(store, plan, attempt)
-        if (attempt.attempt_ordinal != ordinal
-                or attempt.previous_attempt_id != (None if ordinal == 1 else chain[ordinal - 2].attempt_id)
-                or (ordinal < len(chain) and (attempt.state != "failed" or attempt.failure_disposition != "retryable"))):
-            raise ValueError("Stage 2 generation audit is not a complete retry chain")
-        if ordinal < len(chain) and attempt.raw_response is not None:
-            # Earlier provider failures may retain partial/invalid draft bytes.
-            # Verify their immutable audit, but only the final response supplies
-            # business meaning and must pass the semantic draft decoder.
-            _audited_raw(store, prepared, outcome, attempt)
-    final = chain[-1]
-    if final.receipt_id != outcome.receipt_id or final.artifact_set_id != outcome.artifact_set_id:
-        raise ValueError("Stage 2 final Attempt belongs to another committed result")
-    raw = _audited_raw(store, prepared, outcome, final)
+    chain, raw = read_committed_draft_audit(store, _plan(prepared), outcome)
     values = decode_story_design_members(record.artifacts, scope=request.artifact_scope)
     expected = _evaluate(prepared, inputs, raw, record.artifacts[:4])
     if (values.admission != expected or expected.next_action != "continue"
@@ -190,7 +152,7 @@ class CompileStoryPortfolioCommand:
         outcome: CommandOutcome, attempt: GenerationAttempt,
     ) -> CompileStoryPortfolioResult:
         request = prepared.request
-        raw = _audited_raw(self._store, prepared, outcome, attempt)
+        raw = read_draft_response_bytes(self._store, _plan(prepared), outcome, attempt)
         try:
             compilation = compile_story_design(
                 inputs.semantic, inputs.narrative.values, raw,
