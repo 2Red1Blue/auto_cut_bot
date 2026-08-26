@@ -32,3 +32,12 @@ Approved for the PC shadow-calibration deployment slice.
 This is shadow calibration only.  It does not create a CalibrationRecord or
 enable the normal Pipeline endpoint; those require the subsequent real PC
 calibration and local-run authority installation.
+
+## Follow-up design review
+
+The existing CalibrationRecord closes over a static `native_port_identity_sha256`
+but does not persist the dynamically measured CUDA timing-compatibility hash.
+It would be unsafe to turn the new self-measured shadow identity directly into
+normal-mode authority. The next change must bind that hash through the raw
+measurement, independent validator, persisted record and installed-runtime
+resolver before normal CUDA mode is enabled.

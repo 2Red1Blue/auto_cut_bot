@@ -127,7 +127,8 @@ uv sync --extra dev
 install -d -m 700 /absolute/private/autocut-config
 install -m 600 deploy/funasr/.env.example \
   /absolute/private/autocut-config/funasr.env
-# 编辑外部 funasr.env，填写模型目录、随机本地 token 和 Profile。
+# 编辑外部 funasr.env，填写模型目录、随机本地 token；首次校准时设置
+# FUNASR_MODE=shadow 并保持 FUNASR_PROFILE_JSON 为空。
 cd deploy/funasr
 rm -f .env
 ln -s /absolute/private/autocut-config/funasr.env .env
@@ -135,8 +136,9 @@ podman compose --env-file .env -f compose.yml up --build -d
 curl --fail http://127.0.0.1:18765/health/ready
 ```
 
-空或非法 Profile 会使容器在 health endpoint 建立前退出；合法 shadow Profile 只允许
-校准 endpoint，独立验证后生成的 measured run Profile 才允许 timed evidence。这是
+shadow 模式会在模型加载后自行测量 CUDA/模型/解码/时间策略身份，并且只允许校准
+endpoint；它不会要求先手工制作 Profile。独立验证并写入 CalibrationRecord 后，
+configured 正式模式读取自动生成的本地运行授权，才允许 timed evidence。这是
 fail-closed，不是 Podman 故障。
 
 ### 5. 启动 PostgreSQL 与执行真实一集

@@ -17,7 +17,7 @@ directories there, and then:
 cd deploy/funasr
 cp .env.example .env
 # Edit .env: set the two absolute snapshot paths, a random local token, and
-# the generated protected FUNASR_PROFILE_JSON.
+# the generated protected FUNASR_PROFILE_JSON for configured mode.
 docker compose --env-file .env -f compose.yml up --build -d
 curl --fail http://127.0.0.1:18765/health/ready
 ```
@@ -37,10 +37,10 @@ use the locked endpoint `http://127.0.0.1:18765/v1/timed-speech-evidence` when
 it runs on that same desktop.  Do not add the service to the root nanobot
 Compose file or map it to host `8765`.
 
-The generated `.env` contains a secret and the measured Profile; it is ignored
-by Git.  A Profile is produced by the protected calibration/profile flow and
-binds the exact image service bytes, model trees and dependency versions.  A
-placeholder or copied profile is expected to make startup fail closed.
+The generated `.env` contains a secret and the configured-mode authority
+projection; it is ignored by Git.  A normal service starts only after the
+Pipeline has bound an independently accepted CalibrationRecord to the installed
+local-run authority.  A placeholder or copied authority projection fails closed.
 
 ## CUDA shadow calibration only
 
@@ -50,12 +50,12 @@ read-only model mounts and root filesystem, private tmpfs, dropped capabilities,
 and `no-new-privileges`; the only added runtime capability is one NVIDIA GPU.
 It neither uses host networking nor supplies a credential or profile default.
 
-Use it only after creating a fresh `funasr-cuda-shadow-calibration-profile-v1`
-through the protected profile flow.  That closed profile requires actual CUDA
-placement, CUDA runtime and compute capability, model-tree hashes, the current
-service/build audit identities, and a recomputed timing-compatibility identity.
-It enables only `/v1/shadow-calibration-funasr-raw`: it cannot activate normal
-timed speech or either local-window route.
+Set `FUNASR_MODE=shadow` and leave `FUNASR_PROFILE_JSON` empty.  The service
+then measures its actual CUDA placement, runtime, model trees, decoder and
+timing policy after loading the model.  Its authenticated
+`GET /v1/shadow-calibration/identity` response is the immutable input to the
+calibration command. It enables only `/v1/shadow-calibration-funasr-raw`: it
+cannot activate normal timed speech or either local-window route.
 
 The CUDA image copies the official CPython 3.13.13 runtime into the NVIDIA CUDA
 base image; it does not use Ubuntu's Python 3.12 package or a fallback
@@ -63,15 +63,15 @@ interpreter. Set this exact value in the private `.env`
 alongside the new CUDA shadow profile, then start the merged stack:
 
 ```sh
-# First add FUNASR_REQUIRED_PYTHON_VERSION=3.13.13 to .env.
+# Set FUNASR_MODE=shadow and FUNASR_REQUIRED_PYTHON_VERSION=3.13.13 in .env.
 docker compose --env-file .env -f compose.yml -f compose.cuda.yml up --build -d
 curl --fail http://127.0.0.1:18765/health/ready
 ```
 
-Do not set `FUNASR_PROFILE_JSON` to a normal measured profile in this overlay,
-and do not treat a successful raw response as local-run authority.  A separate
-accepted calibration record and installed local-run authority remain required
-before the normal Pipeline endpoint is admitted.
+Do not set `FUNASR_PROFILE_JSON` in this overlay, and do not treat a successful
+raw response as local-run authority.  A separate accepted calibration record
+and installed local-run authority remain required before normal timed speech is
+admitted.
 
 ## Runtime topology and admission
 
@@ -138,7 +138,8 @@ The complete runtime environment is:
 - the three resource limits above
 - `FUNASR_SINGLETON_LOCK_PATH=/tmp/autocut-funasr-service.lock` (canonical path only)
 - `FUNASR_SHARED_TOKEN` (non-empty and sent only in loopback Authorization)
-- `FUNASR_PROFILE_JSON`
+- `FUNASR_MODE=configured` plus `FUNASR_PROFILE_JSON` only for configured mode;
+  or `FUNASR_MODE=shadow` with an empty profile for self-measured calibration.
 
 ## Pipeline Media Preflight composition
 

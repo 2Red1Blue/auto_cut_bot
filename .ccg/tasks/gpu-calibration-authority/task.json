@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend/deployment/authority",
-  "currentPhase": "review",
-  "nextAction": "Deploy the committed CUDA shadow-calibration image on the PC, create a fresh current-source shadow profile, then run independent calibration.",
+  "currentPhase": "implementation",
+  "nextAction": "Persist the self-measured timing compatibility identity through calibration validation and installed local-run resolution before enabling CUDA normal mode.",
   "branch": "feat/v213-contract-codegen"
 }

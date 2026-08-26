@@ -68,6 +68,9 @@ CANONICAL_SINGLETON_LOCK_PATH = Path("/tmp").resolve(strict=True) / "autocut-fun
 NORMAL_PROFILE_SCHEMA = "funasr-measured-profile-v1"
 SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-shadow-calibration-profile-v1"
 CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-cuda-shadow-calibration-profile-v1"
+SHADOW_BOOTSTRAP_MODE = "shadow"
+CONFIGURED_MODE = "configured"
+CUDA_SHADOW_TIMING_ENGINE_VERSION = "funasr-cuda-timing-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
 _InferenceResult = TypeVar("_InferenceResult")
@@ -879,13 +882,22 @@ def vad(
 
 class Service:
     def __init__(self, resource_reader: ResourceReader = system_resource_snapshot) -> None:
-        try:
-            profile = strict_json_loads(os.environ["FUNASR_PROFILE_JSON"])
-        except ValueError as error:
-            raise RuntimeError("FUNASR_PROFILE_JSON contains duplicate JSON object keys") from error
-        if type(profile) is not dict:
-            raise RuntimeError("FUNASR_PROFILE_JSON must be an object")
-        self.profile = cast(dict[str, object], profile)
+        self.mode = os.environ.get("FUNASR_MODE", CONFIGURED_MODE)
+        if self.mode not in {CONFIGURED_MODE, SHADOW_BOOTSTRAP_MODE}:
+            raise RuntimeError("FUNASR_MODE must be configured or shadow")
+        raw_profile = os.environ.get("FUNASR_PROFILE_JSON", "")
+        if self.mode == SHADOW_BOOTSTRAP_MODE:
+            if raw_profile:
+                raise RuntimeError("shadow mode derives its identity and forbids FUNASR_PROFILE_JSON")
+            self.profile: dict[str, object] | None = None
+        else:
+            try:
+                profile = strict_json_loads(raw_profile)
+            except ValueError as error:
+                raise RuntimeError("FUNASR_PROFILE_JSON contains duplicate JSON object keys") from error
+            if type(profile) is not dict:
+                raise RuntimeError("FUNASR_PROFILE_JSON must be an object")
+            self.profile = cast(dict[str, object], profile)
         self.lock = asyncio.Lock()
         self.admission_lock = asyncio.Lock()
         self.admitted = 0
@@ -967,6 +979,8 @@ class Service:
 
     async def _load_cuda_shadow_profile(self, asr_path: Path, vad_path: Path) -> None:
         """Validate the distinct CUDA shadow grammar without enabling normal routes."""
+        if self.profile is None:
+            raise RuntimeError("CUDA shadow profile is unavailable")
         fields = {
             "schema_version", "provider_id", "provider_version", "build_audit_sha256",
             "funasr_version", "torch_version", "device",
@@ -1123,11 +1137,129 @@ class Service:
         self.measured = sha(canon(measured))
         self.ready = True
 
+    @staticmethod
+    def _cuda_shadow_policy_hash(kind: str, values: dict[str, object]) -> str:
+        """Derive a versioned policy identity instead of accepting caller hashes."""
+        return sha(canon({"schema_version": "funasr-cuda-shadow-policy-v1", "kind": kind, **values}))
+
+    async def _bootstrap_cuda_shadow_profile(self, asr_path: Path, vad_path: Path) -> None:
+        """Measure a CUDA shadow identity locally; it grants no normal-run authority."""
+        if self.profile is not None:
+            raise RuntimeError("shadow bootstrap must not receive a profile")
+        audit = service_hash()
+        funasr_version = importlib.metadata.version("funasr")
+        torch_version = torch.__version__
+        timed_policy = self._cuda_shadow_policy_hash(
+            "timed-speech",
+            {
+                "word_timing": "required",
+                "guard_profile": SENSEVOICE_WORD_GUARD_PROFILE,
+                "asr_model_id": ASR_MODEL_ID,
+                "vad_model_id": VAD_MODEL_ID,
+            },
+        )
+        word_gap_policy = self._cuda_shadow_policy_hash(
+            "word-gap", {"merge_gap_milliseconds": 700, "semantics": "utterance-gap-protected-range"}
+        )
+        vad_merge_policy = self._cuda_shadow_policy_hash(
+            "vad-merge", {"merge_gap_milliseconds": 350, "semantics": "direct-fsmn"}
+        )
+        profile: dict[str, object] = {
+            "schema_version": CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA,
+            "provider_id": PROVIDER_ID,
+            "provider_version": PROVIDER_VERSION,
+            "build_audit_sha256": audit,
+            "funasr_version": funasr_version,
+            "torch_version": torch_version,
+            "device": cuda_device_identity(),
+            "word_timing_capability": "required",
+            "max_request_bytes": self.max_request,
+            "timed_speech_policy_sha256": timed_policy,
+            "word_gap_policy_sha256": word_gap_policy,
+            "vad_merge_policy_sha256": vad_merge_policy,
+            "utterance_gap_milliseconds": 700,
+            "vad_merge_gap_milliseconds": 350,
+            "timing_engine_compatibility_version": CUDA_SHADOW_TIMING_ENGINE_VERSION,
+        }
+        producer_specs = (
+            ("asr", "funasr-sensevoice-small", ASR_MODEL_ID, asr_path, ASR_INFERENCE_KIND),
+            ("vad", "funasr-fsmn-vad", VAD_MODEL_ID, vad_path, VAD_INFERENCE_KIND),
+        )
+        producers: list[dict[str, object]] = []
+        for kind, producer_id, model_id, path, inference_kind in producer_specs:
+            generation = self._cuda_shadow_policy_hash(
+                "producer-generation",
+                {"producer_kind": kind, "producer_id": producer_id, "inference_kind": inference_kind},
+            )
+            calibration = self._cuda_shadow_policy_hash(
+                "producer-calibration",
+                {"producer_kind": kind, "timed_speech_policy_sha256": timed_policy},
+            )
+            producer: dict[str, object] = {
+                "producer_kind": kind,
+                "producer_id": producer_id,
+                "producer_version": funasr_version,
+                "generation_policy_sha256": generation,
+                "detector_sha256": "sha256:" + "0" * 64,
+                "calibration_policy_sha256": calibration,
+                "model_id": model_id,
+                "model_revision": path.name,
+                "model_sha256": await asyncio.to_thread(tree_hash, path),
+                "service_sha256": audit,
+                "build_audit_sha256": audit,
+                "inference_kind": inference_kind,
+                "inference_identity_sha256": "sha256:" + "0" * 64,
+            }
+            producer["inference_identity_sha256"] = cuda_inference_identity(producer, profile)
+            producer["detector_sha256"] = cuda_detector_hash(producer, profile)
+            producers.append(producer)
+        profile["producers"] = producers
+        profile["native_port_identity_sha256"] = cuda_native_port_identity(profile, producers)
+        compatibility = build_timing_compatibility_profile(
+            {
+                "schema_version": "timing-compatibility-profile-v1",
+                "timing_engine_compatibility_version": CUDA_SHADOW_TIMING_ENGINE_VERSION,
+                "build_audit_sha256": audit,
+                "runtime": {
+                    "funasr_version": funasr_version,
+                    "torch_version": torch_version,
+                    "device": profile["device"],
+                },
+                "decode": {
+                    "decoder_identity_sha256": await asyncio.to_thread(cuda_decoder_identity_sha256),
+                    "resampling_identity_sha256": cuda_resampling_identity_sha256(),
+                    "native_protocol_identity_sha256": profile["native_port_identity_sha256"],
+                },
+                "policies": {
+                    "word_timestamp_policy_sha256": timed_policy,
+                    "vad_merge_policy_sha256": vad_merge_policy,
+                },
+                "producers": [
+                    {
+                        key: producer[key]
+                        for key in (
+                            "producer_kind", "producer_id", "producer_version", "model_id",
+                            "model_revision", "model_sha256", "inference_identity_sha256",
+                        )
+                    }
+                    for producer in producers
+                ],
+            }
+        )
+        profile["timing_compatibility_sha256"] = compatibility.timing_compatibility_sha256
+        self.profile = profile
+        await self._load_cuda_shadow_profile(asr_path, vad_path)
+
     async def load(self) -> None:
         a = Path(os.environ["FUNASR_ASR_MODEL_PATH"]).resolve(strict=True)
         v = Path(os.environ["FUNASR_VAD_MODEL_PATH"]).resolve(strict=True)
         if not a.is_dir() or not v.is_dir():
             raise RuntimeError("model paths must be directories")
+        if self.mode == SHADOW_BOOTSTRAP_MODE:
+            await self._bootstrap_cuda_shadow_profile(a, v)
+            return
+        if self.profile is None:
+            raise RuntimeError("configured mode requires FUNASR_PROFILE_JSON")
         if self.profile.get("schema_version") == CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA:
             await self._load_cuda_shadow_profile(a, v)
             return
@@ -2058,6 +2190,27 @@ async def ready(request: web.Request) -> web.Response:
     )
 
 
+async def shadow_identity(request: web.Request) -> web.Response:
+    """Expose the self-measured CUDA shadow identity after authenticated readiness."""
+    service = request.app[SERVICE_KEY]
+    supplied = request.headers.get("Authorization", "")
+    if not hmac.compare_digest(supplied, f"Bearer {service.shared_token}"):
+        raise web.HTTPUnauthorized(text="unauthorized")
+    if (
+        service.mode != SHADOW_BOOTSTRAP_MODE
+        or not service.ready
+        or service.profile is None
+        or service.profile.get("schema_version") != CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA
+    ):
+        raise web.HTTPConflict(text="self-measured CUDA shadow identity is unavailable")
+    payload = {
+        "schema_version": "funasr-shadow-service-identity-response-v1",
+        "profile_identity_sha256": sha(canon(service.profile)),
+        "profile": service.profile,
+    }
+    return web.Response(body=canon(payload), content_type="application/json")
+
+
 def create_app(service: Service | None = None) -> web.Application:
     s = service or Service()
     app = web.Application(client_max_size=s.max_request)
@@ -2066,6 +2219,7 @@ def create_app(service: Service | None = None) -> web.Application:
         [
             web.get("/health/live", live),
             web.get("/health/ready", ready),
+            web.get("/v1/shadow-calibration/identity", shadow_identity),
             web.post("/v1/timed-speech-evidence", s.evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
             web.post("/v2/timed-speech-window", s.window_evidence),

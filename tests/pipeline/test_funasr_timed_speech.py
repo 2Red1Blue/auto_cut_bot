@@ -1201,6 +1201,50 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
 
 
 @pytest.mark.asyncio
+async def test_shadow_mode_self_measures_identity_without_a_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _CudaAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_MODE", "shadow")
+    monkeypatch.delenv("FUNASR_PROFILE_JSON")
+    ns["Service"]._load_cuda_shadow_profile.__globals__["cuda_decoder_identity_sha256"] = (  # type: ignore[attr-defined]
+        lambda: H
+    )
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        assert service.mode == "shadow"
+        assert service.ready is True
+        identity = await client.get(
+            "/v1/shadow-calibration/identity", headers={"Authorization": "Bearer secret"}
+        )
+        assert identity.status == 200
+        payload = await identity.json()
+        measured = payload["profile"]
+        assert measured["schema_version"] == "funasr-cuda-shadow-calibration-profile-v1"
+        assert measured["build_audit_sha256"] == ns["service_hash"]()
+        assert measured["timing_compatibility_sha256"] == service.measured_profile[
+            "timing_compatibility"
+        ]["timing_compatibility_sha256"]
+        assert (await client.get("/v1/shadow-calibration/identity")).status == 401
+        assert (
+            await client.post("/v1/timed-speech-evidence", headers={"Authorization": "Bearer secret"})
+        ).status == 409
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_cuda_shadow_profile_rejects_fallback_and_identity_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
