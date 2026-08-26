@@ -273,22 +273,21 @@ class MediaPreflightPipelineStage:
                 "media-preflight requires one exact committed VLM SemanticPackSet"
             ) from error
         source_reference = source_bundle.artifact_reference
-        committed = self._store.read_committed_semantic_inputs(
-            CommittedSemanticInputsRequest(
-                job=job,
-                source_manifest=CommittedArtifactMemberReference(
-                    receipt_id=source_bundle.receipt_id,
-                    artifact_set_id=source_bundle.artifact_set_id,
-                    member_ordinal=0,
-                    scope=source_reference.scope,
-                    artifact_type=source_reference.artifact_type,
-                    logical_id=source_reference.logical_id,
-                    revision=source_reference.revision,
-                    content_hash=source_reference.content_hash,
-                ),
-                vlm_semantic_pack_set=vlm_semantic_pack_set,
-            )
+        semantic_inputs_request = CommittedSemanticInputsRequest(
+            job=job,
+            source_manifest=CommittedArtifactMemberReference(
+                receipt_id=source_bundle.receipt_id,
+                artifact_set_id=source_bundle.artifact_set_id,
+                member_ordinal=0,
+                scope=source_reference.scope,
+                artifact_type=source_reference.artifact_type,
+                logical_id=source_reference.logical_id,
+                revision=source_reference.revision,
+                content_hash=source_reference.content_hash,
+            ),
+            vlm_semantic_pack_set=vlm_semantic_pack_set,
         )
+        committed = self._store.read_committed_semantic_inputs(semantic_inputs_request)
         inputs_by_window = {
             item.source_window.window_manifest_sha256: item for item in committed.inputs
         }
@@ -326,6 +325,7 @@ class MediaPreflightPipelineStage:
                 PrepareTimedMediaEvidenceRequest(
                     job=job,
                     idempotency_key=key,
+                    semantic_inputs_request=semantic_inputs_request,
                     episode_index=episode_index,
                     artifact_scope=canonical_recipe_scope(job),
                     artifact_revision=_ARTIFACT_REVISION,

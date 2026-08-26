@@ -69,6 +69,7 @@ from autocut_kernel.source_manifest import (
     DecodedSourceManifest,
     SourceOperationGrant,
     SourceOperationPolicy,
+    decode_source_manifest,
     identity_frame_index,
 )
 from autocut_kernel.store import (
@@ -84,16 +85,32 @@ from autocut_kernel.store import (
     PersistedWholeSeriesSourceManifest,
     WholeSeriesSourceManifestReference,
 )
-from autocut_kernel.store.models import MaterializationLimits, canonical_payload_hash
+from autocut_kernel.store.models import (
+    CommittedSemanticInputs,
+    CommittedSemanticInputsRequest,
+    CommittedVlmSemanticInput,
+    MaterializationLimits,
+    PersistedVlmGenerationChild,
+    PersistedVlmSemanticPack,
+    SourceWindowIdentity,
+    VlmRequestRecordReference,
+    VlmSemanticPackReference,
+    canonical_payload_hash,
+)
 from autocut_kernel.vlm import (
     ProxyTimelineMap,
+    VlmRequestIdentity,
     WindowFrameSample,
     WindowManifestSet,
     WindowProxyBlobRef,
+    parse_vlm_response,
 )
 
 from tests.media.test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
 from tests.media.test_timed_evidence import _bindings, _manifest_and_candidate
+from tests.vlm.test_parser import _context as _vlm_context
+from tests.vlm.test_parser import _payload as _vlm_payload
+from tests.vlm.test_parser import _raw as _vlm_raw
 
 AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
     "sha256:" + "a" * 64,
@@ -120,6 +137,24 @@ class _Store:
         self.bootstrapped_reference: CommittedArtifactMemberReference | None = None
         self.bootstrapped_entry: TimedSpeechProfileRegistryEntry | None = None
         self.source_manifest: PersistedWholeSeriesSourceManifest | None = None
+        self.semantic_inputs: CommittedSemanticInputs | None = None
+        self.semantic_reads = 0
+        self.claims: list[CommandClaim] = []
+
+    def read_committed_semantic_inputs(self, request: CommittedSemanticInputsRequest) -> CommittedSemanticInputs:
+        self.semantic_reads += 1
+        value = self.semantic_inputs
+        if value is None or request.job != value.source_manifest.source_job or request.vlm_semantic_pack_set != value.vlm_semantic_pack_set:
+            raise ValueError("committed semantic input is unavailable")
+        source = value.source_manifest
+        ref = source.reference
+        expected = CommittedArtifactMemberReference(
+            source.receipt_id, source.artifact_set_id, 0, ref.scope,
+            ref.artifact_type, ref.logical_id, ref.revision, ref.content_hash,
+        )
+        if request.source_manifest != expected:
+            raise ValueError("committed semantic Source differs")
+        return value
 
     def read_whole_series_source_manifest(
         self, _: Job, artifact_set_id: UUID
@@ -147,6 +182,7 @@ class _Store:
         )
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
+        self.claims.append(claim)
         existing = self.outcomes.get(claim.idempotency_key)
         if existing is not None:
             return existing
@@ -279,6 +315,12 @@ class _Producer:
             else item
             for item in _bindings(values)
         )
+        by_producer = {item.producer_id: item for item in bindings}
+        bindings = tuple(by_producer[item.context.producer_id] for item in (
+            bundle.frame_pts_index, bundle.audio_sample_boundaries, bundle.transcript,
+            bundle.speech_activity, bundle.shot_boundaries, bundle.scene_boundaries,
+            bundle.visual_validity, bundle.subtitle_cues,
+        ))
         return ProducedTimedMediaEvidence(
             TEST_POLICY_SHA256,
             bundle,
@@ -360,6 +402,7 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         command_slot_id,
         job,
     )
+    semantic_inputs_request, semantic_pack = _register_semantic_inputs(store, with_candidates=with_candidates)
     return PrepareTimedMediaEvidenceRequest(
         job=job,
         idempotency_key="media-preflight:episode:0",
@@ -374,6 +417,7 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
         source_provenance_sha256=canonical_sha256(
             _persisted_source_manifest_provenance_mapping(store.source_manifest)
         ),
+        semantic_inputs_request=semantic_inputs_request,
         window_manifest=manifest,
         semantic_pack=semantic_pack,
         frame_pts_index=manifest.frame_pts_index_set,
@@ -397,6 +441,85 @@ def _request(store: _Store, *, with_candidates: bool = True) -> PrepareTimedMedi
             staging_quota_bytes=1024,
         ),
     )
+
+
+def _register_semantic_inputs(store: _Store, *, with_candidates: bool):
+    """Typed fake Store rows with genuinely parsed VLM; no SQL/provider authority."""
+    source = store.source_manifest
+    assert source is not None
+    decoded = decode_source_manifest(source.payload_json, source.proxy_blobs)
+    episode = decoded.episodes[0]
+    manifest, manifest_set = episode.manifest, episode.manifest_set
+    _, _, parse_policy, template = _vlm_context()
+    request_content = b'{"fixture":"VLM request"}'
+    request_blob = BlobRef(uuid4(), _hash(request_content), len(request_content), "application/json")
+    identity = VlmRequestIdentity.from_manifest(
+        manifest, manifest_set, prompt_template_sha256=template.prompt_template_sha256,
+        prompt_version=template.prompt_version, response_schema_sha256=template.response_schema_sha256,
+        model_id=template.model_id, provider_id=template.provider_id,
+        request_parameters_sha256=template.request_parameters_sha256,
+        request_payload_sha256=request_blob.content_hash, parse_policy=parse_policy,
+    )
+    payload = _vlm_payload(manifest)
+
+    def retarget(value):
+        if type(value) is dict:
+            if "supporting_frame_ids" in value:
+                value["supporting_frame_ids"] = [manifest.frame_samples[2].frame_id]
+            for nested in value.values():
+                retarget(nested)
+        elif type(value) is list:
+            for nested in value:
+                retarget(nested)
+
+    retarget(payload)
+    if not with_candidates:
+        payload["candidate_hypotheses"] = []
+    raw = _vlm_raw(payload)
+    pack = parse_vlm_response(raw, manifest=manifest, manifest_set=manifest_set,
+                              request_identity=identity, policy=parse_policy)
+    raw_blob = BlobRef(uuid4(), _hash(raw), len(raw), "application/json")
+    store.blobs[request_blob.object_id], store.blobs[raw_blob.object_id] = request_content, raw
+    scope = source.reference.scope
+    attempt, slot, receipt, artifact_set = uuid4(), uuid4(), uuid4(), uuid4()
+    request_payload = {
+        "attempt_id": str(attempt), "episode_index": 0, "idempotency_key": "fixture-vlm-child",
+        "provider_idempotency_key": "fixture-vlm-provider", "proxy_blob": command_module._blob_mapping(source.proxy_blobs[0]),
+        "request_hash": HASH_A, "request_identity": identity.to_mapping(),
+        "request_identity_sha256": identity.canonical_hash,
+        "request_payload_blob": command_module._blob_mapping(request_blob),
+        "source_manifest_sha256": source.reference.content_hash,
+        "source_provenance_sha256": source.canonical_hash,
+        "window_manifest_set_sha256": manifest_set.canonical_hash,
+        "window_manifest_sha256": manifest.canonical_hash,
+    }
+    request_json = json.dumps(request_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    child = PersistedVlmGenerationChild(
+        VlmRequestRecordReference(scope, f"vlm_request_{manifest.canonical_hash[7:31]}", 1, canonical_payload_hash(request_json)),
+        request_json, source.source_job, source.job_id, slot, "fixture-vlm-child", HASH_A,
+        attempt, "fixture-vlm-provider", request_blob, receipt, artifact_set, 0,
+        manifest.canonical_hash, manifest_set.canonical_hash, source.reference.content_hash,
+        source.canonical_hash, identity.canonical_hash,
+    )
+    pack_json = json.dumps(pack.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    persisted = PersistedVlmSemanticPack(
+        VlmSemanticPackReference(scope, f"semantic_pack_{manifest.canonical_hash[7:39]}", 1, canonical_payload_hash(pack_json)),
+        pack_json, pack, child,
+    )
+    response = CommittedArtifactMemberReference(receipt, artifact_set, 1, scope,
+        "vlm_response_record", f"vlm_response_{manifest.canonical_hash[7:31]}", 1, HASH_B)
+    window = SourceWindowIdentity(0, manifest.stream_index, manifest.core_range.start_pts,
+        manifest.core_range.end_pts, manifest.canonical_hash, manifest.source_id,
+        manifest.source_sha256, manifest.source_clock_id, manifest_set.canonical_hash, source.proxy_blobs[0])
+    aggregate = CommittedArtifactMemberReference(uuid4(), uuid4(), 0, scope,
+        "vlm_semantic_pack_set", "vlm_semantic_pack_set", 1, HASH_C)
+    store.semantic_inputs = CommittedSemanticInputs(source, decoded.census, aggregate,
+        child.request_policy, (CommittedVlmSemanticInput(window, identity, persisted, response, raw_blob),))
+    ref = source.reference
+    selector = CommittedSemanticInputsRequest(source.source_job, CommittedArtifactMemberReference(
+        source.receipt_id, source.artifact_set_id, 0, ref.scope, ref.artifact_type,
+        ref.logical_id, ref.revision, ref.content_hash), aggregate)
+    return selector, pack
 
 
 def _canonical_v2_source_manifest(
@@ -473,7 +596,7 @@ def _canonical_v2_source_manifest(
     canonical_pack = _pack_for_manifest(semantic_pack, canonical_manifest.canonical_hash)
     decoded = DecodedSourceManifest(
         SourceOperationGrant(
-            SourceOperationPolicy("fixture-authority", "fixture-series", 1, ("semantic_analysis",)),
+            SourceOperationPolicy("fixture-authority", "fixture-series", 1, ("semantic_analysis", "render_source")),
             "all_or_nothing",
             (source,),
         ),
@@ -910,6 +1033,237 @@ def test_empty_candidate_pack_commits_explicit_empty_index() -> None:
     assert payload["candidate_index_state"] == "empty"
     assert payload["candidate_blobs"] == []
     assert payload["semantic_pack_sha256"] == request.semantic_pack.canonical_hash
+    root_payload = json.loads(store.successes[0].artifacts[0].payload_json)
+    from autocut_kernel.media.timed_evidence_codec import decode_calibration_binding
+    bindings = tuple(decode_calibration_binding(item) for item in root_payload["calibration_bindings"])
+    assert len(bindings) == 8
+    assert all(item.active for item in bindings)
+    admission = json.loads(store.successes[0].artifacts[2].payload_json)
+    root = json.loads(store.blobs[UUID(root_payload["blob"]["object_id"])])
+    by_producer = {item.producer_id: item for item in bindings}
+    assert admission["transcript_calibration_sha256"] == by_producer[root["transcript"]["context"]["producer_id"]].canonical_hash
+    assert admission["vad_calibration_sha256"] == by_producer[root["speech_activity"]["context"]["producer_id"]].canonical_hash
+
+
+@pytest.mark.parametrize("with_candidates", (False, True))
+@pytest.mark.parametrize("mutation", ("clock", "missing", "duplicate", "policy", "producer"))
+def test_complete_calibration_closure_is_required_even_without_candidates(with_candidates, mutation):
+    class ChangedBindingProducer(_Producer):
+        def prepare(self, request, source):
+            produced = super().prepare(request, source)
+            bindings = list(produced.calibration_bindings)
+            index = next(i for i, item in enumerate(bindings)
+                         if item.producer_id == produced.root_bundle.shot_boundaries.context.producer_id)
+            if mutation == "clock":
+                bindings[index] = replace(bindings[index], time_base=TimeBase(1, 999))
+            elif mutation == "missing":
+                del bindings[index]
+            elif mutation == "duplicate":
+                bindings.append(bindings[index])
+            elif mutation == "policy":
+                bindings[index] = replace(bindings[index], policy_sha256=HASH_C)
+            else:
+                bindings[index] = replace(bindings[index], producer_id="foreign-shot")
+            return replace(produced, calibration_bindings=tuple(bindings))
+
+    store = _Store()
+    request = _request(store, with_candidates=with_candidates)
+    outcome = _command(store, ChangedBindingProducer(_bundle())).execute(request).outcome
+    assert outcome.state == "denied"
+    assert "calibration" in outcome.failure_detail_json
+    assert store.successes == [] and store.closed_materializations == 1
+
+
+@pytest.mark.parametrize("with_candidates", (False, True))
+@pytest.mark.parametrize("field,value", [
+    ("timing_error_bound_tick", value)
+    for value in (True, False, 1.0, 0, -1, "1", None, [], {}, float("nan"), float("inf"))
+] + [
+    (field, value)
+    for field in ("producer_id", "producer_version")
+    for value in (None, True, 1, 1.0, "", " \t", "\ud800", [], {})
+])
+def test_provenance_identity_leaves_reject_before_equality_comparison(with_candidates, field, value):
+    store = _Store()
+    request = _request(store, with_candidates=with_candidates)
+    resolved = command_module.resolve_committed_timed_media_request(store, request)
+    produced = _Producer(_bundle()).prepare(resolved, _Lease(request.source_blob, store))
+    provenance = json.loads(produced.producer_provenance_json)
+    provenance["producer_identities"][0][field] = value
+    raw = json.dumps(provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="producer (timing bound|identity)"):
+        replace(produced, producer_provenance_json=raw)
+
+
+@pytest.mark.parametrize("value", (True, 1.0))
+@pytest.mark.parametrize("with_candidates", (False, True))
+def test_invalid_provenance_bound_commits_denial_not_evidence(value, with_candidates):
+    class InvalidProvenanceProducer(_Producer):
+        def prepare(self, request, source):
+            produced = super().prepare(request, source)
+            provenance = json.loads(produced.producer_provenance_json)
+            provenance["producer_identities"][0]["timing_error_bound_tick"] = value
+            return replace(produced, producer_provenance_json=json.dumps(
+                provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+
+    store = _Store()
+    request = _request(store, with_candidates=with_candidates)
+    result = _command(store, InvalidProvenanceProducer(_bundle())).execute(request)
+    assert result.outcome.state == "denied"
+    assert "exact positive integer" in result.outcome.failure_detail_json
+    assert not store.successes and store.closed_materializations == 1
+
+
+def test_provenance_producer_text_preserves_valid_unicode_without_normalization():
+    store = _Store()
+    request = _request(store, with_candidates=False)
+    resolved = command_module.resolve_committed_timed_media_request(store, request)
+    produced = _Producer(_bundle()).prepare(resolved, _Lease(request.source_blob, store))
+    version = " 版本一😀 "
+    provenance = json.loads(produced.producer_provenance_json)
+    provenance["producer_identities"][0]["producer_version"] = version
+    bindings = (replace(produced.calibration_bindings[0], producer_version=version),
+                *produced.calibration_bindings[1:])
+    updated = replace(produced, calibration_bindings=bindings,
+        producer_provenance_json=json.dumps(provenance, ensure_ascii=False,
+                                           separators=(",", ":"), sort_keys=True))
+    command_module.validate_produced_timed_media_evidence(resolved, updated)
+    assert json.loads(updated.producer_provenance_json)["producer_identities"][0]["producer_version"] == version
+
+
+def test_exact_semantic_selector_is_required_and_fully_hash_bound():
+    store = _Store()
+    request = _request(store)
+    selector = request.semantic_inputs_request
+    assert request.canonical_payload()["semantic_inputs_request"] == {
+        "job": {"job_key": request.job.job_key, "profile": request.job.profile},
+        "source_manifest": selector.source_manifest.to_mapping(),
+        "vlm_semantic_pack_set": selector.vlm_semantic_pack_set.to_mapping(),
+    }
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="must be exact"):
+        replace(request, semantic_inputs_request=None)
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="exact Source member"):
+        replace(request, semantic_inputs_request=replace(selector, job=Job("foreign", "shadow")))
+    for field, value in (("receipt_id", uuid4()), ("artifact_set_id", uuid4()),
+                         ("revision", 2), ("content_hash", HASH_B)):
+        changed = replace(request, semantic_inputs_request=replace(selector,
+            vlm_semantic_pack_set=replace(selector.vlm_semantic_pack_set, **{field: value})))
+        assert changed.request_hash != request.request_hash
+        producer = _Producer(_bundle())
+        with pytest.raises(command_module.TimedMediaEvidenceCommandError):
+            _command(store, producer).execute(changed)
+        assert producer.calls == 0
+    assert store.claims == [] and store.materializations == []
+
+
+@pytest.mark.parametrize("mutation", ("summary", "remove_candidates"))
+def test_caller_semantic_pack_cannot_replace_the_committed_pack(mutation):
+    store = _Store()
+    request = _request(store)
+    original = request.semantic_pack
+    forged = (replace(original, candidate_hypotheses=()) if mutation == "remove_candidates"
+              else replace(original, window_summary=replace(original.window_summary, summary="forged")))
+    producer = _Producer(_bundle())
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="committed VLM pack"):
+        _command(store, producer).execute(replace(request, semantic_pack=forged))
+    assert store.claims == [] and store.materializations == [] and producer.calls == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("episode_index", 1), ("stream_index", 1), ("core_start_pts", 1),
+    ("core_end_pts", 99), ("source_id", "foreign"), ("source_sha256", HASH_B),
+    ("source_clock_id", "foreign-clock"), ("window_manifest_set_sha256", HASH_B),
+])
+def test_committed_window_must_join_exact_source_episode_before_work(field, value):
+    store = _Store()
+    request = _request(store)
+    inputs = store.semantic_inputs
+    selected = inputs.inputs[0]
+    store.semantic_inputs = replace(inputs, inputs=(replace(selected,
+        source_window=replace(selected.source_window, **{field: value})),))
+    producer = _Producer(_bundle())
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="committed VLM pack"):
+        _command(store, producer).execute(request)
+    assert store.claims == [] and store.materializations == [] and producer.calls == 0
+
+
+@pytest.mark.parametrize("field,value", [
+    ("receipt_id", UUID(int=900)), ("artifact_set_id", UUID(int=901)),
+    ("member_ordinal", 2), ("logical_id", "foreign-response"),
+    ("artifact_type", "vlm_request_record"), ("revision", 2),
+])
+def test_committed_response_reference_must_be_the_matching_child(field, value):
+    store = _Store()
+    request = _request(store)
+    inputs = store.semantic_inputs
+    selected = inputs.inputs[0]
+    store.semantic_inputs = replace(inputs, inputs=(replace(selected,
+        response_record=replace(selected.response_record, **{field: value})),))
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="committed VLM pack"):
+        _command(store, _Producer(_bundle())).execute(request)
+    assert store.claims == [] and store.materializations == []
+
+
+def test_shared_request_hash_is_the_actual_claim_hash_and_replay_rereads_inputs():
+    store = _Store()
+    request = _request(store)
+    resolved = command_module.resolve_committed_timed_media_request(store, request)
+    expected = command_module.timed_media_request_hash(resolved, AUTHORITY_SNAPSHOT)
+    assert expected == canonical_sha256({
+        "authority_registry_set_sha256": AUTHORITY_SNAPSHOT.registry_set_sha256,
+        "authority_profile_key": AUTHORITY_SNAPSHOT.enabled_profile.value,
+        "request": resolved.canonical_payload(),
+    })
+    assert expected != request.request_hash
+    producer = _Producer(_bundle())
+    command = _command(store, producer)
+    assert command.execute(request).outcome.state == "succeeded"
+    assert store.claims[-1].request_hash == expected
+    before = store.semantic_reads
+    assert command.execute(request).outcome.state == "succeeded"
+    assert store.semantic_reads == before + 1 and producer.calls == 1
+    store.semantic_inputs = None
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError):
+        command.execute(request)
+    assert producer.calls == 1
+
+
+@pytest.mark.parametrize("purpose", ("semantic_analysis", "render_source"))
+def test_missing_source_operation_rejects_before_claim_or_work(purpose):
+    store = _Store()
+    request = _request(store)
+    source = store.source_manifest
+    decoded = decode_source_manifest(source.payload_json, source.proxy_blobs)
+    policy = replace(decoded.census.policy, authorized_purposes=(purpose,))
+    decoded = replace(decoded, census=replace(decoded.census, policy=policy))
+    raw = json.dumps(decoded.to_mapping(), separators=(",", ":"), sort_keys=True)
+    source = replace(source, payload_json=raw,
+                     reference=replace(source.reference, content_hash=canonical_payload_hash(raw)))
+    store.source_manifest = source
+    selector, pack = _register_semantic_inputs(store, with_candidates=True)
+    request = replace(request, source_manifest_reference=source.reference,
+        source_provenance_sha256=source.canonical_hash, semantic_inputs_request=selector,
+        semantic_pack=pack)
+    producer = _Producer(_bundle())
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError):
+        _command(store, producer).execute(request)
+    assert store.claims == [] and store.materializations == [] and producer.calls == 0
+
+
+@pytest.mark.parametrize("with_candidates", (False, True))
+def test_public_closure_helpers_replay_persisted_plans_and_complete_bindings(with_candidates):
+    store = _Store()
+    request = _request(store, with_candidates=with_candidates)
+    resolved = command_module.resolve_committed_timed_media_request(store, request)
+    produced = _Producer(_bundle()).prepare(resolved, _Lease(request.source_blob, store))
+    command_module.validate_produced_timed_media_evidence(resolved, produced)
+    plans, candidates = command_module.close_timed_media_candidates(resolved, produced)
+    assert _command(store, _Producer(_bundle())).execute(request).outcome.state == "succeeded"
+    root, index = (json.loads(item.payload_json) for item in store.successes[0].artifacts[:2])
+    assert root["calibration_bindings"] == [item.to_mapping() for item in produced.calibration_bindings]
+    plan_payload = json.loads(store.blobs[UUID(index["plan_blob"]["object_id"])])
+    assert plan_payload["plans"] == [item.to_mapping() for item in plans]
+    assert index["candidate_set_sha256"] == [item.canonical_hash for item in candidates]
 
 
 def test_command_rejects_missing_or_vad_mismatched_authority_profile() -> None:
@@ -1012,13 +1366,16 @@ def test_preflight_real_decoder_rejects_v1_source_manifest_before_claim_or_work(
     request = replace(
         request,
         source_manifest_reference=reference,
+        semantic_inputs_request=replace(request.semantic_inputs_request,
+            source_manifest=replace(request.semantic_inputs_request.source_manifest,
+                                    content_hash=reference.content_hash)),
         source_provenance_sha256=canonical_sha256(
             _persisted_source_manifest_provenance_mapping(store.source_manifest)
         ),
     )
     producer = _Producer(_bundle())
 
-    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="invalid for V2"):
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="invalid for preflight"):
         _command(store, producer).execute(request)
 
     assert store.outcomes == {}
@@ -1033,7 +1390,7 @@ def test_preflight_denies_mismatched_source_member_or_absent_episode_before_work
     request = _request(store)
     producer = _Producer(_bundle())
 
-    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="immutable handle"):
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="exact Source member"):
         _command(store, producer).execute(
             replace(request, source_manifest_receipt_id=uuid4())
         )

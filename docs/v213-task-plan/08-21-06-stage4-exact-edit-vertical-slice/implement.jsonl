@@ -5,3 +5,4 @@
 {"file":"ac_auto_cut/原理/v2.1-implementation-design/11-compatible-algorithm-principles-and-reuse-boundaries.md","reason":"Verified historical alignment principles and forbidden reuse"}
 {"file":".trellis/tasks/08-21-05-media-preflight-calibration/prd.md","reason":"Predecessor evidence acceptance criteria"}
 {"file":".trellis/tasks/08-21-05-media-preflight-calibration/design.md","reason":"TimedSpeech service and evidence ownership"}
+{"file":".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice/committed-reader-wave.md","reason":"Exact Source/VLM selection, empty-candidate calibration closure, bounded five-member replay and accepted-profile authority"}

@@ -18,6 +18,7 @@ from autocut_kernel.media import (
     advance_candidate_evidence_window,
     plan_candidate_evidence_window,
 )
+from autocut_kernel.media.timed_evidence import validate_calibration_bindings
 from autocut_kernel.media.types import TickRange
 from autocut_kernel.vlm import (
     MappedSourceInterval,
@@ -488,3 +489,20 @@ def test_candidate_window_has_no_admission_fields() -> None:
     assert "vlm_candidate_sha256" in plan_field_names
     assert "vlm_observation_sha256" not in field_names | plan_field_names
     assert not hasattr(plan.final_window, "pass")
+
+
+@pytest.mark.parametrize("mutation", ("missing", "duplicate", "clock", "policy", "producer", "type"))
+def test_shared_binding_validation_closes_exact_contexts_without_candidate(mutation):
+    context = _context(MediaKind.VIDEO, "frame-decoder-v1")
+    binding = CalibrationBinding(HASH_A, HASH_B, HASH_C, context.producer_id,
+                                 "1", context.time_base, 1, True)
+    context = replace(context, generation_policy_sha256=binding.policy_sha256)
+    assert validate_calibration_bindings((binding,), (context,)) == (binding,)
+    changes = {
+        "missing": (), "duplicate": (binding, binding),
+        "clock": (replace(binding, time_base=TimeBase(1, 999)),),
+        "policy": (replace(binding, policy_sha256=HASH_C),),
+        "producer": (replace(binding, producer_id="foreign"),), "type": (object(),),
+    }
+    with pytest.raises(MediaValidationError, match="calibration"):
+        validate_calibration_bindings(changes[mutation], (context,))

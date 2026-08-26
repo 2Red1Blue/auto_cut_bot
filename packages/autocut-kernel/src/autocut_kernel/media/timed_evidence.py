@@ -17,6 +17,7 @@ from .root_evidence import (
     CanonicalEvidence,
     Coverage,
     EvidenceCompleteness,
+    EvidenceContext,
     FramePtsIndexSet,
     SceneBoundarySet,
     ShotBoundarySet,
@@ -149,6 +150,29 @@ class CalibrationBinding(CanonicalEvidence):
         )
         if not _boolean(self.active, "calibration.active"):
             raise TimedEvidenceValidationError("calibration binding must be active")
+
+
+def validate_calibration_bindings(
+    bindings: tuple[CalibrationBinding, ...],
+    evidence_contexts: tuple[EvidenceContext, ...],
+) -> tuple[CalibrationBinding, ...]:
+    """Close every producer/policy/clock, including roots with no candidates.
+
+    This is value consistency, not proof of an accepted CalibrationRecord.
+    """
+    exact = tuple(bindings)
+    if not exact or any(type(item) is not CalibrationBinding for item in exact):  # noqa: E721
+        raise TimedEvidenceValidationError("calibration bindings must contain active CalibrationBinding values")
+    contexts = tuple(evidence_contexts)
+    if not contexts or any(type(item) is not EvidenceContext for item in contexts):  # noqa: E721
+        raise TimedEvidenceValidationError("calibration requires exact evidence contexts")
+    keys = tuple((item.producer_id, item.policy_sha256, item.time_base) for item in exact)
+    if len(keys) != len(set(keys)):
+        raise TimedEvidenceValidationError("calibration bindings must be unique")
+    expected = {(item.producer_id, item.generation_policy_sha256, item.time_base) for item in contexts}
+    if set(keys) != expected:
+        raise TimedEvidenceValidationError("calibration bindings must cover every exact evidence producer policy")
+    return exact
 
 
 @dataclass(frozen=True, slots=True)
@@ -507,28 +531,10 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
             raise TimedEvidenceValidationError(
                 "window sentence fact disagrees with transcript evidence"
             )
-        bindings = tuple(self.calibration_bindings)
-        if not bindings or any(type(item) is not CalibrationBinding for item in bindings):  # noqa: E721
-            raise TimedEvidenceValidationError(
-                "calibration_bindings must contain active CalibrationBinding values"
-            )
-        binding_keys = tuple(
-            (item.producer_id, item.policy_sha256, item.time_base) for item in bindings
+        bindings = validate_calibration_bindings(
+            self.calibration_bindings,
+            tuple(evidence.context for evidence, _, _ in expected_types),
         )
-        if len(binding_keys) != len(set(binding_keys)):
-            raise TimedEvidenceValidationError("calibration bindings must be unique")
-        expected_binding_keys = {
-            (
-                evidence.context.producer_id,
-                evidence.context.generation_policy_sha256,
-                evidence.context.time_base,
-            )
-            for evidence, _, _ in expected_types
-        }
-        if set(binding_keys) != expected_binding_keys:
-            raise TimedEvidenceValidationError(
-                "calibration bindings must cover every exact evidence producer policy"
-            )
         object.__setattr__(self, "calibration_bindings", bindings)
 
     @property
@@ -789,4 +795,5 @@ __all__ = [
     "plan_adaptive_evidence_window",
     "plan_candidate_evidence_window",
     "plan_candidate_window",
+    "validate_calibration_bindings",
 ]

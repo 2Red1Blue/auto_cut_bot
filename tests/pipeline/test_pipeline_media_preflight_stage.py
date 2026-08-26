@@ -670,6 +670,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
+    del mapping["stage3_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -679,7 +680,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     }
     v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v7"):
+    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v8"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),

@@ -2,6 +2,8 @@
 
 ## Current boundary
 
+Active reader slice: [Exact committed timed-media reader](committed-reader-wave.md).
+
 Stage1-3 shared Commands and their exact readers now exist. The earlier Task06
 editorial-fixture allowance is obsolete for new production work: the production
 input is the actual admitted Stage3 batch and its exact Stage2/Catalog/root
