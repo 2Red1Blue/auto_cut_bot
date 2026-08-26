@@ -17,6 +17,7 @@ from autocut_kernel.media.local_speech_window_busy import (
 from autocut_kernel.media.local_speech_window_codec import decode_local_speech_window_response
 from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
 from autocut_kernel.pipeline.local_speech_window_port import (
+    LocalSpeechWindowInvalidResponseError,
     LocalSpeechWindowPreDispatchBusyError,
     ReceivedLocalSpeechWindow,
 )
@@ -38,6 +39,16 @@ class LocalSpeechWindowBusyError(LocalMediaToolError, LocalSpeechWindowPreDispat
     def __init__(self, proof: LocalSpeechWindowBusyProof, raw_response: bytes) -> None:
         try:
             LocalSpeechWindowPreDispatchBusyError.__init__(self, proof, raw_response)
+        except ValueError as error:
+            raise LocalMediaPolicyError(str(error)) from error
+
+
+class LocalSpeechWindowInvalidEvidenceError(LocalMediaEvidenceError, LocalSpeechWindowInvalidResponseError):
+    """Keep the existing app error API while exposing received bytes to Kernel."""
+
+    def __init__(self, request: LocalSpeechWindowRequest, raw_response: bytes) -> None:
+        try:
+            LocalSpeechWindowInvalidResponseError.__init__(self, request, raw_response)
         except ValueError as error:
             raise LocalMediaPolicyError(str(error)) from error
 
@@ -131,5 +142,5 @@ class FunASRHttpLocalSpeechWindowPort:
             decoded = decode_local_speech_window_response(raw, request)
             evidence = project_local_speech_window(decoded)
         except (TypeError, ValueError) as error:
-            raise LocalMediaEvidenceError("local speech window evidence is invalid") from error
+            raise LocalSpeechWindowInvalidEvidenceError(request, raw) from error
         return ReceivedLocalSpeechWindow(evidence, raw)

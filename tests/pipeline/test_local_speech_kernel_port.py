@@ -5,13 +5,21 @@ from dataclasses import replace
 import pytest
 from autocut_kernel.media.local_speech_window_busy import LocalSpeechWindowBusyProof
 from autocut_kernel.pipeline.local_speech_window_port import (
+    LocalSpeechWindowInvalidResponseError,
     LocalSpeechWindowPreDispatchBusyError,
     LocalSpeechWindowProducerPort,
     ReceivedLocalSpeechWindow,
 )
 
-from auto_cut_bot.pipeline.media_preflight.funasr_window_http import LocalSpeechWindowBusyError
-from auto_cut_bot.pipeline.media_preflight.models import LocalMediaPolicyError, LocalMediaToolError
+from auto_cut_bot.pipeline.media_preflight.funasr_window_http import (
+    LocalSpeechWindowBusyError,
+    LocalSpeechWindowInvalidEvidenceError,
+)
+from auto_cut_bot.pipeline.media_preflight.models import (
+    LocalMediaEvidenceError,
+    LocalMediaPolicyError,
+    LocalMediaToolError,
+)
 from tests.media.test_local_speech_window_codec import request_and_report
 from tests.pipeline.test_funasr_window_http import _case
 
@@ -65,3 +73,49 @@ def test_invalid_received_types_fail_without_conferring_measurement_authority(tm
         ReceivedLocalSpeechWindow(None, result.raw_response)
     with pytest.raises(ValueError):
         ReceivedLocalSpeechWindow(result.evidence, bytearray(result.raw_response))
+
+
+@pytest.mark.parametrize("raw", [b"", b"not JSON", b' { "schema_version": "foreign" }\n'])
+def test_received_invalid_is_catchable_in_kernel_and_preserves_old_error_api(tmp_path, raw):
+    source, request, _, transport, client = _case(tmp_path, raw=raw)
+    with pytest.raises(LocalSpeechWindowInvalidResponseError) as caught:
+        client.produce(source, request)
+    error = caught.value
+    assert isinstance(error, LocalMediaEvidenceError)
+    assert type(error) is LocalSpeechWindowInvalidEvidenceError
+    assert error.code == LocalMediaEvidenceError.code
+    assert error.request is request and error.request_sha256 == request.canonical_hash
+    assert error.raw_response is raw
+    assert len(transport.calls) == 1 and source.exists()
+    for name, replacement in (("request", replace(request, max_response_bytes=1)),
+                              ("request_sha256", "sha256:" + "f" * 64),
+                              ("raw_response", b"replacement")):
+        with pytest.raises(AttributeError):
+            setattr(error, name, replacement)
+    for forbidden in ("denied", "accepted", "retry_authorized", "receipt_id"):
+        assert not hasattr(error, forbidden)
+
+
+@pytest.mark.parametrize("variant", ["request_mapping", "bytearray", "text", "none", "overflow"])
+def test_invalid_response_carrier_requires_exact_request_and_bounded_bytes(variant):
+    request, _ = request_and_report()
+    raw = b"invalid"
+    if variant == "request_mapping":
+        request = request.to_mapping()
+    elif variant == "overflow":
+        raw = b"x" * (request.max_response_bytes + 1)
+    else:
+        raw = {"bytearray": bytearray(raw), "text": "invalid", "none": None}[variant]
+    with pytest.raises(ValueError):
+        LocalSpeechWindowInvalidResponseError(request, raw)
+    with pytest.raises(LocalMediaPolicyError):
+        LocalSpeechWindowInvalidEvidenceError(request, raw)
+
+
+def test_invalid_response_carrier_is_content_not_a_decoder_verdict(tmp_path):
+    _, request, valid_raw, _, _ = _case(tmp_path)
+    # A typed carrier is not proof that its bytes are invalid. The durable
+    # consumer must compare the locked request and rerun the shared decoder.
+    error = LocalSpeechWindowInvalidResponseError(request, valid_raw)
+    assert error.request is request and error.raw_response is valid_raw
+    assert not hasattr(error, "validation_status")

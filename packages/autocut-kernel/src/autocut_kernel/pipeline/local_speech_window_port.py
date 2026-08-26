@@ -50,11 +50,44 @@ class LocalSpeechWindowPreDispatchBusyError(RuntimeError):
         return self._raw_response
 
 
+class LocalSpeechWindowInvalidResponseError(RuntimeError):
+    """Complete received bytes that the adapter could not decode or project.
+
+    This carrier is not a terminal denial or proof of invalidity. A durable
+    consumer must compare the request to its own locked input and independently
+    replay these exact bytes before deciding an outcome. Empty bytes are a
+    complete but invalid response; missing/oversized transport data is not.
+    """
+
+    def __init__(self, request: LocalSpeechWindowRequest, raw_response: bytes) -> None:
+        if (type(request) is not LocalSpeechWindowRequest or type(raw_response) is not bytes
+                or len(raw_response) > request.max_response_bytes):
+            raise ValueError("invalid-response evidence requires an exact request and bounded bytes")
+        super().__init__("local speech window evidence is invalid")
+        self._request = request
+        self._request_sha256 = request.canonical_hash
+        self._raw_response = raw_response
+
+    @property
+    def request(self) -> LocalSpeechWindowRequest:
+        return self._request
+
+    @property
+    def request_sha256(self) -> str:
+        return self._request_sha256
+
+    @property
+    def raw_response(self) -> bytes:
+        return self._raw_response
+
+
 class LocalSpeechWindowProducerPort(Protocol):
     """The caller owns the durable claim and verified private source lease.
 
     No retry, cleanup or persistence happens here. The existing HTTP adapter
     implements this interface; Kernel never imports its application module.
+    A received but undecodable HTTP success raises the bounded invalid-response
+    carrier; transport uncertainty must never be converted into that carrier.
     """
 
     def produce(self, source_path: Path, request: LocalSpeechWindowRequest) -> ReceivedLocalSpeechWindow: ...

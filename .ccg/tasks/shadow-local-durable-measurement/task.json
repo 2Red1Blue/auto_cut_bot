@@ -1,0 +1,11 @@
+{
+  "id": "shadow-local-durable-measurement",
+  "title": "Persist and recover local-window calibration measurement evidence",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend/database",
+  "currentPhase": "analysis",
+  "nextAction": "Design a sibling command, Store protocol and additive migration without widening complete-source calibration authority.",
+  "branch": "feat/v213-contract-codegen"
+}
