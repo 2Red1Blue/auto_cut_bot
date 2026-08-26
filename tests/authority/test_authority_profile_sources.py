@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from autocut_kernel.contracts.compiler.canonical import canonical_json_hash, sha256_bytes
+from autocut_kernel.media.timing_compatibility import build_timing_compatibility_profile
 from autocut_kernel.registry import (
     AUTHORITY_PROFILE_SOURCE_INVALID,
     AuthorityProfileSourceError,
@@ -17,6 +18,11 @@ from autocut_kernel.registry import (
     UnresolvedAuthorityProfileSourceSet,
     decode_authority_profile_source_grammar,
     decode_stage1_narrative_profile_source,
+)
+from autocut_kernel.registry.authority_profiles import (
+    AuthorityProfileCapabilities,
+    CudaShadowCalibrationProfileSource,
+    decode_cuda_shadow_calibration_profile_source,
 )
 from autocut_kernel.registry.authority_profiles import (
     decode_local_run_profile_source as _decode_local_run_profile_source,
@@ -349,6 +355,105 @@ def _shadow_mapping(narrative: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _cuda_shadow_mapping(narrative: dict[str, object]) -> dict[str, object]:
+    """Build a distinct CUDA source without altering the locked CPU fixture."""
+    source = _shadow_mapping(narrative)
+    source.update(
+        schema_version="autocut-cuda-shadow-calibration-profile-v1",
+        profile_id="cuda_shadow_calibration",
+        profile_state="cuda_shadow_calibration_v1",
+        profile_contract_sha256=_hash("cuda-shadow-profile-contract"),
+    )
+    native = source.pop("native_timed_speech")
+    assert isinstance(native, dict)
+    build_audit_sha256 = _hash("current-cuda-build-audit")
+    native["build_audit_sha256"] = build_audit_sha256
+    native.pop("service_sha256")
+    native["device"] = "cuda"
+    producers = native["producers"]
+    assert isinstance(producers, list)
+    compatibility_producers: list[dict[str, object]] = []
+    for producer in producers:
+        assert isinstance(producer, dict)
+        producer["build_audit_sha256"] = build_audit_sha256
+        producer["service_sha256"] = build_audit_sha256
+        producer["inference_identity_sha256"] = _hash(
+            f"{producer['producer_kind']}-inference-identity"
+        )
+        compatibility_producers.append(
+            {
+                "producer_kind": producer["producer_kind"],
+                "producer_id": producer["producer_id"],
+                "producer_version": producer["producer_version"],
+                "model_id": producer["model_id"],
+                "model_revision": producer["model_revision"],
+                "model_sha256": producer["model_sha256"],
+                "inference_identity_sha256": producer["inference_identity_sha256"],
+            }
+        )
+    policies = source["timing_policies"]
+    assert isinstance(policies, dict)
+    # The native protocol identity excludes audit-only build identities and the
+    # later compatibility digest, so unrelated build changes stay compatible.
+    native_projection = {
+        "schema_version": "funasr-cuda-shadow-calibration-profile-v1",
+        **native,
+        "device": {
+            "device_class": "cuda",
+            "cuda_runtime_version": "12.8",
+            "gpu_compute_capability": "8.9",
+        },
+        "timed_speech_policy_sha256": policies["timed_speech_policy_sha256"],
+        "word_gap_policy_sha256": policies["word_gap_policy_sha256"],
+        "vad_merge_policy_sha256": policies["vad_merge_policy_sha256"],
+        "utterance_gap_milliseconds": policies["word_gap_ms"],
+        "vad_merge_gap_milliseconds": policies["vad_merge_gap_ms"],
+    }
+    native_projection.pop("native_port_identity_sha256")
+    native_projection.pop("build_audit_sha256")
+    projected_producers = native_projection["producers"]
+    assert isinstance(projected_producers, list)
+    native_projection["producers"] = [
+        {
+            key: value
+            for key, value in producer.items()
+            if key not in {"build_audit_sha256", "service_sha256"}
+        }
+        for producer in projected_producers
+        if isinstance(producer, dict)
+    ]
+    native["native_port_identity_sha256"] = canonical_json_hash(native_projection)
+    compatibility = build_timing_compatibility_profile(
+        {
+            "schema_version": "timing-compatibility-profile-v1",
+            "timing_engine_compatibility_version": "funasr-cuda-timing-v1",
+            "build_audit_sha256": build_audit_sha256,
+            "runtime": {
+                "funasr_version": native["funasr_version"],
+                "torch_version": native["torch_version"],
+                "device": {
+                    "device_class": "cuda",
+                    "cuda_runtime_version": "12.8",
+                    "gpu_compute_capability": "8.9",
+                },
+            },
+            "decode": {
+                "decoder_identity_sha256": _hash("cuda-decoder"),
+                "resampling_identity_sha256": _hash("cuda-resampling"),
+                "native_protocol_identity_sha256": native["native_port_identity_sha256"],
+            },
+            "policies": {
+                "word_timestamp_policy_sha256": policies["timed_speech_policy_sha256"],
+                "vad_merge_policy_sha256": policies["vad_merge_policy_sha256"],
+            },
+            "producers": compatibility_producers,
+        }
+    )
+    source["cuda_timed_speech"] = native
+    source["timing_compatibility"] = compatibility.to_mapping()
+    return source
+
+
 def _member_ref(
     *, artifact_type: str, ordinal: int, content_hash: str
 ) -> dict[str, object]:
@@ -487,6 +592,16 @@ def _decoded_dependencies(
         _raw(shadow), narrative=narrative_source
     )
     return narrative_source, shadow_source
+
+
+def _decode_cuda_shadow(
+    narrative: dict[str, object], source: dict[str, object]
+) -> CudaShadowCalibrationProfileSource:
+    return decode_cuda_shadow_calibration_profile_source(
+        _raw(source),
+        narrative=decode_stage1_narrative_profile_source(_raw(narrative)),
+        expected_profile_contract_sha256=_hash("cuda-shadow-profile-contract"),
+    )
 
 
 def _assert_invalid(call: Callable[[], object], *, absent: str | None = None) -> None:
@@ -630,6 +745,67 @@ def test_shadow_only_grammar_decode_does_not_create_a_run_profile() -> None:
     )
     assert decoded.resolution_state == "grammar_only_unresolved"
     assert decoded.local_run is None
+
+
+def test_cuda_shadow_is_a_distinct_shadow_only_grammar() -> None:
+    narrative, _shadow, _run = _profiles()
+    cuda = _cuda_shadow_mapping(narrative)
+
+    decoded = _decode_cuda_shadow(narrative, cuda)
+
+    assert decoded.profile_key == "cuda_shadow_calibration@1"
+    assert decoded.cuda_timed_speech.build_audit_sha256 == _hash("current-cuda-build-audit")
+    assert decoded.timing_compatibility.device.device_class == "cuda"
+    assert decoded.capabilities == AuthorityProfileCapabilities(
+        True, False, False, False, False, False, False, False, False
+    )
+
+
+def test_cuda_and_cpu_shadow_grammars_cannot_be_relabelled_into_each_other() -> None:
+    narrative, shadow, _run = _profiles()
+    cuda = _cuda_shadow_mapping(narrative)
+    cpu_native = shadow["native_timed_speech"]
+    assert isinstance(cpu_native, dict)
+    cpu_native["device"] = "cuda"
+    narrative_source = decode_stage1_narrative_profile_source(_raw(narrative))
+    _assert_invalid(
+        lambda: decode_shadow_calibration_profile_source(_raw(shadow), narrative=narrative_source)
+    )
+
+    cuda_native = cuda["cuda_timed_speech"]
+    assert isinstance(cuda_native, dict)
+    cuda_native["device"] = "cuda:0"
+    _assert_invalid(lambda: _decode_cuda_shadow(narrative, cuda))
+
+
+def test_cuda_shadow_recomputes_compatibility_and_allows_audit_only_change() -> None:
+    narrative, _shadow, _run = _profiles()
+    cuda = _cuda_shadow_mapping(narrative)
+    original = _decode_cuda_shadow(narrative, cuda)
+    changed = copy.deepcopy(cuda)
+    native = changed["cuda_timed_speech"]
+    compatibility = changed["timing_compatibility"]
+    assert isinstance(native, dict) and isinstance(compatibility, dict)
+    audit = _hash("audit-only-service-rebuild")
+    native["build_audit_sha256"] = audit
+    producers = native["producers"]
+    assert isinstance(producers, list)
+    for producer in producers:
+        assert isinstance(producer, dict)
+        producer["build_audit_sha256"] = audit
+        producer["service_sha256"] = audit
+    compatibility["build_audit_sha256"] = audit
+    rebuilt = build_timing_compatibility_profile(
+        {key: value for key, value in compatibility.items() if key != "timing_compatibility_sha256"}
+    )
+    changed["timing_compatibility"] = rebuilt.to_mapping()
+
+    decoded = _decode_cuda_shadow(narrative, changed)
+
+    assert decoded.cuda_timed_speech.build_audit_sha256 != original.cuda_timed_speech.build_audit_sha256
+    assert decoded.timing_compatibility.timing_compatibility_sha256 == (
+        original.timing_compatibility.timing_compatibility_sha256
+    )
 
 
 def test_duplicate_key_at_nested_depth_is_sanitized() -> None:

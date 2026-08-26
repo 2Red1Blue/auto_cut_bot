@@ -149,8 +149,14 @@ from .models import (
     VlmSemanticPackReference,
     VlmSemanticPackSetChild,
     WholeSeriesSourceManifestReference,
+    artifact_set_hash,
     canonical_payload_hash,
     canonical_recipe_scope,
+)
+from .shadow_local_measurement_artifacts import (
+    CommittedShadowLocalMeasurement,
+    compile_shadow_local_measurement_artifacts,
+    validate_shadow_local_measurement_artifact_metadata,
 )
 from .terminal_receipts import PersistedTerminalCommandReceipt
 
@@ -2110,6 +2116,165 @@ class PostgresRuntimeStore:
             if successor is None:
                 raise RuntimeStoreError("shadow-local successor vanished after reservation")
             return successor
+
+        return self._transaction(operation)
+
+    def finalize_shadow_local_measurement_success(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> CommandOutcome:
+        """Atomically publish the local journal's exact two-member evidence set.
+
+        This owner intentionally does not share the complete-source shadow
+        finalizer: local evidence has a different plan grammar, raw-response
+        claims and pure replay contract.
+        """
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_nonnegative_version(expected_version, "shadow-local finalizer expected_version")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            job_id, slot_state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, attempt.command_slot_id
+            )
+            self._require_slot_execution_kind(cursor, attempt.command_slot_id, "deterministic")
+            if (
+                command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME
+                or request_hash != attempt.plan_hash
+                or attempt.job.profile != "shadow"
+                or attempt.outcome.job_id != job_id
+            ):
+                raise CommandStateError("shadow-local finalizer lost its exact command identity")
+            self._validate_shadow_local_attempt_chain(cursor, attempt)
+            if slot_state != "running":
+                if attempt.state != "committed":
+                    raise CommandStateError("terminal local command is not backed by a committed journal")
+                return self._replay_or_raise(
+                    cursor, attempt.command_slot_id, job_id, "succeeded", None  # type: ignore[arg-type]
+                )
+            if (
+                attempt.state != "ready"
+                or attempt.version != expected_version
+                or attempt.outcome.state != "running"
+                or any(member.state != "staged" for member in attempt.members)
+            ):
+                raise CommandStateError("shadow-local finalizer requires the exact ready staged attempt")
+            raw_responses = self._read_shadow_local_staged_responses(cursor, attempt, job_id)
+            compiled = compile_shadow_local_measurement_artifacts(attempt, raw_responses)
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_attempts
+                   SET state = 'committed', completed_at = transaction_timestamp(),
+                       recovery_lease_token = NULL, recovery_lease_expires_at = NULL,
+                       version = version + 1
+                 WHERE attempt_id = %s AND state = 'ready' AND version = %s
+                """,
+                (attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow-local finalizer CAS was lost")
+            return self._write_success(
+                cursor,
+                CommandSuccess(
+                    attempt.command_slot_id,
+                    artifact_set_hash(compiled.artifacts),
+                    compiled.artifacts,
+                ),
+                job_id,
+            )
+
+        return self._transaction(operation)
+
+    def read_committed_shadow_local_measurement(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+        receipt_id: UUID,
+        artifact_set_id: UUID,
+        *,
+        expected_request_sha256: str,
+    ) -> CommittedShadowLocalMeasurement:
+        """Read one exact unaccepted local measurement after full durable closure."""
+
+        if type(job) is not Job or job.profile != "shadow":  # noqa: E721
+            raise StoreValidationError("local measurement reader requires its exact shadow Job")
+        for value, field_name in (
+            (command_slot_id, "local measurement command_slot_id"),
+            (receipt_id, "local measurement receipt_id"),
+            (artifact_set_id, "local measurement artifact_set_id"),
+        ):
+            self._validate_uuid(value, field_name)
+        self._validate_sha256(expected_request_sha256, "local measurement expected request hash")
+        if job.job_key != f"shadow-local:{expected_request_sha256.removeprefix('sha256:')}":
+            raise StoreValidationError("local measurement Job does not match its expected request hash")
+
+        def operation(cursor: DbCursor) -> CommittedShadowLocalMeasurement:
+            actual_job, _job_state, command_name, request_hash, members = self._read_succeeded_set_members(
+                cursor, receipt_id, artifact_set_id
+            )
+            summary = expected_request_sha256.removeprefix("sha256:")
+            scope = ArtifactScope("autocut_calibration", "shadow_local_run", summary)
+            if (
+                actual_job != job
+                or command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME
+                or request_hash != expected_request_sha256
+                or len(members) != 2
+                or any(
+                    member.command_slot_id != command_slot_id
+                    or member.reference.scope != scope
+                    or (member.reference.member_ordinal, member.reference.artifact_type,
+                        member.reference.logical_id, member.reference.revision)
+                    != expected
+                    for member, expected in zip(
+                        members,
+                        (
+                            (0, "shadow_local_measurement_manifest", f"shadow-local-measurement:{summary}:manifest", 1),
+                            (1, "shadow_local_measurement_results", f"shadow-local-measurement:{summary}:results", 1),
+                        ),
+                        strict=True,
+                    )
+                )
+            ):
+                raise StoreValidationError("local measurement Receipt/Set does not name the exact artifact pair")
+            cursor.execute(
+                """
+                SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts
+                 WHERE command_slot_id = %s AND state = 'committed'
+                """,
+                (command_slot_id,),
+            )
+            row = cursor.fetchone()
+            if row is None or cursor.fetchone() is not None:
+                raise StoreValidationError("local measurement has no unique committed journal attempt")
+            attempt = self._read_shadow_local_attempt_by_id(cursor, UUID(str(row[0])))
+            if attempt is None or attempt.job != job or attempt.plan_hash != expected_request_sha256:
+                raise StoreValidationError("local measurement committed journal identity does not close")
+            self._validate_shadow_local_attempt_chain(cursor, attempt)
+            validate_shadow_local_measurement_artifact_metadata(
+                attempt, members[0].payload_json, members[1].payload_json
+            )
+            raw_responses = self._read_shadow_local_staged_responses(cursor, attempt, attempt.outcome.job_id)
+            compiled = compile_shadow_local_measurement_artifacts(attempt, raw_responses)
+            if (
+                tuple(member.reference.content_hash for member in members)
+                != (compiled.manifest_artifact.content_hash, compiled.results_artifact.content_hash)
+                or tuple(member.payload_json for member in members)
+                != (compiled.manifest_artifact.payload_json, compiled.results_artifact.payload_json)
+            ):
+                raise StoreValidationError("local measurement artifacts do not match independent raw replay")
+            if attempt.outcome.job_id is None:
+                raise RuntimeStoreError("local measurement journal lost its durable Job UUID")
+            return CommittedShadowLocalMeasurement(
+                attempt.attempt_id,
+                attempt.outcome.job_id,
+                command_slot_id,
+                receipt_id,
+                artifact_set_id,
+                expected_request_sha256,
+                compiled.manifest,
+                compiled.results,
+                compiled.report,
+            )
 
         return self._transaction(operation)
 
@@ -6950,6 +7115,123 @@ class PostgresRuntimeStore:
         if attempt is None:
             raise RuntimeStoreError("shadow-local attempt vanished while reading")
         return attempt
+
+    def _validate_shadow_local_attempt_chain(
+        self, cursor: DbCursor, attempt: ShadowLocalMeasurementAttempt
+    ) -> None:
+        """Lock and close the full same-slot predecessor chain before publication/read."""
+
+        cursor.execute(
+            """
+            SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts
+             WHERE command_slot_id = %s ORDER BY attempt_ordinal FOR UPDATE
+            """,
+            (attempt.command_slot_id,),
+        )
+        attempt_ids: list[UUID] = []
+        while (row := cursor.fetchone()) is not None:
+            attempt_ids.append(UUID(str(row[0])))
+        if not attempt_ids or attempt_ids[-1] != attempt.attempt_id:
+            raise StoreValidationError("shadow-local final attempt is not the exact current same-slot attempt")
+        attempts: list[ShadowLocalMeasurementAttempt] = []
+        for item_id in attempt_ids:
+            loaded = self._read_shadow_local_attempt_by_id(cursor, item_id)
+            if loaded is None:
+                raise RuntimeStoreError("shadow-local predecessor vanished while locked")
+            attempts.append(loaded)
+        first = attempts[0]
+        immutable_members = tuple(
+            (
+                member.member_ordinal, member.case_sha256, member.request_sha256,
+                member.canonical_case_json, member.canonical_request_json, member.source_job_id,
+                member.source_blob, member.source_blob_reference_sha256, member.binding_sha256,
+                member.service_profile_sha256, member.max_response_bytes,
+            )
+            for member in first.members
+        )
+        for ordinal, item in enumerate(attempts, start=1):
+            members = tuple(
+                (
+                    member.member_ordinal, member.case_sha256, member.request_sha256,
+                    member.canonical_case_json, member.canonical_request_json, member.source_job_id,
+                    member.source_blob, member.source_blob_reference_sha256, member.binding_sha256,
+                    member.service_profile_sha256, member.max_response_bytes,
+                )
+                for member in item.members
+            )
+            if (
+                item.attempt_ordinal != ordinal
+                or item.command_slot_id != attempt.command_slot_id
+                or item.job != attempt.job
+                or item.plan_hash != attempt.plan_hash
+                or item.canonical_plan_json != attempt.canonical_plan_json
+                or members != immutable_members
+                or (item.previous_attempt_id if ordinal > 1 else None)
+                != (attempts[ordinal - 2].attempt_id if ordinal > 1 else None)
+            ):
+                raise StoreValidationError("shadow-local predecessor chain is not contiguous and immutable")
+
+    @staticmethod
+    def _shadow_local_total_response_limit(attempt: ShadowLocalMeasurementAttempt) -> int:
+        plan = _strict_json_object(attempt.canonical_plan_json, "shadow-local attempt plan")
+        inputs = plan.get("shadow_local_inputs")
+        if type(inputs) is not dict:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt lacks frozen response limits")
+        limits = cast(dict[str, object], inputs).get("limits")
+        if type(limits) is not dict:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt lacks frozen response limits")
+        value = cast(dict[str, object], limits).get("max_total_response_bytes")
+        if type(value) is not int or value <= 0:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt total response limit is invalid")
+        return value
+
+    def _read_shadow_local_staged_responses(
+        self,
+        cursor: DbCursor,
+        attempt: ShadowLocalMeasurementAttempt,
+        job_id: UUID | None,
+    ) -> dict[tuple[int, str], bytes]:
+        """Validate all claims/budgets before reading any raw local response byte."""
+
+        if type(job_id) is not UUID:  # noqa: E721
+            raise RuntimeStoreError("shadow-local attempt lost its durable Job UUID")
+        if any(member.state != "staged" or member.raw_blob is None for member in attempt.members):
+            raise StoreValidationError("shadow-local committed attempt does not have complete staged responses")
+        limit = self._shadow_local_total_response_limit(attempt)
+        durable: list[tuple[ShadowLocalMeasurementMember, BlobRef]] = []
+        total = 0
+        for member in attempt.members:
+            raw_blob = cast(BlobRef, member.raw_blob)
+            if not 0 < raw_blob.byte_length <= member.max_response_bytes:
+                raise StoreValidationError("shadow-local raw response violates its per-member byte budget")
+            total += raw_blob.byte_length
+            durable.append(
+                (
+                    member,
+                    self._claimed_blob_ref(
+                        cursor, job_id, raw_blob, field_name="shadow-local raw response"
+                    ),
+                )
+            )
+        if total > limit:
+            raise StoreValidationError("shadow-local raw response metadata exceeds its total byte budget")
+        responses: dict[tuple[int, str], bytes] = {}
+        for member, raw_blob in durable:
+            cursor.execute(
+                "SELECT content_bytes FROM storage.blob_objects WHERE object_id = %s",
+                (raw_blob.object_id,),
+            )
+            row = cursor.fetchone()
+            if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
+                raise BlobUnavailableError("shadow-local staged raw response bytes are unavailable")
+            raw = row[0].tobytes() if isinstance(row[0], memoryview) else bytes(row[0])
+            if (
+                len(raw) != raw_blob.byte_length
+                or "sha256:" + hashlib.sha256(raw).hexdigest() != raw_blob.content_hash
+            ):
+                raise BlobIntegrityError("shadow-local staged raw response fails its exact BlobRef")
+            responses[(member.member_ordinal, member.case_sha256)] = raw
+        return responses
 
     @staticmethod
     def _locked_shadow_local_member(

@@ -23,6 +23,32 @@ local-profile identity snapshot, be bootstrapped into the authority Store and
 be injected into runtime.
 New calibration means a new profile version, never an anchor mutation.
 
+### Compatibility identity versus build audit
+
+The complete service build SHA remains recorded for audit and incident
+reproduction, but it is not alone a calibration invalidator.  A calibration
+record binds a closed timing-compatibility identity derived only from the
+timing-relevant engine version, ASR/VAD model trees and versions, device class
+and measured capability, decode/resample implementation, native protocol,
+word-timestamp/VAD policies, and ordered producer identities.  The build SHA
+is retained beside it so a reviewer can see the exact bytes that ran.
+
+Changing a log line, health route, UI/API code, or VLM/story policy may create
+a new audit SHA while preserving timing compatibility; an accepted compatible
+record remains usable.  Changing model bytes, CPU/GPU class or CUDA runtime,
+decoder/timestamp/VAD behavior, timing-engine compatibility version, or a
+producer identity changes the derived compatibility identity and therefore
+requires fresh shadow measurement and independent validation.  The runtime
+never accepts a caller-supplied compatibility hash: the source compiler and
+the native service each recompute it.
+
+A current build with no accepted compatible record is allowed to start only as
+**shadow-only**.  Its calibration endpoints are available, while ordinary
+`/v1/timed-speech-evidence` remains denied.  Only a separately installed
+local-run profile with a durable accepted compatible record can enable normal
+Pipeline detector use.  This keeps fail-closed publication safety without
+making unrelated code changes turn into a total startup outage.
+
 ## Calibration authority boundary
 
 The existing `calibration_record_sha256` consumer field is not a

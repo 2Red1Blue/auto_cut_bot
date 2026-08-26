@@ -1,0 +1,11 @@
+{
+  "id": "gpu-calibration-authority",
+  "title": "Enable verifiable GPU shadow calibration for the PC real pipeline run",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend/deployment/authority",
+  "currentPhase": "implementation",
+  "nextAction": "Wire the verified timing-compatibility identity through CUDA shadow authority and service deployment, without widening normal timed-speech admission.",
+  "branch": "feat/v213-contract-codegen"
+}

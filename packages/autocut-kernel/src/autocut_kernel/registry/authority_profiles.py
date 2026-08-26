@@ -29,6 +29,11 @@ from ..media.stage4_predecessor import (
     TimedSpeechProfileRegistryEntry,
     decode_timed_speech_profile_registry_entry,
 )
+from ..media.timing_compatibility import (
+    TimingCompatibilityError,
+    TimingCompatibilityProfile,
+    decode_timing_compatibility_profile,
+)
 from ..media.types import TimeBase
 from ..store.models import ArtifactScope, CommittedArtifactMemberReference
 
@@ -41,6 +46,7 @@ AUTHORITY_PROFILE_SOURCE_INVALID = "AUTHORITY_PROFILE_SOURCE_INVALID"
 CONTRACT_VERSION = "2.1.3"
 STAGE1_NARRATIVE_SCHEMA_VERSION = "autocut-stage1-narrative-profile-v2"
 SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-shadow-calibration-profile-v2"
+CUDA_SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-cuda-shadow-calibration-profile-v1"
 LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v4"
 
 _ZERO_HASH = "sha256:" + "0" * 64
@@ -314,6 +320,68 @@ class NativeTimedSpeechProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class CudaTimedSpeechProducer:
+    """CUDA shadow producer identity, bound to the audited service build."""
+
+    producer_kind: str
+    producer_id: str
+    producer_version: str
+    generation_policy_sha256: str
+    detector_sha256: str
+    calibration_policy_sha256: str
+    model_id: str
+    model_revision: str
+    model_sha256: str
+    inference_kind: str
+    inference_identity_sha256: str
+    service_sha256: str
+    build_audit_sha256: str
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "producer_kind": self.producer_kind,
+            "producer_id": self.producer_id,
+            "producer_version": self.producer_version,
+            "generation_policy_sha256": self.generation_policy_sha256,
+            "detector_sha256": self.detector_sha256,
+            "calibration_policy_sha256": self.calibration_policy_sha256,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "model_sha256": self.model_sha256,
+            "inference_kind": self.inference_kind,
+            "inference_identity_sha256": self.inference_identity_sha256,
+            "service_sha256": self.service_sha256,
+            "build_audit_sha256": self.build_audit_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CudaTimedSpeechProfile:
+    """CUDA-only native profile. It is not accepted by the CPU grammar."""
+
+    build_audit_sha256: str
+    funasr_version: str
+    torch_version: str
+    max_request_bytes: int
+    native_port_identity_sha256: str
+    producers: tuple[CudaTimedSpeechProducer, CudaTimedSpeechProducer]
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "provider_id": "funasr-http-v1",
+            "provider_version": "1.0.0",
+            "build_audit_sha256": self.build_audit_sha256,
+            "funasr_version": self.funasr_version,
+            "torch_version": self.torch_version,
+            "device": "cuda",
+            "word_timing_capability": "required",
+            "max_request_bytes": self.max_request_bytes,
+            "native_port_identity_sha256": self.native_port_identity_sha256,
+            "producers": [producer.to_mapping() for producer in self.producers],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SourceClockPolicy:
     policy_sha256: str
     clock_id: str
@@ -457,6 +525,51 @@ class ShadowCalibrationProfileSource:
             "profile_contract_sha256": self.profile_contract_sha256,
             "stage1_narrative_profile": self.stage1_narrative_profile.to_mapping(),
             "native_timed_speech": self.native_timed_speech.to_mapping(),
+            "source_clock_policy": self.source_clock_policy.to_mapping(),
+            "calibration_corpus": self.calibration_corpus.to_mapping(),
+            "timing_policies": self.timing_policies.to_mapping(),
+            "capabilities": self.capabilities.to_mapping(),
+            "calibration_acceptance": self.calibration_acceptance.to_mapping(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CudaShadowCalibrationProfileSource:
+    """A CUDA-only, shadow-only calibration source with derived timing identity.
+
+    This deliberately has no local-run successor or registry projection.  It
+    is an input to shadow measurement only; normal timed-speech authority stays
+    owned by the existing independently installed local-run profile path.
+    """
+
+    profile_version: str
+    profile_contract_sha256: str
+    source_sha256: str
+    canonical_sha256: str
+    stage1_narrative_profile: Stage1NarrativeProfileReference
+    cuda_timed_speech: CudaTimedSpeechProfile
+    timing_compatibility: TimingCompatibilityProfile
+    source_clock_policy: SourceClockPolicy
+    calibration_corpus: CalibrationCorpus
+    timing_policies: TimingPolicies
+    capabilities: AuthorityProfileCapabilities
+    calibration_acceptance: CalibrationAcceptance
+
+    @property
+    def profile_key(self) -> str:
+        return f"cuda_shadow_calibration@{self.profile_version}"
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": CUDA_SHADOW_CALIBRATION_SCHEMA_VERSION,
+            "contract_version": CONTRACT_VERSION,
+            "profile_id": "cuda_shadow_calibration",
+            "profile_version": self.profile_version,
+            "profile_state": "cuda_shadow_calibration_v1",
+            "profile_contract_sha256": self.profile_contract_sha256,
+            "stage1_narrative_profile": self.stage1_narrative_profile.to_mapping(),
+            "cuda_timed_speech": self.cuda_timed_speech.to_mapping(),
+            "timing_compatibility": self.timing_compatibility.to_mapping(),
             "source_clock_policy": self.source_clock_policy.to_mapping(),
             "calibration_corpus": self.calibration_corpus.to_mapping(),
             "timing_policies": self.timing_policies.to_mapping(),
@@ -775,6 +888,93 @@ def _decode_native_timed_speech(value: object, field_name: str, *, local_run: bo
     )
 
 
+def _decode_cuda_timed_speech(value: object, field_name: str) -> CudaTimedSpeechProfile:
+    """Decode the closed CUDA wire shape without widening the CPU decoder."""
+    mapping = _mapping(
+        value,
+        frozenset(
+            {
+                "provider_id", "provider_version", "build_audit_sha256", "funasr_version",
+                "torch_version", "device", "word_timing_capability", "max_request_bytes",
+                "native_port_identity_sha256", "producers",
+            }
+        ),
+        field_name,
+    )
+    for name, expected in (
+        ("provider_id", "funasr-http-v1"),
+        ("provider_version", "1.0.0"),
+        ("device", "cuda"),
+        ("word_timing_capability", "required"),
+    ):
+        _const(mapping[name], expected, f"{field_name}.{name}")
+    build_audit_sha256 = _sha(mapping["build_audit_sha256"], f"{field_name}.build_audit_sha256")
+    producer_fields = frozenset(
+        {
+            "producer_kind", "producer_id", "producer_version", "generation_policy_sha256",
+            "detector_sha256", "calibration_policy_sha256", "model_id", "model_revision",
+            "model_sha256", "inference_kind", "inference_identity_sha256", "service_sha256",
+            "build_audit_sha256",
+        }
+    )
+    raw_producers = _array(mapping["producers"], f"{field_name}.producers")
+    if len(raw_producers) != 2:
+        raise _invalid(f"{field_name}.producers must contain ordered ASR then VAD")
+    producers: list[CudaTimedSpeechProducer] = []
+    expected_matrix = (
+        ("asr", "SenseVoiceSmall", "sensevoice-word-timestamp"),
+        ("vad", "fsmn-vad", "fsmn-vad-direct"),
+    )
+    for index, (raw_producer, (kind, model_id, inference_kind)) in enumerate(
+        zip(raw_producers, expected_matrix, strict=True)
+    ):
+        name = f"{field_name}.producers[{index}]"
+        producer = _mapping(raw_producer, producer_fields, name)
+        for key, expected in (
+            ("producer_kind", kind), ("model_id", model_id), ("inference_kind", inference_kind)
+        ):
+            _const(producer[key], expected, f"{name}.{key}")
+        producer_audit_sha256 = _sha(
+            producer["build_audit_sha256"], f"{name}.build_audit_sha256"
+        )
+        producer_service_sha256 = _sha(producer["service_sha256"], f"{name}.service_sha256")
+        if producer_audit_sha256 != build_audit_sha256 or producer_service_sha256 != build_audit_sha256:
+            raise _invalid(f"{name} audit and service identities must close to the parent identity")
+        producers.append(
+            CudaTimedSpeechProducer(
+                kind,
+                _text(producer["producer_id"], f"{name}.producer_id", canonical_id=True),
+                _text(producer["producer_version"], f"{name}.producer_version"),
+                _sha(producer["generation_policy_sha256"], f"{name}.generation_policy_sha256"),
+                _sha(producer["detector_sha256"], f"{name}.detector_sha256"),
+                _sha(producer["calibration_policy_sha256"], f"{name}.calibration_policy_sha256"),
+                model_id,
+                _text(producer["model_revision"], f"{name}.model_revision"),
+                _sha(producer["model_sha256"], f"{name}.model_sha256"),
+                inference_kind,
+                _sha(producer["inference_identity_sha256"], f"{name}.inference_identity_sha256"),
+                producer_service_sha256,
+                producer_audit_sha256,
+            )
+        )
+    asr, vad = producers
+    if (
+        asr.producer_id == vad.producer_id
+        or asr.detector_sha256 == vad.detector_sha256
+        or asr.model_sha256 == vad.model_sha256
+        or asr.inference_identity_sha256 == vad.inference_identity_sha256
+    ):
+        raise _invalid(f"{field_name}.producers require distinct ASR and VAD identities")
+    return CudaTimedSpeechProfile(
+        build_audit_sha256,
+        _text(mapping["funasr_version"], f"{field_name}.funasr_version"),
+        _text(mapping["torch_version"], f"{field_name}.torch_version"),
+        _integer(mapping["max_request_bytes"], f"{field_name}.max_request_bytes", minimum=1),
+        _sha(mapping["native_port_identity_sha256"], f"{field_name}.native_port_identity_sha256"),
+        (asr, vad),
+    )
+
+
 def _decode_source_clock(value: object, field_name: str) -> SourceClockPolicy:
     mapping = _mapping(
         value,
@@ -984,6 +1184,121 @@ def decode_shadow_calibration_profile_source(
             (True, False, False, False, False, False, False, False, False),
         ),
         _decode_acceptance(mapping["calibration_acceptance"], "shadow calibration source.calibration_acceptance"),
+    )
+
+
+def _require_cuda_timing_closure(
+    *,
+    native: CudaTimedSpeechProfile,
+    compatibility: TimingCompatibilityProfile,
+    policies: TimingPolicies,
+) -> None:
+    """Bind every timing-relevant CUDA source value to the derived profile."""
+    if compatibility.device.device_class != "cuda":
+        raise _invalid("CUDA shadow timing compatibility must use the exact CUDA device class")
+    if (
+        compatibility.build_audit_sha256 != native.build_audit_sha256
+        or compatibility.funasr_version != native.funasr_version
+        or compatibility.torch_version != native.torch_version
+        or compatibility.native_protocol_identity_sha256 != native.native_port_identity_sha256
+        or compatibility.word_timestamp_policy_sha256 != policies.timed_speech_policy_sha256
+        or compatibility.vad_merge_policy_sha256 != policies.vad_merge_policy_sha256
+    ):
+        raise _invalid("CUDA shadow timing compatibility does not close to native timing inputs")
+    for native_producer, compatibility_producer in zip(
+        native.producers, compatibility.producers, strict=True
+    ):
+        if (
+            native_producer.producer_kind != compatibility_producer.producer_kind
+            or native_producer.producer_id != compatibility_producer.producer_id
+            or native_producer.producer_version != compatibility_producer.producer_version
+            or native_producer.model_id != compatibility_producer.model_id
+            or native_producer.model_revision != compatibility_producer.model_revision
+            or native_producer.model_sha256 != compatibility_producer.model_sha256
+            or native_producer.inference_identity_sha256
+            != compatibility_producer.inference_identity_sha256
+        ):
+            raise _invalid("CUDA shadow timing compatibility producer identity does not close")
+
+
+def decode_cuda_shadow_calibration_profile_source(
+    raw: bytes,
+    *,
+    narrative: Stage1NarrativeProfileSource,
+    expected_profile_contract_sha256: str,
+) -> CudaShadowCalibrationProfileSource:
+    """Decode the CUDA-only shadow grammar without creating runtime authority."""
+    if type(narrative) is not Stage1NarrativeProfileSource:  # noqa: E721
+        raise _invalid("CUDA shadow narrative dependency must be an exact decoded source")
+    value, source_sha256, semantic_sha256 = _source_object(raw, "CUDA shadow calibration source")
+    mapping = _mapping(
+        value,
+        frozenset(
+            {
+                "schema_version", "contract_version", "profile_id", "profile_version",
+                "profile_state", "profile_contract_sha256", "stage1_narrative_profile",
+                "cuda_timed_speech", "timing_compatibility", "source_clock_policy",
+                "calibration_corpus", "timing_policies", "capabilities", "calibration_acceptance",
+            }
+        ),
+        "CUDA shadow calibration source",
+    )
+    for name, expected in (
+        ("schema_version", CUDA_SHADOW_CALIBRATION_SCHEMA_VERSION),
+        ("contract_version", CONTRACT_VERSION),
+        ("profile_id", "cuda_shadow_calibration"),
+        ("profile_state", "cuda_shadow_calibration_v1"),
+    ):
+        _const(mapping[name], expected, f"CUDA shadow calibration source.{name}")
+    expected_contract = _sha(
+        expected_profile_contract_sha256,
+        "expected CUDA shadow profile contract SHA-256",
+    )
+    claimed_contract = _sha(
+        mapping["profile_contract_sha256"],
+        "CUDA shadow calibration source.profile_contract_sha256",
+    )
+    if claimed_contract != expected_contract:
+        raise _invalid("CUDA shadow calibration source profile contract does not match locked input")
+    narrative_ref = _decode_narrative_reference(
+        mapping["stage1_narrative_profile"],
+        "CUDA shadow calibration source.stage1_narrative_profile",
+    )
+    if narrative_ref != narrative.reference:
+        raise _invalid("CUDA shadow calibration source narrative reference does not resolve exactly")
+    native = _decode_cuda_timed_speech(
+        mapping["cuda_timed_speech"], "CUDA shadow calibration source.cuda_timed_speech"
+    )
+    try:
+        compatibility = decode_timing_compatibility_profile(mapping["timing_compatibility"])
+    except TimingCompatibilityError as error:
+        raise _invalid("CUDA shadow timing compatibility profile is invalid") from error
+    policies = _decode_timing_policies(
+        mapping["timing_policies"], "CUDA shadow calibration source.timing_policies"
+    )
+    _require_cuda_timing_closure(native=native, compatibility=compatibility, policies=policies)
+    return CudaShadowCalibrationProfileSource(
+        _profile_version(mapping["profile_version"], "CUDA shadow calibration source.profile_version"),
+        claimed_contract,
+        source_sha256,
+        semantic_sha256,
+        narrative_ref,
+        native,
+        compatibility,
+        _decode_source_clock(
+            mapping["source_clock_policy"], "CUDA shadow calibration source.source_clock_policy"
+        ),
+        _decode_corpus(mapping["calibration_corpus"], "CUDA shadow calibration source.calibration_corpus"),
+        policies,
+        _decode_capabilities(
+            mapping["capabilities"],
+            "CUDA shadow calibration source.capabilities",
+            (True, False, False, False, False, False, False, False, False),
+        ),
+        _decode_acceptance(
+            mapping["calibration_acceptance"],
+            "CUDA shadow calibration source.calibration_acceptance",
+        ),
     )
 
 
@@ -1328,11 +1643,15 @@ def decode_authority_profile_source_grammar(
 __all__ = [
     "AUTHORITY_PROFILE_SOURCE_INVALID",
     "AuthorityProfileSourceError",
+    "CudaShadowCalibrationProfileSource",
+    "CudaTimedSpeechProducer",
+    "CudaTimedSpeechProfile",
     "LocalRunProfileSource",
     "ShadowCalibrationProfileSource",
     "Stage1NarrativeProfileSource",
     "UnresolvedAuthorityProfileSourceSet",
     "decode_authority_profile_source_grammar",
+    "decode_cuda_shadow_calibration_profile_source",
     "decode_local_run_profile_source",
     "decode_shadow_calibration_profile_source",
     "decode_stage1_narrative_profile_source",

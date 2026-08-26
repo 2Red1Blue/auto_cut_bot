@@ -173,3 +173,18 @@ def test_attempt_and_member_decoders_read_all_local_raw_and_busy_fields() -> Non
         assert column in source
     assert "ShadowLocalMeasurementMember(" in source
     assert "ShadowLocalMeasurementAttempt(" in source
+
+
+def test_local_finalizer_and_reader_have_dedicated_non_generic_surfaces() -> None:
+    finalizer = _source("finalize_shadow_local_measurement_success")
+    reader = _source("read_committed_shadow_local_measurement")
+
+    assert "compile_shadow_local_measurement_artifacts" in finalizer
+    assert "_read_shadow_local_staged_responses" in finalizer
+    assert "_write_success" in finalizer
+    assert "finalize_shadow_measurement_success" not in finalizer
+    assert "_read_succeeded_set_members" in reader
+    assert "_validate_shadow_local_attempt_chain" in reader
+    assert "validate_shadow_local_measurement_artifact_metadata" in reader
+    assert "compile_shadow_local_measurement_artifacts" in reader
+    assert "read_immutable_blob" not in reader
