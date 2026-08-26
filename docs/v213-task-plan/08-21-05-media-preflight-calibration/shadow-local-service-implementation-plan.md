@@ -115,17 +115,65 @@ independent validator reread raw bytes, exact case ownership and all observation
 Zero measured error must remain zero; an explicit conservative acceptance policy
 may add a justified margin but must not falsify the measurement.
 
-Only a corresponding persisted local CalibrationRecord/anchor may compile and
-activate a normal local profile. The existing `bind_profile_calibration()` and
-full-source installed resource cannot substitute for that chain. Durable local
-child Commands and episode admissions must independently check the actual local
-mode, not merely hash syntax or the constructor of an expectations DTO.
+The next durable result is **not** the existing `CalibrationRecord` or its
+authority anchor: that grammar means complete-source, single-clock acceptance
+and would falsely activate local PCM evidence. First persist a versioned,
+unaccepted local measurement manifest/results pair and an independently replayed
+local validation report. Each member retains its own source clock/time base and
+measured error; a cross-source aggregate, when required, is an exact rational
+duration rather than a maximum of bare ticks. Zero remains zero.
+
+Only a later, explicitly versioned local activation grammar may compile and
+install a normal local profile. It must project the normal profile's
+pre-calibration fields back to this shadow-local profile identity, then bind an
+accepted local result under an explicit conservative-margin policy. The existing
+`bind_profile_calibration()`, full-source `CalibrationRecord`, and installed
+resource cannot substitute for that chain. Durable local child Commands and
+episode admissions must independently check the actual local mode, not merely
+hash syntax or the constructor of an expectations DTO.
 
 Next concrete sequence: close the versioned local profile/source grammar,
-persist and independently validate shadow-local measurements, then wire durable
-local child/episode readers and admissions into Runtime. Do not activate the
-new route by changing an old Record's schema/hash or substituting synthetic
-test anchors. A service-code change also changes its measured identity; the
-desktop must build matching measured configuration through the real calibration
-path rather than reuse the prior service's identity. No private configuration
-or desktop deployment was changed by this slice.
+persist and independently validate shadow-local measurements, define the
+separate acceptance/activation grammar, then wire durable local child/episode
+readers and admissions into Runtime. Do not activate the new route by changing
+an old Record's schema/hash or substituting synthetic test anchors. A
+service-code change also changes its measured identity; the desktop must build
+matching measured configuration through the real calibration path rather than
+reuse the prior service's identity. No private configuration or desktop
+deployment was changed by this slice.
+
+## Local measurement persistence boundary (2026-08-26)
+
+The frozen pure-domain data flow is:
+
+```text
+pre-calibration service profile + committed source + independent anchors
+  -> ordered ShadowLocalCalibrationCase / LocalSpeechWindowRequest corpus
+  -> original raw response bytes + independently replayed projection
+  -> unaccepted local validation report
+  -> [later, separate] explicit local acceptance and normal-profile installation
+```
+
+The corpus identity is ordered by case/request identity and ordinal, not by
+source identity: one source can contribute several windows. Raw-byte identity
+and byte length are part of measurement evidence, but Store later adds the
+separate immutable BlobRef, owner Job and media-type verification. The pure
+media layer has no Store/BlobRef/Job/Receipt/Registry import and cannot grant a
+bound, registry activation or publish permission.
+
+The durable command/Store phase is additive: it will use a sibling local
+measurement protocol, recovery lease, manifest/results artifact pair and exact
+reader. It must not relax the old full-source command, migration `0016`,
+authority-record migration `0017`, or their decoders. Before command dispatch,
+the whole ordered plan and response budgets close; after staging, restart
+replays raw bytes rather than dispatching again. Unknown dispatch is
+indeterminate until explicitly authorized recovery, never an automatic retry.
+
+The first pure implementation is now `ShadowLocalMeasurementEvidence` plus
+`ShadowLocalMeasurementManifest`, `ShadowLocalMeasurementResults` and
+`ShadowLocalMeasurementValidationReport`. They are closed media-domain values:
+their decoders recompute the raw projection; result members cannot reorder,
+omit, duplicate or substitute cases; empty producer observations report `null`
+for the maximum while a real zero-error match reports numeric `0`. This is
+synthetically tested only and intentionally has no Postgres migration, BlobRef,
+Job, Receipt or authority/activation side effect.

@@ -281,9 +281,12 @@ command/reader accept local responses.
 The next explicit service/profile slice is specified in the
 [shadow-local service plan](shadow-local-service-implementation-plan.md).
 
-Persist measurement → independently validate window anchors → accept immutable
-CalibrationRecord/anchor → compile/install normal profile. Never put a
-generated Record hash in its own measured identity, reuse fake bounds or feed
+Persist the versioned local manifest/results → independently replay window
+anchors into an **unaccepted** local validation report → define a separate
+local acceptance/activation grammar → compile/install a normal local profile.
+The existing complete-source `CalibrationRecord`/anchor cannot represent this
+multi-source, multi-time-base evidence and must not be reused. Never put a
+future accepted hash in its own measured identity, reuse fake bounds or feed
 the new window envelope into the old full-source decoder.
 
 ## 8. Parallel implementation and acceptance

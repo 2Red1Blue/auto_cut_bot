@@ -1,0 +1,11 @@
+{
+  "id": "local-window-calibration-domain",
+  "title": "Define replayable local-window measurement and validation contracts",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Archived after pure-domain implementation and independent review; the follow-up is durable local measurement recovery and validation commands.",
+  "branch": "feat/v213-contract-codegen"
+}
