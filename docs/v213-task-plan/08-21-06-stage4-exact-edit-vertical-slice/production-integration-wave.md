@@ -53,6 +53,11 @@ in an HTTP adapter.
   media/timed_evidence_codec.py and tests/media/test_timed_evidence_codec.py.
   Decode the existing CandidateEvidenceWindow/Plan/TimedEvidenceSet wire shapes;
   reuse root codecs, no copied nested wire parsers.
+  Review exposed an existing CandidateEvidenceWindowPlan constructor indexing
+  windows before checking assessment cardinality. This owner may also move the
+  existing outcome/count validation before that access in media/timed_evidence.py;
+  fix the domain owner rather than catching IndexError in the codec. No change
+  to valid plans or their wire format is authorized by this correction.
 - Root presentation owner: media/presentation_evidence_codec.py and
   tests/media/test_presentation_evidence_codec.py for existing v2 certificate/
   profile-admission value bodies. Reuse root decode_time_base. The actual

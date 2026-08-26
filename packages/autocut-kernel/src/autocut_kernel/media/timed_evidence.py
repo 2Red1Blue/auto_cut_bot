@@ -285,6 +285,17 @@ class CandidateEvidenceWindowPlan(CanonicalEvidence):
             raise TimedEvidenceValidationError(
                 "plan.assessments must contain CandidateWindowAssessment values"
             )
+        if type(self.outcome) is not CandidateWindowOutcome:  # noqa: E721
+            raise TimedEvidenceValidationError("plan.outcome must be a CandidateWindowOutcome")
+        if self.outcome is CandidateWindowOutcome.AWAITING_EVIDENCE:
+            if len(assessments) != len(windows) - 1:
+                raise TimedEvidenceValidationError(
+                    "awaiting plan must have one unassessed final window"
+                )
+        elif len(assessments) != len(windows):
+            raise TimedEvidenceValidationError(
+                "terminal plan must assess every extraction window"
+            )
         if tuple(item.expansion_ordinal for item in windows) != tuple(range(len(windows))):
             raise TimedEvidenceValidationError(
                 "plan windows must have contiguous expansion ordinals"
@@ -322,18 +333,7 @@ class CandidateEvidenceWindowPlan(CanonicalEvidence):
             raise TimedEvidenceValidationError(
                 "only an observed boundary/truncation may create another window"
             )
-        if type(self.outcome) is not CandidateWindowOutcome:  # noqa: E721
-            raise TimedEvidenceValidationError("plan.outcome must be a CandidateWindowOutcome")
-        if self.outcome is CandidateWindowOutcome.AWAITING_EVIDENCE:
-            if len(assessments) != len(windows) - 1:
-                raise TimedEvidenceValidationError(
-                    "awaiting plan must have one unassessed final window"
-                )
-        else:
-            if len(assessments) != len(windows):
-                raise TimedEvidenceValidationError(
-                    "terminal plan must assess every extraction window"
-                )
+        if self.outcome is not CandidateWindowOutcome.AWAITING_EVIDENCE:
             final_assessment = assessments[-1]
             final_window = windows[-1]
             expected = CandidateWindowOutcome.INDETERMINATE
