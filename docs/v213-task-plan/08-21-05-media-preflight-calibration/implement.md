@@ -41,3 +41,9 @@
 15. Implement `ValidateCalibrationRecord@2.1.3` as a read-only deterministic
     command over exact committed measurement references and raw Blob bytes.
     Invalid and unavailable branches write Receipt-only outcomes.
+16. Connect the raw shadow service through an exact-request, original-owner
+    file adapter with explicit limits, no environment proxy or redirect, no
+    implicit retry, and guaranteed lease cleanup. Test real HTTP transport
+    separately from synthetic model output; retain independent Kernel decode.
+    Authority source/anchor resolution and native calibration remain separate
+    incomplete integration work, not implied by an adapter unit-test pass.

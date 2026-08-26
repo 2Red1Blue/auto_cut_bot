@@ -37,7 +37,11 @@ Profile 的源语法和 decoder 已实现；它们仍是 unresolved grammar，�
 写入、独立验证命令和 local-run 可直接消费的记录读取接口。相关合并测试为
 324 passed、零 skipped（包括显式启用的数据库用例）；
 详见该任务的 [分块审查记录](08-21-05-media-preflight-calibration/review-calibration-phase2-slices.md)。
-尚须完成真实 native 测量适配器/校准、权威源/lock 部署、运行时接线和真实 HTTP 单集运行。
+真实 raw 校准 HTTP 适配器现已实现，含原 source owner/BlobRef 校验、流式传输、
+禁用环境代理/重定向，以及不重复调用的回放测试。本轮相关回归 242 passed、零 skipped，
+并通过独立审查。实际 HTTP 服务往返已测，但模型输出是 fixture，不是真实 native 校准。
+尚须完成 committed-source/独立标注输入装配、真实模型校准、权威源/lock 部署、
+运行时接线和真实 HTTP 单集运行。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。

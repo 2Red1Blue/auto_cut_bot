@@ -216,3 +216,38 @@ requiring measurement Receipt/Set UUIDs absent from `LocalRunCalibration`.
 The private writer-replay path additionally verifies its complete
 `CalibrationValidationBinding` and request hash. Neither API selects a latest
 logical head or reconstructs missing input references by guessing.
+
+## Real shadow measurement transport
+
+The deployment constructs one `ShadowCalibrationHttpMeasurementPort` for an
+exact frozen measurement request. Its immutable source bindings map every
+corpus member to the original owner Job and exact BlobRef. They are not
+HTTP request fields. A future authority composition resolver must verify
+committed source provenance and independently authored anchor data before
+constructing that request; this adapter does not claim to implement that
+resolver or authorize a profile. It grants no acceptance or publish decision.
+
+Before materialization, the port checks the complete request identity, exact
+member, full nonduplicated binding set, source BlobRef and frozen byte limits.
+It materializes through the Store using the original owner, never the derived
+measurement Job, an arbitrary caller path or a guessed claim. Operational
+response ceilings additionally bound the frozen invocation response limit.
+The verified file lease closes after every dispatch outcome.
+Bindings whose source owner equals the derived measurement Job are rejected
+before I/O. The adapter uses the existing media/service compact sorted ASCII
+JSON encoding for request comparison and wire bytes, not the compiler's JCS
+subset; Unicode and integer handling cannot change the invocation identity.
+
+The port sends the canonical invocation to the existing loopback-only
+`/v1/shadow-calibration-funasr-raw` endpoint with explicit credentials. Shared
+file transport streams the upload and bounded response, bypasses environment
+proxies, disables redirects and dispatches once. HTTP/transport uncertainty
+is unavailable, not a deterministic rejection or automatic retry. The existing
+measurement command owns invoking leases, recovery and explicit successor
+authorization. A received malformed native envelope is rejected; a valid one
+is independently decoded into an untrusted comparison projection, not an
+accepted CalibrationRecord.
+
+This slice includes transport/adapter/service-envelope tests with synthetic
+native output. It does not establish real model calibration, authority lock
+publication, runtime activation or end-to-end production readiness.

@@ -116,3 +116,36 @@ inspection, Ruff/basedpyright/diff checks; no new blocker. The public reader
 uses only existing local-run fields, while writer replay retains its full
 request binding. The temporary PostgreSQL verification services are stopped
 after validation; no Podman application database is stopped or reset.
+
+## Real shadow HTTP adapter — ALLOW after focused repair
+
+The Pipeline now implements the existing Kernel measurement port using the
+FunASR raw calibration endpoint. One frozen request and the complete source
+binding set are checked before I/O. The original source owner and exact BlobRef
+drive bounded Store materialization; the derived measurement Job cannot
+impersonate that owner. Every dispatched outcome closes the verified lease.
+
+The shared file transport disables environment proxies and redirects, bounds
+response chunks and never retries. Uncertain transport/HTTP outcomes remain
+unavailable for the existing command recovery path. Valid raw output is decoded
+into an untrusted comparison projection; no adapter grants record acceptance.
+
+Independent reviewer `calibration_migration` approved the transport, then found
+two adapter details: compiler JSON encoding differed from the media/service
+protocol, and same-Job source-owner substitution was not rejected. Both were
+fixed and independently rechecked. Tests bind Unicode wire bytes to the exact
+invocation hash, preserve the media protocol integer domain, reject same-Job
+owners before I/O, and prove staged recovery/succeeded replay do not dispatch
+or materialize twice.
+
+Parent merged verification: **242 passed, zero skipped**, including a real
+loopback HTTP upload with poisoned proxy settings and a service-to-adapter-to-
+Kernel decoder round trip. Native models and source materialization in that
+round trip are fixtures; this is NOT real SenseVoice/FSMN calibration or full
+Pipeline completion. Ruff, source basedpyright and diff checks passed.
+
+Commits: `5ac56f99` (shared transport) and `3fd97fd7` (owner-bound adapter).
+No Kernel schema, migration, external publication path or user
+configuration was changed in this slice. The controlled committed-source/
+independent-anchor resolver, actual native calibration and deployment/runtime
+integration remain pending.
