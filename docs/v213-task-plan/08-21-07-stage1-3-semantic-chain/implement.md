@@ -1,8 +1,10 @@
 # Implementation
 
-Current business-code delivery: [narrative projection and coverage analysis](stage1-coverage-projection-wave.md).
-The Graph models and direct coverage analysis are implemented; full diagnostics,
-Ledger/proof/independent KC evaluation and the eight-member Command remain open.
+Current business-code delivery: [diagnostics, Ledger and dependency projection](stage1-diagnostics-ledger-wave.md).
+The six-member compiler and full-domain dependency projection are implemented and
+independently reviewed. Proof/Admission, independent KC evaluation and the exact
+eight-member reader/Command remain open. Earlier [narrative projection and coverage
+analysis](stage1-coverage-projection-wave.md) remains useful background.
 
 Current code wave: [Stage 1 production preparation](stage1-production-wave.md).
 Generic generation persistence and strict draft decoding are delivered before

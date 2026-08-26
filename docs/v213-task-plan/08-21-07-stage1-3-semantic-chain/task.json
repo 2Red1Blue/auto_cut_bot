@@ -21,6 +21,6 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Graph/Card/Digest values 701d3056, continuity 3371bfaf, direct coverage ae049a65 and factual projection 4966e27e delivered. Independent model/projector and direct-coverage reviews completed; summary-without-evidence is preserved for diagnostics and remains unresolved. Final combined selected pure regression: 776 passed; Ruff and production BasedPyright clean. See stage1-coverage-projection-wave.md. Full diagnostic/Ledger/seed/proof/KC Admission models, eight-member Command/reader and Stage2/3 Runtime integration remain in progress. No new HTTP stage enabled; DB/model/full Pipeline remains remote-only.",
+  "notes": "2026-08-26: Stage1 closed diagnostics/Ledger 291f4b9c, actual failure causes bd88f4fa, full-domain dependency projection 48c70ee0 and six-business-member compiler ec70e359 delivered. Independent reviews ALLOW within this scope; missing unknown frontier and omitted-window projection holes fixed. Final selected pure regression 1236 passed; changed-file Ruff and production BasedPyright clean. See stage1-diagnostics-ledger-wave.md. DependencyClosureProof/CoverageAdmission models, independent KC checks, exact eight-member reader/Command and Stage2/3/Runtime integration remain open. No new HTTP stage enabled; DB/models/services/full Pipeline are remote-only.",
   "meta": {}
 }
