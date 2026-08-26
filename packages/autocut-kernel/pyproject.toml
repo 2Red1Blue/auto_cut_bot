@@ -11,3 +11,6 @@ dependencies = ["psycopg>=3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+autocut_kernel = ["_authority/local-run.json", "_authority/local-run.sha256"]
