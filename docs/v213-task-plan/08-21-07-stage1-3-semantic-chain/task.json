@@ -28,9 +28,10 @@
     "stage3_current_wave": "stage3-production-wave.md",
     "stage3_input_checkpoint": "b4568448",
     "stage3_draft_checkpoint": "b5798b6c",
-    "stage3_local_scope": "Exact Stage2 input reader delivered and reviewed (32 new tests). Full-target typed Blueprint draft/models/parser delivered and independently reviewed (78 new tests). Closure/compiler, independent Admission, durable Command and Runtime remain next, not complete.",
+    "stage3_compilation_checkpoints": ["77390e9d", "2d0cd511", "7643723c"],
+    "stage3_local_scope": "Exact input reader/draft parser plus deduplicated full contexts, strict Blueprint projection, 3N pending business members and rational intent timing delivered and independently reviewed. New scoped tests: context84, Blueprint20, members27, timing18. No Stage3 admission or persistence: material alternative/function/reuse feasibility, independent Admission, audited Command/exact replay and Runtime remain open.",
     "stage2_local_scope": "Kernel Command plus local-run-v3/profile-v7 HTTP runtime delivered. Independent resource/adapter/core reviews ALLOW. Final Runtime regression299passed, source/resource413passed, packaging20passed, media2purepassed; DB/media65 collected only. Ruff and production types clean. No real DB/provider or complete-run success claim.",
-    "stage2_next": "Continue Stage3 closure/compiler/independent Admission and durable full-target Blueprint Command; then Runtime and Stage4/Render/QC integration.",
+    "stage2_next": "Stage3 full-batch material feasibility and independent Admission, frozen generation request/durable Command/exact replay; then Runtime and Stage4/Render/QC integration.",
     "remote_acceptance": "Not executed on this workstation; database, real model and full Pipeline acceptance remain open."
   }
 }

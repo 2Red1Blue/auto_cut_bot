@@ -221,6 +221,8 @@ uv run auto_cut_bot serve \
 - Pipeline HTTP 到共享 Kernel 的边界；
 - Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；
+- Stage 3 的前驱读取、草案解析、证据上下文、蓝图编译和三成员组装纯函数；
+  尚未接入最终准入、数据库提交或 HTTP 调度，不能用它声明脚本阶段成功；
 - HTTP 新任务的 `source_prep → vlm → stage1_narrative → stage2_portfolio → media_preflight` 调度；
 - 本地测试和 Podman 部署文件。
 

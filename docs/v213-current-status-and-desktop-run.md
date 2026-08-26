@@ -39,8 +39,9 @@ Authority、Profile 或 CalibrationRecord。
   Command、19 项独立校验、五成员原子提交与精确重放。Stage 1/2 共用流式生成、
   有限重试、超时对账和因果 Receipt 流程。Stage 2 HTTP 接线使用同一 Command，
   不执行或重建替代 Stage 1 产物。真实模型/数据库验收仍留给台式机。
-- Stage 3 已交付精确前驱读取，以及完整目标批次的蓝图草案模型/严格解析器。
-  这还不是获准 Blueprint；证据闭包、编译/准入、持久化命令和 Runtime 尚待接入。
+- Stage 3 已交付精确前驱读取、蓝图草案解析、完整去重证据上下文、蓝图编译、
+  每故事三成员组装/严格读取，以及有理数时长一致性检查。
+  这还不是获准 Blueprint；素材组合可行性、独立准入、持久化命令和 Runtime 尚待接入。
   当前设计与进度见 [Stage 3 实现波次](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-production-wave.md)。
 
 上述描述表示“已实现并经过单元/契约测试”，不表示“已经成功跑完一部真实剧”。

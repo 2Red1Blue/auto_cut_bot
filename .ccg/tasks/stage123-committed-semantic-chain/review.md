@@ -1,4 +1,41 @@
-# Latest review: Stage 2 durable Command (2026-08-26)
+# Latest review: Stage 3 compilation slices (2026-08-26)
+
+Stage2 Runtime/local-run v3/profile v7 delivery is recorded in
+`docs/v213-task-plan/08-21-07-stage1-3-semantic-chain/stage2-runtime-wave.md`.
+Commits 92263149/f39b562d passed independent resource/adapter/Runtime review;
+299 scoped Runtime tests passed without DB/provider execution. Stage3 exact
+reader/draft parser b4568448/b5798b6c passed independent review and the then-current
+2195 semantic/architecture regression. These supersede the older status below.
+
+Stage3 timing commit 77390e9d: independent read-only reviewer ALLOW; 18 targeted
+tests, Ruff and production typing passed. Fixed-order rational difference
+constraints check joint Beat/Story ranges and max-gap limits; witness validation
+does not call the solver. This is intent consistency, not material allocation,
+physical safety, Stage3 Admission or a complete Pipeline.
+
+Context 2d0cd511 and Blueprint/3N composition 7643723c are independently reviewed
+ALLOW. Final regression: 2344 semantic/architecture tests passed. Scoped tests
+context84/Blueprint20/members27/timing18 overlap this total; Ruff and changed
+production typing passed. No DB/model/service execution.
+
+Actual review findings fixed in their owners:
+
+- Compiled Blueprint decoders had weaker shape/owner checks than draft parsing.
+  They now reuse draft/material constructors and independently rederive IDs.
+- Projection allowed widening Proposal Story duration and replacing teaser
+  strategy; frozen Proposal hard bounds/strategy are now preserved.
+- Cross-member decoding accepted internally consistent foreign material/fact
+  rows. Complete material IDs/obligations/facts must now match the actual closure.
+- Context pool decoding accepted a rehashed substituted VLM request or raw pack
+  owner. Closed record/identity, Source/window pairing and nested raw references
+  now join exactly; full-DAG rehash controls reach these checks, not stale hashes.
+
+Full Task07 stays open, not archived: material combination/function/reuse
+feasibility, independent Admission, generation request/durable Command/replay,
+Runtime and real acceptance remain. Pending 3N values are not an admitted 3N+1
+transaction. Real DB/model/whole-Pipeline acceptance remains remote.
+
+## Earlier review: Stage 2 durable Command (2026-08-26)
 
 Scope ALLOW after independent request, lifecycle and exact reader reviews.
 Commits: ff5fef1b (request), a8dcdf53 (shared lifecycle), 9e924be9 (Command/reader).

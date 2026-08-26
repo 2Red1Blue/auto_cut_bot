@@ -24,8 +24,10 @@ independent reviews. Real migration/provider acceptance stays remote.
 
 Next implementation: [Stage3 production wave](stage3-production-wave.md). The
 exact committed Stage2 input reader and typed Blueprint draft/parser are
-implemented. Context closure/compiler/Admission/Command and real acceptance
-remain open; do not confuse these draft values with admitted Blueprints.
+implemented. Complete contexts (2d0cd511), Blueprint projection/3N member closure
+(7643723c) and rational editorial timing (77390e9d) are also delivered. Material
+combination feasibility, independent Admission/Command/Runtime and real acceptance
+remain open; do not confuse pending business members with admitted Blueprints.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。

@@ -166,8 +166,77 @@ cross-field invariants and aggregate limits. Shape-valid unknown object refs,
 unsupported semantic alternatives or order cycles still require independent
 business rejection; parsing alone does not admit them.
 
-Remaining implementation: context/closure and CommandPolicy request budgets,
-pure compiled Blueprint/evidence feasibility over the entire frozen batch,
-independent Admission, durable Command/exact reader, Runtime activation and real
-remote acceptance. No Stage3 admitted output or full-pipeline completion is
-claimed by these first two commits.
+The reader/draft slices alone do not produce an admitted Stage3 output. Current
+context/compilation progress and remaining execution work are recorded below.
+
+## Current implementation decisions: context and intent timing
+
+- Provider context uses one complete shared exact-member payload pool plus the
+  ordered per-Story closure and manifest rows. It does not repeat the full series
+  once per Story. Each manifest binds the hash and byte length of its expanded
+  content; the actual request includes every referenced payload. Persisted
+  predecessor identities remain exact, never latest-head lookups.
+- Story/Beat duration ranges describe contiguous editorial output intent.
+  `precedes` must agree with array order; `adjacent` means immediately following;
+  `max_gap` measures from the end of the earlier Beat to the start of the later
+  Beat. It is not distance on a Source clock. Teaser intent does not implicitly
+  add another clip, padding or duration. Targets are preferences, min/max are hard.
+- `editorial_timing.py` solves all duration and max-gap constraints jointly with
+  exact rational difference constraints. A separate verifier checks each witness
+  directly. This proves intent consistency only, not that those durations can
+  be allocated from actual footage. Candidate coarse-duration evidence must not
+  be summed repeatedly to claim physical capacity; final allocation is Stage4.
+- Alternative candidate refs form a candidate pool. `one_of` requires one whole
+  alternative, not pieces borrowed from different alternatives; `all_of` requires
+  each alternative independently. A witness selects a nonempty subset covering
+  all that alternative's events. Source reuse is checked jointly across Stories.
+- Candidate `editing_modes` (`dialogue|action`) are not SpanPolicy modes
+  (`tight|scene|context`). Do not intersect these different vocabularies or invent
+  a capability field. Preserve span intent for Stage4 evidence/endpoint checks.
+
+These are pure compilation slices, not a Stage3 Admission or Runtime activation.
+Durable 3N+1 commit, full material feasibility and real acceptance remain open.
+
+Business composition uses `compose_editorial_business_members(contexts,
+projection)` and the strict `decode_editorial_business_members(members,
+contexts=...)`. Blueprint member payloads bind the input hash and exact
+ContextManifest identity, which in turn binds the EvidenceClosureSet identity.
+Thus hash dependency order is closure -> manifest -> Blueprint, while serialized
+member order is Blueprint/closure/manifest per Story. This is acyclic and does
+not include database IDs or Admission. Composition produces 3N pending business
+members only; the future independently admitted Command must add the single
+Admission and commit all 3N+1 in one transaction.
+
+## Context, Blueprint and business-member delivery
+
+Pure implementation now includes:
+
+- `editorial_context_models.py` / `editorial_context.py`: complete deduplicated
+  predecessor pool, exact request/pack/Source/window and nested raw-owner joins,
+  per-Story closures/manifests, closed decoding and explicit byte overflow.
+- `editorial_blueprint.py`: exact frozen targets/Proposals, stable Beat and
+  strategy-bound evidence requirement IDs, complete mandatory facts/obligations,
+  unchanged physical requirements and Source constraints. Story duration may
+  narrow but never widen Proposal bounds; teaser strategy remains Proposal-owned.
+- `editorial_members.py`: 3N pending members and strict roundtrip, including
+  exact agreement with closure material IDs, obligations and facts.
+- `editorial_timing.py` (77390e9d): joint rational editorial intent consistency
+  plus direct independent witness checks, without physical feasibility claims.
+
+Review fixes are in these owners, not compatibility adapters: compiled values
+reuse draft/material validators; rehashed nested references and fabricated IDs
+are rejected; a substituted VLM request or raw semantic owner cannot hide behind
+a recomputed context hash. Tests include fully rehashed DAGs so failure cannot
+be credited merely to a stale outer hash.
+
+Still open: material alternative coverage/function eligibility and full-batch
+Source reuse search; independent SemanticFeasibilityAdmission; generation policy
+and durable request; audited Command and exact 3N+1 replay; HTTP/Agent Runtime;
+remote DB/provider acceptance. No Stage3 admitted output, real model execution,
+database transaction or whole-run success is claimed by these pure slices.
+
+Delivery commits: 2d0cd511 (context), 7643723c (Blueprint and 3N members),
+77390e9d (timing). Final semantic-chain/architecture regression: 2344 passed.
+Scoped independent review accepted context84/Blueprint20/members27/timing18
+tests; these are subsets, not additional end-to-end acceptance counts. Changed
+production typing, Ruff and diff checks passed. No local DB/model/service ran.
