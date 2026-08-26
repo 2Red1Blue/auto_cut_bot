@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Literal, Protocol, cast
 from uuid import UUID
 
+from ..media.calibration_record import (
+    CALIBRATION_VALIDATOR_COMMAND,
+    CalibrationRecordArtifactSet,
+    calibration_profile_key,
+)
 from ..source_manifest import SourceOperationGrant
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from .errors import StoreValidationError
@@ -868,6 +873,117 @@ class PersistedCommittedArtifactMember:
             )
         if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise StoreValidationError("persisted committed member command_slot_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationValidationBinding:
+    """Immutable validator inputs; retry keys never change the evidence identity."""
+
+    profile_version: str
+    profile_source_sha256: str
+    registry_snapshot_sha256: str
+    manifest_reference: CommittedArtifactMemberReference
+    results_reference: CommittedArtifactMemberReference
+    attempt_idempotency_key: str
+
+    def __post_init__(self) -> None:
+        calibration_profile_key(self.profile_version)
+        for name in ("profile_source_sha256", "registry_snapshot_sha256"):
+            value = getattr(self, name)
+            _sha256(value, name)
+            if value == "sha256:" + "0" * 64:
+                raise StoreValidationError(f"{name} must be non-zero")
+        _text(self.attempt_idempotency_key, "validator attempt idempotency key")
+        manifest, results = self.manifest_reference, self.results_reference
+        if any(type(ref) is not CommittedArtifactMemberReference for ref in (manifest, results)):  # noqa: E721
+            raise StoreValidationError("calibration validation requires exact measurement references")
+        if (
+            manifest.receipt_id != results.receipt_id
+            or manifest.artifact_set_id != results.artifact_set_id
+            or manifest.scope != results.scope
+            or manifest.scope.namespace != "autocut_calibration"
+            or manifest.scope.kind != "shadow_run"
+            or manifest.content_hash == results.content_hash
+        ):
+            raise StoreValidationError("calibration measurement references must name one exact shadow set")
+        _sha256("sha256:" + manifest.scope.key, "measurement scope request hash")
+        for ref, ordinal, artifact_type, logical_id in (
+            (manifest, 0, "calibration_measurement_manifest", "measurement-manifest"),
+            (results, 1, "calibration_measurement_results", "measurement-results"),
+        ):
+            if (ref.member_ordinal, ref.artifact_type, ref.logical_id, ref.revision) != (
+                ordinal, artifact_type, logical_id, 1
+            ) or ref.content_hash == "sha256:" + "0" * 64:
+                raise StoreValidationError("calibration measurement reference identity is invalid")
+
+    @property
+    def profile_key(self) -> str:
+        return calibration_profile_key(self.profile_version)
+
+    @property
+    def job(self) -> Job:
+        return Job(f"autocut_calibration_validator:{self.profile_key}", "authority")
+
+    @property
+    def request_hash(self) -> str:
+        return canonical_payload_hash(json.dumps({
+            "command": CALIBRATION_VALIDATOR_COMMAND,
+            "profile_key": self.profile_key,
+            "profile_source_sha256": self.profile_source_sha256,
+            "registry_snapshot_sha256": self.registry_snapshot_sha256,
+            "measurement_manifest": self.manifest_reference.to_mapping(),
+            "measurement_results": self.results_reference.to_mapping(),
+        }, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+
+    @property
+    def claim(self) -> CommandClaim:
+        return CommandClaim(
+            self.job, self.attempt_idempotency_key, CALIBRATION_VALIDATOR_COMMAND, self.request_hash
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedShadowCalibrationMeasurement:
+    """The exact succeeded measurement pair and the shadow Job owning its blobs."""
+
+    job: Job
+    request_hash: str
+    command_slot_id: UUID
+    manifest: PersistedCommittedArtifactMember
+    results: PersistedCommittedArtifactMember
+
+    def __post_init__(self) -> None:
+        _sha256(self.request_hash, "measurement request hash")
+        if self.job != Job(self.request_hash.removeprefix("sha256:"), "shadow"):
+            raise StoreValidationError("measurement Job does not bind its request hash")
+        if (
+            self.manifest.command_slot_id != self.command_slot_id
+            or self.results.command_slot_id != self.command_slot_id
+            or self.manifest.reference.receipt_id != self.results.reference.receipt_id
+            or self.manifest.reference.artifact_set_id != self.results.reference.artifact_set_id
+        ):
+            raise StoreValidationError("measurement pair does not share one succeeded command")
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedCalibrationRecordAnchor:
+    """Exact accepted members reached through an immutable anchor, never a head."""
+
+    record: CalibrationRecordArtifactSet
+    aggregate: PersistedCommittedArtifactMember
+    validation: PersistedCommittedArtifactMember
+
+    @property
+    def command_slot_id(self) -> UUID:
+        return self.aggregate.command_slot_id
+
+    @property
+    def record_sha256(self) -> str:
+        return self.aggregate.reference.content_hash
+
+    @property
+    def validation_receipt_sha256(self) -> str:
+        return self.validation.reference.content_hash
 
 
 @dataclass(frozen=True, slots=True)

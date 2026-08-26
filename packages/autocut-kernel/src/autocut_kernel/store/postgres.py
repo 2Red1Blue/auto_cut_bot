@@ -22,6 +22,16 @@ from uuid import UUID, uuid4
 from psycopg import DatabaseError, InterfaceError
 
 from ..media import Stage4PredecessorError, decode_timed_speech_profile_registry_entry
+from ..media.calibration_record import (
+    CALIBRATION_VALIDATOR_COMMAND,
+    CalibrationRecordArtifactMember,
+    CalibrationRecordArtifactSet,
+    CalibrationRecordScope,
+    decode_calibration_record_member_payload,
+    decode_calibration_record_payload,
+    decode_calibration_validation_receipt_payload,
+    verify_calibration_record_artifact_set,
+)
 from ..registry.timed_speech import (
     AUTHORITY_BOOTSTRAP_JOB,
     BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
@@ -49,6 +59,7 @@ from ..vlm import (
 )
 from .errors import (
     BlobIntegrityError,
+    BlobUnavailableError,
     CommandStateError,
     GenerationAttemptStateError,
     IdempotencyConflictError,
@@ -76,6 +87,7 @@ from .models import (
     ArtifactMember,
     ArtifactScope,
     BlobRef,
+    CalibrationValidationBinding,
     CommandClaim,
     CommandOutcome,
     CommandRejection,
@@ -91,10 +103,12 @@ from .models import (
     MaterializationError,
     MaterializationLimits,
     MediaEvidenceReference,
+    PersistedCalibrationRecordAnchor,
     PersistedCommittedArtifactMember,
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
+    PersistedShadowCalibrationMeasurement,
     PersistedVlmGenerationChild,
     PersistedVlmSemanticPack,
     PersistedWholeSeriesSourceManifest,
@@ -1643,7 +1657,7 @@ class PostgresRuntimeStore:
             )
             if cursor.rowcount != 1:
                 raise CommandStateError("shadow terminal denial attempt CAS was lost")
-            outcome = self._write_rejection(
+            self._write_rejection(
                 cursor,
                 CommandRejection(
                     attempt.command_slot_id,
@@ -1656,7 +1670,9 @@ class PostgresRuntimeStore:
             denied = self._read_shadow_attempt_by_id(cursor, attempt.attempt_id)
             if denied is None:
                 raise RuntimeStoreError("shadow terminal denial attempt vanished after closure")
-            return ShadowMeasurementTerminalDenialResult(denied, outcome)
+            # Use the same durable Receipt representation as replay: JSONB text
+            # need not preserve the submitted canonical JSON whitespace.
+            return ShadowMeasurementTerminalDenialResult(denied, denied.outcome)
 
         return self._transaction(operation)
 
@@ -1671,6 +1687,10 @@ class PostgresRuntimeStore:
             job_id, state, command_name, _ = self._locked_job_then_slot(
                 cursor, success.command_slot_id
             )
+            if command_name == CALIBRATION_VALIDATOR_COMMAND:
+                raise CommandStateError(
+                    "ValidateCalibrationRecord success requires the protected validator writer"
+                )
             if state != "running":
                 return self._replay_or_raise(
                     cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
@@ -1692,6 +1712,116 @@ class PostgresRuntimeStore:
             return self._write_success(cursor, success, job_id)
 
         return self._transaction(operation)
+
+    def commit_calibration_record_validation_success(
+        self,
+        success: CommandSuccess,
+        binding: CalibrationValidationBinding,
+        record: CalibrationRecordArtifactSet,
+    ) -> CommandOutcome:
+        """Close the accepted record, Receipt, anchor and authority Job atomically."""
+
+        self._validate_calibration_record_binding(binding, record)
+        expected_members = tuple(
+            ArtifactMember(
+                member.artifact_type, member.logical_id, member.revision,
+                ArtifactScope(member.scope.namespace, member.scope.kind, member.scope.key),
+                member.content_hash, member.payload_json,
+            )
+            for member in record.members
+        )
+        if type(success) is not CommandSuccess or success.artifacts != expected_members:  # noqa: E721
+            raise StoreValidationError("validator success must contain the exact typed record members")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
+            cursor.execute(
+                "SELECT job.job_key, job.profile, slot.idempotency_key FROM runtime.jobs AS job "
+                "JOIN runtime.command_slots AS slot ON slot.job_id = job.job_id "
+                "WHERE job.job_id = %s AND slot.command_slot_id = %s",
+                (job_id, success.command_slot_id),
+            )
+            row = cursor.fetchone()
+            if (
+                command_name != CALIBRATION_VALIDATOR_COMMAND
+                or row is None
+                or Job(_text(row[0]), cast(JobProfile, _text(row[1]))) != binding.job
+            ):
+                raise CommandStateError("validator writer requires its exact dedicated authority Job")
+            if request_hash != binding.request_hash or _text(row[2]) != binding.attempt_idempotency_key:
+                raise IdempotencyConflictError("validator slot does not bind the exact validation inputs")
+            self._read_shadow_calibration_measurement(cursor, binding)
+            if state != "running":
+                outcome = self._replay_or_raise(
+                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
+                )
+                anchor = self._read_calibration_record_anchor(cursor, binding)
+                if (
+                    anchor.command_slot_id != success.command_slot_id
+                    or anchor.aggregate.reference.receipt_id != outcome.receipt_id
+                    or anchor.aggregate.reference.artifact_set_id != outcome.artifact_set_id
+                    or anchor.record != record
+                ):
+                    raise IdempotencyConflictError("validator replay does not match its immutable anchor")
+                return outcome
+            self._assert_no_other_open_slots(cursor, job_id, success.command_slot_id)
+            cursor.execute(
+                "SELECT command_slot_id FROM runtime.calibration_record_anchors "
+                "WHERE namespace = 'autocut_authority' AND scope_kind = 'calibration' AND scope_key = %s",
+                (binding.profile_key,),
+            )
+            if cursor.fetchone() is not None:
+                raise IdempotencyConflictError("calibration profile already has an immutable anchor")
+            outcome = self._write_success(cursor, success, job_id)
+            cursor.execute(
+                """
+                INSERT INTO runtime.calibration_record_anchors (
+                    namespace, scope_kind, scope_key, record_sha256,
+                    profile_source_sha256, registry_snapshot_sha256,
+                    measurement_manifest_sha256, measurement_results_sha256,
+                    asr_member_sha256, vad_member_sha256, validation_receipt_sha256,
+                    receipt_id, artifact_set_id, aggregate_member_ordinal,
+                    validation_member_ordinal, command_slot_id
+                ) VALUES ('autocut_authority', 'calibration', %s, %s, %s, %s,
+                          %s, %s, %s, %s, %s, %s, %s, 0, 3, %s)
+                """,
+                (
+                    binding.profile_key, record.members[0].content_hash,
+                    binding.profile_source_sha256, binding.registry_snapshot_sha256,
+                    binding.manifest_reference.content_hash, binding.results_reference.content_hash,
+                    record.members[1].content_hash, record.members[2].content_hash,
+                    record.members[3].content_hash, outcome.receipt_id, outcome.artifact_set_id,
+                    success.command_slot_id,
+                ),
+            )
+            cursor.execute(
+                "UPDATE runtime.jobs SET state = 'succeeded' WHERE job_id = %s AND state = 'running'",
+                (job_id,),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("validator authority Job is not running")
+            return outcome
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _validate_calibration_record_binding(
+        binding: CalibrationValidationBinding, record: CalibrationRecordArtifactSet
+    ) -> None:
+        if type(binding) is not CalibrationValidationBinding or type(record) is not CalibrationRecordArtifactSet:  # noqa: E721
+            raise StoreValidationError("validator writer requires typed binding and accepted record")
+        verify_calibration_record_artifact_set(record.members)
+        if (
+            record.members[0].scope.key != binding.profile_key
+            or record.aggregate.identity.profile_source_sha256 != binding.profile_source_sha256
+            or record.aggregate.identity.registry_snapshot_sha256 != binding.registry_snapshot_sha256
+            or record.aggregate.measurement_manifest_sha256 != binding.manifest_reference.content_hash
+            or record.aggregate.measurement_results_sha256 != binding.results_reference.content_hash
+            or any(canonical_payload_hash(member.payload_json) != member.content_hash for member in record.members)
+        ):
+            raise StoreValidationError("accepted record does not match the exact validation binding")
 
     def commit_timed_speech_profile_bootstrap(
         self,
@@ -2044,7 +2174,7 @@ class PostgresRuntimeStore:
             )
             row = cursor.fetchone()
             if row is None or not isinstance(row[0], (bytes, bytearray, memoryview)):
-                raise BlobIntegrityError("immutable blob bytes are unavailable")
+                raise BlobUnavailableError("immutable blob bytes are unavailable")
             content = row[0].tobytes() if isinstance(row[0], memoryview) else bytes(row[0])
             if (
                 len(content) != durable.byte_length
@@ -3057,6 +3187,207 @@ class PostgresRuntimeStore:
             )
 
         return self._transaction(operation)
+
+    def read_committed_shadow_calibration_measurement(
+        self, binding: CalibrationValidationBinding
+    ) -> PersistedShadowCalibrationMeasurement:
+        """Read the exact two-member shadow predecessor with command provenance."""
+        if type(binding) is not CalibrationValidationBinding:  # noqa: E721
+            raise StoreValidationError("measurement reader requires an exact validation binding")
+        return self._transaction(lambda cursor: self._read_shadow_calibration_measurement(cursor, binding))
+
+    @staticmethod
+    def _read_succeeded_set_members(
+        cursor: DbCursor, receipt_id: UUID, artifact_set_id: UUID
+    ) -> tuple[Job, str, str, str, tuple[PersistedCommittedArtifactMember, ...]]:
+        cursor.execute(
+            """
+            SELECT job.job_key, job.profile, job.state, slot.command_slot_id,
+                   slot.command_name, slot.request_hash, artifact_set.member_count,
+                   member.ordinal, artifact.namespace, artifact.scope_kind,
+                   artifact.scope_key, artifact.artifact_type, artifact.logical_id,
+                   artifact.revision, artifact.content_hash, artifact.payload_json::text
+              FROM runtime.command_receipts AS receipt
+              JOIN runtime.command_slots AS slot ON slot.command_slot_id = receipt.command_slot_id
+              JOIN runtime.jobs AS job ON job.job_id = slot.job_id
+              JOIN runtime.artifact_sets AS artifact_set
+                ON artifact_set.artifact_set_id = receipt.result_artifact_set_id
+               AND artifact_set.command_slot_id = slot.command_slot_id
+               AND artifact_set.job_id = job.job_id
+              JOIN runtime.artifact_set_members AS member
+                ON member.artifact_set_id = artifact_set.artifact_set_id
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = artifact_set.artifact_set_id
+               AND artifact.job_id = job.job_id
+             WHERE receipt.receipt_id = %s AND artifact_set.artifact_set_id = %s
+               AND receipt.outcome = 'succeeded' AND slot.state = 'succeeded'
+             ORDER BY member.ordinal
+            """,
+            (receipt_id, artifact_set_id),
+        )
+        rows: list[tuple[object, ...]] = []
+        while (row := cursor.fetchone()) is not None:
+            rows.append(row)
+        if not rows:
+            raise MediaEvidenceUnavailableError("exact committed artifact set is unavailable")
+        first = rows[0]
+        if int(_text(first[6])) != len(rows) or any(
+            int(_text(row[7])) != ordinal or row[:7] != first[:7]
+            for ordinal, row in enumerate(rows)
+        ):
+            raise StoreValidationError("committed artifact set has incomplete member provenance")
+        members = tuple(
+            PersistedCommittedArtifactMember(
+                CommittedArtifactMemberReference(
+                    receipt_id, artifact_set_id, int(_text(row[7])),
+                    ArtifactScope(_text(row[8]), _text(row[9]), _text(row[10])),
+                    _text(row[11]), _text(row[12]), int(_text(row[13])), _text(row[14]),
+                ),
+                _canonical_db_json(_text(row[15])), UUID(str(row[3])),
+            )
+            for row in rows
+        )
+        return (
+            Job(_text(first[0]), cast(JobProfile, _text(first[1]))),
+            _text(first[2]), _text(first[4]), _text(first[5]), members,
+        )
+
+    def _read_shadow_calibration_measurement(
+        self, cursor: DbCursor, binding: CalibrationValidationBinding
+    ) -> PersistedShadowCalibrationMeasurement:
+        manifest_ref, results_ref = binding.manifest_reference, binding.results_reference
+        job, _, command, request_hash, members = self._read_succeeded_set_members(
+            cursor, manifest_ref.receipt_id, manifest_ref.artifact_set_id
+        )
+        if (
+            len(members) != 2
+            or tuple(member.reference for member in members) != (manifest_ref, results_ref)
+            or command != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
+            or job != Job(request_hash.removeprefix("sha256:"), "shadow")
+            or manifest_ref.scope != ArtifactScope("autocut_calibration", "shadow_run", job.job_key)
+        ):
+            raise StoreValidationError("measurement pair does not have exact shadow command provenance")
+        manifest = _strict_json_object(members[0].payload_json, "measurement manifest")
+        results = _strict_json_object(members[1].payload_json, "measurement results")
+        if (
+            set(manifest) != {
+                "alignment_policy_sha256", "acceptance_policy_sha256", "calibration_corpus_set_sha256",
+                "measurement_request_sha256", "native_invocations", "native_port_identity_sha256",
+                "registry_snapshot_sha256", "schema_version", "shadow_profile_source_sha256",
+                "vad_merge_policy_sha256", "word_gap_policy_sha256",
+            }
+            or set(results) != {
+                "measurement_manifest_sha256", "members", "per_producer_measurements", "schema_version"
+            }
+            or manifest.get("schema_version") != "shadow-calibration-measurement-manifest-v3"
+            or results.get("schema_version") != "shadow-calibration-measurement-results-v2"
+            or manifest.get("measurement_request_sha256") != request_hash
+            or manifest.get("shadow_profile_source_sha256") != binding.profile_source_sha256
+            or manifest.get("registry_snapshot_sha256") != binding.registry_snapshot_sha256
+            or results.get("measurement_manifest_sha256") != manifest_ref.content_hash
+        ):
+            raise StoreValidationError("measurement v3 manifest/results do not close over the validation binding")
+        invocation_values, projection_values = manifest["native_invocations"], results["members"]
+        if not isinstance(invocation_values, list) or not isinstance(projection_values, list):
+            raise StoreValidationError("measurement manifest/results member coverage is incomplete")
+        invocations = cast(list[object], invocation_values)
+        projections = cast(list[object], projection_values)
+        if not invocations or len(invocations) != len(projections):
+            raise StoreValidationError("measurement manifest/results member coverage is incomplete")
+        seen: set[str] = set()
+        for raw_invocation, raw_projection in zip(invocations, projections, strict=True):
+            if not isinstance(raw_invocation, dict) or not isinstance(raw_projection, dict):
+                raise StoreValidationError("measurement member must be an object")
+            invocation = cast(dict[str, object], raw_invocation)
+            projection = cast(dict[str, object], raw_projection)
+            if (
+                set(invocation) != {"corpus_member_reference_sha256", "expected_anchor_reference_sha256", "native_invocation", "native_response_blob", "raw_context"}
+                or set(projection) != {"corpus_member_reference_sha256", "expected_anchor_reference_sha256", "native_invocation", "native_response_blob", "native_response_sha256", "projection"}
+                or any(invocation[key] != projection[key] for key in (
+                    "corpus_member_reference_sha256", "expected_anchor_reference_sha256", "native_invocation", "native_response_blob"
+                ))
+                or not isinstance(invocation["raw_context"], dict)
+                or not isinstance(invocation["native_response_blob"], dict)
+            ):
+                raise StoreValidationError("measurement member provenance does not close")
+            blob = cast(dict[str, object], invocation["native_response_blob"])
+            corpus_ref = invocation["corpus_member_reference_sha256"]
+            if not isinstance(corpus_ref, str) or corpus_ref in seen or projection["native_response_sha256"] != blob.get("content_hash"):
+                raise StoreValidationError("measurement member identity is duplicated or inconsistent")
+            seen.add(corpus_ref)
+        return PersistedShadowCalibrationMeasurement(job, request_hash, members[0].command_slot_id, members[0], members[1])
+
+    def read_calibration_record_anchor(
+        self,
+        binding: CalibrationValidationBinding,
+        aggregate_reference: CommittedArtifactMemberReference,
+        validation_reference: CommittedArtifactMemberReference,
+    ) -> PersistedCalibrationRecordAnchor:
+        """Resolve only the caller's exact accepted aggregate/validation references."""
+        if type(binding) is not CalibrationValidationBinding:  # noqa: E721
+            raise StoreValidationError("anchor reader requires an exact validation binding")
+
+        def operation(cursor: DbCursor) -> PersistedCalibrationRecordAnchor:
+            anchor = self._read_calibration_record_anchor(cursor, binding)
+            if anchor.aggregate.reference != aggregate_reference or anchor.validation.reference != validation_reference:
+                raise StoreValidationError("anchor does not name the expected exact accepted members")
+            return anchor
+
+        return self._transaction(operation)
+
+    def _read_calibration_record_anchor(
+        self, cursor: DbCursor, binding: CalibrationValidationBinding
+    ) -> PersistedCalibrationRecordAnchor:
+        cursor.execute(
+            """
+            SELECT record_sha256, profile_source_sha256, registry_snapshot_sha256,
+                   measurement_manifest_sha256, measurement_results_sha256,
+                   asr_member_sha256, vad_member_sha256, validation_receipt_sha256,
+                   receipt_id, artifact_set_id, command_slot_id,
+                   aggregate_member_ordinal, validation_member_ordinal
+              FROM runtime.calibration_record_anchors
+             WHERE namespace = 'autocut_authority' AND scope_kind = 'calibration' AND scope_key = %s
+            """,
+            (binding.profile_key,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise MediaEvidenceUnavailableError("exact calibration record anchor is unavailable")
+        job, job_state, command, request_hash, members = self._read_succeeded_set_members(
+            cursor, UUID(str(row[8])), UUID(str(row[9]))
+        )
+        if (
+            job != binding.job or job_state != "succeeded" or command != CALIBRATION_VALIDATOR_COMMAND
+            or request_hash != binding.request_hash or len(members) != 4
+            or members[0].command_slot_id != UUID(str(row[10]))
+            or (int(_text(row[11])), int(_text(row[12]))) != (0, 3)
+        ):
+            raise StoreValidationError("calibration anchor does not close over its succeeded authority command")
+        payloads = (
+            decode_calibration_record_payload(members[0].payload_json.encode("utf-8")),
+            decode_calibration_record_member_payload(members[1].payload_json.encode("utf-8")),
+            decode_calibration_record_member_payload(members[2].payload_json.encode("utf-8")),
+            decode_calibration_validation_receipt_payload(members[3].payload_json.encode("utf-8")),
+        )
+        record = CalibrationRecordArtifactSet(tuple(
+            CalibrationRecordArtifactMember(
+                member.reference.member_ordinal, member.reference.artifact_type,
+                member.reference.logical_id, member.reference.revision,
+                CalibrationRecordScope(member.reference.scope.namespace, member.reference.scope.kind, member.reference.scope.key),
+                member.reference.content_hash, payload,
+            )
+            for member, payload in zip(members, payloads, strict=True)
+        ))
+        self._validate_calibration_record_binding(binding, record)
+        expected_hashes = (
+            record.members[0].content_hash, binding.profile_source_sha256, binding.registry_snapshot_sha256,
+            binding.manifest_reference.content_hash, binding.results_reference.content_hash,
+            record.members[1].content_hash, record.members[2].content_hash, record.members[3].content_hash,
+        )
+        if tuple(_text(value) for value in row[:8]) != expected_hashes:
+            raise StoreValidationError("calibration anchor hashes do not bind its exact accepted members")
+        return PersistedCalibrationRecordAnchor(record, members[0], members[3])
 
     def read_committed_artifact_member(
         self,

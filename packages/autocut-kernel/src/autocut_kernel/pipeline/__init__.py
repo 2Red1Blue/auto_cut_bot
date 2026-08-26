@@ -60,8 +60,18 @@ from .render_local import (
     render_local,
     render_persisted_local,
 )
+from .validate_calibration_record_command import (
+    CalibrationValidationError,
+    CalibrationValidationLimits,
+    CalibrationValidationStore,
+    ValidateCalibrationRecordCommand,
+)
 
 __all__ = [
+    "CalibrationValidationError",
+    "CalibrationValidationLimits",
+    "CalibrationValidationStore",
+    "ValidateCalibrationRecordCommand",
     "FinalizeVlmBatchCommand",
     "FinalizeVlmBatchRequest",
     "FinalizeVlmBatchResult",

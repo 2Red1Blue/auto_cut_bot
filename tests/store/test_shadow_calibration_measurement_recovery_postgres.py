@@ -225,10 +225,11 @@ def test_expired_unknown_member_is_indeterminate_and_successor_is_authorized(mon
     store, plan = _store(), _plan()
     attempt = store.claim_or_read_shadow_measurement_attempt(plan.claim, plan)
     attempt = _stage(store, attempt, 0)
-    monkeypatch.setattr(postgres_module, "SHADOW_MEASUREMENT_LEASE_SECONDS", 0)
-    lease = store.acquire_shadow_measurement_member_lease(
-        attempt.attempt_id, attempt.members[1].corpus_member_reference_sha256, expected_version=attempt.members[1].version
-    )
+    with monkeypatch.context() as expired_member:
+        expired_member.setattr(postgres_module, "SHADOW_MEASUREMENT_LEASE_SECONDS", 0)
+        lease = store.acquire_shadow_measurement_member_lease(
+            attempt.attempt_id, attempt.members[1].corpus_member_reference_sha256, expected_version=attempt.members[1].version
+        )
     assert lease is not None
     recovery = store.acquire_shadow_measurement_recovery_lease(attempt.attempt_id, expected_version=lease.attempt_version)
     assert recovery is not None
@@ -243,8 +244,23 @@ def test_expired_unknown_member_is_indeterminate_and_successor_is_authorized(mon
     assert unknown.outcome.receipt_id is None
     with pytest.raises(StoreValidationError):
         store.reserve_shadow_measurement_successor(attempt.attempt_id, object())  # type: ignore[arg-type]
+    authorization = ShadowMeasurementRetryAuthorization(_hash("decision"), plan.claim.request_hash)
+    with pytest.raises(CommandStateError, match="active recovery lease"):
+        store.reserve_shadow_measurement_successor(attempt.attempt_id, authorization)
+    # Advance the verification fixture past recovery ownership without sleeping
+    # or weakening the production successor's lease guard.
+    with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE runtime.shadow_calibration_measurement_attempts
+               SET recovery_lease_expires_at = transaction_timestamp() - interval '1 second',
+                   version = version + 1
+             WHERE attempt_id = %s
+            """,
+            (attempt.attempt_id,),
+        )
     successor = store.reserve_shadow_measurement_successor(
-        attempt.attempt_id, ShadowMeasurementRetryAuthorization(_hash("decision"), plan.claim.request_hash)
+        attempt.attempt_id, authorization
     )
 
     assert successor.attempt_ordinal == 2
@@ -276,6 +292,8 @@ def test_decoder_proven_invalid_response_terminally_denies_without_artifacts() -
     replay = store.commit_shadow_measurement_terminal_denial(denial)
 
     assert result.outcome.state == replay.outcome.state == "denied"
+    assert result == replay
+    assert json.loads(result.outcome.failure_detail_json) == json.loads(denial.failure_detail_json)
     assert result.outcome.receipt_id == replay.outcome.receipt_id
     assert result.attempt.state == "indeterminate"
     assert result.attempt.outcome == result.outcome
@@ -302,7 +320,7 @@ def test_terminal_denial_rejects_substitution_and_preserves_unknown_invocation()
         )
     with pytest.raises(StoreValidationError):
         replace(denial, command_name="AnotherShadowCommand")
-    with pytest.raises(CommandStateError):
+    with pytest.raises(StoreValidationError, match="attempt_id is unknown"):
         store.commit_shadow_measurement_terminal_denial(
             replace(denial, attempt_id=uuid4())
         )

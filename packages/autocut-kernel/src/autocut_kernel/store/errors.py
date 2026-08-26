@@ -33,6 +33,10 @@ class BlobIntegrityError(RuntimeStoreError):
     """Blob bytes, digest, length, media type, or durable claim do not agree."""
 
 
+class BlobUnavailableError(RuntimeStoreError):
+    """An exactly claimed Blob exists, but its durable bytes cannot be read."""
+
+
 class GenerationAttemptStateError(CommandStateError):
     """A provider attempt transition is stale, invalid, or would dispatch twice."""
 
