@@ -77,6 +77,16 @@ The assessment compares speech coverage/touch against the mapped interval on
 the original audio clock, with calibrated margins; it does not subtract stream
 origins independently or claim sentence completeness from word gaps.
 
+The adaptive boundary-touch margin is measured on the video clock and must be
+mapped using exact presentation arithmetic before adding ASR/VAD timing-error
+bounds and the audio snap allowance. Audio snap calibration alone cannot stand
+in for speech timestamp accuracy. Validate ASR/VAD calibration roles separately,
+not merely their unordered set. Include utterance-gap protected segments as well
+as word ranges. Suppress a source-edge touch only when both the video and audio
+extraction endpoints equal their respective source endpoints. Policy guard
+points need not be decoded frames; they are measurement intervals inside the
+already proved continuous span, not newly authorized physical cut endpoints.
+
 The current `CandidateTimedEvidenceSet` carries per-candidate speech, but
 `timed_evidence.py::_coverage_contains_range` still directly compares rational
 native times. Therefore nonidentity/piecewise local coverage is **not** proved
@@ -259,6 +269,18 @@ raw outputs. Its pre-calibration identity binds models, decoder, source/window,
 policy and independent window anchors, but excludes the not-yet-produced
 accepted Record and measured bounds. Preserve normal window route validation.
 
+The pure shadow-local case/projector is implemented in `media/shadow_local_calibration.py`
+and `media/shadow_local_calibration_projection.py`: closed case content produces
+the request binding, then the existing window decoder/projector replays actual
+raw bytes against independently authored ordered local anchors. Case identity
+distinguishes the complete service-profile hash from its nested native identity.
+Zero measured error and explicit empty observations remain valid measurements;
+neither is coerced into a fabricated positive bound or an accepted Record.
+This does not activate a service route or make the old full-source calibration
+command/reader accept local responses.
+The next explicit service/profile slice is specified in the
+[shadow-local service plan](shadow-local-service-implementation-plan.md).
+
 Persist measurement → independently validate window anchors → accept immutable
 CalibrationRecord/anchor → compile/install normal profile. Never put a
 generated Record hash in its own measured identity, reuse fake bounds or feed
@@ -271,14 +293,18 @@ certificate support (f2c59f35), claim-owned physical prelude/producer/readback
 (49179042), physical-root mapping (f0dc57b3), native audio facts (3ff0d690), and
 the pure mapped local-audio request factory, request-bound pre-dispatch BUSY
 proof (a4bbb44e; 195 synthetic/loopback checks, zero skips), and exact terminal
-Receipt reader (203 pure Store checks, independently reviewed). These are not complete Runtime
-activation or real detector/model/DB acceptance.
+Receipt reader (2b7f4b3f; 203 pure Store checks, independently reviewed),
+Kernel-owned single-dispatch delivery port (697d13f4; 199 synthetic/loopback
+checks), local lifecycle and resolved Source facts (f99682a8; 127 new pure cases),
+shadow-local case/raw projection (0001b165; 150 new pure cases), and mapped
+window assessment (15 new cases; independently reviewed). Root's combined
+foundation/Store/Source/window regression is 923 passed. These are not complete
+Runtime activation or real detector/model/DB acceptance.
 
 Claude quota is exhausted; existing native workers now implement in disjoint
 files and cross-review frozen results. Root owns integration, task metadata
-and scoped commits. The next batch closes local lifecycle, mapped assessment,
-shadow-local measurements and local speech child persistence,
-then mapped assessment/parent-owned admissions and exact episode readers.
+and scoped commits. The next batch closes local speech child persistence,
+then parent-owned admissions and exact episode readers.
 Runtime wiring follows those APIs. Shadow-local calibration is a separate
 producer/validator slice and cannot be folded into ordinary window Commands.
 

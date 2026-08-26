@@ -21,8 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Physical prelude 49179042 is implemented and independently reviewed (909 combined pure checks). Physical mapping f0dc57b3, measured native audio facts 3ff0d690 and mapped audio factory 29dc5798 are accepted. BUSY proof a4bbb44e passed 195 synthetic/loopback checks with zero skips. Exact terminal Receipt reader passed independent review and 203 pure Store checks; it does not itself authorize retries. Existing native agents now implement local lifecycle, mapped assessment and shadow-local measurement after Claude quota exhaustion. Durable child/episode admissions, shadow-local acceptance and Runtime activation remain incomplete. Composed Runtime is still full-source. No real model/native codec or PostgreSQL race acceptance claimed.",
+  "notes": "2026-08-26: Physical prelude 49179042, physical mapping f0dc57b3, native audio facts 3ff0d690 and mapped audio factory 29dc5798 are accepted. BUSY proof a4bbb44e and exact terminal reader 2b7f4b3f are reviewed. Native agents completed local lifecycle f99682a8, Kernel-owned port 697d13f4, shadow-local case/raw projection 0001b165 and mapped assessment. Root reproduced 923 combined pure regressions and 199 synthetic/loopback HTTP checks with zero skips. Design/review corrections and next shadow-local service/profile plan are documented. Durable child/episode readers/admissions, real shadow-local acceptance and Runtime activation remain incomplete; composed Runtime is still full-source. No real models/codecs or PostgreSQL race acceptance claimed.",
   "meta": {
-    "next_action": "Implement local lifecycle/mapped assessment and shadow-local measurement, then durable speech children, exact chain readers and parent-owned admissions; activate only after local calibration and real desktop validation"
+    "next_action": "Implement durable local speech children and exact chain/episode readers with parent-owned admissions; implement explicit shadow-local service/profile/persisted acceptance before real desktop Runtime activation"
   }
 }
