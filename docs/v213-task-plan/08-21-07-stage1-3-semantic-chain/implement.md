@@ -4,6 +4,10 @@ Current code wave: [Stage 1 production preparation](stage1-production-wave.md).
 Generic generation persistence and strict draft decoding are delivered before
 the real compiler/Command; the inactive prototype is not production authority.
 
+Next compiler wave: [production model and reference binding](stage1-model-binding.md).
+This closes the precommit identity model without inventing database artifact IDs;
+the actual Graph model, KC evaluators and eight-member Command remain required.
+
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。
 2. 同一波把 Prompt、Schema、Parser、Decoder、Artifact、Store reader、batch
