@@ -56,6 +56,28 @@ from .probe import (
 
 _COMMAND_NAME = "PrepareWholeSeriesSourcesCommand"
 _SHOWINFO_PTS = re.compile(rb"\bpts:\s*(-?(?:0|[1-9][0-9]*))\b")
+DEFAULT_IDENTITY_SAMPLE_COUNT = 9
+
+
+def identity_window_sampling_policy(
+    sample_count: int = DEFAULT_IDENTITY_SAMPLE_COUNT,
+) -> dict[str, object]:
+    """Return the static identity-window sampling policy, never frame choices."""
+    if type(sample_count) is not int or sample_count < 1:  # noqa: E721
+        raise ValueError("sample_count must be positive")
+    return {
+        "algorithm": "uniform-decoded-frame-index-v1",
+        "correspondence_certificate": "ffmpeg-copyts-showinfo-pts-equals-ffprobe-index-v1",
+        "frame_encoding": "png-image2pipe-v1",
+        "sample_count": sample_count,
+    }
+
+
+def identity_window_sampling_policy_sha256(
+    sample_count: int = DEFAULT_IDENTITY_SAMPLE_COUNT,
+) -> str:
+    """Return the stable identity for the static sampling policy only."""
+    return canonical_sha256(identity_window_sampling_policy(sample_count))
 
 
 class FrameSampleEvidenceError(SeriesCensusError):
@@ -208,7 +230,7 @@ class IdentitySourceWindowBuilder:
         *,
         probe_port: FFprobeSourceMediaPort | None = None,
         ffmpeg_executable: str | None = None,
-        sample_count: int = 9,
+        sample_count: int = DEFAULT_IDENTITY_SAMPLE_COUNT,
         timeout_seconds: float = 120.0,
     ) -> None:
         if type(sample_count) is not int or sample_count < 1:  # noqa: E721
@@ -242,7 +264,9 @@ class IdentitySourceWindowBuilder:
         policy = _identity_policy()
         clock_id = f"video-stream-{stream.stream_index}"
         frame_index = _identity_frame_index(probe, policy)
-        selected = _sample_indices(len(video.pts_index.ticks), self._sample_count)
+        selected = identity_window_sample_indices(
+            len(video.pts_index.ticks), self._sample_count
+        )
         samples = tuple(
             self._frame_sample(source_path, index, video.pts_index.ticks[index])
             for index in selected
@@ -277,12 +301,7 @@ class IdentitySourceWindowBuilder:
             preprocess_policy_sha256=policy,
             window_sampling_policy_sha256=canonical_sha256(
                 {
-                    "algorithm": "uniform-decoded-frame-index-v1",
-                    "correspondence_certificate": (
-                        "ffmpeg-copyts-showinfo-pts-equals-ffprobe-index-v1"
-                    ),
-                    "frame_encoding": "png-image2pipe-v1",
-                    "sample_count": self._sample_count,
+                    **identity_window_sampling_policy(self._sample_count),
                     "selected_indices": list(selected),
                 }
             ),
@@ -599,9 +618,16 @@ def _blob_mapping(blob: BlobRef) -> dict[str, object]:
     }
 
 
-def _sample_indices(frame_count: int, sample_count: int) -> tuple[int, ...]:
-    if frame_count < 1:
-        raise SeriesCensusError("decoded frame PTS must not be empty")
+def identity_window_sample_indices(
+    frame_count: int,
+    sample_count: int = DEFAULT_IDENTITY_SAMPLE_COUNT,
+) -> tuple[int, ...]:
+    """Return deterministic decoded-frame indices for an identity window."""
+
+    if type(frame_count) is not int or frame_count < 1:  # noqa: E721
+        raise ValueError("frame_count must be positive")
+    if type(sample_count) is not int or sample_count < 1:  # noqa: E721
+        raise ValueError("sample_count must be positive")
     count = min(frame_count, sample_count)
     if count == 1:
         return (0,)

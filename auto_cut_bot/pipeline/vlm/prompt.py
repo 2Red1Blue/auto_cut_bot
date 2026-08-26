@@ -4,11 +4,41 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from autocut_kernel.vlm import WindowManifest
 
 VLM_PROMPT_VERSION = "vlm-semantic-pack-v3"
+
+VLM_PROMPT_TEMPLATE = (
+    "你是 Story-first 视频窗口语义分析器。只根据当前窗口内确实可见、可听且可由给定帧佐证的内容输出局部语义包；"
+    "不得借用语音识别、语音活动检测、外部接口、预写文本、文字识别或字幕轨道作为语义权威，也不得臆造身份、关系、对白或因果。\n"
+    "先完整记录所有对叙事有意义的可见事实，再组织事件。window_summary 必须引用已声明 fact/event 并给出 dominant_temporal_mode；"
+    "continuity 必须明确窗口是否从上一窗口延续、是否延续到下一窗口、是否从事件中段开始或在事件中段结束，"
+    "entry_state_fact_refs 与 exit_state_fact_refs 只引用已声明事实。temporal_segments 只描述可见的 present/flashback/flashforward/dream/unknown，证据不足用 unknown。\n"
+    "所有 ID 都是本窗口局部 ID，按字典序输出且不可重复。entity_kind 只能取 person,object,location,screen_text_source。"
+    "fact_kind 只能取 visible_presence,visible_state,visible_action,visible_change,visible_relation,scene_context,"
+    "character_appearance,screen_text,temporal_mode；subject_ref/object_ref 只引用已声明实体。"
+    "event_kind 只能取 action,interaction,state_change,reaction,reveal,transition；每个 event 至少引用一条 fact，"
+    "participant_refs 只引用实体。cause_event_refs/effect_event_refs 只表达画面明确支持的因果与反应，证据不足时为空。\n"
+    "每个 support 必须使用 proxy 时钟整数 PTS 的半开区间 [start_pts,end_pts)，位于给定范围内且 start_pts 小于 end_pts；"
+    "uncertainty_pts 是非负整数保守误差。support 至少引用一个 allowlist frame_id，frame_id 必须逐字复制完整的 sha256: 加 64 位小写十六进制字符（共 71 字符）。"
+    "所有 confidence 以及 measurement 的 value 必须是 0 到 1 的 canonical 十进制字符串，禁止 JSON 浮点数。\n"
+    "candidate_hypotheses 只是叙事候选，不是剪辑决定。普通闲聊、过场、铺垫或证据不足时必须输出空数组。"
+    "只有达到绝对标准才可输出：candidate_kind=hook 必须提出具体且尚未回答的 open_question，payoff_event_refs 必须为空；"
+    "candidate_kind=highlight 必须引用本窗口已经发生的非空 payoff_event_refs。不得因为它是窗口内相对最强片段就降低标准。"
+    "每个候选必须给出 anchor_event_ref、reason、anchor_summary、payoff_or_open_question 及至少一条 measurement。"
+    "editing_modes 必须是 canonical 非空 ['dialogue']、['action'] 或按此顺序的 ['dialogue','action']。"
+    "narrative_functions 按 hook,setup,escalation,confrontation,reveal,reversal,payoff,aftermath 的顺序去重且非空。"
+    "tags 按 dialogue,action,emotion,suspense,conflict,reveal,reversal,visual_spectacle,character_moment,relationship_moment 的顺序去重且非空。"
+    "measurement_kind 只能取 hook_strength,reveal_strength,emotional_payoff_strength,dialogue_salience,action_salience,visual_salience；"
+    "每条 measurement 必须引用至少一个已有 fact 或 event。dialogue_excerpt 仅作窗口内对话语义的简短描述；"
+    "它不是逐字记录，也不能证明任何时间边界；不适用时为 null。\n"
+    "所有时间只是粗粒度语义支持，绝不输出源时间、精确媒体端点、提前量或任何物理剪辑位置。"
+    "只输出符合所给 JSON Schema 的单个 JSON 对象，不要 Markdown、解释或代码围栏。\n"
+    "窗口证据："
+)
 
 _SHA256_SCHEMA: dict[str, object] = {
     "type": "string",
@@ -409,6 +439,11 @@ def vlm_response_schema_json() -> str:
     )
 
 
+def vlm_prompt_template_sha256() -> str:
+    """Return the exact UTF-8 identity of the static prompt instructions."""
+    return "sha256:" + hashlib.sha256(VLM_PROMPT_TEMPLATE.encode("utf-8")).hexdigest()
+
+
 def build_vlm_prompt(manifest: WindowManifest) -> str:
     """Build a manifest-bound prompt without granting physical-cut authority."""
 
@@ -430,39 +465,14 @@ def build_vlm_prompt(manifest: WindowManifest) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
-    return (
-        "你是 Story-first 视频窗口语义分析器。只根据当前窗口内确实可见、可听且可由给定帧佐证的内容输出局部语义包；"
-        "不得借用语音识别、语音活动检测、外部接口、预写文本、文字识别或字幕轨道作为语义权威，也不得臆造身份、关系、对白或因果。\n"
-        "先完整记录所有对叙事有意义的可见事实，再组织事件。window_summary 必须引用已声明 fact/event 并给出 dominant_temporal_mode；"
-        "continuity 必须明确窗口是否从上一窗口延续、是否延续到下一窗口、是否从事件中段开始或在事件中段结束，"
-        "entry_state_fact_refs 与 exit_state_fact_refs 只引用已声明事实。temporal_segments 只描述可见的 present/flashback/flashforward/dream/unknown，证据不足用 unknown。\n"
-        "所有 ID 都是本窗口局部 ID，按字典序输出且不可重复。entity_kind 只能取 person,object,location,screen_text_source。"
-        "fact_kind 只能取 visible_presence,visible_state,visible_action,visible_change,visible_relation,scene_context,"
-        "character_appearance,screen_text,temporal_mode；subject_ref/object_ref 只引用已声明实体。"
-        "event_kind 只能取 action,interaction,state_change,reaction,reveal,transition；每个 event 至少引用一条 fact，"
-        "participant_refs 只引用实体。cause_event_refs/effect_event_refs 只表达画面明确支持的因果与反应，证据不足时为空。\n"
-        "每个 support 必须使用 proxy 时钟整数 PTS 的半开区间 [start_pts,end_pts)，位于给定范围内且 start_pts 小于 end_pts；"
-        "uncertainty_pts 是非负整数保守误差。support 至少引用一个 allowlist frame_id，frame_id 必须逐字复制完整的 sha256: 加 64 位小写十六进制字符（共 71 字符）。"
-        "所有 confidence 以及 measurement 的 value 必须是 0 到 1 的 canonical 十进制字符串，禁止 JSON 浮点数。\n"
-        "candidate_hypotheses 只是叙事候选，不是剪辑决定。普通闲聊、过场、铺垫或证据不足时必须输出空数组。"
-        "只有达到绝对标准才可输出：candidate_kind=hook 必须提出具体且尚未回答的 open_question，payoff_event_refs 必须为空；"
-        "candidate_kind=highlight 必须引用本窗口已经发生的非空 payoff_event_refs。不得因为它是窗口内相对最强片段就降低标准。"
-        "每个候选必须给出 anchor_event_ref、reason、anchor_summary、payoff_or_open_question 及至少一条 measurement。"
-        "editing_modes 必须是 canonical 非空 ['dialogue']、['action'] 或按此顺序的 ['dialogue','action']。"
-        "narrative_functions 按 hook,setup,escalation,confrontation,reveal,reversal,payoff,aftermath 的顺序去重且非空。"
-        "tags 按 dialogue,action,emotion,suspense,conflict,reveal,reversal,visual_spectacle,character_moment,relationship_moment 的顺序去重且非空。"
-        "measurement_kind 只能取 hook_strength,reveal_strength,emotional_payoff_strength,dialogue_salience,action_salience,visual_salience；"
-        "每条 measurement 必须引用至少一个已有 fact 或 event。dialogue_excerpt 仅作窗口内对话语义的简短描述；"
-        "它不是逐字记录，也不能证明任何时间边界；不适用时为 null。\n"
-        "所有时间只是粗粒度语义支持，绝不输出源时间、精确媒体端点、提前量或任何物理剪辑位置。"
-        "只输出符合所给 JSON Schema 的单个 JSON 对象，不要 Markdown、解释或代码围栏。\n"
-        f"窗口证据：{context_json}"
-    )
+    return VLM_PROMPT_TEMPLATE + context_json
 
 
 __all__ = [
     "VLM_PROMPT_VERSION",
+    "VLM_PROMPT_TEMPLATE",
     "VLM_RESPONSE_SCHEMA",
     "build_vlm_prompt",
+    "vlm_prompt_template_sha256",
     "vlm_response_schema_json",
 ]

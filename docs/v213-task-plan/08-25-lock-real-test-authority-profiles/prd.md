@@ -40,7 +40,7 @@ remains closed.
 - R5: Authority bootstrap uses the verified run profile, replays an identical
   profile/snapshot, terminally rejects divergence, and is unreachable from
   Pipeline HTTP.
-- R6: Standard HTTP composition loads an injected verified snapshot and checks
+- R6: Standard HTTP composition loads the fixed installed local-run resource and checks
   its durable anchor before accepting work. Missing bootstrap/profile/calibration
   fails before SourcePrep, Ark or FunASR work.
 - R7: The first real local run uses the current drama, configured Ark
@@ -66,6 +66,14 @@ remains closed.
 - [ ] Real Pipeline cannot begin without verified injection, and no HTTP/API
   route bootstraps, rotates or selects a profile.
 - [ ] A current-drama run stays local and never invokes publication.
+
+## Execution location update — 2026-08-26
+
+Code development, automated tests and independent review run on this workstation.
+Real calibration and complete Pipeline execution run on the remote desktop.
+Earlier local-machine/native-host wording describes the service topology, not
+permission to run large models on this workstation. Real-run acceptance remains
+open until the remote evidence exists.
 
 ## Out of scope
 

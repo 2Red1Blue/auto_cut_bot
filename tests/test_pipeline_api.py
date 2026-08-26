@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from auto_cut_bot.api import server as pipeline_server
 from auto_cut_bot.api.server import create_app
 from auto_cut_bot.pipeline.runtime import DurablePipelineRunService, PipelineRunValidationError
+from tests.pipeline.runtime_profile_fixture import execution_profile
 from tests.pipeline.test_run_service import FakeAuthorizer, FakeRunStore, FakeScheduler
 
 
@@ -37,9 +38,13 @@ def _agent() -> MagicMock:
 
 
 def _service(*, allowed: bool = True):
+    """Typed v5 request fixture with fake Store; not accepted installed authority."""
     store = FakeRunStore()
     scheduler = FakeScheduler()
-    return DurablePipelineRunService(store, scheduler, FakeAuthorizer(allowed)), store, scheduler
+    service = DurablePipelineRunService(
+        store, scheduler, FakeAuthorizer(allowed), execution_profile=execution_profile(),
+    )
+    return service, store, scheduler
 
 
 class FakePipelineRuntime:
@@ -101,7 +106,7 @@ class DrainingPipelineRuntime(FakePipelineRuntime):
 
 @pytest.mark.asyncio
 async def test_run_returns_202_replay_and_409_mismatch(aiohttp_client) -> None:
-    service, _, scheduler = _service()
+    service, store, scheduler = _service()
     client = await aiohttp_client(create_app(_agent(), pipeline_run_service=service))
     headers = {"Idempotency-Key": "run-request-1"}
     payload = {"profile": "test", "source_root": "/authorized/source"}
@@ -123,6 +128,9 @@ async def test_run_returns_202_replay_and_409_mismatch(aiohttp_client) -> None:
     assert replay_body["replayed"] is True
     assert conflict.status == 409
     assert scheduler.enqueued == [first_body["run_id"], first_body["run_id"]]
+    persisted_profile = store.by_run_id[first_body["run_id"]].execution_profile
+    assert persisted_profile.to_mapping()["schema_version"] == "pipeline-execution-profile-v5"
+    assert persisted_profile == execution_profile()
 
 
 @pytest.mark.asyncio
@@ -205,12 +213,15 @@ async def test_environment_paid_runtime_requires_configured_http_auth(
     aiohttp_client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service, _, _ = _service()
+    service, store, _ = _service()
     runtime = FakePipelineRuntime(service)
+    # Isolate server authentication from installed-resource/Store activation.
+    # This explicit fake proves neither calibration nor deployed authority.
+    composition = MagicMock(return_value=runtime)
     monkeypatch.setattr(
         pipeline_server,
         "compose_pipeline_runtime_from_environment",
-        lambda: runtime,
+        composition,
     )
     payload = {"profile": "test", "source_root": "/authorized/source"}
     headers = {"Idempotency-Key": "paid-run-1"}
@@ -221,6 +232,7 @@ async def test_environment_paid_runtime_requires_configured_http_auth(
     ):
         create_app(_agent())
     assert runtime.startup_calls == 0
+    composition.assert_called_once_with()
 
     authenticated_client = await aiohttp_client(
         create_app(_agent(), api_key="configured-http-secret")
@@ -228,6 +240,8 @@ async def test_environment_paid_runtime_requires_configured_http_auth(
     missing = await authenticated_client.post(
         "/v1/pipeline/run", headers=headers, json=payload
     )
+    assert missing.status == 401
+    assert store.by_run_id == {}
     accepted = await authenticated_client.post(
         "/v1/pipeline/run",
         headers={**headers, "Authorization": "Bearer configured-http-secret"},
@@ -237,6 +251,7 @@ async def test_environment_paid_runtime_requires_configured_http_auth(
     assert missing.status == 401
     assert accepted.status == 202
     assert "configured-http-secret" not in str(await missing.json())
+    assert composition.call_count == 2
 
 
 @pytest.mark.asyncio

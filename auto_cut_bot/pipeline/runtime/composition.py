@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import psycopg
-from autocut_kernel.registry import (
-    AuthorityRegistrySnapshot,
-    StoreAnchoredTimedSpeechProfileResolver,
+from autocut_kernel.registry.installed_runtime import (
+    InstalledLocalRunProfileResolver,
+    load_installed_local_run_resolver,
 )
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
 from autocut_kernel.store import PostgresRuntimeStore, RuntimeStoreError, StoreValidationError
@@ -31,6 +31,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightPolicy,
     LocalMediaPreflightPort,
 )
+from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import AuthorizedSeriesSourceRoot
 from auto_cut_bot.pipeline.vlm import (
     DoubaoArkVlmProvider,
@@ -39,6 +40,7 @@ from auto_cut_bot.pipeline.vlm import (
     PostgresArkFileCache,
 )
 from auto_cut_bot.pipeline.vlm.ark_file_cache import DbConnection as ArkDbConnection
+from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_policy
 
 from .highlight_projection import PipelineHighlightReadService
 from .media_preflight_stage import MediaPreflightPipelineStage
@@ -268,7 +270,7 @@ class PipelineRuntime:
     service: DurablePipelineRunService
     worker: DurablePipelineWorker
     execution_profile: PipelineExecutionProfile
-    authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver
+    authority_profile_resolver: InstalledLocalRunProfileResolver
     authority_store: PostgresRuntimeStore
 
     async def startup_reconstruct(self) -> tuple[str, ...]:
@@ -276,7 +278,7 @@ class PipelineRuntime:
             await asyncio.to_thread(self.authority_profile_resolver.resolve, self.authority_store)
         except (RuntimeStoreError, StoreValidationError, ValueError, TypeError) as error:
             raise PipelineRuntimeConfigurationError(
-                "pipeline runtime authority bootstrap anchor is unavailable"
+                "pipeline runtime installed calibration/profile anchor is unavailable"
             ) from error
         return await self.worker.startup_reconstruct()
 
@@ -330,14 +332,11 @@ def compose_pipeline_highlight_read_service_from_environment(
 
 def compose_pipeline_runtime_from_environment(
     environ: Mapping[str, str] | None = None,
-    *,
-    authority_snapshot: AuthorityRegistrySnapshot | None = None,
 ) -> PipelineRuntime | None:
     """Compose the paid runtime, rejecting every partial configuration.
 
-    The authority snapshot is a deployment injection from a verified authority
-    source. It is deliberately not environment JSON and cannot be selected by
-    a Pipeline HTTP request.
+    Authority comes only from the fixed controlled installed resource, never
+    from an argument, environment JSON, checkout or Pipeline HTTP request.
     """
     values = os.environ if environ is None else environ
     relevant = _REQUIRED_ENVIRONMENT + (
@@ -351,11 +350,6 @@ def compose_pipeline_runtime_from_environment(
         raise PipelineRuntimeConfigurationError(
             "pipeline runtime configuration is incomplete; missing: " + ", ".join(missing)
         )
-    if type(authority_snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
-        raise PipelineRuntimeConfigurationError(
-            "pipeline runtime requires an injected verified timed-speech authority snapshot"
-        )
-
     control_dsn = values[PIPELINE_POSTGRES_DSN_ENV].strip()
     kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
     catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
@@ -391,6 +385,17 @@ def compose_pipeline_runtime_from_environment(
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
             materialization_limits=materialization_limits,
         )
+        authority_profile_resolver = load_installed_local_run_resolver()
+        validate_installed_vlm_policy(
+            authority_profile_resolver.resource.narrative,
+            policy,
+            DOUBAO_GENERATION_RETRY_POLICY,
+        )
+        validate_installed_media_policy(authority_profile_resolver.resource, media_policy)
+        if materialization_limits.timed_speech_max_request_bytes != (
+            authority_profile_resolver.resource.local_run.native_timed_speech.max_request_bytes
+        ):
+            raise ValueError("timed speech request limit differs from installed service")
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
@@ -430,8 +435,11 @@ def compose_pipeline_runtime_from_environment(
     file_cache = PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory))
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
-    vlm_stage = VlmPipelineStage(kernel_store, provider)
-    authority_profile_resolver = StoreAnchoredTimedSpeechProfileResolver(authority_snapshot)
+    vlm_stage = VlmPipelineStage(
+        kernel_store,
+        provider,
+        installed_profile=authority_profile_resolver.resource,
+    )
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(),

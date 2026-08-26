@@ -8,10 +8,6 @@ import pytest
 from autocut_kernel.store import RuntimeStoreError
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION
 from psycopg import OperationalError
-from runtime_profile_fixture import (
-    execution_profile as frozen_execution_profile,
-)
-from runtime_profile_fixture import media_preflight_policy
 
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
@@ -34,6 +30,10 @@ from auto_cut_bot.pipeline.runtime import (
     SourceDeniedError,
     StaleRunVersionError,
 )
+from tests.pipeline.runtime_profile_fixture import (
+    execution_profile as frozen_execution_profile,
+)
+from tests.pipeline.runtime_profile_fixture import media_preflight_policy
 
 
 class FakeRunStore:

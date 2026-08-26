@@ -18,6 +18,17 @@
 
 ## 当前主线
 
+### 最新代码状态（2026-08-26）
+
+安装包资源准备、固定配置读取和 HTTP 启动接线已实现；启动先核对已接受的校准记录
+及完整配置，再恢复任务。VLM/ASR/VAD 的实际运行参数和恢复任务保存的参数均须匹配，
+不通过时不调用模型，也不改写旧任务。共享包与主项目两种安装方式均已做隔离测试。
+
+当前 HTTP 注册的仍是 `source_prep → vlm → media_preflight`，不代表完整
+Stage 1–4 / Render / QC 已接通。没有安装真实校准配置，也没有完成整剧真实运行。
+本机只负责开发、自动化测试和审查；模型校准及完整实际运行留在远程台式机。
+下列较早检查点的“待接线”是历史状态，以本段和当前任务最新章节为准。
+
 ```text
 authority implementation
   → contract codegen / Artifact Store
@@ -72,7 +83,7 @@ timed-speech Registry 契约哈希已改为从锁定 Schema 的可达定义闭�
 116 项通过（包含重复覆盖，不累加）；独立审查通过，详见
 [本地配置编译与资源传输审查](08-25-lock-real-test-authority-profiles/review-local-profile-resource.md)。
 
-当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
+当前优先级是继续开发；完整真实运行在远程台式机完成。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。
 
 `08-26-real-e2e-multi-agent-closure` 是真实一集到全剧验收的集成计划；它不能替代各个

@@ -9,9 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
+from autocut_kernel.registry.installed_local_run import LocalRunResourceError
+from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.source_manifest import SourceOperationPolicy
 from psycopg import OperationalError
-from runtime_profile_fixture import media_preflight_policy
 
 from auto_cut_bot.pipeline.runtime import PipelineRunRequest, PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.composition import (
@@ -34,6 +35,10 @@ from auto_cut_bot.pipeline.runtime.composition import (
     compose_pipeline_runtime_from_environment,
 )
 from auto_cut_bot.pipeline.runtime.worker import DurablePipelineWorker
+from tests.pipeline.installed_profile_fixture import (
+    synthetic_installed_resource,
+    synthetic_media_policy,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -79,7 +84,7 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV: json.dumps(
             {
                 "max_source_bytes": 8 * 1024 * 1024,
-                "timed_speech_max_request_bytes": 8 * 1024 * 1024,
+                "timed_speech_max_request_bytes": 1024 * 1024,
                 "copy_chunk_bytes": 64 * 1024,
                 "staging_quota_bytes": 16 * 1024 * 1024,
             }
@@ -89,14 +94,17 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
 
 def _media_policy(path: Path) -> dict[str, object]:
     del path
-    return media_preflight_policy().to_mapping()
+    return synthetic_media_policy(synthetic_installed_resource()).to_mapping()
 
 
-def _authority_snapshot() -> AuthorityRegistrySnapshot:
-    return AuthorityRegistrySnapshot(
-        "sha256:" + "a" * 64,
-        TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
-    )
+@pytest.fixture(autouse=True)
+def fake_installed_loader(monkeypatch: pytest.MonkeyPatch):
+    """Synthetic content tests wiring only; no model/calibration acceptance."""
+    from auto_cut_bot.pipeline.runtime import composition
+
+    resolver = InstalledLocalRunProfileResolver(synthetic_installed_resource())
+    monkeypatch.setattr(composition, "load_installed_local_run_resolver", lambda: resolver)
+    return resolver
 
 
 def test_closed_source_catalog_requires_an_exact_path_and_preserves_identity(
@@ -203,12 +211,14 @@ def test_source_catalog_rejects_open_or_incomplete_entries(catalog: str) -> None
 
 def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     tmp_path: Path,
+    fake_installed_loader,
 ) -> None:
     runtime = compose_pipeline_runtime_from_environment(
-        _environment(tmp_path), authority_snapshot=_authority_snapshot()
+        _environment(tmp_path)
     )
 
     assert runtime is not None
+    assert runtime.authority_profile_resolver is fake_installed_loader
     assert runtime.execution_profile.kind == "doubao_vlm"
     assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v5"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
@@ -222,6 +232,35 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
     assert str(tmp_path / "verified-media-staging") not in runtime.execution_profile.canonical_json
+
+
+@pytest.mark.parametrize("mutation", ("vlm-model", "vlm-parameters", "media-model", "request-limit"))
+def test_installed_configuration_mismatch_stops_before_provider_or_store_construction(
+    tmp_path, monkeypatch, mutation,
+):
+    from auto_cut_bot.pipeline.runtime import composition
+
+    environment = _environment(tmp_path)
+    if mutation == "vlm-model":
+        environment[PIPELINE_ARK_MODEL_ID_ENV] = "other-doubao-deployment"
+    elif mutation == "vlm-parameters":
+        environment[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV] = "1024"
+    elif mutation == "media-model":
+        policy = json.loads(environment[PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV])
+        policy["asr_model_revision"] = "different-model-revision"
+        environment[PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV] = json.dumps(policy)
+    else:
+        limits = json.loads(environment[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV])
+        limits["timed_speech_max_request_bytes"] = 2 * 1024 * 1024
+        environment[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV] = json.dumps(limits)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid installed binding reached side-effecting composition")
+
+    monkeypatch.setattr(composition, "DoubaoArkVlmProvider", forbidden)
+    monkeypatch.setattr(composition, "PostgresRuntimeStore", forbidden)
+    with pytest.raises(PipelineRuntimeConfigurationError):
+        compose_pipeline_runtime_from_environment(environment)
 
 
 def test_highlight_read_composition_uses_only_configured_read_dsns(
@@ -252,7 +291,7 @@ def test_direct_v3_profile_cannot_relabel_v4_parse_fields_as_executable(
     tmp_path: Path,
 ) -> None:
     runtime = compose_pipeline_runtime_from_environment(
-        _environment(tmp_path), authority_snapshot=_authority_snapshot()
+        _environment(tmp_path)
     )
     assert runtime is not None
     profile = runtime.execution_profile
@@ -271,7 +310,7 @@ def test_environment_uses_registered_ark_base_url_when_not_overridden(
     del environment[PIPELINE_ARK_BASE_URL_ENV]
 
     runtime = compose_pipeline_runtime_from_environment(
-        environment, authority_snapshot=_authority_snapshot()
+        environment
     )
 
     assert runtime is not None
@@ -302,7 +341,7 @@ def test_environment_rejects_qwen_as_a_doubao_fallback(tmp_path: Path) -> None:
         PipelineRuntimeConfigurationError,
         match="Doubao/provider/media-preflight configuration",
     ):
-        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
+        compose_pipeline_runtime_from_environment(environment)
 
 
 @pytest.mark.parametrize(
@@ -320,7 +359,7 @@ def test_media_preflight_composition_has_no_materialization_defaults(
     del environment[required_name]
 
     with pytest.raises(PipelineRuntimeConfigurationError, match=required_name):
-        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
+        compose_pipeline_runtime_from_environment(environment)
 
 
 def test_media_preflight_composition_rejects_unsafe_staging_root_before_registration(
@@ -331,7 +370,7 @@ def test_media_preflight_composition_rejects_unsafe_staging_root_before_registra
     os.chmod(staging_root, 0o755)
 
     with pytest.raises(PipelineRuntimeConfigurationError, match="private 0700"):
-        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
+        compose_pipeline_runtime_from_environment(environment)
 
 
 def test_media_preflight_composition_rejects_open_materialization_policy(
@@ -349,12 +388,23 @@ def test_media_preflight_composition_rejects_open_materialization_policy(
     )
 
     with pytest.raises(PipelineRuntimeConfigurationError, match="closed materialization"):
-        compose_pipeline_runtime_from_environment(environment, authority_snapshot=_authority_snapshot())
+        compose_pipeline_runtime_from_environment(environment)
 
 
-def test_runtime_requires_an_injected_non_placeholder_authority_snapshot(tmp_path: Path) -> None:
-    with pytest.raises(PipelineRuntimeConfigurationError, match="injected verified timed-speech"):
-        compose_pipeline_runtime_from_environment(_environment(tmp_path))
+def test_runtime_requires_fixed_resource_and_has_no_snapshot_override(tmp_path: Path, monkeypatch) -> None:
+    from auto_cut_bot.pipeline.runtime import composition
+
+    def unavailable():
+        raise LocalRunResourceError("installed resource unavailable")
+
+    monkeypatch.setattr(composition, "load_installed_local_run_resolver", unavailable)
+    environment = _environment(tmp_path)
+    with pytest.raises(PipelineRuntimeConfigurationError) as caught:
+        compose_pipeline_runtime_from_environment(environment)
+    assert isinstance(caught.value.__cause__, LocalRunResourceError)
+    with pytest.raises(TypeError, match="authority_snapshot"):
+        compose_pipeline_runtime_from_environment(environment, authority_snapshot=object())
+    assert compose_pipeline_runtime_from_environment({}) is None
 
     with pytest.raises(ValueError, match="placeholder hash"):
         AuthorityRegistrySnapshot(

@@ -159,3 +159,24 @@ Next: explicit two-wheel resource packaging, immutable admin bootstrap, full-ent
 and calibration anchor validation before worker recovery, then provider-policy
 compatibility and actual measured local execution. Actual inventory/lock renewal
 must exclude the withdrawn total contract; do not restore it to satisfy old tools.
+
+## Installed HTTP wiring checkpoint — 2026-08-26
+
+Completed code:
+- Explicit resource preparation for both root and standalone wheels, verified in
+  isolated temporary installations without checkout/tools.
+- Fixed installed loader used by standard HTTP composition; caller snapshot
+  injection removed. Accepted calibration and whole bootstrap entry are checked
+  before worker reconstruction. Admin bootstrap remains separate.
+- Executed VLM and timed-speech policy compatibility at startup and on persisted
+  execute/reconcile paths; incompatible runs are rejected, never rewritten.
+- Static prompt/sampling identities are separate from preserved dynamic request
+  identities; installed parser code has a fixed bounded implementation digest.
+- Installed media batch verifies acceptance before the existing Kernel command
+  receives the same immutable snapshot resolver.
+
+No native model or real database was started for this code slice. Complete
+calibration, production source publication/resource installation, and whole-drama
+execution remain remote-desktop acceptance work. Stage 1–3 and Render/QC still
+need their remaining production HTTP integration; this three-stage checkpoint
+does not complete them. Continue code development before desktop deployment.

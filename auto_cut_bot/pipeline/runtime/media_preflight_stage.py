@@ -27,6 +27,8 @@ from autocut_kernel.pipeline.prepare_timed_media_evidence_command import (
 from autocut_kernel.registry import (
     StoreAnchoredTimedSpeechProfileResolver,
 )
+from autocut_kernel.registry.calibration_binding import CalibrationRecordAnchorReader
+from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
@@ -49,10 +51,15 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightRequest,
     LocalMediaToolError,
 )
+from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     SourcePrepStore,
     read_persisted_prepared_sources_bundle,
+)
+from auto_cut_bot.pipeline.vlm.policy_binding import (
+    validate_installed_source_sampling,
+    validate_installed_vlm_policy,
 )
 
 from .errors import PipelineRunValidationError
@@ -67,7 +74,9 @@ MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequenti
 _ARTIFACT_REVISION = 1
 
 
-class MediaPreflightPipelineStore(SourcePrepStore, TimedMediaEvidenceStore, Protocol):
+class MediaPreflightPipelineStore(
+    SourcePrepStore, TimedMediaEvidenceStore, CalibrationRecordAnchorReader, Protocol,
+):
     def read_committed_vlm_semantic_pack_set_reference(
         self,
         job: Job,
@@ -184,11 +193,13 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
-        authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver,
+        authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver | InstalledLocalRunProfileResolver,
     ) -> None:
         self._store = store
         self._port = port
-        if type(authority_profile_resolver) is not StoreAnchoredTimedSpeechProfileResolver:  # noqa: E721
+        if type(authority_profile_resolver) not in (
+            StoreAnchoredTimedSpeechProfileResolver, InstalledLocalRunProfileResolver,
+        ):
             raise PipelineRunValidationError(
                 "media-preflight requires an explicit authority profile resolver"
             )
@@ -213,6 +224,17 @@ class MediaPreflightPipelineStage:
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
         materialization_limits = context.execution_profile.to_materialization_limits()
         job = self._job(context)
+        resolver = self._authority_profile_resolver
+        if isinstance(resolver, InstalledLocalRunProfileResolver):
+            validate_installed_media_policy(resolver.resource, policy)
+            validate_installed_vlm_policy(
+                resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
+                context.execution_profile.to_generation_retry_policy(),
+            )
+            if materialization_limits.timed_speech_max_request_bytes != (
+                resolver.resource.local_run.native_timed_speech.max_request_bytes
+            ):
+                raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
         source_outcome = self._store.read_outcome(
             job,
             source_prep_kernel_idempotency_key(context.run_id),
@@ -230,6 +252,8 @@ class MediaPreflightPipelineStage:
             artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
             artifact_revision=_ARTIFACT_REVISION,
         )
+        if isinstance(resolver, InstalledLocalRunProfileResolver):
+            validate_installed_source_sampling(source_bundle)
         require_committed_source_operation(source_bundle, "render_source")
         require_committed_source_operation(source_bundle, "semantic_analysis")
         vlm_batch_key = vlm_batch_kernel_idempotency_key(
@@ -352,10 +376,16 @@ class MediaPreflightPipelineStage:
         requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
         policy: LocalMediaPreflightPolicy,
     ) -> FinalizeTimedMediaEvidenceBatchResult | PrepareTimedMediaEvidenceResult:
+        resolver = self._authority_profile_resolver
+        if isinstance(resolver, InstalledLocalRunProfileResolver):
+            # Check the complete installed binding before delegating to the
+            # existing Kernel command's per-request immutable anchor resolver.
+            await asyncio.to_thread(resolver.resolve, self._store)
+            resolver = StoreAnchoredTimedSpeechProfileResolver(resolver.snapshot)
         command = PrepareTimedMediaEvidenceCommand(
             self._store,
             _ClaimOwnedLocalProducer(self._port, policy),
-            self._authority_profile_resolver,
+            resolver,
         )
         children: list[TimedMediaEvidenceBatchChild] = []
         for request in requests:

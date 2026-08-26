@@ -21,6 +21,7 @@ from autocut_kernel.pipeline import (
     VlmBatchChildOutcome,
     VlmBatchFinalizerStore,
 )
+from autocut_kernel.registry.installed_local_run import LocalRunResource
 from autocut_kernel.store import (
     VLM_BATCH_IDEMPOTENCY_PREFIX,
     ArtifactScope,
@@ -30,12 +31,17 @@ from autocut_kernel.store import (
 from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import VlmProviderPort
 
+from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     SourcePrepStore,
     read_persisted_prepared_sources_bundle,
 )
 from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy, build_doubao_vlm_request
+from auto_cut_bot.pipeline.vlm.policy_binding import (
+    validate_installed_source_sampling,
+    validate_installed_vlm_policy,
+)
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
@@ -131,6 +137,7 @@ class VlmPipelineStage:
         *,
         command: GenerateVlmEvidenceCommand | None = None,
         finalizer: FinalizeVlmBatchCommand | None = None,
+        installed_profile: LocalRunResource | None = None,
     ) -> None:
         if not callable(getattr(provider, "dispatch", None)) or not callable(
             getattr(provider, "reconcile", None)
@@ -139,6 +146,10 @@ class VlmPipelineStage:
         self._store = store
         self._command = command or GenerateVlmEvidenceCommand(store, provider)
         self._finalizer = finalizer or FinalizeVlmBatchCommand(store)
+        # None is an internal unit-test/adapter seam, never standard HTTP composition.
+        if installed_profile is not None and type(installed_profile) is not LocalRunResource:  # noqa: E721
+            raise PipelineRunValidationError("VLM requires an exact installed local-run resource")
+        self._installed_profile = installed_profile
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -158,6 +169,17 @@ class VlmPipelineStage:
         context: PipelineStageContext,
     ) -> tuple[PersistedPreparedSources, tuple[GenerateVlmEvidenceRequest, ...]] | None:
         job = self._job(context)
+        policy = context.execution_profile.to_doubao_policy()
+        retry_policy = context.execution_profile.to_generation_retry_policy()
+        if self._installed_profile is not None:
+            validate_installed_vlm_policy(self._installed_profile.narrative, policy, retry_policy)
+            validate_installed_media_policy(
+                self._installed_profile, context.execution_profile.to_media_preflight_policy(),
+            )
+            if context.execution_profile.to_materialization_limits().timed_speech_max_request_bytes != (
+                self._installed_profile.local_run.native_timed_speech.max_request_bytes
+            ):
+                raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
         source_outcome = self._store.read_outcome(
             job,
             source_prep_kernel_idempotency_key(context.run_id),
@@ -182,8 +204,8 @@ class VlmPipelineStage:
             raise PipelineRunValidationError(
                 "VLM stage requires at least one committed source episode"
             )
-        policy = context.execution_profile.to_doubao_policy()
-        retry_policy = context.execution_profile.to_generation_retry_policy()
+        if self._installed_profile is not None:
+            validate_installed_source_sampling(source_bundle)
         return source_bundle, tuple(
             replace(
                 build_doubao_vlm_request(

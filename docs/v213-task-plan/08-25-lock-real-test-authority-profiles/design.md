@@ -454,3 +454,85 @@ Delivery order: (1) domain identity + fixed resource codec, (2) replace accident
 generic compiler dependency and share the calibration comparison, (3) explicit
 emitter/wheel packaging, (4) installed bootstrap and provider-compatible HTTP
 composition, (5) real calibration and local Pipeline verification.
+
+## HTTP activation and remote execution boundary — 2026-08-26
+
+The user has assigned this workstation code development, automated tests and
+review only. Native model inference, real calibration and the complete drama
+Pipeline are to run on the remote desktop. Synthetic tests do not satisfy those
+remaining acceptance criteria. Do not start local database/model services for
+this slice.
+
+Standard HTTP composition has no authority_snapshot argument. With no Pipeline
+configuration it remains disabled; partial configuration still fails clearly.
+An enabled runtime reads only the fixed installed local-run resource. Before
+worker reconstruction, it validates the accepted calibration anchor, resolves
+the immutable bootstrap profile and compares the entire installed entry. The
+separate admin bootstrap uses the existing protected Command; HTTP never calls it.
+
+The currently registered HTTP stages are source_prep, vlm and media_preflight.
+Their actual executable policies, not merely a typed profile object, must match
+the installed source. Extract a stable prompt-template digest from the exact
+static text used by build_vlm_prompt, and a stable sampling-policy digest from
+the same algorithm/certificate/encoding/sample_count mapping used by
+IdentitySourceWindowBuilder. Keep all existing per-window prompt and
+selected-indices hashes unchanged: they identify different, dynamic inputs.
+
+Define parser_contract_sha256 as a versioned, fixed installed implementation
+bundle digest owned by Kernel, not as a duplicate response-schema hash or a
+strategy-name hash. Its enumerated source members and bounded package-resource
+reads must be documented and tested independently. This binds the parser code
+used by this release; it is not a formal proof or authentication of a replaced
+wheel. The controlled installed wheel remains the code trust boundary.
+
+One VLM compatibility checker compares provider, model, adapter, prompt and
+parser versions plus prompt/template/schema/parser/request/parse/retry/sampling
+digests. Use it at composition and again on each persisted execution profile
+before VLM dispatch or reconciliation. Never rewrite an old run to current
+defaults. Persisted source windows must also retain the expected dynamic
+sampling identity; a matching deployment default alone cannot certify old input.
+
+Coverage/dependency/conflict policies belong to Stage 1, which is not registered
+in the current three-stage HTTP plan. Retain their locked source identities
+without claiming they were evaluated here. Stage 1 activation must define and
+compare its actual policy owners before registering its executor. This explicit
+scope does not waive any check for code that is executed now.
+
+Regression tests must demonstrate startup failure before worker recovery on
+missing/calibration/profile mismatch, no provider call for an incompatible
+persisted run, and unchanged prompt/window request identities after extraction.
+Test-only loader/Store substitutes must be explicit; no production default or
+environment profile bypass is added.
+
+### Executed identity and unit closure
+
+The parser implementation bundle is the ordered set
+media/root_evidence.py, media/types.py, vlm/models.py, vlm/parser.py and
+vlm/window.py under the installed Kernel package. Each exact raw member hash
+is included with its path in canonical material with schema_version
+vlm-parser-implementation-contract-v1 and parser_strategy_version
+strict-semantic-pack-v3. Reads are bounded to 4 MiB per file, with no cache or
+caller path. Comments also change this identity. It binds this fixed parser
+dependency set, not stdlib, bytecode substitution or arbitrary runtime mutation.
+
+The normal media policy's timed_speech_calibration_sha256 identifies the accepted
+aggregate CalibrationRecord, while each producer calibration identifies its
+distinct ASR or VAD child. Match provider/service/tool/model identities and
+producer metadata, detector recomputation, timing policies and exact positive
+bounds. Bound conversion must satisfy the exact rational equality between
+microseconds and the source clock; rounding cannot substitute another bound.
+The service request-size value must equal the installed native max_request_bytes,
+as required by the existing native service protocol.
+
+Keep PipelineExecutionProfile v5: no independent parser replay bypass was found.
+Current narrative must inherit the shadow narrative; changing executable parser,
+template, timing or native identity changes shadow identity and its independently
+accepted aggregate record. Persisted media policy already names that aggregate.
+Both resumed VLM and resumed media compare it to the installed aggregate before
+any command/provider work. Separately, the existing media Kernel claim binds
+the installed Registry snapshot. Do not add a duplicate execution-profile version
+without an evidenced missing identity.
+
+The installed media adapter validates the full accepted/profile binding before
+delegating to the existing Kernel Command's StoreAnchored resolver with the exact
+same snapshot. It does not weaken that Command or introduce a private Store write.
