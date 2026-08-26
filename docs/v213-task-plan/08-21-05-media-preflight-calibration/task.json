@@ -21,8 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Physical prelude 49179042 is implemented and independently reviewed (909 combined pure checks): speech-free producer, three committed members/one root Blob, exact bounded readback and no ambiguous redispatch. Physical mapping f0dc57b3, measured native audio facts 3ff0d690, and candidate-local audio request factory 29dc5798 are also reviewed/committed. Audio Source/DTO checks 107 passed plus 250 relevant regressions; mapped factory adds 57 pure cases. Existing native agents now implement after Claude quota exhaustion. BUSY proof and exact failed-Receipt handling are next; local speech child/episode admissions, shadow-local calibration and Runtime activation remain incomplete. Composed Runtime is still full-source. No real model/native codec or PostgreSQL race acceptance claimed.",
+  "notes": "2026-08-26: Physical prelude 49179042 is implemented and independently reviewed (909 combined pure checks). Physical mapping f0dc57b3, measured native audio facts 3ff0d690 and mapped audio factory 29dc5798 are accepted. BUSY proof a4bbb44e passed 195 synthetic/loopback checks with zero skips. Exact terminal Receipt reader passed independent review and 203 pure Store checks; it does not itself authorize retries. Existing native agents now implement local lifecycle, mapped assessment and shadow-local measurement after Claude quota exhaustion. Durable child/episode admissions, shadow-local acceptance and Runtime activation remain incomplete. Composed Runtime is still full-source. No real model/native codec or PostgreSQL race acceptance claimed.",
   "meta": {
-    "next_action": "Implement request-bound pre-dispatch BUSY evidence, exact terminal Receipt reads, durable local speech children and parent-owned admissions; add shadow-local calibration before real desktop Runtime activation"
+    "next_action": "Implement local lifecycle/mapped assessment and shadow-local measurement, then durable speech children, exact chain readers and parent-owned admissions; activate only after local calibration and real desktop validation"
   }
 }

@@ -1,0 +1,12 @@
+{
+  "id": "exact-terminal-command-receipt",
+  "title": "Read exact failed or denied Command receipts before bounded recovery",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Reader accepted after independent native review. Use it in the later BUSY predecessor resolver; actual PostgreSQL acceptance remains on desktop.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}

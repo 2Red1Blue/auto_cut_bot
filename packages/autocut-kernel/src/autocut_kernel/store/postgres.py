@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
-from typing import Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
@@ -140,6 +140,7 @@ from .models import (
     canonical_payload_hash,
     canonical_recipe_scope,
 )
+from .terminal_receipts import PersistedTerminalCommandReceipt
 
 
 class DbCursor(Protocol):
@@ -3295,6 +3296,104 @@ class PostgresRuntimeStore:
                 if command is None
                 else self._read_outcome_by_slot(cursor, UUID(str(command[0])), job_id)
             )
+
+        return self._transaction(operation)
+
+    def read_terminal_command_receipt(
+        self,
+        job: Job,
+        *,
+        command_slot_id: UUID,
+        receipt_id: UUID,
+        expected_request_hash: str,
+        expected_command_name: str,
+        expected_execution_kind: str,
+        max_failure_detail_bytes: int,
+    ) -> PersistedTerminalCommandReceipt:
+        """Read an exact failed/denied Receipt, without a claim or retry decision.
+
+        Detail is bounded logical JSONB text, never the original HTTP bytes.
+        No slot-owned ArtifactSet is allowed, even if its Receipt pointer is null.
+        """
+        if type(job) is not Job or type(job.profile) is not str or job.profile not in (
+            "test", "shadow", "production", "authority",
+        ):
+            raise StoreValidationError("terminal reader requires an exact Job and profile")
+        for name, value in (("command_slot_id", command_slot_id), ("receipt_id", receipt_id)):
+            if type(value) is not UUID:
+                raise StoreValidationError(f"{name} must be an exact UUID")
+        self._validate_sha256(expected_request_hash, "expected_request_hash")
+        for name, value in (("job_key", job.job_key), ("expected_command_name", expected_command_name)):
+            _required_text(value, name)
+            try:
+                value.encode("utf-8", "strict")
+            except UnicodeError as error:
+                raise StoreValidationError(f"{name} must be UTF-8 text") from error
+        if type(expected_execution_kind) is not str or expected_execution_kind not in ("deterministic", "generation"):
+            raise StoreValidationError("expected execution kind is unsupported")
+        if type(max_failure_detail_bytes) is not int or max_failure_detail_bytes <= 0:
+            raise StoreValidationError("max_failure_detail_bytes must be a positive integer")
+
+        def operation(cursor: DbCursor) -> PersistedTerminalCommandReceipt:
+            cursor.execute(
+                """
+                SELECT job.job_key, job.profile, job.job_id, slot.command_slot_id,
+                       receipt.receipt_id, slot.request_hash, slot.command_name,
+                       slot.execution_kind, slot.state, receipt.outcome,
+                       receipt.result_artifact_set_id, receipt.failure_code,
+                       CASE WHEN octet_length(convert_to(receipt.failure_detail::text, 'UTF8')) <= %s
+                            THEN receipt.failure_detail::text ELSE NULL END,
+                       octet_length(convert_to(receipt.failure_detail::text, 'UTF8'))
+                  FROM runtime.jobs AS job
+                  JOIN runtime.command_slots AS slot ON slot.job_id = job.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                 WHERE job.job_key = %s AND job.profile = %s
+                   AND slot.command_slot_id = %s AND receipt.receipt_id = %s
+                   AND slot.request_hash = %s AND slot.command_name = %s
+                   AND slot.execution_kind = %s
+                   AND receipt.outcome IN ('failed', 'denied')
+                   AND slot.state = receipt.outcome
+                   AND receipt.result_artifact_set_id IS NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM runtime.artifact_sets AS owned_set
+                        WHERE owned_set.command_slot_id = slot.command_slot_id
+                   )
+                   AND octet_length(convert_to(receipt.failure_detail::text, 'UTF8')) <= %s
+                """,
+                (max_failure_detail_bytes, job.job_key, job.profile, command_slot_id,
+                 receipt_id, expected_request_hash, expected_command_name,
+                 expected_execution_kind, max_failure_detail_bytes),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise SemanticInputUnavailableError("exact terminal command Receipt is unavailable")
+            if cursor.fetchone() is not None or len(row) != 14:
+                raise SemanticInputIntegrityError("terminal command Receipt is not a unique complete row")
+            (
+                job_key, profile, job_id, slot_id, actual_receipt_id, request_hash,
+                command_name, kind, state, outcome, set_id, code, detail, byte_count,
+            ) = row
+            if (
+                type(job_key) is not str or type(profile) is not str
+                or (job_key, profile, slot_id, actual_receipt_id, request_hash, command_name, kind)
+                != (job.job_key, job.profile, command_slot_id, receipt_id, expected_request_hash,
+                    expected_command_name, expected_execution_kind)
+                or type(state) is not str or state != outcome or set_id is not None
+            ):
+                raise SemanticInputIntegrityError("terminal command Receipt ownership/state differs")
+            if type(detail) is not str or type(byte_count) is not int or not 0 < byte_count <= max_failure_detail_bytes:
+                raise SemanticInputIntegrityError("terminal failure detail exceeds its UTF-8 byte bound or is missing")
+            try:
+                if len(detail.encode("utf-8", "strict")) != byte_count:
+                    raise StoreValidationError("terminal failure detail UTF-8 byte count differs")
+                return PersistedTerminalCommandReceipt(
+                    job, cast(UUID, job_id), cast(UUID, slot_id), cast(UUID, actual_receipt_id),
+                    cast(str, request_hash), cast(str, command_name), cast(CommandExecutionKind, kind),
+                    cast(Literal["failed", "denied"], outcome), cast(str, code), detail,
+                )
+            except (StoreValidationError, UnicodeError) as error:
+                raise SemanticInputIntegrityError("terminal command Receipt payload is invalid") from error
 
         return self._transaction(operation)
 

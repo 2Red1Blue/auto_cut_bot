@@ -269,13 +269,15 @@ the new window envelope into the old full-source decoder.
 Implemented/reviewed checkpoints: six-set physical root/codec (f0a7b5c4),
 certificate support (f2c59f35), claim-owned physical prelude/producer/readback
 (49179042), physical-root mapping (f0dc57b3), native audio facts (3ff0d690), and
-the pure mapped local-audio request factory. These are not complete Runtime
+the pure mapped local-audio request factory, request-bound pre-dispatch BUSY
+proof (a4bbb44e; 195 synthetic/loopback checks, zero skips), and exact terminal
+Receipt reader (203 pure Store checks, independently reviewed). These are not complete Runtime
 activation or real detector/model/DB acceptance.
 
 Claude quota is exhausted; existing native workers now implement in disjoint
 files and cross-review frozen results. Root owns integration, task metadata
-and scoped commits. The next batch closes request-bound pre-dispatch BUSY
-evidence, exact terminal Receipt reads and local speech child persistence,
+and scoped commits. The next batch closes local lifecycle, mapped assessment,
+shadow-local measurements and local speech child persistence,
 then mapped assessment/parent-owned admissions and exact episode readers.
 Runtime wiring follows those APIs. Shadow-local calibration is a separate
 producer/validator slice and cannot be folded into ordinary window Commands.
