@@ -123,3 +123,88 @@ anchor, composition/preflight fails closed before accepting work.
 Pipeline HTTP has no route, request field, environment JSON selector, or
 auto-seeding path for this operation. It can only dereference the composed
 Store-anchored resolver after a fresh preflight claim.
+
+## Independent CalibrationRecord closure
+
+`shadow-calibration-measurement-manifest-v2` is not admissible validator input
+because it drops the canonical `raw_context` that contains the expected ASR/VAD
+anchors. Measurement finalization first upgrades to
+`shadow-calibration-measurement-manifest-v3`; every ordered member persists its
+corpus reference, expected-anchor-reference hash, native invocation, complete
+canonical raw context and immutable raw-response BlobRef. The results member
+contains only the untrusted claimed projection used for comparison.
+
+`ValidateCalibrationRecord@2.1.3` then reads the exact succeeded two-member
+measurement set and raw Blob bytes, rejects v2, reconstructs typed context,
+re-decodes direct SenseVoice/FSMN output, recomputes ordered one-to-one anchor
+matches and positive integer bounds, and compares the claimed projection. It
+performs no provider/native call and does not extend migration 0016 recovery.
+
+Accepted output is one protected four-member ArtifactSet in scope
+`autocut_authority/calibration/shadow_calibration@<profile_version>`:
+
+1. `calibration_record` aggregate;
+2. `calibration_record_member` ASR child;
+3. `calibration_record_member` VAD child;
+4. `calibration_validation_receipt` independent accepted member.
+
+All revisions are 1 and logical IDs are the frozen
+`calibration-record/{aggregate|member/asr|member/vad|validation}/<profile-key>/1`
+forms. Success commits those members, the generic succeeded Command Receipt,
+the terminal authority Job and one immutable anchor in one PostgreSQL
+transaction. Deterministic invalid evidence produces only a denied Receipt;
+unavailable evidence produces only a failed/indeterminate Receipt. No failed
+branch may own an ArtifactSet or anchor.
+
+This authority Job uses an explicit, narrow finalization variant: a succeeded
+`autocut_calibration_validator:<profile-key>` Job is finalized only by its
+matching `ValidateCalibrationRecord@2.1.3` succeeded Receipt, exact four-member
+set and immutable anchor, with no open slots. Ordinary Pipeline Jobs still
+require the existing `FinalizeRunOutcome`/singleton `run_outcome` contract.
+Validator Job key/profile are immutable independently of state. A committed
+failed Receipt replays under its original key; a bounded infrastructure retry
+uses a new command attempt key over the same immutable input binding. Denied
+and failed attempts cannot later acquire a set: deferred checks run from both
+Receipt and set/artifact insertion paths.
+
+The public media facade decodes/verifies candidate and committed bytes but
+cannot manufacture an accepted receipt from caller hashes. Accepted assembly
+is an internal validator seam consuming independently recomputed proof. Record
+identity uses `registry_snapshot_sha256` and `producer_kind`; model IDs are
+exactly `SenseVoiceSmall` and `fsmn-vad`. The bound algorithm hash is
+Kernel-owned, and ASR/VAD producer IDs, detector hashes, model IDs, model hashes
+and child record hashes are pairwise distinct where their roles require it.
+Aggregate and child JSON payloads group shared fields under the closed
+`identity` object; SQL anchor closure must read those exact nested fields, not
+a hand-built flat test-only shape.
+
+Validator input hashes use two explicit encodings. A corpus member's
+`source_blob_reference_sha256` hashes the canonical Store BlobRef object with
+exact keys `object_id`, `content_hash`, `byte_length`, `media_type`.
+`expected_anchor_reference_sha256` hashes
+`{schema_version: shadow-calibration-anchor-set-v1, asr_anchors, vad_anchors}`;
+the reference is not included in its own preimage. The deployment-injected
+shadow profile fixes the ordered corpus, sources, producer identities, clock,
+native service limit and timing policies. Neither persisted context nor a
+caller-selected profile can replace those bindings.
+
+Native observation IDs are local to each source. Accepted record match IDs
+are qualified as `<corpus_member_reference_sha256>/<local_id>` for both
+anchors and observations. This permits ordinary repeated native position IDs
+across different sources while preserving one-to-one pairing within each
+member. The immutable manifest/context retains the original local IDs.
+
+Validation uses explicit deployment-side single-response and total-response
+byte ceilings, independent of the untrusted invocation's response limit. All
+corpus metadata, ordered references, byte budgets and the reconstructed
+measurement request hash must close before the first raw Blob read. These
+operational limits do not grant acceptance or change any measured bound.
+Typed profile instances are rechecked with the strict source decoder and an
+externally supplied contract hash/narrative dependency; their self-declared
+canonical hash is not a substitute for profile grammar validation.
+
+Blob lookup distinguishes an unproved/mismatched owner/reference or corrupted
+bytes (`BlobIntegrityError`, denied) from bytes becoming unavailable after the
+exact owner/metadata claim was established (`BlobUnavailableError`, failed).
+An ambiguous success-commit exception is never converted into a new rejection;
+the subsequent request must reconcile the authoritative receipt.

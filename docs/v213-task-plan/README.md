@@ -31,9 +31,15 @@ authority implementation
   → migration cutover
 ```
 
-`08-25-lock-real-test-authority-profiles` 是当前真实运行的前置任务；它必须先冻结
-Shadow/local-run Profile 的权威源语法，才能进入 Profile decoder、authority lock 和
-真实单集运行。
+`08-25-lock-real-test-authority-profiles` 是当前真实运行的前置任务。Shadow/local-run
+Profile 的源语法和 decoder 已实现；它们仍是 unresolved grammar，不是运行许可。
+`08-21-05-media-preflight-calibration` 已补齐测量 v3、CalibrationRecord、数据库原子
+写入和独立验证命令。相关合并测试为 310 passed、1 skipped（数据库用例已执行）；
+详见该任务的 [分块审查记录](08-21-05-media-preflight-calibration/review-calibration-phase2-slices.md)。
+尚须完成消费者接线、真实 native 校准、权威源/lock 部署和真实 HTTP 单集运行。
+
+当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
+旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。
 
 `08-26-real-e2e-multi-agent-closure` 是真实一集到全剧验收的集成计划；它不能替代各个
 阶段的实现，也不能把 HTTP 503 或 fixture 测试称为真实 Pipeline 成功。

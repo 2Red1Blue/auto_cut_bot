@@ -1,5 +1,59 @@
 # Implementation Plan
 
+## Phase 1 — profile grammar only
+
+Freeze the closed source grammar before authoring any production profile bytes.
+This phase owns only:
+
+- `registry/authority_profiles.py` and its public exports;
+- the three governance JSON Schema mirrors plus `schema-index.yaml`;
+- focused authority tests for closed fields, duplicate keys, fixed identities,
+  non-zero hashes, exact capability matrices and shadow-to-run closure.
+
+It must not create `governance/registry-sources/profiles/*.json`, update the
+authority inventory/lock, touch runtime composition, or invent model/corpus
+hashes.  Passing this phase proves only that the grammar is executable.
+
+## Phase 2 — CalibrationRecord and independent validation
+
+Add one aggregate immutable CalibrationRecord with distinct ASR and VAD child
+record hashes.  Existing timed-speech registry entries continue to receive the
+two child hashes; the run profile references the aggregate record and the
+independent validation Receipt.  The validator must re-read immutable raw
+evidence, re-decode it, recompute integer observations and bounds, and commit
+accepted record/Receipt/anchor atomically through a protected Store owner.
+
+Measurement and validation use different run identities.  Denied or
+indeterminate validation never produces a committed record and cannot be
+referenced by a run profile.
+
+As a Phase-2 entry repair, upgrade the committed measurement manifest from v2
+to v3 so every ordered member persists its complete canonical `raw_context`,
+expected-anchor reference and raw BlobRef.  Validation must reject v2 instead
+of silently trusting its projection.  Persisted candidate construction and
+accepted authority assembly are separate APIs; only the validator command may
+assemble the accepted receipt after raw-byte recomputation.
+
+## Phase 3 — measured sources and authority publication
+
+Only after Phases 1–2 pass may the local machine produce real, non-zero model,
+service, policy, corpus and calibration identities.  Author and publish the
+shadow source through source A, inventory-only B and generated-lock-only C.
+After the accepted record exists, author the successor local-run and Stage-1
+narrative sources and publish a second A→B→C chain.
+
+## Phase 4 — packaged bootstrap, HTTP injection and real local run
+
+Compile the verified Git blobs into an installed authority-context resource,
+bootstrap it through the authority-only Store command, replay the durable
+anchor, then inject the verified snapshot into standard HTTP composition.
+The runtime cannot read Git, `tools/`, the checkout, caller profile data or
+ordinary environment policy.  Run the current drama locally and retain
+Receipts/ArtifactSets/Render/QC evidence while external publication remains
+unreachable.
+
+## Detailed ordered work
+
 1. Define the Kernel-owned closed calibration-only raw-response envelope,
    invocation identity, CalibrationRecord member, independent validation
    receipt and deterministic measurement-bound algorithm.  The first record

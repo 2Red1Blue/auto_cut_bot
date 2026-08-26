@@ -3,3 +3,6 @@
 {"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/prd.md","reason":"Local-only acceptance criteria."}
 {"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/design.md","reason":"Profile state/source/lock/runtime boundary."}
 {"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/implement.md","reason":"Ordered implementation and rollback."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/research/authority-profile-grammar-audit.md","reason":"Reviewer must verify exact grammar, fixed identities and aggregate/child CalibrationRecord closure."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/research/authority-publish-and-test-plan.md","reason":"Reviewer must verify protected authorization and immutable publication/runtime boundaries."}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/research/calibration-record-persistence-design.md","reason":"Reviewer must verify independent recomputation, four-member atomic closure and protected anchor semantics."}

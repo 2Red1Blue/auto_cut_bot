@@ -5,7 +5,7 @@
   "description": "Produce FunASR-backed adaptive ASR/VAD/frame/sample/scene/subtitle evidence for committed Doubao intervals.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "packages/autocut-kernel/src/autocut_kernel/media/**,packages/autocut-kernel/src/autocut_kernel/pipeline/prepare_timed_media_evidence_command.py,auto_cut_bot/pipeline/media_preflight/**,auto_cut_bot/pipeline/runtime/{composition.py,media_preflight_stage.py},deploy/funasr/**,tests/pipeline/test_local_media_preflight.py,tests/pipeline/test_pipeline_runtime_composition.py,tests/media/test_prepare_timed_media_evidence_command.py",
+  "scope": "packages/autocut-kernel/src/autocut_kernel/media/**,packages/autocut-kernel/src/autocut_kernel/store/**,packages/autocut-kernel/src/autocut_kernel/pipeline/{measure_shadow_calibration_command.py,validate_calibration_record_command.py,prepare_timed_media_evidence_command.py},packages/autocut-kernel/migrations/**,auto_cut_bot/pipeline/media_preflight/**,auto_cut_bot/pipeline/runtime/{composition.py,media_preflight_stage.py},deploy/funasr/**,tests/media/**,tests/pipeline/**,tests/store/**",
   "package": "autocut_kernel,auto_cut_bot",
   "priority": "P0",
   "creator": "liuzx",

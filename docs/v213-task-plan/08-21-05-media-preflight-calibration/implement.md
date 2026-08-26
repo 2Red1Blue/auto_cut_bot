@@ -28,3 +28,16 @@
     runtime composition. Pipeline HTTP cannot initiate bootstrap or rotation,
     and runtime startup must fail before accepting work if the injection or
     immutable anchor is absent.
+12. Upgrade the committed shadow measurement manifest to v3 with full canonical
+    raw context and expected anchors; reject v2 for independent validation.
+13. Implement the closed CalibrationRecord aggregate/ASR child/VAD child and
+    independent validation-member grammar. Keep accepted assembly internal to
+    the validator command; prevent reused anchors/observations/evidence hashes.
+14. Add migration 0017 and a dedicated Store writer that atomically commits the
+    exact four members, succeeded generic Receipt, terminal authority Job and
+    immutable anchor. Database tests must execute PostgreSQL and cover missing
+    payload fields, failed-with-set, nonterminal Job, pre-existing protected
+    data, replay/conflict and anchor mutation.
+15. Implement `ValidateCalibrationRecord@2.1.3` as a read-only deterministic
+    command over exact committed measurement references and raw Blob bytes.
+    Invalid and unavailable branches write Receipt-only outcomes.

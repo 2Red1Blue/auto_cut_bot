@@ -64,6 +64,91 @@ validation Job, protected calibration scope, logical record ID and immutable
 anchor. Generic Store writes remain unable to create that protected record or
 anchor.
 
+### Frozen Phase-2 persistence contract
+
+The accepted validation ArtifactSet has exactly four members in this order:
+
+| ordinal | artifact type | role |
+| ---: | --- | --- |
+| 0 | `calibration_record` | aggregate record |
+| 1 | `calibration_record_member` | SenseVoice ASR child record |
+| 2 | `calibration_record_member` | FSMN-VAD child record |
+| 3 | `calibration_validation_receipt` | independent accepted decision |
+
+All members use scope
+`autocut_authority/calibration/shadow_calibration@<profile_version>`, revision
+`1`, and fixed logical IDs beneath
+`calibration-record/{aggregate|member/asr|member/vad|validation}/<profile-key>/1`.
+The aggregate content hash is distinct from both child hashes; the two child
+hashes are distinct from each other and are the values projected into the
+existing ASR/VAD Registry requirements.  The validation member and generic
+Command Receipt are different objects: the member is stable source-bindable
+evidence, while the generic Receipt proves the Store transaction and command
+outcome.
+
+`ValidateCalibrationRecord@2.1.3` runs under authority Job
+`autocut_calibration_validator:<profile-key>`.  Its request contains only exact
+committed references to the prior measurement manifest/results and the locked
+shadow profile identity. It re-reads every immutable raw blob, rejects duplicate
+keys, recomputes alignment and integer bounds, and compares the stored
+projection without trusting it. Accepted writes all four members, the succeeded
+Command Receipt and one immutable `calibration_record_anchors` row in a single
+transaction. Deterministic invalid evidence writes only a denied Receipt;
+unavailable evidence writes only a failed/indeterminate Receipt. Neither branch
+creates an ArtifactSet or anchor.
+
+The validator is read-only with respect to providers, so process loss before a
+commit is safe to replay through the existing command idempotency boundary. It
+must not reuse or extend the native-invocation recovery state from migration
+0016. The anchor has no mutable current pointer and cannot be updated or
+deleted.
+
+Successful calibration authority Jobs use a narrowly scoped finalization
+variant: their exact validator Receipt/four-member set/anchor closes the Job
+with no open slots; ordinary Pipeline Jobs retain the existing
+`FinalizeRunOutcome` requirement. Validator Job key/profile cannot mutate in
+any state. A terminal failed Receipt is replay-only under its key; an explicit
+bounded retry uses a new attempt key over the same immutable inputs. Both
+Receipt-to-set and set-to-Receipt/anchor constraints must hold, including when
+a later transaction tries to attach artifacts to a denied/failed slot.
+Shared aggregate/child identity fields are nested under the closed `identity`
+JSON object, and SQL closure must use that exact shape.
+
+### Frozen independently-validatable measurement input
+
+The current `shadow-calibration-measurement-manifest-v2` is not a sufficient
+validator input: it persists the invocation and raw BlobRef but drops the
+canonical `raw_context` containing the expected ASR/VAD anchors.  A validator
+over v2 could only trust the measurement projection and therefore cannot
+produce an independent receipt.
+
+Before `ValidateCalibrationRecord@2.1.3` is implemented, measurement
+finalization must emit `shadow-calibration-measurement-manifest-v3`.  Each
+ordered manifest member contains exactly the corpus-member reference, expected
+anchor-reference hash, native invocation, complete canonical `raw_context` and
+immutable raw-response BlobRef.  The results member remains the untrusted
+projection used only for equality comparison.  The validator rejects v2 as
+non-validatable, rereads the exact two-member succeeded measurement set and raw
+Blob bytes, reconstructs every typed anchor/context, re-decodes the native
+response and recomputes the integer bounds.  No logical-head lookup or caller
+supplied context is permitted.
+
+The record vocabulary follows this predecessor boundary:
+`registry_snapshot_sha256` names the measured RegistrySet snapshot;
+`producer_kind` is `asr|vad`; model IDs are exactly `SenseVoiceSmall` and
+`fsmn-vad`.  The bound-algorithm identity is a Kernel-owned deterministic hash
+of the frozen aggregation/alignment algorithm, not a caller-selected field.
+ASR and VAD producer IDs, detector hashes, model IDs, model hashes and child
+record hashes must all differ.
+
+The pure media facade may decode and verify candidate/committed record bytes,
+but it must not offer a public function that manufactures an accepted
+validation receipt from caller-provided hashes.  Accepted assembly is an
+internal validator-command seam and consumes only independently recomputed
+proof material.  This API boundary prevents accidental self-certification;
+the protected Store command and PostgreSQL transaction remain the actual
+authority boundary.
+
 ## Shadow measurement recovery
 
 Native calibration is not treated as a pure retryable function after a process
