@@ -35,7 +35,12 @@ from autocut_kernel.pipeline.build_narrative_graph_request import (
 from autocut_kernel.registry.installed_local_run import LocalRunResource
 from autocut_kernel.semantic_chain.draft_provider import DraftProviderPort
 from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
-from autocut_kernel.source_manifest import SourceOperationPolicy, identity_frame_index
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
+from autocut_kernel.source_manifest import (
+    SourceOperationPolicy,
+    SourceOperationPurpose,
+    identity_frame_index,
+)
 from autocut_kernel.store import (
     ArtifactScope,
     BlobRef,
@@ -159,7 +164,7 @@ def _hash(digit: str) -> str:
     return "sha256:" + digit * 64
 
 
-def _bundle() -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
+def _bundle(*, purposes: tuple[SourceOperationPurpose, ...] = ("semantic_analysis",)) -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
     """Build one strict-decoder-compatible committed-source test record."""
     job = Job(RUN_ID, "test")
     source = SeriesSource("episode-000.mp4", "source-000", _hash("1"), 4_096)
@@ -232,7 +237,7 @@ def _bundle() -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
     )
     prepared = PreparedSeriesSources(
         SeriesSourceCensus(
-            SourceOperationPolicy("fixture-authority", "fixture-series", 1, ("semantic_analysis",)),
+            SourceOperationPolicy("fixture-authority", "fixture-series", 1, purposes),
             "all_or_nothing", (source,),
         ),
         (PreparedSourceEpisode(probe, proxy, manifest, manifest_set),),
@@ -250,7 +255,8 @@ def _bundle() -> tuple[PersistedPreparedSources, dict[UUID, bytes]]:
     )
 
 
-def _context(*, stage1_policy: Stage1CommandPolicy | None = None) -> PipelineStageContext:
+def _context(*, stage1_policy: Stage1CommandPolicy | None = None,
+             stage2_policy: Stage2CommandPolicy | None = None) -> PipelineStageContext:
     base = _profile()
     policy = base.build_stage1_command_policy() if stage1_policy is None else stage1_policy
     profile = PipelineExecutionProfile.from_policies(
@@ -259,6 +265,7 @@ def _context(*, stage1_policy: Stage1CommandPolicy | None = None) -> PipelineSta
         retry_policy=base.to_generation_retry_policy(),
         materialization_limits=base.to_materialization_limits(),
         stage1_policy=policy,
+        stage2_policy=base.build_stage2_command_policy() if stage2_policy is None else stage2_policy,
     )
     return PipelineStageContext(
         RUN_ID,

@@ -220,7 +220,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime is not None
     assert runtime.authority_profile_resolver is fake_installed_loader
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v6"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v7"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
@@ -238,6 +238,9 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime.execution_profile.build_stage1_command_policy().canonical_hash == (
         fake_installed_loader.resource.narrative.reference.stage1_command_policy_sha256
     )
+    assert runtime.execution_profile.build_stage2_command_policy() == (
+        fake_installed_loader.resource.local_run.stage2_command_policy
+    )
 
 
 def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and_media(
@@ -247,6 +250,7 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
 
     from auto_cut_bot.pipeline.runtime import composition
     from auto_cut_bot.pipeline.runtime.stage1_narrative_stage import Stage1NarrativePipelineStage
+    from auto_cut_bot.pipeline.runtime.stage2_portfolio_stage import Stage2PortfolioPipelineStage
     from auto_cut_bot.pipeline.vlm import ark_responses_transport
     from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
 
@@ -258,7 +262,7 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
     runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
     assert runtime is not None
     registry = runtime.worker._runner._registry
-    assert registry.stage_names == ("source_prep", "vlm", "stage1_narrative", "media_preflight")
+    assert registry.stage_names == ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
     for name in registry.stage_names:
         assert runtime.worker._reconciler._require(name) is registry.require(name)
     stage = registry.require("stage1_narrative")
@@ -274,6 +278,18 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
     assert provider._transport._config.max_stream_bytes == (
         policy.draft_policy.max_response_bytes
     )
+    from autocut_kernel.pipeline.compile_story_portfolio_command import CompileStoryPortfolioCommand
+    portfolio = registry.require("stage2_portfolio")
+    assert type(portfolio) is Stage2PortfolioPipelineStage
+    assert type(portfolio._command) is CompileStoryPortfolioCommand
+    assert portfolio._installed_profile is fake_installed_loader.resource
+    assert portfolio._store is runtime.authority_store
+    portfolio_provider = portfolio._command._generation._provider
+    portfolio_policy = runtime.execution_profile.build_stage2_command_policy()
+    assert type(portfolio_provider) is DoubaoDraftProvider and portfolio_provider is not provider
+    assert portfolio_provider.strategy_version == portfolio_policy.generation.adapter_strategy_version
+    assert portfolio_provider._max_request_bytes == portfolio_policy.max_prompt_bytes
+    assert portfolio_provider._transport._config.max_stream_bytes == portfolio_policy.draft_policy.max_response_bytes
 
 
 @pytest.mark.parametrize("mutation", ("vlm-model", "vlm-parameters", "media-model", "request-limit"))

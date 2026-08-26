@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from autocut_kernel.semantic_chain.candidate_catalog import CandidateCatalogPolicy
 from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
 from autocut_kernel.semantic_chain.stage1_command_policy import (
@@ -7,6 +8,8 @@ from autocut_kernel.semantic_chain.stage1_command_policy import (
     Stage1GenerationPolicy,
 )
 from autocut_kernel.semantic_chain.stage1_draft import Stage1DraftPolicy
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
+from autocut_kernel.semantic_chain.story_design_draft import StoryDesignDraftPolicy
 from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 
@@ -126,11 +129,49 @@ def stage1_command_policy() -> Stage1CommandPolicy:
     )
 
 
+def stage2_command_policy() -> Stage2CommandPolicy:
+    """Explicit synthetic Stage 2 policy, never an installed authority source."""
+    from tests.semantic_chain.test_story_design_models import _job_policy, _story_policy
+
+    return Stage2CommandPolicy(
+        artifact_revision=1,
+        generation=Stage1GenerationPolicy(
+            provider_id="doubao-ark-text-responses-stream",
+            model_id="synthetic-stage2-model",
+            prompt_version="synthetic-stage2-prompt-v1",
+            prompt_template="Build a portfolio from the admitted semantic inputs.",
+            adapter_strategy_version="doubao-ark-text-responses-stream-v1",
+            max_output_tokens=1024,
+            temperature="0.5",
+        ),
+        max_prompt_bytes=64_000,
+        draft_policy=StoryDesignDraftPolicy(
+            max_response_bytes=64_000,
+            max_json_depth=16,
+            max_proposals=8,
+            max_material_requirements_per_proposal=8,
+            max_total_material_requirements=16,
+            max_references_per_field=16,
+            max_total_references=64,
+            max_genre_tags=8,
+            max_text_characters=512,
+            max_total_text_characters=8_192,
+        ),
+        candidate_policy=CandidateCatalogPolicy(
+            "candidate-catalog-v1", "0.5", ("reveal_strength",),
+        ),
+        job_policy=_job_policy(),
+        story_policy=_story_policy(),
+        retry_policy=GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 2, (1,)),
+    )
+
+
 def execution_profile(
     *,
     model_id: str = "doubao-seed-2-1-pro-260628",
     media_policy: LocalMediaPreflightPolicy | None = None,
     stage1_policy: Stage1CommandPolicy | None = None,
+    stage2_policy: Stage2CommandPolicy | None = None,
 ) -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(model_id=model_id),
@@ -147,4 +188,5 @@ def execution_profile(
             staging_quota_bytes=16 * 1024 * 1024,
         ),
         stage1_policy=stage1_command_policy() if stage1_policy is None else stage1_policy,
+        stage2_policy=stage2_command_policy() if stage2_policy is None else stage2_policy,
     )

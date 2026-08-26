@@ -123,6 +123,7 @@ def _historical_execution_profile(
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = schema_version
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -146,6 +147,7 @@ def _v4_execution_profile() -> PipelineExecutionProfile:
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v4"
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     del mapping["materialization_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
@@ -154,6 +156,14 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v5"
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
+    return PipelineExecutionProfile.from_mapping(mapping)
+
+
+def _v6_execution_profile() -> PipelineExecutionProfile:
+    mapping = _execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v6"
+    del mapping["stage2_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -216,7 +226,7 @@ def test_0019_sql_guard_closes_every_policy_object(path, mutation) -> None:
     for key in path:
         target = target[key]
     if mutation == "missing":
-        # Keep v6 so the policy CHECK, not historical-version trigger, denies.
+        # Keep v7 so the policy CHECK, not historical-version trigger, denies.
         target.pop("stage1_command_policy" if not path else next(iter(target)))
     else:
         target["unregistered"] = True
@@ -225,35 +235,36 @@ def test_0019_sql_guard_closes_every_policy_object(path, mutation) -> None:
             _insert_profile_for_guard(cursor, mapping)
 
 
-def test_0019_sql_null_cannot_escape_closed_policy_guard() -> None:
+def test_current_sql_null_cannot_escape_closed_policy_guard() -> None:
     assert DSN is not None
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT runtime.stage1_command_policy_shape_is_valid(NULL)")
         assert cursor.fetchone() == (False,)
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v6 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v7 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, None)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5])
-def test_0019_sql_guard_rejects_new_old_profiles_even_with_valid_old_policy(version) -> None:
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6])
+def test_current_sql_guard_rejects_new_old_profiles_even_with_valid_old_policy(version) -> None:
     assert DSN is not None
     profile = (
         _historical_execution_profile(f"pipeline-execution-profile-v{version}")
-        if version <= 3 else _v4_execution_profile() if version == 4 else _v5_execution_profile()
+        if version <= 3 else _v4_execution_profile() if version == 4
+        else _v5_execution_profile() if version == 5 else _v6_execution_profile()
     )
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v6 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v7 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, profile.to_mapping())
 
 
-def test_0019_sql_guard_accepts_v6_but_freezes_complete_policy_and_hash() -> None:
+def test_current_sql_guard_accepts_v7_but_freezes_complete_policy_and_hash() -> None:
     assert DSN is not None
     original = _execution_profile()
     changed = _execution_profile(stage1_revision=2)
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         run_id = _insert_profile_for_guard(cursor, original.to_mapping())
         cursor.execute(
-            "SELECT runtime.execution_profile_semantic_v6_is_valid(%s::jsonb, 'accepted')",
+            "SELECT runtime.execution_profile_semantic_v7_is_valid(%s::jsonb, 'accepted')",
             (original.canonical_json,),
         )
         assert cursor.fetchone() == (True,)
@@ -392,6 +403,90 @@ def test_0019_migration_rolls_back_active_v5_then_preserves_terminal_history(act
                 (run_id,),
             )
         assert read_frozen_history() == terminal_history
+
+
+def test_0020_migration_rejects_active_v6_and_keeps_terminal_history_read_only() -> None:
+    """Remote-only upgrade coverage for the v7 boundary; never run without DSN."""
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+    migration_sql = (migration_root / "0020_stage2_pipeline_profile.sql").read_text(encoding="utf-8")
+    profile = _v6_execution_profile()
+
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+        for migration in sorted(migration_root.glob("*.sql")):
+            if migration.name >= "0020_stage2_pipeline_profile.sql":
+                break
+            cursor.execute(migration.read_text(encoding="utf-8"))
+        with connection.transaction():
+            run_id = _insert_profile_for_guard(cursor, profile.to_mapping())
+
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        active_history = cursor.fetchone()
+        with pytest.raises(psycopg.errors.RaiseException, match="0020 refuses accepted/running pre-v7 runs"):
+            cursor.execute(migration_sql)
+        connection.rollback()
+        cursor.execute("SELECT to_regprocedure('runtime.stage2_command_policy_shape_is_valid(jsonb)')")
+        assert cursor.fetchone() == (None,)
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        assert cursor.fetchone() == active_history
+
+        with connection.transaction():
+            cursor.execute(
+                """UPDATE runtime.pipeline_runs SET state = 'failed', version = version + 1,
+                    updated_at = transaction_timestamp() WHERE run_id = %s""",
+                (run_id,),
+            )
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        terminal_history = cursor.fetchone()
+        assert json.loads(terminal_history[0]) == profile.to_mapping()
+
+        cursor.execute(migration_sql)
+        cursor.execute(
+            """SELECT runtime.execution_profile_semantic_v7_is_valid(execution_profile, state)
+                 FROM runtime.pipeline_runs WHERE run_id = %s""",
+            (run_id,),
+        )
+        assert cursor.fetchone() == (True,)
+        with pytest.raises(psycopg.errors.RaiseException, match="historical pre-v7 execution profile rows are read-only"):
+            cursor.execute(
+                "UPDATE runtime.pipeline_runs SET execution_profile_hash = execution_profile_hash WHERE run_id = %s",
+                (run_id,),
+            )
+        cursor.execute(
+            "SELECT execution_profile::text, execution_profile_hash FROM runtime.pipeline_runs WHERE run_id = %s",
+            (run_id,),
+        )
+        assert cursor.fetchone() == terminal_history
+
+        valid = _execution_profile().to_mapping()
+        invalid_candidate = json.loads(json.dumps(valid))
+        invalid_candidate["stage2_command_policy"]["candidate_policy"]["minimum_confidence"] = None
+        invalid_range = json.loads(json.dumps(valid))
+        invalid_range["stage2_command_policy"]["job_policy"]["proposal_count"]["min"] = None
+        invalid_unknown = json.loads(json.dumps(valid))
+        invalid_unknown["stage2_command_policy"]["story_policy"]["unexpected"] = True
+        for mapping, expected in (
+            (valid, True),
+            (invalid_candidate, False),
+            (invalid_range, False),
+            (invalid_unknown, False),
+        ):
+            cursor.execute(
+                "SELECT runtime.stage2_command_policy_shape_is_valid(%s::jsonb)",
+                (json.dumps(mapping["stage2_command_policy"]),),
+            )
+            assert cursor.fetchone() == (expected,)
 
 
 def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> None:
@@ -545,6 +640,7 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
         "source_prep",
         "vlm",
         "stage1_narrative",
+        "stage2_portfolio",
         "media_preflight",
     )
     assert await scheduler.pending_run_ids() == (first.snapshot.run_id,)
@@ -684,6 +780,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
     del mapping["media_preflight_policy_hash"]
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     v2 = PipelineExecutionProfile.from_mapping(mapping)
 
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -694,7 +791,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             try:
                 with pytest.raises(
                     psycopg.errors.RaiseException,
-                    match="new pre-v6 execution profile rows are forbidden",
+                    match="new pre-v7 execution profile rows are forbidden",
                 ):
                     cursor.execute(
                         """
@@ -808,17 +905,29 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
         expected_version=narrative.version,
         lease_id="worker-lease-3",
     )
-    media = await restarted.claim_next_pending(
+    portfolio = await restarted.claim_next_pending(
         run_id,
         expected_version=0,
         lease_id="worker-lease-4",
+    )
+    assert portfolio is not None and portfolio.stage == "stage2_portfolio"
+    await restarted.record_result(
+        run_id,
+        result=PipelineStageResult(portfolio.command_id, "succeeded", uuid4()),
+        expected_version=portfolio.version,
+        lease_id="worker-lease-4",
+    )
+    media = await restarted.claim_next_pending(
+        run_id,
+        expected_version=0,
+        lease_id="worker-lease-5",
     )
     assert media is not None and media.stage == "media_preflight"
     await restarted.record_result(
         run_id,
         result=PipelineStageResult(media.command_id, "succeeded", uuid4()),
         expected_version=media.version,
-        lease_id="worker-lease-4",
+        lease_id="worker-lease-5",
     )
     completed = await restarted.read_run(run_id)
     assert completed is not None and completed.status == "failed"
@@ -862,7 +971,7 @@ async def test_predecessor_denial_atomically_blocks_vlm_and_terminates_run(
     assert snapshot.commands[1].receipt_id is None
     assert snapshot.commands[1].blocking_command_id == source.command_id
     assert tuple(command.stage for command in snapshot.commands[1:]) == (
-        "vlm", "stage1_narrative", "media_preflight",
+        "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight",
     )
     assert all(
         command.status == "blocked"
@@ -1726,6 +1835,15 @@ async def test_real_http_run_status_resume_survive_app_restart(
             },
             {
                 "command_id": status_body["commands"][3]["command_id"],
+                "stage": "stage2_portfolio",
+                "status": "pending",
+                "receipt_id": None,
+                "version": 0,
+                "lease_id": None,
+                "blocking_command_id": None,
+            },
+            {
+                "command_id": status_body["commands"][4]["command_id"],
                 "stage": "media_preflight",
                 "status": "pending",
                 "receipt_id": None,

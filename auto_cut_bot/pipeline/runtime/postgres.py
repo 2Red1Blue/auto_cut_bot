@@ -194,6 +194,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 "claim_run request_hash does not bind the canonical request"
             )
         execution_profile.build_stage1_command_policy()
+        execution_profile.build_stage2_command_policy()
         source_kind = "root" if request.source_root is not None else "reference"
         source_value = request.source_root or request.source_reference
         if source_value is None:
@@ -257,9 +258,13 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                         (%s, %s, 0, 'source_prep', 'pending', 0),
                         (%s, %s, 1, 'vlm', 'pending', 0),
                         (%s, %s, 2, 'stage1_narrative', 'pending', 0),
-                        (%s, %s, 3, 'media_preflight', 'pending', 0)
+                        (%s, %s, 3, 'stage2_portfolio', 'pending', 0),
+                        (%s, %s, 4, 'media_preflight', 'pending', 0)
                     """,
-                    (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
+                    (
+                        uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                        uuid4(), run_id, uuid4(), run_id,
+                    ),
                 )
                 self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)
@@ -514,14 +519,15 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                  WHERE candidate.run_id = %s AND candidate.state = 'pending'
                    AND candidate.version = %s
                    AND (
-                       candidate.stage NOT IN ('vlm', 'stage1_narrative')
+                       candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio')
                        OR EXISTS (
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v6'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v7'
                               AND profile_run.execution_profile ? 'stage1_command_policy'
+                              AND profile_run.execution_profile ? 'stage2_command_policy'
                        )
                    )
                    AND (
@@ -530,13 +536,17 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v6'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v7'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy_hash'
                               AND profile_run.execution_profile
                                   ? 'materialization_limits'
+                              AND profile_run.execution_profile
+                                  ? 'stage1_command_policy'
+                              AND profile_run.execution_profile
+                                  ? 'stage2_command_policy'
                        )
                    )
                    AND NOT EXISTS (

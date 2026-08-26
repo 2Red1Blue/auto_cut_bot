@@ -76,7 +76,11 @@ from auto_cut_bot.pipeline.source_prep import (
 from auto_cut_bot.pipeline.source_prep.models import SeriesSource, SeriesSourceCensus
 from auto_cut_bot.pipeline.source_prep.probe import SourceMediaProbe
 from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy
-from tests.pipeline.runtime_profile_fixture import media_preflight_policy, stage1_command_policy
+from tests.pipeline.runtime_profile_fixture import (
+    media_preflight_policy,
+    stage1_command_policy,
+    stage2_command_policy,
+)
 
 RUN_ID = "pipeline_run_" + "a" * 32
 
@@ -808,6 +812,7 @@ def _profile() -> PipelineExecutionProfile:
             staging_quota_bytes=16 * 1024 * 1024,
         ),
         stage1_policy=stage1_command_policy(),
+        stage2_policy=stage2_command_policy(),
     )
 
 
@@ -816,6 +821,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     mapping["schema_version"] = "pipeline-execution-profile-v3"
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -825,7 +831,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     }
     historical = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="profile v6"):
+    with pytest.raises(PipelineRunValidationError, match="profile v7"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="authorized-source"),

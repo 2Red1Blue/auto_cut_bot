@@ -149,6 +149,7 @@ def _v2_execution_profile() -> PipelineExecutionProfile:
     del mapping["media_preflight_policy_hash"]
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -168,6 +169,7 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     mapping = execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v5"
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -288,6 +290,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
             retry_policy=profile.to_generation_retry_policy(),
             materialization_limits=profile.to_materialization_limits(),
             stage1_policy=profile.build_stage1_command_policy(),
+            stage2_policy=profile.build_stage2_command_policy(),
         )
         == profile
     )
@@ -363,6 +366,7 @@ def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -
             retry_policy=profile.to_generation_retry_policy(),
             materialization_limits=profile.to_materialization_limits(),
             stage1_policy=profile.build_stage1_command_policy(),
+            stage2_policy=profile.build_stage2_command_policy(),
         )
 
 
@@ -841,7 +845,7 @@ async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(oper
     snapshot = replace(_snapshot(command), execution_profile=_v5_execution_profile())
     store = NoStore()
     execute_stage, reconcile_stage = FakeStage(), FakeReconcileStage()
-    with pytest.raises(PipelineRunValidationError, match="profile v6"):
+    with pytest.raises(PipelineRunValidationError, match="profile v6 or v7"):
         if operation == "execute":
             runner = PipelineStageRunner(
                 PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)), store,

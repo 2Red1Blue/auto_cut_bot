@@ -473,7 +473,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
         execution_profile=profile,
     )
     assert tuple(command.stage for command in claimed.snapshot.commands) == (
-        "source_prep", "vlm", "stage1_narrative", "media_preflight",
+        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight",
     )
 
     async def claim_context() -> PipelineStageContext:
@@ -536,6 +536,14 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
             narrative_context,
             PipelineStageResult(narrative_context.command.command_id, "succeeded", uuid4()),
         )
+        portfolio_context = await claim_context()
+        assert portfolio_context.command.stage == "stage2_portfolio"
+        # This remote test covers only media replay/control-plane sequencing.
+        # No Kernel Stage 2 portfolio members or production authority are minted.
+        await project(
+            portfolio_context,
+            PipelineStageResult(portfolio_context.command.command_id, "succeeded", uuid4()),
+        )
 
     if scenario == "forged-pack":
         _forge_semantic_pack_with_recomputed_member_and_set_hash()
@@ -546,7 +554,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
         media_context = PipelineStageContext(
             run_id,
             request,
-            snapshot.commands[3],
+            snapshot.commands[4],
             snapshot.execution_profile,
         )
     else:
@@ -606,7 +614,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     )
     restarted_snapshot = await restarted_run_store.read_run(claimed.snapshot.run_id)
     assert restarted_snapshot is not None
-    persisted_command = restarted_snapshot.commands[3]
+    persisted_command = restarted_snapshot.commands[4]
     assert persisted_command.stage == "media_preflight"
     assert persisted_command.status == "running"
     changed_environment = _fixture_policy(asr_model_revision="changed-after-restart")
@@ -661,6 +669,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     mapping["schema_version"] = "pipeline-execution-profile-v3"
     del mapping["materialization_limits"]
     del mapping["stage1_command_policy"]
+    del mapping["stage2_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -670,7 +679,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     }
     v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v6"):
+    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v7"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),

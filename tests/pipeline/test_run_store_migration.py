@@ -17,6 +17,9 @@ MATERIALIZATION_PROFILE_MIGRATION = Path(
 STAGE1_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0019_stage1_pipeline_profile.sql"
 )
+STAGE2_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0020_stage2_pipeline_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -142,7 +145,7 @@ def test_stage1_profile_migration_closes_v6_and_preserves_terminal_history() -> 
     assert "run_state IN ('succeeded', 'denied', 'failed')" in sql
     assert "historical pre-v6 execution profile rows are read-only" in sql
     assert "new pre-v6 execution profile rows are forbidden" in sql
-    assert "value ?& fields AND value - fields = '{}'::jsonb" in sql
+    assert "runtime.stage1_policy_closed_object" in sql
     assert ") IS TRUE);" in sql
     for field in (
         "artifact_revision", "generation", "draft_policy", "coverage_policy",
@@ -158,7 +161,35 @@ def test_stage1_profile_migration_closes_v6_and_preserves_terminal_history() -> 
     assert "INSERT INTO runtime.pipeline_commands" not in sql
 
 
-def test_new_run_sql_has_ordered_stage1_and_current_profile_claim_predicates() -> None:
+def test_stage2_profile_migration_closes_v7_and_preserves_terminal_history() -> None:
+    """Static SQL contract only: this does not claim PostgreSQL execution."""
+    sql = STAGE2_PROFILE_MIGRATION.read_text(encoding="utf-8")
+    assert "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE" in sql
+    assert "0020 refuses accepted/running pre-v7 runs" in sql
+    assert "WHERE state IN ('accepted', 'running')" in sql
+    assert "runtime.execution_profile_semantic_v7_is_valid" in sql
+    assert "runtime.stage2_command_policy_shape_is_valid" in sql
+    assert "profile_value - 'stage2_command_policy'" in sql
+    assert "runtime.execution_profile_semantic_v6_is_valid(profile_value, run_state)" in sql
+    assert "run_state IN ('succeeded', 'denied', 'failed')" in sql
+    assert "historical pre-v7 execution profile rows are read-only" in sql
+    assert "new pre-v7 execution profile rows are forbidden" in sql
+    assert "runtime.stage1_policy_closed_object" in sql
+    for field in (
+        "artifact_revision", "generation", "max_prompt_bytes", "draft_policy",
+        "candidate_policy", "job_policy", "story_policy", "retry_policy",
+        "max_json_depth", "max_material_requirements_per_proposal",
+        "max_total_material_requirements", "required_measurement_kinds",
+        "story_design_policy_sha256", "selection_strategy", "proposal_count",
+        "target_duration_seconds", "source_constraints", "authorization_purpose",
+        "allowed_source_refs", "forbidden_source_refs", "minimum_confidence",
+    ):
+        assert f"'{field}'" in sql
+    assert "UPDATE runtime.pipeline_runs" not in sql
+    assert "INSERT INTO runtime.pipeline_commands" not in sql
+
+
+def test_new_run_sql_has_ordered_stage2_and_current_profile_claim_predicates() -> None:
     """Inspect the actual emitted-query source; never open a DB connection."""
     from inspect import getsource
 
@@ -167,11 +198,14 @@ def test_new_run_sql_has_ordered_stage1_and_current_profile_claim_predicates() -
     source = getsource(PostgresPipelineRunStore)
     start = source.index("INSERT INTO runtime.pipeline_commands")
     insert = source[start:source.index("self._insert_outbox", start)]
-    for ordinal, stage in enumerate(("source_prep", "vlm", "stage1_narrative", "media_preflight")):
+    for ordinal, stage in enumerate(
+        ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")
+    ):
         assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
-    assert insert.count("uuid4(), run_id") == 4
-    assert "candidate.stage NOT IN ('vlm', 'stage1_narrative')" in source
-    assert "->> 'schema_version' = 'pipeline-execution-profile-v6'" in source
+    assert insert.count("uuid4(), run_id") == 5
+    assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio')" in source
+    assert "->> 'schema_version' = 'pipeline-execution-profile-v7'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source
+    assert "profile_run.execution_profile ? 'stage2_command_policy'" in source
     assert "predecessor.ordinal < candidate.ordinal" in source
     assert "predecessor.state <> 'succeeded'" in source
