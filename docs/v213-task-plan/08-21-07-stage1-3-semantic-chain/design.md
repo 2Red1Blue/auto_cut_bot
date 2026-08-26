@@ -1,5 +1,10 @@
 # Design
 
+Current Stage 2 decisions and implementation ownership are frozen in
+[Stage 2 production wave](stage2-production-wave.md). Its v3 candidate projection,
+acyclic member IDs, conservative coarse duration and exact joint assignment
+correct the older enrichment/scoring examples; physical safety remains Stage 4.
+
 ## 实现策略：选择性重写，不继续补丁
 
 当前 Stage 1–3 prototype 没有真实 Runtime consumer，Stage 2/3 的 production
@@ -88,7 +93,7 @@ contract/model、迁移全部 consumer，并增加跨层回归测试。临时 sh
 ```text
 Committed Source/Window/VLM semantic packs
   → BuildNarrativeGraph (draft → deterministic compiler → coverage admission)
-  → CompileStoryPortfolio (candidate enrichment/proposal drafts → local feasibility compiler)
+  → CompileStoryPortfolio (committed candidate projection + proposal draft → local feasibility compiler)
   → BuildEditorialBlueprint per frozen Story (context closure → semantic feasibility admission)
 ```
 
