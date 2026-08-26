@@ -8,12 +8,9 @@ import base64
 import hashlib
 import json
 import os
-from collections.abc import Mapping
 from dataclasses import replace
-from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
-import httpx
 from autocut_kernel.media import (
     Coverage,
     CoverageOutcome,
@@ -32,6 +29,7 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256
 
+from .http_transport import FileHttpTransport, HttpxFileTransport
 from .models import (
     LocalMediaEvidenceError,
     LocalMediaPolicyError,
@@ -46,60 +44,6 @@ from .speech_port import (
     TimedSpeechProducerIdentity,
     TimedSpeechTimingErrorBound,
 )
-
-
-class _Transport(Protocol):
-    def post(
-        self,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        body_path: Path,
-        timeout_seconds: int,
-        max_response_bytes: int,
-    ) -> tuple[int, bytes]: ...
-
-
-class _HttpxTransport:
-    def post(
-        self,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        body_path: Path,
-        timeout_seconds: int,
-        max_response_bytes: int,
-    ) -> tuple[int, bytes]:
-        try:
-            with (
-                body_path.open("rb") as body,
-                httpx.stream(
-                    "POST",
-                    url,
-                    headers=dict(headers),
-                    content=body,
-                    timeout=float(timeout_seconds),
-                    follow_redirects=False,
-                ) as response,
-            ):
-                raw = bytearray()
-                for chunk in response.iter_bytes():
-                    if len(raw) + len(chunk) > max_response_bytes:
-                        raise LocalMediaToolError("response exceeded byte bound")
-                    raw.extend(chunk)
-            return response.status_code, bytes(raw)
-        except httpx.TimeoutException as e:
-            raise LocalMediaToolError(
-                "timed speech result is unknown after timeout",
-                code="TIMED_SPEECH_RESULT_UNKNOWN",
-            ) from e
-        except LocalMediaToolError:
-            raise
-        except (httpx.HTTPError, OSError) as e:
-            raise LocalMediaToolError(
-                "timed speech result is unknown after transport failure",
-                code="TIMED_SPEECH_RESULT_UNKNOWN",
-            ) from e
 
 
 def _obj(v: object, fields: set[str], name: str) -> dict[str, object]:
@@ -147,9 +91,9 @@ def _sha(v: bytes) -> str:
 
 class FunASRHttpTimedSpeechEvidencePort:
     def __init__(
-        self, *, transport: _Transport | None = None, shared_token: str | None = None
+        self, *, transport: FileHttpTransport | None = None, shared_token: str | None = None
     ) -> None:
-        self._transport = transport or _HttpxTransport()
+        self._transport = transport or HttpxFileTransport()
         token = shared_token if shared_token is not None else os.environ.get("FUNASR_SHARED_TOKEN")
         if type(token) is not str or not token:  # noqa: E721
             raise LocalMediaPolicyError("FUNASR_SHARED_TOKEN must be non-empty")
