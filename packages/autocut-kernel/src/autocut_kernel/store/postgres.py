@@ -21,7 +21,11 @@ from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
-from ..media import Stage4PredecessorError, decode_timed_speech_profile_registry_entry
+from ..media import (
+    CalibrationRecordError,
+    Stage4PredecessorError,
+    decode_timed_speech_profile_registry_entry,
+)
 from ..media.calibration_record import (
     CALIBRATION_VALIDATOR_COMMAND,
     CalibrationRecordArtifactMember,
@@ -3320,16 +3324,41 @@ class PostgresRuntimeStore:
 
     def read_calibration_record_anchor(
         self,
-        binding: CalibrationValidationBinding,
         aggregate_reference: CommittedArtifactMemberReference,
         validation_reference: CommittedArtifactMemberReference,
+        *,
+        expected_profile_source_sha256: str,
+        expected_registry_snapshot_sha256: str,
     ) -> PersistedCalibrationRecordAnchor:
-        """Resolve only the caller's exact accepted aggregate/validation references."""
-        if type(binding) is not CalibrationValidationBinding:  # noqa: E721
-            raise StoreValidationError("anchor reader requires an exact validation binding")
+        """Resolve a consumer's exact accepted refs without requiring writer inputs."""
+        if any(type(ref) is not CommittedArtifactMemberReference for ref in (aggregate_reference, validation_reference)):  # noqa: E721
+            raise StoreValidationError("anchor reader requires exact committed member references")
+        scope = aggregate_reference.scope
+        try:
+            CalibrationRecordScope(scope.namespace, scope.kind, scope.key)
+        except CalibrationRecordError as error:
+            raise StoreValidationError("anchor references require the protected calibration scope") from error
+        if (
+            aggregate_reference.receipt_id != validation_reference.receipt_id
+            or aggregate_reference.artifact_set_id != validation_reference.artifact_set_id
+            or scope != validation_reference.scope
+            or any(
+                (ref.member_ordinal, ref.artifact_type, ref.logical_id, ref.revision)
+                != (ordinal, artifact_type, f"calibration-record/{role}/{scope.key}/1", 1)
+                for ref, ordinal, artifact_type, role in (
+                    (aggregate_reference, 0, "calibration_record", "aggregate"),
+                    (validation_reference, 3, "calibration_validation_receipt", "validation"),
+                )
+            )
+        ):
+            raise StoreValidationError("anchor references must name the exact aggregate/validation pair")
+        self._validate_sha256(expected_profile_source_sha256, "expected profile source hash")
+        self._validate_sha256(expected_registry_snapshot_sha256, "expected registry snapshot hash")
 
         def operation(cursor: DbCursor) -> PersistedCalibrationRecordAnchor:
-            anchor = self._read_calibration_record_anchor(cursor, binding)
+            anchor = self._read_calibration_record_anchor_closure(
+                cursor, scope.key, expected_profile_source_sha256, expected_registry_snapshot_sha256
+            )
             if anchor.aggregate.reference != aggregate_reference or anchor.validation.reference != validation_reference:
                 raise StoreValidationError("anchor does not name the expected exact accepted members")
             return anchor
@@ -3339,6 +3368,24 @@ class PostgresRuntimeStore:
     def _read_calibration_record_anchor(
         self, cursor: DbCursor, binding: CalibrationValidationBinding
     ) -> PersistedCalibrationRecordAnchor:
+        """Writer replay additionally proves the complete immutable request binding."""
+        anchor = self._read_calibration_record_anchor_closure(
+            cursor, binding.profile_key, binding.profile_source_sha256,
+            binding.registry_snapshot_sha256, expected_request_hash=binding.request_hash,
+        )
+        self._validate_calibration_record_binding(binding, anchor.record)
+        return anchor
+
+    def _read_calibration_record_anchor_closure(
+        self,
+        cursor: DbCursor,
+        profile_key: str,
+        expected_profile_source_sha256: str,
+        expected_registry_snapshot_sha256: str,
+        *,
+        expected_request_hash: str | None = None,
+    ) -> PersistedCalibrationRecordAnchor:
+        """Shared accepted-set decoding, immutable anchor and authority closure."""
         cursor.execute(
             """
             SELECT record_sha256, profile_source_sha256, registry_snapshot_sha256,
@@ -3349,7 +3396,7 @@ class PostgresRuntimeStore:
               FROM runtime.calibration_record_anchors
              WHERE namespace = 'autocut_authority' AND scope_kind = 'calibration' AND scope_key = %s
             """,
-            (binding.profile_key,),
+            (profile_key,),
         )
         row = cursor.fetchone()
         if row is None:
@@ -3358,8 +3405,10 @@ class PostgresRuntimeStore:
             cursor, UUID(str(row[8])), UUID(str(row[9]))
         )
         if (
-            job != binding.job or job_state != "succeeded" or command != CALIBRATION_VALIDATOR_COMMAND
-            or request_hash != binding.request_hash or len(members) != 4
+            job != Job(f"autocut_calibration_validator:{profile_key}", "authority")
+            or job_state != "succeeded" or command != CALIBRATION_VALIDATOR_COMMAND
+            or (expected_request_hash is not None and request_hash != expected_request_hash)
+            or len(members) != 4
             or members[0].command_slot_id != UUID(str(row[10]))
             or (int(_text(row[11])), int(_text(row[12]))) != (0, 3)
         ):
@@ -3379,10 +3428,15 @@ class PostgresRuntimeStore:
             )
             for member, payload in zip(members, payloads, strict=True)
         ))
-        self._validate_calibration_record_binding(binding, record)
+        if (
+            record.members[0].scope.key != profile_key
+            or record.aggregate.identity.profile_source_sha256 != expected_profile_source_sha256
+            or record.aggregate.identity.registry_snapshot_sha256 != expected_registry_snapshot_sha256
+        ):
+            raise StoreValidationError("calibration anchor does not match the expected profile/registry identity")
         expected_hashes = (
-            record.members[0].content_hash, binding.profile_source_sha256, binding.registry_snapshot_sha256,
-            binding.manifest_reference.content_hash, binding.results_reference.content_hash,
+            record.members[0].content_hash, expected_profile_source_sha256, expected_registry_snapshot_sha256,
+            record.aggregate.measurement_manifest_sha256, record.aggregate.measurement_results_sha256,
             record.members[1].content_hash, record.members[2].content_hash, record.members[3].content_hash,
         )
         if tuple(_text(value) for value in row[:8]) != expected_hashes:

@@ -17,6 +17,7 @@ from autocut_kernel.media.calibration_record import (
     validator_internal_assemble_accepted_artifact_set,
 )
 from autocut_kernel.pipeline import MeasureShadowCalibrationCommand
+from autocut_kernel.registry.authority_profiles import LocalRunCalibration
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
@@ -230,8 +231,22 @@ def test_success_is_atomic_terminal_and_replay_checks_anchor(store: PostgresRunt
     assert store.claim_command(binding.claim).receipt_id == outcome.receipt_id
     assert store.commit_calibration_record_validation_success(success, binding, record) == outcome
     references = _references(outcome)
-    anchor = store.read_calibration_record_anchor(binding, references[0], references[3])
+    calibration = LocalRunCalibration(
+        references[0], references[3], record.members[1].content_hash, record.members[2].content_hash,
+        record.aggregate.asr_accepted_bound_tick, record.aggregate.vad_accepted_bound_tick,
+    )
+    # A LocalRun consumer has only these accepted references and its predecessor
+    # profile hashes: it need not reconstruct either measurement UUID or retry key.
+    anchor = store.read_calibration_record_anchor(
+        calibration.record_ref, calibration.validation_receipt_ref,
+        expected_profile_source_sha256=record.aggregate.identity.profile_source_sha256,
+        expected_registry_snapshot_sha256=record.aggregate.identity.registry_snapshot_sha256,
+    )
     assert anchor.record == record
+    assert anchor.record.asr.content_hash == calibration.asr_producer_record_sha256
+    assert anchor.record.vad.content_hash == calibration.vad_producer_record_sha256
+    assert anchor.record.aggregate.asr_accepted_bound_tick == calibration.asr_timing_error_bound_tick
+    assert anchor.record.aggregate.vad_accepted_bound_tick == calibration.vad_timing_error_bound_tick
     assert anchor.aggregate.reference == references[0]
     assert anchor.validation.reference == references[3]
     assert anchor.record_sha256 == record.members[0].content_hash
@@ -347,9 +362,13 @@ def test_anchor_reader_ignores_heads_and_rejects_reference_substitution(store: P
     refs = _references(outcome)
     with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
         cursor.execute("DELETE FROM runtime.logical_heads WHERE job_id = %s", (outcome.job_id,))
-    assert store.read_calibration_record_anchor(binding, refs[0], refs[3]).record == record
+    expected = {
+        "expected_profile_source_sha256": binding.profile_source_sha256,
+        "expected_registry_snapshot_sha256": binding.registry_snapshot_sha256,
+    }
+    assert store.read_calibration_record_anchor(refs[0], refs[3], **expected).record == record
     with pytest.raises(StoreValidationError, match="expected exact accepted members"):
-        store.read_calibration_record_anchor(binding, replace(refs[0], content_hash=_hash("substituted")), refs[3])
+        store.read_calibration_record_anchor(replace(refs[0], content_hash=_hash("substituted")), refs[3], **expected)
     for statement in (
         "UPDATE runtime.calibration_record_anchors SET record_sha256 = record_sha256",
         "DELETE FROM runtime.calibration_record_anchors",
@@ -357,6 +376,54 @@ def test_anchor_reader_ignores_heads_and_rejects_reference_substitution(store: P
         with pytest.raises(psycopg.Error, match="anchors are immutable"):
             with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
                 cursor.execute(statement)
+
+
+@pytest.mark.parametrize("drift", (
+    "profile", "registry", "receipt", "set", "both-refs", "ordinal", "type",
+    "logical-id", "revision", "scope", "scope-kind", "namespace", "validation-hash",
+))
+def test_consumer_anchor_reader_rejects_identity_or_exact_reference_drift(
+    store: PostgresRuntimeStore, drift: str
+) -> None:
+    binding = _binding(store)
+    record = _record(binding)
+    claim = store.claim_command(binding.claim)
+    outcome = store.commit_calibration_record_validation_success(_success(claim.command_slot_id, record), binding, record)
+    refs = _references(outcome)
+    aggregate, validation = refs[0], refs[3]
+    expected = {
+        "expected_profile_source_sha256": binding.profile_source_sha256,
+        "expected_registry_snapshot_sha256": binding.registry_snapshot_sha256,
+    }
+    if drift in {"profile", "registry"}:
+        key = "expected_profile_source_sha256" if drift == "profile" else "expected_registry_snapshot_sha256"
+        expected[key] = _hash("wrong-identity")
+    elif drift == "receipt":
+        validation = replace(validation, receipt_id=uuid4())
+    elif drift == "set":
+        validation = replace(validation, artifact_set_id=uuid4())
+    elif drift == "both-refs":
+        receipt_id, set_id = uuid4(), uuid4()
+        aggregate = replace(aggregate, receipt_id=receipt_id, artifact_set_id=set_id)
+        validation = replace(validation, receipt_id=receipt_id, artifact_set_id=set_id)
+    elif drift == "ordinal":
+        validation = replace(validation, member_ordinal=2)
+    elif drift == "type":
+        validation = replace(validation, artifact_type="calibration_record_member")
+    elif drift == "logical-id":
+        validation = replace(validation, logical_id="wrong-validation-id")
+    elif drift == "revision":
+        validation = replace(validation, revision=2)
+    elif drift == "scope":
+        validation = replace(validation, scope=replace(validation.scope, key="shadow_calibration@2"))
+    elif drift == "scope-kind":
+        aggregate = replace(aggregate, scope=replace(aggregate.scope, kind="different"))
+    elif drift == "namespace":
+        aggregate = replace(aggregate, scope=replace(aggregate.scope, namespace="different"))
+    else:
+        validation = replace(validation, content_hash=_hash("wrong-validation"))
+    with pytest.raises(StoreValidationError):
+        store.read_calibration_record_anchor(aggregate, validation, **expected)
 
 
 @pytest.mark.parametrize("drift", ("command", "profile", "v2", "results-link"))
