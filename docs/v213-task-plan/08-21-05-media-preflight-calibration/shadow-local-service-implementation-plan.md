@@ -1,8 +1,9 @@
 # Shadow-local service measurement — next implementation slice
 
-Status: designed, not implemented or activated. Native-agent read-only research
-and root decisions following the accepted pure case/projector checkpoint
-`0001b165`. Complements [local-window Command plan](local-window-command-implementation-plan.md#7-calibration-activation--newly-identified-required-seam).
+Status: service/profile/client measurement slice implemented and synthetically
+verified on 2026-08-26; not installed or activated as production calibration.
+Native-agent research and root decisions follow the accepted pure
+case/projector checkpoint `0001b165`. Complements [local-window Command plan](local-window-command-implementation-plan.md#7-calibration-activation--newly-identified-required-seam).
 
 ## Why a separate measured mode
 
@@ -60,7 +61,7 @@ producer port application-independent.
 
 ## Ownership and verification
 
-Suggested disjoint files:
+Implemented disjoint files:
 
 - New pure `media/shadow_local_service_profile.py` plus its tests: closed content,
   actual-field hash derivation, normal/old-shadow/Record/bound rejection.
@@ -69,10 +70,42 @@ Suggested disjoint files:
 - Existing window HTTP client plus a fixed shadow-local wrapper and tests:
   shared wire/result/error behavior, normal URL restrictions unchanged.
 
+The concrete Kernel API is `ShadowLocalServiceProfile`,
+`build_shadow_local_service_profile(measured)` and
+`decode_shadow_local_service_profile(mapping)`. It reuses the existing
+`ShadowCalibrationProducerIdentity`; no parallel producer grammar is created.
+The builder accepts explicit expected pre-calibration content, not evidence
+that the service has executed it. `Service.load()` compares measured service,
+models, framework/device and decoder facts before readiness.
+
+The application wrapper is `FunASRShadowLocalHttpPort(port=..., shared_token=...,
+timeout_seconds=..., max_response_bytes=...)` in
+`auto_cut_bot/pipeline/media_preflight/funasr_shadow_local_http.py`. It derives
+the fixed loopback URL rather than accepting a caller-selected endpoint. Both
+clients share the original single-dispatch response/BUSY implementation.
+
 Use fake model/decoder and ephemeral HTTP on Mac; no native models/codecs or DB.
 Use the existing independent local anchors/projector to consume synthetic route
 responses end-to-end. Real extraction, both models and calibration corpus run on
 the desktop only. A passing fake response is not a completed calibration.
+
+Verification: root reproduced 1,113 targeted pure/store-fake/client regressions
+and a separate 138-case synthetic startup/loopback suite, all with zero skips.
+The latter covers the new profile/route, normal and full-source-shadow
+regressions, original raw bytes, independent gold with measured errors of 0
+and 7 ticks, strict route separation, pre-dispatch BUSY and not-ready unknown.
+New production modules pass scoped type checks and all eight changed Python
+files pass Ruff. The service still has pre-existing type diagnostics outside
+the added regions, which introduce none. This is not whole-project or real
+PostgreSQL/native-model acceptance.
+
+Independent review also reproduced an existing startup cancellation race: a
+second cancellation could release the singleton while the model constructor
+thread was still running. Startup now drains that same task despite repeated
+cancellation before releasing ownership. Success/cancellation and constructor
+failure regressions failed before the fix and pass afterward; an independent
+fake-thread probe confirms the lock remains held through three cancellations.
+This repairs a demonstrated mechanism, not a diagnosis of any earlier real OOM.
 
 ## Following persistence and activation work
 
@@ -87,3 +120,12 @@ activate a normal local profile. The existing `bind_profile_calibration()` and
 full-source installed resource cannot substitute for that chain. Durable local
 child Commands and episode admissions must independently check the actual local
 mode, not merely hash syntax or the constructor of an expectations DTO.
+
+Next concrete sequence: close the versioned local profile/source grammar,
+persist and independently validate shadow-local measurements, then wire durable
+local child/episode readers and admissions into Runtime. Do not activate the
+new route by changing an old Record's schema/hash or substituting synthetic
+test anchors. A service-code change also changes its measured identity; the
+desktop must build matching measured configuration through the real calibration
+path rather than reuse the prior service's identity. No private configuration
+or desktop deployment was changed by this slice.

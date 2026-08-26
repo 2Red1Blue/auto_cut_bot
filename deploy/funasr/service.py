@@ -45,6 +45,11 @@ from autocut_kernel.media.local_speech_window_codec import (
     encode_local_speech_window_response,
 )
 from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
+from autocut_kernel.media.shadow_local_service_profile import (
+    SHADOW_LOCAL_SERVICE_PROFILE_SCHEMA,
+    build_shadow_local_service_profile,
+    decode_shadow_local_service_profile,
+)
 from autocut_kernel.media.types import TimeBase
 from funasr import AutoModel
 
@@ -857,11 +862,19 @@ class Service:
             "producers",
         }
         profile_schema = self.profile.get("schema_version")
+        declared_local_profile = None
         if profile_schema == NORMAL_PROFILE_SCHEMA:
             expected_fields = normal_profile_fields
             calibration_profile = False
         elif profile_schema == SHADOW_CALIBRATION_PROFILE_SCHEMA:
             expected_fields = shadow_profile_fields
+            calibration_profile = True
+        elif profile_schema == SHADOW_LOCAL_SERVICE_PROFILE_SCHEMA:
+            try:
+                declared_local_profile = decode_shadow_local_service_profile(self.profile)
+            except ValueError as error:
+                raise RuntimeError("shadow-local profile content is invalid") from error
+            expected_fields = set(declared_local_profile.to_mapping())
             calibration_profile = True
         else:
             raise RuntimeError("profile schema is not supported")
@@ -892,6 +905,8 @@ class Service:
             "funasr_version": importlib.metadata.version("funasr"),
             "torch_version": torch.__version__,
         }
+        if declared_local_profile is not None:
+            measured["decoder_identity_sha256"] = await asyncio.to_thread(decoder_identity_sha256)
         producers = self.profile["producers"]
         if type(producers) is not list or len(producers) != 2:
             raise RuntimeError("profile must contain ASR and VAD producers")
@@ -977,7 +992,18 @@ class Service:
         for key, actual in measured.items():
             if key != "producers" and actual != self.profile[key]:
                 raise RuntimeError(f"measured profile identity mismatch {key}")
-        if calibration_profile:
+        if declared_local_profile is not None:
+            # The shared pure owner derives both identities from actual fields.
+            # It does not provide calibration acceptance or trust a declared hash.
+            actual_local_profile = build_shadow_local_service_profile({
+                **{key: value for key, value in cast(dict[str, object], measured).items()
+                   if key != "native_port_identity_sha256"},
+                "producers": cast(list[dict[str, object]], identities),
+            })
+            if actual_local_profile != declared_local_profile:
+                raise RuntimeError("measured shadow-local profile identity mismatch")
+            measured = actual_local_profile.to_mapping()
+        elif calibration_profile:
             measured_native_identity = sha(
                 canon(
                     {
@@ -997,7 +1023,7 @@ class Service:
                 raise RuntimeError("measured shadow native identity mismatch")
         await self.require_resources(self.startup_min_available)
         self.singleton.acquire()
-        model_task = asyncio.create_task(
+        model_task: asyncio.Task[Any] = asyncio.create_task(
             asyncio.to_thread(
                 AutoModel,
                 model=str(a),
@@ -1008,11 +1034,18 @@ class Service:
             )
         )
         try:
-            try:
-                self.model = await asyncio.shield(model_task)
-            except asyncio.CancelledError:
-                await asyncio.shield(model_task)
-                raise
+            cancelled = False
+            # Cancelling the coroutine cannot stop the native constructor. Keep
+            # the singleton until that same task finishes, including repeated
+            # cancellation while draining. Worker failures still surface below.
+            while not model_task.done():
+                try:
+                    await asyncio.shield(model_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.model = model_task.result()
+            if cancelled:
+                raise asyncio.CancelledError
             devices = (module_device(self.model.model), module_device(self.model.vad_model))
             if devices != (self.profile["device"], self.profile["device"]):
                 raise RuntimeError("model parameter device mismatch")
@@ -1501,6 +1534,14 @@ class Service:
             await self.release()
 
     async def window_evidence(self, req: web.Request) -> web.Response:
+        """Normal local measurement; never accepts a shadow profile."""
+        return await self._window_evidence(req, required_profile_schema=NORMAL_PROFILE_SCHEMA)
+
+    async def shadow_local_window_evidence(self, req: web.Request) -> web.Response:
+        """Calibration-only local measurement; never accepts old full-source profiles."""
+        return await self._window_evidence(req, required_profile_schema=SHADOW_LOCAL_SERVICE_PROFILE_SCHEMA)
+
+    async def _window_evidence(self, req: web.Request, *, required_profile_schema: str) -> web.Response:
         """Raw local measurement only; binding_sha256 is opaque correlation."""
         if not self.ready:
             raise web.HTTPServiceUnavailable()
@@ -1508,8 +1549,8 @@ class Service:
                                    f"Bearer {self.shared_token}".encode("utf-8")):
             raise web.HTTPUnauthorized(text="unauthorized")
         if (self.measured_profile is None
-                or self.measured_profile["schema_version"] != NORMAL_PROFILE_SCHEMA):
-            raise web.HTTPConflict(text="normal measured profile is unavailable")
+                or self.measured_profile["schema_version"] != required_profile_schema):
+            raise web.HTTPConflict(text="required measured window profile is unavailable")
         try:
             encoded = req.headers["X-Local-Speech-Window-Manifest"]
             raw_manifest = base64.b64decode(encoded, validate=True)
@@ -1534,6 +1575,9 @@ class Service:
         )
         if request.policy != expected_policy:
             raise web.HTTPConflict(text="measured local speech policy drift")
+        if (required_profile_schema == SHADOW_LOCAL_SERVICE_PROFILE_SCHEMA
+                and request.extraction.decoder_identity_sha256 != self.measured_profile["decoder_identity_sha256"]):
+            raise web.HTTPConflict(text="measured shadow-local decoder identity drift")
         if request.extraction.decoder_identity_sha256 != await asyncio.to_thread(decoder_identity_sha256):
             raise web.HTTPConflict(text="local decoder identity drift")
         if (request.extraction.max_source_bytes > self.max_request
@@ -1748,6 +1792,7 @@ def create_app(service: Service | None = None) -> web.Application:
             web.post("/v1/timed-speech-evidence", s.evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
             web.post("/v2/timed-speech-window", s.window_evidence),
+            web.post("/v2/shadow-calibration-speech-window", s.shadow_local_window_evidence),
         ]
     )
     app.on_startup.append(startup)

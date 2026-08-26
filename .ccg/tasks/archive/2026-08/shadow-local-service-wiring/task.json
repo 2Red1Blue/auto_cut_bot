@@ -1,0 +1,13 @@
+{
+  "id": "shadow-local-service-wiring",
+  "title": "Connect measured shadow-local profile, native route and fixed HTTP client",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Archive and commit verified measurement slice; task05 and full goal remain in progress",
+  "branch": "feat/v213-contract-codegen",
+  "parent_task": "docs/v213-task-plan/08-21-05-media-preflight-calibration",
+  "external_models": "disabled by user; native agents plus independent root review"
+}

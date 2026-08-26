@@ -58,11 +58,15 @@ def validate_local_speech_window_endpoint(value: str) -> str:
 
 
 class FunASRHttpLocalSpeechWindowPort:
+    @staticmethod
+    def _validate_endpoint(value: str) -> str:
+        return validate_local_speech_window_endpoint(value)
+
     def __init__(
         self, *, endpoint_url: str, shared_token: str, timeout_seconds: int,
         max_response_bytes: int, transport: FileHttpTransport | None = None,
     ) -> None:
-        self.endpoint_url = validate_local_speech_window_endpoint(endpoint_url)
+        self.endpoint_url = self._validate_endpoint(endpoint_url)
         if (type(shared_token) is not str or not shared_token
                 or any(ord(ch) < 33 or ord(ch) > 126 for ch in shared_token)):
             raise LocalMediaPolicyError("window shared token must be nonempty ASCII header text")
