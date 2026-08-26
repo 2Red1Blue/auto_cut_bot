@@ -20,7 +20,7 @@
 
 - Stage 1 Command 从 root evidence 与受审计 draft 编译 EpisodeDigestSet、EventCardSet、NarrativeGraph、CoverageLedger、Diagnostics/Proof 和 Admission；每个输入 observation/window/obligation 恰有 ledger row，unresolved 不得改写为 water content。
 - EventCard 只表达事实与 source evidence；高光、反转、情绪、对白适用性属于 Stage 2 CandidateCatalog；任何物理端点只属于 Stage 4。
-- Stage 2 允许生成模型扩展 Candidate/Proposal draft，但本地 deterministic compiler 只验证 VLM semantic evidence/capability、taint、Source 授权与粗粒度候选支持，选择 lexicographically first feasible Portfolio 并冻结 target_story_ids。对白/字幕/精确 A/V 支持保持 deferred 到 Stage 4。禁止静默丢弃失败 Proposal 后提交 partial success。
+- Stage 2 首版从 committed v3 VLM candidates 确定性投影 CandidateCatalog；只为 Proposal draft 新增受审计生成调用，不重复 candidate_enrichment。本地 deterministic compiler 验证 VLM semantic evidence/capability、taint、Source 授权与粗粒度候选支持，选择 lexicographically first feasible Portfolio 并冻结 target_story_ids。对白/字幕/精确 A/V 支持保持 deferred 到 Stage 4。禁止静默丢弃非法 Proposal 后提交 partial success；结构合法但未入选的 Proposal 保留明确 disposition。
 - Stage 2 的每个权威 Candidate 必须从已提交的 VLM observation/capability 产生非空、规范排序的 `editing_modes ⊆ {dialogue, action}`，并绑定其 observation hash。`dialogue` 与 `action` 可以同时存在；ASR 文本、word 数量、VAD、旧 strength 字段和本地启发式均不得推断或改写该集合。
 - Stage 3 对冻结 Story fan-out，生成每 Story 的 EditorialBlueprint、EvidenceClosureSet、ContextManifest 与 Admission。每个必选 Beat 必须存在且可由 committed evidence 支持；失败不得省略 Beat。
 - 所有 Stage 业务成员和唯一 Admission 通过现有 Command/Receipt/ArtifactSet/CAS 原子提交。重放返回同一 committed refs，不重复生成。

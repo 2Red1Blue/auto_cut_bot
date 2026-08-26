@@ -117,3 +117,11 @@ product-oracle/budget cases. Seven predecessor tests run the actual Stage 1
 Command/reader over an explicitly test-only persistence double. Both slices
 received independent ALLOW, Ruff and production BasedPyright checks passed.
 This proves neither PostgreSQL execution nor Stage 2 completion.
+
+Second slice: closed ProposalDraft/JobPolicy/StoryDesignPolicy/physical requirement
+models and bounded response decoder/schema have 100 focused tests. Whole-draft
+reference/policy checks add 15 tests, retaining every original proposal on error.
+Independent review found and fixed repeated whole-Graph hashing per reference;
+a regression now requires exactly one hash computation. Source allowlist empty
+means no extra restriction, never authorization; the exact committed grant is
+still mandatory. These checks do not claim material support or Admission.
