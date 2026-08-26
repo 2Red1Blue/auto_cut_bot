@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "Implement the new semantic-chain authority and Stage 1 strict-global command",
+  "nextAction": "Implement strict DependencyClosureProof/CoverageAdmission and independent KC checks over the completed six-member coverage compiler and full-domain dependency projection; then exact eight-member reader/generation Command and Stage2/3 Runtime integration",
   "createdAt": "2026-08-25T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
