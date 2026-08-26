@@ -72,12 +72,27 @@ def _local_sources(
         run["trusted_override"] = True
     elif mutation == "publication":
         run["capabilities"]["external_publication"] = True
+    elif mutation == "registry-contract":
+        run["timed_speech_registry_entry"]["registry_contract_sha256"] = _hash("foreign-contract")
+    elif mutation == "whole-schema-as-contract":
+        run["timed_speech_registry_entry"]["registry_contract_sha256"] = run["profile_contract_sha256"]
+    elif mutation == "registry-set-as-contract":
+        run["timed_speech_registry_entry"]["registry_contract_sha256"] = registry["registry_set_hash"]
     if customize_run is not None:
         customize_run(run, old)
     raw = _raw(run)
     if mutation == "duplicate-key":
         raw = raw[:-1] + b',"profile_version":"1"}'
     schema_raw = (REPO_ROOT / LOCAL_RUN_PROFILE_SCHEMA_PATH).read_bytes()
+    if mutation in {"schema-contract-change", "contract-pointer"}:
+        schema = json.loads(schema_raw)
+        if mutation == "schema-contract-change":
+            schema["$defs"]["sha256"]["description"] = "A changed reachable contract definition"
+        else:
+            schema["properties"]["timed_speech_registry_entry"] = {"$ref": "#/$defs/native_timed_speech"}
+        schema_raw = _raw(schema)
+        run["profile_contract_sha256"] = sha256_bytes(schema_raw)
+        raw = _raw(run)
     if mutation == "schema-raw":
         schema_raw += b"\n"
     if mutation == "narrative-raw":
@@ -158,6 +173,14 @@ def test_source_location_substitution_is_rejected(tmp_path: Path, field: str, va
     fixture = _local_sources(tmp_path)
     with pytest.raises(GateViolation):
         build_locked_local_run_context(**{**fixture.options, field: value})
+
+
+@pytest.mark.parametrize("mutation", ["registry-contract", "whole-schema-as-contract", "registry-set-as-contract",
+                                      "schema-contract-change", "contract-pointer"])
+def test_registry_contract_must_derive_from_current_locked_schema(tmp_path: Path, mutation: str) -> None:
+    fixture = _local_sources(tmp_path, mutation)
+    with pytest.raises(GateViolation, match="AUTH-LOCAL-RUN-CONTRACT"):
+        build_locked_local_run_context(**fixture.options)
 
 
 @pytest.mark.parametrize("mutation", ("current-C", "old-B", "wrong-path", "mapping"))

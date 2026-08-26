@@ -56,7 +56,11 @@ local-run 前驱来源及 accepted anchor 绑定函数也已实现并通过独�
 **69 个新增测试通过**，相关合并回归 **128 passed、零 skipped**。
 详见 [正式配置接线审查](08-25-lock-real-test-authority-profiles/review-local-run-binding.md)。
 这仍不代表真实校准或正式运行配置已加载：尚无实际 ready 八包 Registry 源，
-仅测试 helper 可生成；还须补齐真实来源、Registry 契约哈希定义、安装资源和 HTTP 接线。
+仅测试 helper 可生成；还须补齐真实来源、安装资源和 HTTP 接线。
+timed-speech Registry 契约哈希已改为从锁定 Schema 的可达定义闭包推导，
+拒绝错用整个 Profile/Registry 哈希及过期定义。新增投影测试 96 项通过，
+相关来源/绑定回归 115 项通过、零 skipped；独立审查无缺陷。
+详见 [契约哈希绑定审查](08-25-lock-real-test-authority-profiles/review-timed-speech-contract-binding.md)。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。

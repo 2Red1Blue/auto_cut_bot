@@ -128,8 +128,9 @@ Next code/deployment prerequisites, in order:
    tree has no common/registry_set.yaml or five registry documents; only the test
    helper currently creates a ready bundle. Do not publish that fixture as real
    authority or call source loading a completed deployment.
-2. Define the timed-speech registry_contract_sha256 derivation from an actual
-   tracked contract source and test its binding; do not invent a constant hash.
+2. Completed: derive timed-speech registry_contract_sha256 from the locked
+   local-run schema's reachable definition closure and reject substituted or
+   stale component identities. See review-timed-speech-contract-binding.md.
 3. Implement emission/loading of the immutable installed resource; activate only
    after step 4. Use the existing protected
    bootstrap/Store anchor and typed HTTP composition seam, with no runtime Git,

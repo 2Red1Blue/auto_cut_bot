@@ -296,3 +296,41 @@ hash binding only; no canonical contract derivation exists in code. Define and
 test that source binding before installed-resource/bootstrap activation rather
 than substituting the profile schema or Registry hash. This is not satisfied by
 the source-only helpers in this slice.
+
+## Timed-speech Registry contract identity
+
+The previously opaque registry_contract_sha256 receives its first explicit
+derivation; no deployed v2.1.3 profile is migrated and no duplicate schema is
+introduced. The input is the already Git-verified raw local-run profile schema,
+not caller JSON, an invented digest or the whole profile/Registry hash.
+
+The Kernel-owned timed_speech_registry_contract_sha256(raw) strictly parses the
+source with the existing canonical JSON loader, requires Draft 2020-12 and the
+top-level properties.timed_speech_registry_entry value to be exactly
+{"$ref":"#/$defs/timed_speech_registry_entry"}. Its canonical hash material is:
+
+- schema_version = timed-speech-registry-contract-projection-v1
+- schema_dialect = https://json-schema.org/draft/2020-12/schema
+- root_pointer = #/$defs/timed_speech_registry_entry
+- definitions = the root definition and every transitively referenced $defs entry
+
+Only exact #/$defs/<name> references are supported (plain nonempty identifier
+names, no pointer escapes/subpaths). Traverse deterministically with a visited
+set. Reject missing/external/unsupported refs, nested $id/$schema and dynamic or
+recursive reference/anchor mechanisms that could alter resolution. Each selected
+definition must be a schema object or boolean. Unrelated profile definitions,
+formatting and mapping key order do not affect the projection; any reachable
+schema content does. This identifies the wire-schema closure, not the complete
+semantic decoder/implementation and not a calibration or runtime permission.
+
+The locked local-run builder derives the digest from schema_raw and compares it
+with the decoded Registry entry before returning. Grammar-only APIs remain
+explicitly unresolved. Existing semantic inheritance and accepted-anchor checks
+are unchanged. Tests must check an independently assembled projection, cycles,
+scope/ref rejection, reachable/unrelated changes and a Git-locked profile that
+substitutes a wrong contract hash.
+
+Ownership for this slice: Kernel registry/timed_speech_contract.py and its new
+authority tests (worker); tools/authority/local_run_context.py, the two existing
+authority profile/source test fixtures and this task record (integration owner).
+No real lock/profile/native/runtime activation changes belong to this slice.

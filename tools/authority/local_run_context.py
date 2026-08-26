@@ -17,6 +17,10 @@ from autocut_kernel.registry.authority_profiles import (
     decode_local_run_profile_source,
     decode_stage1_narrative_profile_source,
 )
+from autocut_kernel.registry.timed_speech_contract import (
+    TimedSpeechContractError,
+    timed_speech_registry_contract_sha256,
+)
 
 from .common import load_mapping_bytes, sha256_bytes, validate_relative_path
 from .errors import GateViolation
@@ -105,6 +109,12 @@ def build_locked_local_run_context(
         )
     except AuthorityProfileSourceError as error:
         raise GateViolation("AUTH-LOCAL-RUN-PROFILE", "locked local-run profile grammar does not close") from error
+    try:
+        registry_contract_hash = timed_speech_registry_contract_sha256(schema_raw)
+    except TimedSpeechContractError as error:
+        raise GateViolation("AUTH-LOCAL-RUN-CONTRACT", "locked Registry schema closure is invalid") from error
+    if local_run.timed_speech_registry_entry.registry_contract_sha256 != registry_contract_hash:
+        raise GateViolation("AUTH-LOCAL-RUN-CONTRACT", "Registry entry does not bind its locked schema closure")
     reference = local_run.predecessor_shadow_profile
     if (
         reference.profile_version, reference.source_sha256,

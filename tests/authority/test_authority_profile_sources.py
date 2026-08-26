@@ -24,6 +24,7 @@ from autocut_kernel.registry.authority_profiles import (
 from autocut_kernel.registry.authority_profiles import (
     decode_shadow_calibration_profile_source as _decode_shadow_calibration_profile_source,
 )
+from autocut_kernel.registry.timed_speech_contract import timed_speech_registry_contract_sha256
 from jsonschema import Draft202012Validator
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -351,7 +352,9 @@ def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dic
             "kind": "sensevoice_word_guard_v1",
             "profile_id": "local_run",
             "profile_version": "1",
-            "registry_contract_sha256": _hash("registry-contract"),
+            "registry_contract_sha256": timed_speech_registry_contract_sha256(
+                (REPO_ROOT / "governance/schemas/local-run-profile.schema.json").read_bytes()
+            ),
             "transcript_requirement": requirement(0, asr_child),
             "vad_requirement": requirement(1, vad_child),
         },
