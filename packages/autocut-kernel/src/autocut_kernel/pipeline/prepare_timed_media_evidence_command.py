@@ -144,11 +144,19 @@ class TimedMediaEvidenceProducerPort(Protocol):
     ) -> ProducedTimedMediaEvidence: ...
 
 
-class TimedMediaEvidenceStore(Protocol):
+class CommittedMediaInputsStore(Protocol):
+    """Read only exact Source/VLM predecessors, without any speech registry."""
+
     def read_committed_semantic_inputs(
         self, request: CommittedSemanticInputsRequest,
     ) -> CommittedSemanticInputs: ...
 
+    def read_whole_series_source_manifest(
+        self, job: Job, artifact_set_id: UUID,
+    ) -> PersistedWholeSeriesSourceManifest: ...
+
+
+class TimedMediaEvidenceStore(CommittedMediaInputsStore, Protocol):
     def read_outcome(self, job: Job, idempotency_key: str) -> CommandOutcome | None: ...
 
     def read_bootstrapped_timed_speech_profile(
@@ -734,7 +742,7 @@ class PrepareTimedMediaEvidenceCommand:
 
 
 def resolve_committed_timed_media_request(
-    store: TimedMediaEvidenceStore,
+    store: CommittedMediaInputsStore,
     request: PrepareTimedMediaEvidenceRequest,
 ) -> ResolvedPrepareTimedMediaEvidenceRequest:
     """Reread exact Source/VLM owners before claiming any detector work."""

@@ -13,6 +13,7 @@ from enum import Enum
 from fractions import Fraction
 from typing import cast
 
+from .physical_root import PhysicalRootMediaEvidence
 from .root_evidence import (
     AudioSourceOutcome,
     EvidenceCompleteness,
@@ -967,12 +968,14 @@ class CommittedVideoToAudioClockMapCertificate:
     def assert_replays_probe(
         self,
         probe: PresentationTimelineProbe,
-        root: RootMediaEvidenceBundle,
+        root: RootMediaEvidenceBundle | PhysicalRootMediaEvidence,
         *,
         source_manifest_sha256: str,
         calibration_binding: CalibrationBinding,
     ) -> None:
-        if type(probe) is not PresentationTimelineProbe or type(root) is not RootMediaEvidenceBundle:  # noqa: E721
+        if type(probe) is not PresentationTimelineProbe or type(root) not in (  # noqa: E721
+            RootMediaEvidenceBundle, PhysicalRootMediaEvidence,
+        ):
             raise Stage4PredecessorError("clock certificate requires exact probe and root evidence")
         if (
             self.facts_sha256 != probe.canonical_hash
@@ -1009,14 +1012,18 @@ class CommittedVideoToAudioClockMapCertificate:
 
 
 def derive_presentation_timeline_facts(
-    root: RootMediaEvidenceBundle,
+    root: RootMediaEvidenceBundle | PhysicalRootMediaEvidence,
     *,
     probe: PresentationTimelineProbe,
     source_manifest_sha256: str,
     audio_snap_calibration: CalibrationBinding,
 ) -> tuple[PresentationTimelineProbe, CommittedVideoToAudioClockMapCertificate]:
-    """Compile a certificate from source-prep facts; never reconstruct facts from root ranges."""
-    if type(root) is not RootMediaEvidenceBundle:  # noqa: E721
+    """Compile from exact source facts; speech is not required for a physical map.
+
+    Both root formats retain their own aggregate hash. Supporting the physical
+    root here does not grant the separate timed-speech or edit admission.
+    """
+    if type(root) not in (RootMediaEvidenceBundle, PhysicalRootMediaEvidence):
         raise Stage4PredecessorError("presentation probe requires exact root evidence")
     if root.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
         raise Stage4PredecessorError("presentation clock map requires audio boundaries")
