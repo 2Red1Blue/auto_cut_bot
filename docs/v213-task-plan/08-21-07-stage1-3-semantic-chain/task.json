@@ -5,7 +5,7 @@
   "description": "Compile committed Doubao VLM observations into real Stage 1-3 business artifacts without fixture resolvers; timed speech evidence remains Stage 4-only.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "packages/autocut-kernel/src/autocut_kernel/{semantic_chain/*.py,pipeline/*command.py,store/{models.py,postgres.py,__init__.py},registry/{timed_speech,authority_profiles}.py},packages/autocut-kernel/migrations/{0018_command_execution_kind,0019_stage1_pipeline_profile}.sql,auto_cut_bot/pipeline/{source_prep/command.py,semantic/**,runtime/{stage1_narrative_stage.py,stage2_portfolio_stage.py,stage3_blueprint_stage.py,models.py,composition.py,postgres.py}},related semantic/store/runtime tests and task records; current wave ownership is in stage1-production-wave.md; media/root_evidence.py and media/timed_evidence.py belong to Stage4, governance/schemas/{stage1-narrative,shadow-calibration,local-run}-profile.schema.json",
+  "scope": "Task07 semantic_chain/*.py, semantic pipeline Commands/requests/committed-input readers/shared generation lifecycle, exact Store readers and registry policy sources; migrations0018-0020; HTTP semantic adapters/shared predecessor reconstruction/models/composition/postgres/stages; related schemas/tests/docs. Current per-file ownership: stage2-runtime-wave.md and stage3-production-wave.md. media/root_evidence.py and media/timed_evidence.py remain Stage4-owned; user config and legacy execution are excluded.",
   "package": "autocut_kernel,auto_cut_bot",
   "priority": "P1",
   "creator": "liuzx",
@@ -23,10 +23,14 @@
   "relatedFiles": [],
   "notes": "2026-08-26: Stage1 exact eight-member reader/durable generation Command and seventeen-rule independent admission delivered (1580e127, 0ac205f0); Ark typed request/terminal identity fixed (a732da32). Runtime activation wave af2c9041 implements source wire v2, complete Stage1 policy in execution profile v6, migration0019 and source_prep→vlm→stage1_narrative→media_preflight registration. Independent source/Runtime/adapter reviews ALLOW; final selected cross-layer regression 2322 passed, media pure cases 2 passed; 63 remote DB/media cases collected only. Ruff and production type checks clean. Isolated-wheel failure was fixed by moving policy values out of pipeline facade into semantic_chain. No full Pipeline success claim; Stage2/3 and remote DB/model/whole-run acceptance remain open.",
   "meta": {
-    "stage2_checkpoints": ["33cd9413", "a1c66f22", "ab139b82", "0b63addb", "7cedb80e", "261488d5", "53cda7bc", "ff5fef1b", "a8dcdf53", "9e924be9"],
-    "stage2_current_wave": "stage2-command-wave.md",
-    "stage2_local_scope": "Audited request and shared text lifecycle, all nineteen checks, five-member atomic commit and exact replay implemented; independent final reviews ALLOW. 2085 semantic/architecture and 104 Runtime/adapter pure tests passed; Ruff and production types clean. HTTP Stage2 not yet registered.",
-    "stage2_next": "Implement explicit installed Stage2 policy and frozen Runtime profile, thin predecessor adapter and scheduling/migration; then Stage3 Blueprint.",
+    "stage2_checkpoints": ["33cd9413", "a1c66f22", "ab139b82", "0b63addb", "7cedb80e", "261488d5", "53cda7bc", "ff5fef1b", "a8dcdf53", "9e924be9", "92263149", "f39b562d"],
+    "stage2_current_wave": "stage2-runtime-wave.md",
+    "stage3_current_wave": "stage3-production-wave.md",
+    "stage3_input_checkpoint": "b4568448",
+    "stage3_draft_checkpoint": "b5798b6c",
+    "stage3_local_scope": "Exact Stage2 input reader delivered and reviewed (32 new tests). Full-target typed Blueprint draft/models/parser delivered and independently reviewed (78 new tests). Closure/compiler, independent Admission, durable Command and Runtime remain next, not complete.",
+    "stage2_local_scope": "Kernel Command plus local-run-v3/profile-v7 HTTP runtime delivered. Independent resource/adapter/core reviews ALLOW. Final Runtime regression299passed, source/resource413passed, packaging20passed, media2purepassed; DB/media65 collected only. Ruff and production types clean. No real DB/provider or complete-run success claim.",
+    "stage2_next": "Continue Stage3 closure/compiler/independent Admission and durable full-target Blueprint Command; then Runtime and Stage4/Render/QC integration.",
     "remote_acceptance": "Not executed on this workstation; database, real model and full Pipeline acceptance remain open."
   }
 }

@@ -32,13 +32,16 @@ Authority、Profile 或 CalibrationRecord。
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
   committed reader 已实现。HTTP 新任务按 `source_prep → vlm → stage1_narrative →
-  media_preflight` 调度；Stage 2–3 尚未接通，四阶段通过不代表完整 run 成功。
-- execution profile v6 冻结完整 Stage 1 提示词与策略；三份 profile source 使用 v2
-  wire schema。旧 source 不能直接使用，需要按实际策略重新生成资源；不得安装测试 fixture。
+  stage2_portfolio → media_preflight` 调度；Stage 3 尚未接通，五阶段通过不代表完整 run 成功。
+- execution profile v7 冻结完整 Stage 1/2 提示词与策略；narrative/shadow source 仍是 v2，
+  local-run source 为 v3。其必填 Stage 2 策略必须来自实际安装资源；不得安装测试 fixture。
 - Stage 2 已实现候选投影、素材支持、确定性故事组合、目标冻结，以及持久化生成
   Command、19 项独立校验、五成员原子提交与精确重放。Stage 1/2 共用流式生成、
-  有限重试、超时对账和因果 Receipt 流程。HTTP Runtime 的 Stage 2 Profile/调度接线
-  尚未完成；当前不能声称“故事生成已可通过 HTTP 远程运行”。
+  有限重试、超时对账和因果 Receipt 流程。Stage 2 HTTP 接线使用同一 Command，
+  不执行或重建替代 Stage 1 产物。真实模型/数据库验收仍留给台式机。
+- Stage 3 已交付精确前驱读取，以及完整目标批次的蓝图草案模型/严格解析器。
+  这还不是获准 Blueprint；证据闭包、编译/准入、持久化命令和 Runtime 尚待接入。
+  当前设计与进度见 [Stage 3 实现波次](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-production-wave.md)。
 
 上述描述表示“已实现并经过单元/契约测试”，不表示“已经成功跑完一部真实剧”。
 
@@ -52,7 +55,7 @@ Authority、Profile 或 CalibrationRecord。
    calibration，独立验证非零误差界，再生成受保护的 local-run Profile。没有该
    Profile，服务应拒绝普通 Media Preflight，这是预期行为。
 3. **Stage 1–3 语义链**：Stage 1 的本地实现已交付，仍需真实模型/数据库验收；下一项
-   开发是 Stage 2 Story Portfolio 与 Stage 3 Blueprint 的已提交命令链。
+   开发是 Stage 3 Blueprint 的已提交命令链；Stage 2 HTTP 接线还需台式机验真。
 4. **真实一集 Stage 4**：以 admitted Blueprint 与完整 ASR/VAD MediaEvidence 编译
    ExactSpan/Recipe；只输出本地 Artifact/Receipt，不发布。
 5. **本地 Render 与 Publication QC**：由已提交 Recipe 渲染，完成结构、媒体、编辑
@@ -122,7 +125,7 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 5. 仅在上述步骤成功后接受一个本地 HTTP Pipeline run；
 6. 默认不配置任何外部发布端点。
 
-`0019` 迁移保留旧终态记录，只允许 v6 新任务；旧未结束任务须先明确处理，不得自动
+`0020` 迁移保留旧终态记录，只允许 v7 新任务；旧未结束任务须先明确处理，不得自动
 改写。只在空库按顺序运行全部迁移。数据库 pytest 使用独立、可丢弃的验收库，不得
 把 `AUTOCUT_TEST_POSTGRES_DSN` 指向保存真实运行数据的库。
 
@@ -131,8 +134,12 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧下一步是 Stage 2 Runtime 的 Profile、调度和已提交前驱接线，
-随后 Stage 3 Blueprint；不再把已完成的 Stage 1 Command 当作待设计任务。
-台式机侧准备真实模型、校准、source v2 与 reviewed Stage 1 提示词/预算，运行单集并
+代码侧下一步是 Stage 3 Blueprint；不再把已完成的 Stage 1/2 Command 当作待设计任务。
+台式机侧准备真实模型、校准、narrative/shadow v2、local-run v3 及 reviewed Stage 1/2 策略，运行单集并
 检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。
 之后接 Stage 4/Render/QC，再扩到全剧。当前目标仍只产出本地文件。
+
+新增语义策略不要求重做有效 ASR/VAD 校准，但已 bootstrap 的旧 local-run key 不能绑定
+新的 registry hash。发布新的 local-run profile_version 和对应 timed-speech entry 版本，
+保留原 narrative/shadow 与 accepted CalibrationRecord，再 bootstrap 新 key。详见
+[Stage 2 Runtime wave](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage2-runtime-wave.md)。

@@ -9,12 +9,23 @@ remote-only. Task 07 remains in progress, not complete.
 
 Stage 2 pure compilation is delivered in [Stage 2 production wave](stage2-production-wave.md);
 the [durable Command wave](stage2-command-wave.md) adds frozen generation requests,
-audited five-member commit and exact replay. Next: Stage 2 shared Runtime
-profile/registration, Stage 3 Blueprint and real one-episode acceptance. Earlier
+audited five-member commit and exact replay. The [Runtime wave](stage2-runtime-wave.md)
+is delivered in 92263149/f39b562d with local-run v3, execution profile v7 and
+five-stage HTTP scheduling. Next: Stage3 Blueprint compilation and real
+one-episode acceptance. Earlier
 [diagnostics/Ledger](stage1-diagnostics-ledger-wave.md),
 [production preparation](stage1-production-wave.md) and
 [model binding](stage1-model-binding.md) are historical implementation evidence,
 not a second unfinished Stage 1 authority.
+
+Completed local cross-layer implementation: [Stage 2 Runtime wave](stage2-runtime-wave.md).
+Resource/schema, scheduler/profile and adapter/composition passed scoped
+independent reviews. Real migration/provider acceptance stays remote.
+
+Next implementation: [Stage3 production wave](stage3-production-wave.md). The
+exact committed Stage2 input reader and typed Blueprint draft/parser are
+implemented. Context closure/compiler/Admission/Command and real acceptance
+remain open; do not confuse these draft values with admitted Blueprints.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。

@@ -1,5 +1,10 @@
 # Design
 
+Stage3 production decisions are in [Stage3 production wave](stage3-production-wave.md):
+full frozen-target batch, 3N+1 atomic output, current VLM v3 enums, explicit
+byte budgets and exact committed Stage2 input reads. These corrections take
+precedence over older per-Story Receipt/tokenizer examples for the first strategy.
+
 Current Stage 2 decisions and implementation ownership are frozen in
 [Stage 2 production wave](stage2-production-wave.md). Its v3 candidate projection,
 acyclic member IDs, conservative coarse duration and exact joint assignment
@@ -9,6 +14,11 @@ The audited request/Command and exact reader are detailed in
 [Stage 2 durable Command wave](stage2-command-wave.md). Text-generation retry,
 lease, reconcile and causal Receipt handling have one shared owner used by both
 Stage 1 and Stage 2; business compilation and Admission stay stage-specific.
+
+Current HTTP integration ownership and configuration migration are in
+[Stage 2 Runtime wave](stage2-runtime-wave.md): local-run source v3 embeds
+Stage2 policy, execution profile v7 freezes it for new runs, and the thin
+adapter shares exact Source/VLM predecessor reconstruction with Stage1.
 
 ## 实现策略：选择性重写，不继续补丁
 
