@@ -11,6 +11,7 @@ from bisect import bisect_left
 from dataclasses import dataclass
 from fractions import Fraction
 
+from ..media.physical_root import PhysicalRootMediaEvidence
 from ..media.root_evidence import RootMediaEvidenceBundle
 from ..media.stage4_predecessor import (
     CommittedVideoToAudioClockMapCertificate,
@@ -36,14 +37,14 @@ class ReplayedPresentationMap:
     bounds and calibration tolerances never enlarge its exact covered domain.
     """
 
-    root: RootMediaEvidenceBundle
+    root: RootMediaEvidenceBundle | PhysicalRootMediaEvidence
     probe: PresentationTimelineProbe
     certificate: CommittedVideoToAudioClockMapCertificate
     source_manifest_sha256: str
     audio_snap_calibration: CalibrationBinding
 
     def __post_init__(self) -> None:
-        if (type(self.root) is not RootMediaEvidenceBundle  # noqa: E721
+        if (type(self.root) not in (RootMediaEvidenceBundle, PhysicalRootMediaEvidence)
                 or type(self.probe) is not PresentationTimelineProbe  # noqa: E721
                 or type(self.certificate) is not CommittedVideoToAudioClockMapCertificate  # noqa: E721
                 or type(self.audio_snap_calibration) is not CalibrationBinding):  # noqa: E721
