@@ -40,8 +40,13 @@ Profile 的源语法和 decoder 已实现；它们仍是 unresolved grammar，�
 真实 raw 校准 HTTP 适配器现已实现，含原 source owner/BlobRef 校验、流式传输、
 禁用环境代理/重定向，以及不重复调用的回放测试。本轮相关回归 242 passed、零 skipped，
 并通过独立审查。实际 HTTP 服务往返已测，但模型输出是 fixture，不是真实 native 校准。
-尚须完成 committed-source/独立标注输入装配、真实模型校准、权威源/lock 部署、
-运行时接线和真实 HTTP 单集运行。
+committed-source/独立标注输入装配现已完成：精确核对来源引用与原始字节，
+使用已提交音频时钟，并验证独立标注的锁定哈希；服务配置生成器也已提交。
+测量→成功结果引用读取→独立验证的部署侧执行函数已实现，未新增 HTTP/CLI
+发布入口。当前合并回归 **440 passed、零 skipped**，包含真实隔离 PostgreSQL
+事务测试；模型输出仍为 fixture，不是实际 SenseVoice/FSMN 校准。
+尚须完成真实独立标注/模型校准、权威源/lock 部署、打包配置加载、
+运行时接线和真实 HTTP 单集运行。当前 typed 参数注入不等于部署权威加载已完成。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。

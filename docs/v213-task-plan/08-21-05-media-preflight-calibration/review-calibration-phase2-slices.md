@@ -161,10 +161,43 @@ no materialization, inference, writes, authority publication or acceptance.
 
 Independent reviewer: `calibration_migration`, separate read-only reviews of
 both slices, ALLOW with no concrete defect. The 53 new focused cases passed.
-Combined regression: **284 passed, 1 skipped** (the opt-in PostgreSQL media
-case was not enabled in this run). Ruff, source basedpyright and diff checks
+Combined regression: **284 passed, 1 skipped** (the isolated PostgreSQL
+verification instance was stopped for this run). Ruff, source basedpyright and diff checks
 passed. Package-qualified test fixture imports changed no test assertions.
 
 Service projector commit: `20de2095`. Real annotation assets, native calibration
 and verified deployment loading remain outstanding; fixture tests do not
 provide calibration truth.
+
+## Measurement result reader and independent validation composition — ALLOW
+
+Implemented the exact succeeded-outcome Store reader and a deployment-only
+composition function. The Store recovers complete persisted references using
+Job/slot/Receipt/Set/request/profile/registry closure, shares the existing pair
+decoder and never resolves a logical head. The composition invokes the existing
+measurement Command, reads that pair, then constructs the existing validator
+binding from persisted references. Measurement and validation outcomes remain
+separate; non-success stops before validation, while an unavailable Store read
+propagates. Unknown native results require existing explicit successor recovery.
+
+Implementer `calibration_contract` changed only Store code and Store tests.
+Parent implemented the execution function and its 13 composition cases.
+Independent reviewer `calibration_migration` separately reviewed both frozen
+changes and returned ALLOW. Store-focused PostgreSQL verification: 83 passed,
+zero skipped. Parent merged verification: **440 passed, zero skipped**,
+including real isolated PostgreSQL transactions, shared input/HTTP/measurement/
+validator regressions and raw evidence decoding. Ruff, explicit source
+basedpyright and diff checks passed. The verification PostgreSQL was stopped
+after the run; no application/Podman database was reset or stopped.
+
+The composition tests execute the real resolver and both Commands with
+synthetic native bytes and an in-memory Store. They are not real FunASR
+inference, actual corpus calibration or a completed real HTTP Pipeline.
+No native model, source profile, authority lock, ordinary CLI, Runtime or user
+configuration was modified or activated.
+
+Next code integration gap: Git-verified deployment profile/registry compilation
+and installed-resource loading under `08-25-lock-real-test-authority-profiles`.
+Existing authority-task authorization covers the proposed tools/registry/test
+paths; freeze a concrete slice before implementing. This is distinct from
+publishing real sources or obtaining independent real annotation data.

@@ -3200,6 +3200,62 @@ class PostgresRuntimeStore:
             raise StoreValidationError("measurement reader requires an exact validation binding")
         return self._transaction(lambda cursor: self._read_shadow_calibration_measurement(cursor, binding))
 
+    def read_shadow_calibration_measurement_outcome(
+        self,
+        job: Job,
+        outcome: CommandOutcome,
+        *,
+        expected_request_sha256: str,
+        expected_profile_source_sha256: str,
+        expected_registry_snapshot_sha256: str,
+    ) -> PersistedShadowCalibrationMeasurement:
+        """Resolve exact durable measurement refs, never a reconstructed result hash."""
+        if (
+            type(job) is not Job or type(outcome) is not CommandOutcome  # noqa: E721
+            or outcome.state != "succeeded" or outcome.is_fresh_claim is not False
+            or any(type(value) is not UUID for value in (
+                outcome.command_slot_id, outcome.receipt_id, outcome.artifact_set_id
+            ))
+            or outcome.failure_code is not None or outcome.failure_detail_json is not None
+            or (outcome.job_id is not None and type(outcome.job_id) is not UUID)
+        ):
+            raise StoreValidationError("measurement outcome must be exact succeeded Receipt/Set/slot")
+        for name, value in (
+            ("expected request hash", expected_request_sha256),
+            ("expected profile source hash", expected_profile_source_sha256),
+            ("expected registry snapshot hash", expected_registry_snapshot_sha256),
+        ):
+            self._validate_sha256(value, name)
+            if value == "sha256:" + "0" * 64:
+                raise StoreValidationError(f"{name} must be non-zero")
+        if job != Job(expected_request_sha256.removeprefix("sha256:"), "shadow"):
+            raise StoreValidationError("measurement Job does not match the expected shadow request")
+
+        def operation(cursor: DbCursor) -> PersistedShadowCalibrationMeasurement:
+            actual_job, _, command, request_hash, members = self._read_succeeded_set_members(
+                cursor, cast(UUID, outcome.receipt_id), cast(UUID, outcome.artifact_set_id)
+            )
+            if (
+                actual_job != job or request_hash != expected_request_sha256
+                or members[0].command_slot_id != outcome.command_slot_id
+            ):
+                raise StoreValidationError("measurement outcome does not name the expected Job/request/slot")
+            if outcome.job_id is not None:
+                cursor.execute(
+                    "SELECT job_id FROM runtime.command_slots WHERE command_slot_id = %s",
+                    (outcome.command_slot_id,),
+                )
+                row = cursor.fetchone()
+                if row is None or UUID(str(row[0])) != outcome.job_id:
+                    raise StoreValidationError("measurement outcome Job UUID does not match its owner")
+            return self._decode_shadow_calibration_measurement(
+                actual_job, command, request_hash, members,
+                expected_profile_source_sha256=expected_profile_source_sha256,
+                expected_registry_snapshot_sha256=expected_registry_snapshot_sha256,
+            )
+
+        return self._transaction(operation)
+
     @staticmethod
     def _read_succeeded_set_members(
         cursor: DbCursor, receipt_id: UUID, artifact_set_id: UUID
@@ -3264,14 +3320,45 @@ class PostgresRuntimeStore:
         job, _, command, request_hash, members = self._read_succeeded_set_members(
             cursor, manifest_ref.receipt_id, manifest_ref.artifact_set_id
         )
+        if tuple(member.reference for member in members) != (manifest_ref, results_ref):
+            raise StoreValidationError("measurement pair does not match its exact validation references")
+        return self._decode_shadow_calibration_measurement(
+            job, command, request_hash, members,
+            expected_profile_source_sha256=binding.profile_source_sha256,
+            expected_registry_snapshot_sha256=binding.registry_snapshot_sha256,
+        )
+
+    @staticmethod
+    def _decode_shadow_calibration_measurement(
+        job: Job,
+        command: str,
+        request_hash: str,
+        members: tuple[PersistedCommittedArtifactMember, ...],
+        *,
+        expected_profile_source_sha256: str,
+        expected_registry_snapshot_sha256: str,
+    ) -> PersistedShadowCalibrationMeasurement:
+        """One closure shared by outcome consumers and exact validation bindings."""
         if (
             len(members) != 2
-            or tuple(member.reference for member in members) != (manifest_ref, results_ref)
             or command != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
             or job != Job(request_hash.removeprefix("sha256:"), "shadow")
-            or manifest_ref.scope != ArtifactScope("autocut_calibration", "shadow_run", job.job_key)
+            or any(
+                member.reference.scope != ArtifactScope("autocut_calibration", "shadow_run", job.job_key)
+                or (member.reference.member_ordinal, member.reference.artifact_type,
+                    member.reference.logical_id, member.reference.revision)
+                != (ordinal, artifact_type, logical_id, 1)
+                or member.reference.content_hash == "sha256:" + "0" * 64
+                for member, ordinal, artifact_type, logical_id in zip(
+                    members, (0, 1),
+                    ("calibration_measurement_manifest", "calibration_measurement_results"),
+                    ("measurement-manifest", "measurement-results"), strict=True,
+                )
+            )
+            or members[0].reference.content_hash == members[1].reference.content_hash
         ):
             raise StoreValidationError("measurement pair does not have exact shadow command provenance")
+        manifest_ref = members[0].reference
         manifest = _strict_json_object(members[0].payload_json, "measurement manifest")
         results = _strict_json_object(members[1].payload_json, "measurement results")
         if (
@@ -3287,8 +3374,8 @@ class PostgresRuntimeStore:
             or manifest.get("schema_version") != "shadow-calibration-measurement-manifest-v3"
             or results.get("schema_version") != "shadow-calibration-measurement-results-v2"
             or manifest.get("measurement_request_sha256") != request_hash
-            or manifest.get("shadow_profile_source_sha256") != binding.profile_source_sha256
-            or manifest.get("registry_snapshot_sha256") != binding.registry_snapshot_sha256
+            or manifest.get("shadow_profile_source_sha256") != expected_profile_source_sha256
+            or manifest.get("registry_snapshot_sha256") != expected_registry_snapshot_sha256
             or results.get("measurement_manifest_sha256") != manifest_ref.content_hash
         ):
             raise StoreValidationError("measurement v3 manifest/results do not close over the validation binding")

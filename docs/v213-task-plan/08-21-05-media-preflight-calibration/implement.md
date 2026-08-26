@@ -55,3 +55,9 @@
     Test source/proxy substitution, wrong clock/anchor/profile, incomplete
     corpus, and no provider/materialization during resolution. Keep real
     annotation availability separate from synthetic implementation fixtures.
+18. Add the exact succeeded measurement-outcome Store reader, sharing existing
+    two-member closure, and a thin deployment execution function composing
+    resolution, measurement, persisted-ref lookup and independent validation.
+    Test reference substitution, non-success short-circuit, no repeat native
+    execution on replay, explicit validator key and durable unknown outcomes.
+    Use real isolated PostgreSQL for Store tests; never reset application data.

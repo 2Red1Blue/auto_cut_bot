@@ -288,3 +288,30 @@ No real independently annotated ASR/VAD golden anchors were found during this
 slice's inventory. Synthetic test anchors validate code only and must never
 become a production profile/calibration record. Real source publication and
 native execution still require independently established anchor data.
+
+## Shadow measurement-to-validation execution seam
+
+A deployment-side function composes the existing resolver, HTTP port and
+measurement Command, then invokes the independent validator only on succeeded
+measurement. It is not a Pipeline HTTP endpoint, authority loader or service
+launcher. All profile/registry/source inputs remain deployment verified;
+operational limits, validator attempt key and optional measurement retry
+authorization are explicit. No default retry, key rotation or config mutation.
+
+The Store adds `read_shadow_calibration_measurement_outcome(job, outcome, *,
+expected_request_sha256, expected_profile_source_sha256,
+expected_registry_snapshot_sha256)`. Only an exact succeeded outcome with
+Receipt/Set/slot identities may be resolved. Read the persisted pair in one
+transaction; verify Job, command, request hash, exact slot/Receipt/Set, complete
+member identities and v3 manifest/results closure. Share the existing binding
+reader's closure rather than weaken it or duplicate validation. Return the
+existing `PersistedShadowCalibrationMeasurement`; no new schema or migration.
+
+The composition builds `CalibrationValidationBinding` exclusively from those
+persisted member references. Never reconstruct expected result hashes, query a
+head, or issue app-layer SQL. Non-successful measurements return without a
+validator call; source/Store unavailability propagates rather than becoming
+acceptance. Return separate measurement and optional validation outcomes so
+measurement success cannot be presented as accepted calibration. Validation
+replay uses the explicit stable attempt key. Unknown native execution remains
+owned by the existing durable recovery protocol.

@@ -31,6 +31,7 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     IdempotencyConflictError,
     Job,
+    MediaEvidenceUnavailableError,
     PostgresRuntimeStore,
     StoreValidationError,
 )
@@ -219,6 +220,110 @@ def test_exact_measurement_reader_returns_owner_and_full_v3_pair(store: Postgres
         store.read_committed_shadow_calibration_measurement(
             replace(binding, profile_source_sha256=_hash("wrong-profile"))
         )
+
+
+def test_measurement_outcome_reader_returns_durable_pair_and_same_receipt_replay(
+    store: PostgresRuntimeStore,
+) -> None:
+    request = _request()
+    command = MeasureShadowCalibrationCommand(store, _member_port(request))
+    outcome = command.execute(request)
+    expected = {
+        "expected_request_sha256": request.request_hash,
+        "expected_profile_source_sha256": request.shadow_inputs.profile_source_sha256,
+        "expected_registry_snapshot_sha256": request.shadow_inputs.registry_snapshot_sha256,
+    }
+    measurement = store.read_shadow_calibration_measurement_outcome(request.job, outcome, **expected)
+    refs = _references(outcome)
+    assert (measurement.manifest.reference, measurement.results.reference) == refs
+    assert measurement.job == request.job
+    assert measurement.request_hash == request.request_hash
+    assert measurement.command_slot_id == outcome.command_slot_id
+    binding = CalibrationValidationBinding(
+        "1", expected["expected_profile_source_sha256"], expected["expected_registry_snapshot_sha256"],
+        refs[0], refs[1], "reader-comparison",
+    )
+    assert store.read_committed_shadow_calibration_measurement(binding) == measurement
+    replay = command.execute(request)
+    assert replay.receipt_id == outcome.receipt_id
+    assert store.read_shadow_calibration_measurement_outcome(request.job, replay, **expected) == measurement
+    with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
+        cursor.execute("DELETE FROM runtime.logical_heads WHERE job_id = %s", (outcome.job_id,))
+    assert store.read_shadow_calibration_measurement_outcome(
+        request.job, replace(outcome, job_id=None), **expected
+    ) == measurement
+
+
+@pytest.mark.parametrize("drift", (
+    "job", "job-profile", "request", "receipt", "set", "slot", "job-id", "profile", "registry",
+))
+def test_measurement_outcome_reader_rejects_identity_substitution(
+    store: PostgresRuntimeStore, drift: str,
+) -> None:
+    request = _request()
+    outcome = MeasureShadowCalibrationCommand(store, _member_port(request)).execute(request)
+    job = request.job
+    expected = {
+        "expected_request_sha256": request.request_hash,
+        "expected_profile_source_sha256": request.shadow_inputs.profile_source_sha256,
+        "expected_registry_snapshot_sha256": request.shadow_inputs.registry_snapshot_sha256,
+    }
+    if drift == "job":
+        job = Job("other-job", "shadow")
+    elif drift == "job-profile":
+        job = Job(job.job_key, "authority")
+    elif drift == "request":
+        expected["expected_request_sha256"] = _hash("other-request")
+        job = Job(expected["expected_request_sha256"].removeprefix("sha256:"), "shadow")
+    elif drift in {"profile", "registry"}:
+        key = "expected_profile_source_sha256" if drift == "profile" else "expected_registry_snapshot_sha256"
+        expected[key] = _hash("other-identity")
+    else:
+        field = {"receipt": "receipt_id", "set": "artifact_set_id", "slot": "command_slot_id", "job-id": "job_id"}[drift]
+        outcome = replace(outcome, **{field: uuid4()})
+    with pytest.raises((StoreValidationError, MediaEvidenceUnavailableError)):
+        store.read_shadow_calibration_measurement_outcome(job, outcome, **expected)
+
+
+@pytest.mark.parametrize("changes", (
+    {"state": "running"}, {"state": "failed"}, {"state": "denied"}, {"state": True},
+    {"receipt_id": None}, {"artifact_set_id": None}, {"command_slot_id": None},
+    {"receipt_id": "not-a-uuid"}, {"artifact_set_id": True}, {"command_slot_id": 1.0},
+    {"job_id": "not-a-uuid"}, {"is_fresh_claim": True}, {"is_fresh_claim": 0},
+    {"failure_code": "FAILED"}, {"failure_detail_json": "{}"},
+))
+def test_measurement_outcome_reader_rejects_non_exact_success_before_database(changes) -> None:
+    def no_database():
+        pytest.fail("malformed outcome must be rejected before opening a connection")
+
+    request = _request()
+    outcome = replace(CommandOutcome(uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4()), **changes)
+    with pytest.raises(StoreValidationError):
+        PostgresRuntimeStore(no_database).read_shadow_calibration_measurement_outcome(
+            request.job, outcome, expected_request_sha256=request.request_hash,
+            expected_profile_source_sha256=request.shadow_inputs.profile_source_sha256,
+            expected_registry_snapshot_sha256=request.shadow_inputs.registry_snapshot_sha256,
+        )
+
+
+@pytest.mark.parametrize("field", (
+    "expected_request_sha256", "expected_profile_source_sha256", "expected_registry_snapshot_sha256",
+))
+@pytest.mark.parametrize("value", ("sha256:" + "0" * 64, "invalid", True, 1.0))
+def test_measurement_outcome_reader_rejects_invalid_expected_hash_before_database(field, value) -> None:
+    def no_database():
+        pytest.fail("malformed identity must be rejected before opening a connection")
+
+    request = _request()
+    expected = {
+        "expected_request_sha256": request.request_hash,
+        "expected_profile_source_sha256": request.shadow_inputs.profile_source_sha256,
+        "expected_registry_snapshot_sha256": request.shadow_inputs.registry_snapshot_sha256,
+        field: value,
+    }
+    outcome = CommandOutcome(uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4())
+    with pytest.raises(StoreValidationError):
+        PostgresRuntimeStore(no_database).read_shadow_calibration_measurement_outcome(request.job, outcome, **expected)
 
 
 def test_success_is_atomic_terminal_and_replay_checks_anchor(store: PostgresRuntimeStore) -> None:
@@ -426,7 +531,10 @@ def test_consumer_anchor_reader_rejects_identity_or_exact_reference_drift(
         store.read_calibration_record_anchor(aggregate, validation, **expected)
 
 
-@pytest.mark.parametrize("drift", ("command", "profile", "v2", "results-link"))
+@pytest.mark.parametrize("drift", (
+    "command", "profile", "v2", "results-link", "type", "logical-id", "revision", "scope", "ordinal",
+    "manifest-extra", "results-extra", "coverage", "member-link", "duplicate-corpus", "raw-link",
+))
 def test_reader_rejects_store_readable_forged_predecessor(
     store: PostgresRuntimeStore, drift: str
 ) -> None:
@@ -438,16 +546,38 @@ def test_reader_rejects_store_readable_forged_predecessor(
     manifest["measurement_request_sha256"] = request_hash
     if drift == "v2":
         manifest["schema_version"] = "shadow-calibration-measurement-manifest-v2"
+    elif drift == "manifest-extra":
+        manifest["untrusted_extra"] = True
+    elif drift == "duplicate-corpus":
+        manifest["native_invocations"].append(manifest["native_invocations"][0])
     manifest_json = json.dumps(manifest)
     manifest_hash = canonical_payload_hash(manifest_json)
     results = json.loads(measurement.results.payload_json)
     results["measurement_manifest_sha256"] = _hash("wrong-link") if drift == "results-link" else manifest_hash
+    if drift == "results-extra":
+        results["untrusted_extra"] = True
+    elif drift == "coverage":
+        results["members"] = []
+    elif drift == "member-link":
+        results["members"][0]["expected_anchor_reference_sha256"] = _hash("other-anchor")
+    elif drift == "duplicate-corpus":
+        results["members"].append(results["members"][0])
+    elif drift == "raw-link":
+        results["members"][0]["native_response_sha256"] = _hash("other-raw")
     results_json = json.dumps(results)
     scope = ArtifactScope("autocut_calibration", "shadow_run", job.job_key)
     artifacts = (
         ArtifactMember("calibration_measurement_manifest", "measurement-manifest", 1, scope, manifest_hash, manifest_json),
         ArtifactMember("calibration_measurement_results", "measurement-results", 1, scope, canonical_payload_hash(results_json), results_json),
     )
+    if drift == "ordinal":
+        artifacts = (artifacts[1], artifacts[0])
+    elif drift in {"type", "logical-id", "revision", "scope"}:
+        field, value = {
+            "type": ("artifact_type", "other_type"), "logical-id": ("logical_id", "other-id"),
+            "revision": ("revision", 2), "scope": ("scope", replace(scope, key="other-scope")),
+        }[drift]
+        artifacts = (artifacts[0], replace(artifacts[1], **{field: value}))
     # Raw SQL creates malformed provenance intentionally; generic member reads
     # remain possible, while the specialized predecessor seam must reject it.
     job_id, slot_id, set_id, receipt_id = uuid4(), uuid4(), uuid4(), uuid4()
@@ -461,14 +591,22 @@ def test_reader_rejects_store_readable_forged_predecessor(
         for ordinal, artifact in enumerate(artifacts):
             artifact_id = uuid4()
             cursor.execute(
-                "INSERT INTO runtime.artifacts(artifact_id,artifact_set_id,job_id,artifact_type,logical_id,revision,namespace,scope_kind,scope_key,content_hash,payload_json) VALUES (%s,%s,%s,%s,%s,1,%s,%s,%s,%s,%s::jsonb)",
-                (artifact_id,set_id,job_id,artifact.artifact_type,artifact.logical_id,scope.namespace,scope.kind,scope.key,artifact.content_hash,artifact.payload_json),
+                "INSERT INTO runtime.artifacts(artifact_id,artifact_set_id,job_id,artifact_type,logical_id,revision,namespace,scope_kind,scope_key,content_hash,payload_json) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)",
+                (artifact_id,set_id,job_id,artifact.artifact_type,artifact.logical_id,artifact.revision,artifact.scope.namespace,artifact.scope.kind,artifact.scope.key,artifact.content_hash,artifact.payload_json),
             )
             cursor.execute("INSERT INTO runtime.artifact_set_members VALUES (%s,%s,%s)", (set_id,ordinal,artifact_id))
         cursor.execute("INSERT INTO runtime.command_receipts(receipt_id,command_slot_id,outcome,result_artifact_set_id) VALUES (%s,%s,'succeeded',%s)", (receipt_id,slot_id,set_id))
         cursor.execute("UPDATE runtime.command_slots SET state='succeeded',completed_at=transaction_timestamp() WHERE command_slot_id=%s", (slot_id,))
-    refs = _references(CommandOutcome(slot_id, "succeeded", receipt_id=receipt_id, artifact_set_id=set_id))
-    binding = replace(original, manifest_reference=refs[0], results_reference=refs[1])
+    outcome = CommandOutcome(slot_id, "succeeded", receipt_id=receipt_id, artifact_set_id=set_id, job_id=job_id)
+    refs = _references(outcome)
     assert store.read_committed_artifact_member(refs[0]).reference == refs[0]
     with pytest.raises(StoreValidationError):
+        binding = replace(original, manifest_reference=refs[0], results_reference=refs[1])
         store.read_committed_shadow_calibration_measurement(binding)
+    with pytest.raises(StoreValidationError):
+        store.read_shadow_calibration_measurement_outcome(
+            Job(request_hash.removeprefix("sha256:"), "shadow"), outcome,
+            expected_request_sha256=request_hash,
+            expected_profile_source_sha256=original.profile_source_sha256,
+            expected_registry_snapshot_sha256=original.registry_snapshot_sha256,
+        )
