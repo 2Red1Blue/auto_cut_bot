@@ -64,6 +64,8 @@ class FakeRunStore:
             commands=(
                 PipelineCommand("command-1", "source_prep", "pending"),
                 PipelineCommand("command-2", "vlm", "pending"),
+                PipelineCommand("command-3", "stage1_narrative", "pending"),
+                PipelineCommand("command-4", "media_preflight", "pending"),
             ),
             version=0,
             execution_profile=execution_profile,
@@ -146,6 +148,7 @@ def _v2_execution_profile() -> PipelineExecutionProfile:
     del mapping["media_preflight_policy"]
     del mapping["media_preflight_policy_hash"]
     del mapping["materialization_limits"]
+    del mapping["stage1_command_policy"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -159,6 +162,51 @@ def _snapshot(command: PipelineCommand) -> PipelineRunSnapshot:
         0,
         execution_profile(),
     )
+
+
+def _v5_execution_profile() -> PipelineExecutionProfile:
+    mapping = execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v5"
+    del mapping["stage1_command_policy"]
+    return PipelineExecutionProfile.from_mapping(mapping)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("submit", "resume", "reconstruct"))
+async def test_persisted_v5_cannot_reenter_runtime_or_gain_a_stage1_default(operation):
+    store = FakeRunStore()
+    old_profile = _v5_execution_profile()
+    persisted = await store.claim_run(
+        run_id="pipeline_run_" + "e" * 32,
+        idempotency_key="historical-v5",
+        request=request(), request_hash=request().request_hash, execution_profile=old_profile,
+    )
+    scheduler = FakeScheduler()
+    service = DurablePipelineRunService(
+        store, scheduler, FakeAuthorizer(), execution_profile=execution_profile(),
+    )
+    with pytest.raises(PipelineRunValidationError, match="frozen media-preflight"):
+        if operation == "submit":
+            await service.submit(request(), "historical-v5")
+        elif operation == "resume":
+            await service.resume(persisted.snapshot.run_id, expected_version=0)
+        else:
+            await service.reconstruct()
+    assert store.by_run_id[persisted.snapshot.run_id] == persisted.snapshot
+    assert scheduler.enqueued == []
+    assert (await service.status(persisted.snapshot.run_id)).execution_profile == old_profile
+
+
+@pytest.mark.asyncio
+async def test_new_run_cannot_use_historical_v5_profile_before_persistence():
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    service = DurablePipelineRunService(
+        store, scheduler, FakeAuthorizer(), execution_profile=_v5_execution_profile(),
+    )
+    with pytest.raises(PipelineRunValidationError, match="frozen media-preflight"):
+        await service.submit(request(), "historical-v5-new")
+    assert store.by_run_id == {} and scheduler.enqueued == []
 
 
 @pytest.mark.asyncio
@@ -187,11 +235,18 @@ async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
 
 
 @pytest.mark.asyncio
-async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default() -> None:
+@pytest.mark.parametrize("model_kind", ("vlm", "stage1"))
+async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default(model_kind) -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
     first_profile = execution_profile(model_id="doubao-model-v1")
     changed_profile = execution_profile(model_id="doubao-model-v2")
+    if model_kind == "stage1":
+        first_profile = execution_profile()
+        policy = first_profile.build_stage1_command_policy()
+        changed_profile = frozen_execution_profile(stage1_policy=replace(
+            policy, generation=replace(policy.generation, model_id="different-stage1-model"),
+        ))
     first_service = DurablePipelineRunService(
         store,
         scheduler,
@@ -232,6 +287,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
             profile.to_media_preflight_policy(),
             retry_policy=profile.to_generation_retry_policy(),
             materialization_limits=profile.to_materialization_limits(),
+            stage1_policy=profile.build_stage1_command_policy(),
         )
         == profile
     )
@@ -306,6 +362,7 @@ def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -
             media_preflight_policy(word_timing_capability="sentence_only"),
             retry_policy=profile.to_generation_retry_policy(),
             materialization_limits=profile.to_materialization_limits(),
+            stage1_policy=profile.build_stage1_command_policy(),
         )
 
 
@@ -764,6 +821,36 @@ async def test_legacy_unresolved_profile_never_reconciles_vlm() -> None:
         await reconciler.reconcile(legacy_snapshot)
 
     assert stage.commands == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("execute", "reconcile"))
+async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(operation):
+    command = PipelineCommand(
+        "command-stage1-history", "stage1_narrative",
+        "pending" if operation == "execute" else "indeterminate",
+    )
+
+    class NoStore:
+        async def claim_next_pending(self, *args, **kwargs):
+            pytest.fail("historical Stage 1 profile reached a Store claim")
+
+        async def read_indeterminate(self, *args, **kwargs):
+            pytest.fail("historical Stage 1 profile reached a Store reconcile read")
+
+    snapshot = replace(_snapshot(command), execution_profile=_v5_execution_profile())
+    store = NoStore()
+    execute_stage, reconcile_stage = FakeStage(), FakeReconcileStage()
+    with pytest.raises(PipelineRunValidationError, match="profile v6"):
+        if operation == "execute":
+            runner = PipelineStageRunner(
+                PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)), store,
+            )
+            await runner.claim_and_execute(snapshot, lease_id="historical-lease")
+        else:
+            reconciler = PipelineStageReconciler.from_ports(store, ("stage1_narrative", reconcile_stage))
+            await reconciler.reconcile(snapshot)
+    assert execute_stage.commands == reconcile_stage.commands == []
 
 
 class SuccessStage:

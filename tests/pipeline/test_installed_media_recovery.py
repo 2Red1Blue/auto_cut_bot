@@ -28,6 +28,7 @@ def _matching_context():
         old.to_doubao_policy(), policy, retry_policy=old.to_generation_retry_policy(),
         materialization_limits=replace(old.to_materialization_limits(),
             timed_speech_max_request_bytes=resource.local_run.native_timed_speech.max_request_bytes),
+        stage1_policy=resource.narrative.command_policy,
     )
     return replace(context, execution_profile=profile), resource, policy
 
@@ -40,6 +41,7 @@ async def test_resumed_media_mismatch_stops_before_store_or_native(operation):
     changed = type(old).from_policies(
         old.to_doubao_policy(), replace(policy, timed_speech_calibration_sha256="sha256:" + "9" * 64),
         retry_policy=old.to_generation_retry_policy(), materialization_limits=old.to_materialization_limits(),
+        stage1_policy=old.build_stage1_command_policy(),
     )
     context = replace(context, execution_profile=changed)
 

@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
+from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
+from autocut_kernel.semantic_chain.stage1_command_policy import (
+    Stage1CommandPolicy,
+    Stage1GenerationPolicy,
+)
+from autocut_kernel.semantic_chain.stage1_draft import Stage1DraftPolicy
 from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 
@@ -87,10 +94,43 @@ def media_preflight_policy(**changes: object) -> LocalMediaPreflightPolicy:
     return LocalMediaPreflightPolicy.from_calibrated_values(**values)
 
 
+def stage1_command_policy() -> Stage1CommandPolicy:
+    """Explicit synthetic test policy, never an installed authority source."""
+    return Stage1CommandPolicy(
+        artifact_revision=1,
+        generation=Stage1GenerationPolicy(
+            provider_id="doubao-ark-text-responses-stream",
+            model_id="synthetic-stage1-model",
+            prompt_version="synthetic-stage1-prompt-v1",
+            prompt_template="Build a draft from the supplied semantic observations.",
+            adapter_strategy_version="doubao-ark-text-responses-stream-v1",
+            max_output_tokens=1024,
+            temperature="0.5",
+        ),
+        draft_policy=Stage1DraftPolicy(
+            max_response_bytes=64_000,
+            max_prompt_bytes=64_000,
+            max_input_windows=4,
+            max_input_objects=32,
+            max_beats=4,
+            max_obligations=4,
+            max_story_threads=4,
+            max_merge_proposals=4,
+            max_references_per_item=8,
+            max_text_characters=256,
+            max_total_text_characters=2048,
+        ),
+        coverage_policy=Stage1CoveragePolicy("0.8", "strict_global"),
+        dependency_policy=DependencyProjectionPolicy("semantic-dependencies-v1"),
+        retry_policy=GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (2, 8)),
+    )
+
+
 def execution_profile(
     *,
     model_id: str = "doubao-seed-2-1-pro-260628",
     media_policy: LocalMediaPreflightPolicy | None = None,
+    stage1_policy: Stage1CommandPolicy | None = None,
 ) -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(model_id=model_id),
@@ -106,4 +146,5 @@ def execution_profile(
             copy_chunk_bytes=64 * 1024,
             staging_quota_bytes=16 * 1024 * 1024,
         ),
+        stage1_policy=stage1_command_policy() if stage1_policy is None else stage1_policy,
     )

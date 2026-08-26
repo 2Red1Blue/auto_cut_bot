@@ -9,11 +9,13 @@ import pytest
 from autocut_kernel.pipeline import build_narrative_graph_request as module
 from autocut_kernel.pipeline.build_narrative_graph_request import (
     BuildNarrativeGraphRequest,
-    Stage1CommandPolicy,
-    Stage1GenerationPolicy,
 )
 from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
+from autocut_kernel.semantic_chain.stage1_command_policy import (
+    Stage1CommandPolicy,
+    Stage1GenerationPolicy,
+)
 from autocut_kernel.vlm.retry_policy import GenerationRetryPolicy
 
 from tests.semantic_chain.test_stage1_draft import POLICY

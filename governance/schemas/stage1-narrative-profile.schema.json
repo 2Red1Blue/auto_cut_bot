@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "schema://governance/stage1-narrative-profile/1.0.0",
+  "$id": "schema://governance/stage1-narrative-profile/2.0.0",
   "title": "Stage1NarrativeProfile",
   "type": "object",
   "additionalProperties": false,
@@ -16,10 +16,11 @@
     "response_schema",
     "parser",
     "policies",
+    "stage1_command_policy",
     "capabilities"
   ],
   "properties": {
-    "schema_version": {"const": "autocut-stage1-narrative-profile-v1"},
+    "schema_version": {"const": "autocut-stage1-narrative-profile-v2"},
     "contract_version": {"const": "2.1.3"},
     "profile_id": {"const": "stage1_narrative"},
     "profile_version": {"$ref": "#/$defs/profile_version"},
@@ -30,9 +31,127 @@
     "response_schema": {"$ref": "#/$defs/response_schema"},
     "parser": {"$ref": "#/$defs/parser"},
     "policies": {"$ref": "#/$defs/policies"},
+    "stage1_command_policy": {"$ref": "#/$defs/stage1_command_policy"},
     "capabilities": {"$ref": "#/$defs/capabilities"}
   },
   "$defs": {
+    "safe_positive_integer": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "non_blank_text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "stage1_command_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_revision", "generation", "draft_policy", "coverage_policy", "dependency_policy", "retry_policy"],
+      "properties": {
+        "artifact_revision": {"$ref": "#/$defs/safe_positive_integer"},
+        "generation": {"$ref": "#/$defs/stage1_generation"},
+        "draft_policy": {"$ref": "#/$defs/stage1_draft_policy"},
+        "coverage_policy": {"$ref": "#/$defs/stage1_coverage_policy"},
+        "dependency_policy": {"$ref": "#/$defs/stage1_dependency_policy"},
+        "retry_policy": {"$ref": "#/$defs/stage1_retry_policy"}
+      }
+    },
+    "stage1_generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_id", "model_id", "prompt_version", "prompt_template", "adapter_strategy_version", "max_output_tokens", "temperature"],
+      "properties": {
+        "provider_id": {"const": "doubao-ark-text-responses-stream"},
+        "model_id": {"const": "doubao-seed-2-1-pro-260628"},
+        "prompt_version": {"$ref": "#/$defs/non_blank_text"},
+        "prompt_template": {"$ref": "#/$defs/non_blank_text"},
+        "adapter_strategy_version": {"const": "doubao-ark-text-responses-stream-v1"},
+        "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 32768},
+        "temperature": {"type": "string", "maxLength": 32, "pattern": "^(?:[012]|[01]\\.[0-9]*[1-9])$"}
+      }
+    },
+    "stage1_draft_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_response_bytes", "max_prompt_bytes", "max_input_windows", "max_input_objects", "max_beats", "max_obligations", "max_story_threads", "max_merge_proposals", "max_references_per_item", "max_text_characters", "max_total_text_characters"],
+      "properties": {
+        "max_response_bytes": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_prompt_bytes": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_input_windows": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_input_objects": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_beats": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_obligations": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_story_threads": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_merge_proposals": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_references_per_item": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_text_characters": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_total_text_characters": {"$ref": "#/$defs/safe_positive_integer"}
+      }
+    },
+    "stage1_coverage_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_confidence", "coverage_mode"],
+      "properties": {
+        "minimum_confidence": {"type": "string", "pattern": "^(?:[01]|0\\.[0-9]*[1-9])$"},
+        "coverage_mode": {"const": "strict_global"}
+      }
+    },
+    "stage1_dependency_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_version", "canonical_owner_by_object_type", "edge_projections", "attribute_projections", "external_root_projections"],
+      "properties": {
+        "strategy_version": {"const": "semantic-dependencies-v1"},
+        "canonical_owner_by_object_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entity", "fact", "event", "beat", "obligation", "story_thread", "character", "character_state", "relationship", "question", "foreshadow", "source", "source_window", "coverage_window"],
+          "properties": {
+            "entity": {"const": "narrative_graph"},
+            "fact": {"const": "narrative_graph"},
+            "event": {"const": "event_card_set"},
+            "beat": {"const": "narrative_graph"},
+            "obligation": {"const": "narrative_graph"},
+            "story_thread": {"const": "narrative_graph"},
+            "character": {"const": "narrative_graph"},
+            "character_state": {"const": "narrative_graph"},
+            "relationship": {"const": "narrative_graph"},
+            "question": {"const": "narrative_graph"},
+            "foreshadow": {"const": "narrative_graph"},
+            "source": {"const": "whole_series_source_manifest"},
+            "source_window": {"const": "whole_series_source_manifest"},
+            "coverage_window": {"const": "coverage_ledger"}
+          }
+        },
+        "edge_projections": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supports", "satisfies", "causes", "resolves", "requires", "precedes", "involves", "contradicts"],
+          "properties": {
+            "supports": {"const": "from_to"},
+            "satisfies": {"const": "from_to"},
+            "causes": {"const": "from_to"},
+            "resolves": {"const": "from_to"},
+            "requires": {"const": "to_from"},
+            "precedes": {"const": "no_propagation_seed_both_on_conflict"},
+            "involves": {"const": "attributes_only"},
+            "contradicts": {"const": "seed_both_no_recursive_arc"}
+          }
+        },
+        "attribute_projections": {"const": ["subject_to_fact", "entity_ref_value_to_fact", "participant_to_event", "required_fact_to_obligation", "obligation_to_beat", "obligation_to_story_thread", "entity_to_character", "state_fact_to_character", "character_to_character_state", "state_fact_to_character_state", "answer_fact_to_question", "setup_payoff_event_to_foreshadow", "subject_object_character_to_relationship"]},
+        "external_root_projections": {"const": ["source_window_to_coverage_window", "coverage_window_to_source", "coverage_window_to_fact", "coverage_window_to_event", "source_to_fact", "source_to_event"]}
+      }
+    },
+    "stage1_retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_version", "max_attempts", "backoff_seconds"],
+      "properties": {
+        "strategy_version": {"const": "generation-retry-v1"},
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 3},
+        "backoff_seconds": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "maxItems": 2}
+      },
+      "oneOf": [
+        {"properties": {"max_attempts": {"const": 1}, "backoff_seconds": {"minItems": 0, "maxItems": 0}}},
+        {"properties": {"max_attempts": {"const": 2}, "backoff_seconds": {"minItems": 1, "maxItems": 1}}},
+        {"properties": {"max_attempts": {"const": 3}, "backoff_seconds": {"minItems": 2, "maxItems": 2}}}
+      ]
+    },
     "sha256": {
       "type": "string",
       "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
@@ -93,18 +212,14 @@
         "parse_policy_sha256",
         "retry_policy_sha256",
         "window_sampling_policy_sha256",
-        "coverage_policy_sha256",
-        "dependency_policy_sha256",
-        "conflict_policy_sha256"
+        "stage1_command_policy_sha256"
       ],
       "properties": {
         "request_parameters_sha256": {"$ref": "#/$defs/sha256"},
         "parse_policy_sha256": {"$ref": "#/$defs/sha256"},
         "retry_policy_sha256": {"$ref": "#/$defs/sha256"},
         "window_sampling_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "coverage_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "dependency_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "conflict_policy_sha256": {"$ref": "#/$defs/sha256"}
+        "stage1_command_policy_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "capabilities": {

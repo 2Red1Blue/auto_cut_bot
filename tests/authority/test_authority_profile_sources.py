@@ -25,6 +25,14 @@ from autocut_kernel.registry.authority_profiles import (
     decode_shadow_calibration_profile_source as _decode_shadow_calibration_profile_source,
 )
 from autocut_kernel.registry.timed_speech_contract import timed_speech_registry_contract_sha256
+from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
+from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
+from autocut_kernel.semantic_chain.stage1_command_policy import (
+    Stage1CommandPolicy,
+    Stage1GenerationPolicy,
+)
+from autocut_kernel.semantic_chain.stage1_draft import Stage1DraftPolicy
+from autocut_kernel.vlm.retry_policy import GenerationRetryPolicy
 from jsonschema import Draft202012Validator
 
 REPO_ROOT = Path(__file__).parents[2]
@@ -76,9 +84,36 @@ def decode_local_run_profile_source(
     )
 
 
+def synthetic_stage1_command_policy() -> Stage1CommandPolicy:
+    """Explicit fake prompt/limits, not a calibrated or deployable profile."""
+    return Stage1CommandPolicy(
+        artifact_revision=1,
+        generation=Stage1GenerationPolicy(
+            provider_id="doubao-ark-text-responses-stream",
+            model_id="doubao-seed-2-1-pro-260628",
+            prompt_version="synthetic-stage1-draft-v1",
+            prompt_template="Synthetic test prompt: produce only the closed cross-window draft.",
+            adapter_strategy_version="doubao-ark-text-responses-stream-v1",
+            max_output_tokens=4096,
+            temperature="0",
+        ),
+        draft_policy=Stage1DraftPolicy(
+            max_response_bytes=1_048_576, max_prompt_bytes=2_097_152,
+            max_input_windows=100, max_input_objects=10_000,
+            max_beats=100, max_obligations=100, max_story_threads=20,
+            max_merge_proposals=100, max_references_per_item=100,
+            max_text_characters=4096, max_total_text_characters=100_000,
+        ),
+        coverage_policy=Stage1CoveragePolicy("0.8", "strict_global"),
+        dependency_policy=DependencyProjectionPolicy("semantic-dependencies-v1"),
+        retry_policy=GenerationRetryPolicy("generation-retry-v1", 3, (2, 8)),
+    )
+
+
 def _narrative_mapping() -> dict[str, object]:
+    command_policy = synthetic_stage1_command_policy()
     return {
-        "schema_version": "autocut-stage1-narrative-profile-v1",
+        "schema_version": "autocut-stage1-narrative-profile-v2",
         "contract_version": "2.1.3",
         "profile_id": "stage1_narrative",
         "profile_version": "1",
@@ -100,10 +135,9 @@ def _narrative_mapping() -> dict[str, object]:
             "parse_policy_sha256": _hash("parse-policy"),
             "retry_policy_sha256": _hash("retry-policy"),
             "window_sampling_policy_sha256": _hash("window-policy"),
-            "coverage_policy_sha256": _hash("coverage-policy"),
-            "dependency_policy_sha256": _hash("dependency-policy"),
-            "conflict_policy_sha256": _hash("conflict-policy"),
+            "stage1_command_policy_sha256": command_policy.canonical_hash,
         },
+        "stage1_command_policy": command_policy.to_mapping(),
         "capabilities": {
             "narrative_evidence_generation": True,
             "stage1_compile": True,
@@ -178,7 +212,7 @@ def _shadow_mapping(narrative: dict[str, object]) -> dict[str, object]:
         },
     ]
     return {
-        "schema_version": "autocut-shadow-calibration-profile-v1",
+        "schema_version": "autocut-shadow-calibration-profile-v2",
         "contract_version": "2.1.3",
         "profile_id": "shadow_calibration",
         "profile_version": "1",
@@ -309,7 +343,7 @@ def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dic
         }
 
     return {
-        "schema_version": "autocut-local-run-profile-v1",
+        "schema_version": "autocut-local-run-profile-v2",
         "contract_version": "2.1.3",
         "profile_id": "local_run",
         "profile_version": "1",
@@ -554,7 +588,7 @@ def test_narrative_source_is_closed_and_has_no_version_fallback(mutation: str) -
     elif mutation == "missing":
         narrative.pop("parser")
     elif mutation == "unknown_schema":
-        narrative["schema_version"] = "autocut-stage1-narrative-profile-v2"
+        narrative["schema_version"] = "autocut-stage1-narrative-profile-v3"
     else:
         narrative["profile_state"] = "runtime_selected"
     _assert_invalid(lambda: decode_stage1_narrative_profile_source(_raw(narrative)))
@@ -694,7 +728,7 @@ def test_shadow_rejects_narrative_reference_substitution() -> None:
     narrative_source = decode_stage1_narrative_profile_source(_raw(narrative))
     reference = shadow["stage1_narrative_profile"]
     assert isinstance(reference, dict)
-    reference["coverage_policy_sha256"] = _hash("substituted-coverage")
+    reference["stage1_command_policy_sha256"] = _hash("substituted-command-policy")
     _assert_invalid(
         lambda: decode_shadow_calibration_profile_source(
             _raw(shadow), narrative=narrative_source

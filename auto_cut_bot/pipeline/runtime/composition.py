@@ -40,6 +40,8 @@ from auto_cut_bot.pipeline.vlm import (
     PostgresArkFileCache,
 )
 from auto_cut_bot.pipeline.vlm.ark_file_cache import DbConnection as ArkDbConnection
+from auto_cut_bot.pipeline.vlm.ark_responses_transport import ArkResponsesTransportConfig
+from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
 from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_policy
 
 from .highlight_projection import PipelineHighlightReadService
@@ -49,6 +51,7 @@ from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
 from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage
+from .stage1_narrative_stage import Stage1NarrativePipelineStage
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
 from .vlm_stage import VlmPipelineStage
 from .worker import DurablePipelineWorker
@@ -379,13 +382,15 @@ def compose_pipeline_runtime_from_environment(
         staging_root = _staging_root(
             values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip()
         )
+        authority_profile_resolver = load_installed_local_run_resolver()
+        stage1_policy = authority_profile_resolver.resource.narrative.command_policy
         execution_profile = PipelineExecutionProfile.from_policies(
             policy,
             media_policy,
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
             materialization_limits=materialization_limits,
+            stage1_policy=stage1_policy,
         )
-        authority_profile_resolver = load_installed_local_run_resolver()
         validate_installed_vlm_policy(
             authority_profile_resolver.resource.narrative,
             policy,
@@ -434,6 +439,13 @@ def compose_pipeline_runtime_from_environment(
     )
     file_cache = PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory))
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
+    draft_provider = DoubaoDraftProvider(
+        ArkResponsesTransportConfig(
+            provider_config.api_key, provider_config.base_url,
+            provider_config.timeout_seconds, stage1_policy.draft_policy.max_response_bytes,
+        ),
+        max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+    )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     vlm_stage = VlmPipelineStage(
         kernel_store,
@@ -445,9 +457,13 @@ def compose_pipeline_runtime_from_environment(
         LocalMediaPreflightPort(),
         authority_profile_resolver,
     )
+    narrative_stage = Stage1NarrativePipelineStage(
+        kernel_store, draft_provider, installed_profile=authority_profile_resolver.resource,
+    )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
+        ("stage1_narrative", narrative_stage),
         ("media_preflight", media_preflight_stage),
     )
     runner = PipelineStageRunner(registry, control_store)
@@ -455,6 +471,7 @@ def compose_pipeline_runtime_from_environment(
         control_store,
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
+        ("stage1_narrative", narrative_stage),
         ("media_preflight", media_preflight_stage),
     )
     service = DurablePipelineRunService(

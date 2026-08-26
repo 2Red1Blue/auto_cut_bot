@@ -9,11 +9,11 @@ import pytest
 from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes, sha256_bytes
 from autocut_kernel.pipeline.build_narrative_graph_request import (
     BuildNarrativeGraphRequest,
-    Stage1GenerationPolicy,
     prepare_stage1_request,
 )
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
 from autocut_kernel.semantic_chain.draft_provider import decode_draft_request_payload
+from autocut_kernel.semantic_chain.stage1_command_policy import Stage1GenerationPolicy
 from autocut_kernel.store import CommittedArtifactMemberReference, CommittedSemanticInputsRequest
 from autocut_kernel.vlm.retry_policy import GenerationRetryPolicy
 

@@ -82,6 +82,7 @@ async def test_resumed_policy_mismatch_blocks_before_store_or_provider(operation
     changed = type(original).from_policies(
         policy, media_policy, retry_policy=retry,
         materialization_limits=original.to_materialization_limits(),
+        stage1_policy=resource.narrative.command_policy,
     )
     context = replace(context, execution_profile=changed)
 
@@ -142,6 +143,7 @@ def test_matching_persisted_policy_and_identity_samples_build_requests(monkeypat
         retry_policy=original.to_generation_retry_policy(),
         materialization_limits=replace(original.to_materialization_limits(),
             timed_speech_max_request_bytes=resource.local_run.native_timed_speech.max_request_bytes),
+        stage1_policy=resource.narrative.command_policy,
     ))
     monkeypatch.setattr(vlm_stage, "read_persisted_prepared_sources_bundle", lambda *a, **k: bundle)
     provider = Provider({})

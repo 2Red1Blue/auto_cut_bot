@@ -50,9 +50,8 @@ class DbConnection(Protocol):
 ConnectionFactory = Callable[[], DbConnection]
 _Result = TypeVar("_Result")
 
-# Stage1-3 have no durable commands yet. Once their final command exists, this
-# is the single success boundary to replace; the bootstrap stages alone must
-# never manufacture a semantically complete run.
+# Stage 1 is wired; Stage 2/3 and the final Render/QC path are still incomplete.
+# The bootstrap stages must never manufacture a fully successful Pipeline run.
 _PIPELINE_SUCCESS_TERMINAL_STAGE: str | None = None
 
 
@@ -194,6 +193,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             raise PipelineRunValidationError(
                 "claim_run request_hash does not bind the canonical request"
             )
+        execution_profile.build_stage1_command_policy()
         source_kind = "root" if request.source_root is not None else "reference"
         source_value = request.source_root or request.source_reference
         if source_value is None:
@@ -256,9 +256,10 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     VALUES
                         (%s, %s, 0, 'source_prep', 'pending', 0),
                         (%s, %s, 1, 'vlm', 'pending', 0),
-                        (%s, %s, 2, 'media_preflight', 'pending', 0)
+                        (%s, %s, 2, 'stage1_narrative', 'pending', 0),
+                        (%s, %s, 3, 'media_preflight', 'pending', 0)
                     """,
-                    (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
+                    (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
                 )
                 self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)
@@ -513,13 +514,14 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                  WHERE candidate.run_id = %s AND candidate.state = 'pending'
                    AND candidate.version = %s
                    AND (
-                       candidate.stage <> 'vlm'
+                       candidate.stage NOT IN ('vlm', 'stage1_narrative')
                        OR EXISTS (
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v5'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v6'
+                              AND profile_run.execution_profile ? 'stage1_command_policy'
                        )
                    )
                    AND (
@@ -528,7 +530,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v5'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v6'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy'
                               AND profile_run.execution_profile

@@ -25,7 +25,7 @@ from tests.pipeline.runtime_profile_fixture import media_preflight_policy
 assert installed_fixture is not None
 
 
-def _profile():
+def _profile(resource):
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(model_id="doubao-seed-2-1-pro-260628"),
         media_preflight_policy(), retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
@@ -33,6 +33,7 @@ def _profile():
             max_source_bytes=8 * 1024 * 1024, timed_speech_max_request_bytes=1024 * 1024,
             copy_chunk_bytes=64 * 1024, staging_quota_bytes=16 * 1024 * 1024,
         ),
+        stage1_policy=resource.narrative.command_policy,
     )
 
 
@@ -63,7 +64,7 @@ async def test_invalid_installed_binding_prevents_http_worker_recovery(installed
             entry.guard_policy, pre_roll_tick=entry.guard_policy.pre_roll_tick + 1,
         )))
     store = FakeInstalledReadStore(anchor, profile, **options)
-    runtime = PipelineRuntime(object(), FakeRecoveryWorker(store.events), _profile(),
+    runtime = PipelineRuntime(object(), FakeRecoveryWorker(store.events), _profile(resource),
                              InstalledLocalRunProfileResolver(resource), store)
     with pytest.raises(PipelineRuntimeConfigurationError, match="installed calibration/profile"):
         await runtime.startup_reconstruct()
@@ -76,7 +77,7 @@ async def test_invalid_installed_binding_prevents_http_worker_recovery(installed
 async def test_http_worker_recovery_runs_only_after_both_exact_anchor_reads(installed_fixture):
     resource, anchor = installed_fixture
     store = FakeInstalledReadStore(anchor, _bootstrapped(resource))
-    runtime = PipelineRuntime(object(), FakeRecoveryWorker(store.events), _profile(),
+    runtime = PipelineRuntime(object(), FakeRecoveryWorker(store.events), _profile(resource),
                              InstalledLocalRunProfileResolver(resource), store)
     assert await runtime.startup_reconstruct() == ("reconstructed-fixture",)
     assert store.events == ["calibration", "profile", "worker-recovery"]

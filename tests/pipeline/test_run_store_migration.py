@@ -14,6 +14,9 @@ SEMANTIC_PROFILE_MIGRATION = Path(
 MATERIALIZATION_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0014_media_preflight_materialization_profile.sql"
 )
+STAGE1_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0019_stage1_pipeline_profile.sql"
+)
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -124,3 +127,51 @@ def test_materialization_profile_migration_closes_v5_limits_and_v4_history() -> 
     assert "copy_chunk_bytes" in sql
     assert "timed_speech_max_request_bytes" in sql
     assert "historical v1/v2/v3/v4 execution profile rows are read-only" in sql
+
+
+def test_stage1_profile_migration_closes_v6_and_preserves_terminal_history() -> None:
+    """Static SQL contract only: this does not claim PostgreSQL execution."""
+    sql = STAGE1_PROFILE_MIGRATION.read_text(encoding="utf-8")
+    assert "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE" in sql
+    assert "0019 refuses accepted/running pre-v6 runs" in sql
+    assert "WHERE state IN ('accepted', 'running')" in sql
+    assert "runtime.execution_profile_semantic_v6_is_valid" in sql
+    assert "runtime.stage1_command_policy_shape_is_valid" in sql
+    assert "profile_value - 'stage1_command_policy'" in sql
+    assert "runtime.execution_profile_semantic_v5_is_valid(profile_value, run_state)" in sql
+    assert "run_state IN ('succeeded', 'denied', 'failed')" in sql
+    assert "historical pre-v6 execution profile rows are read-only" in sql
+    assert "new pre-v6 execution profile rows are forbidden" in sql
+    assert "value ?& fields AND value - fields = '{}'::jsonb" in sql
+    assert ") IS TRUE);" in sql
+    for field in (
+        "artifact_revision", "generation", "draft_policy", "coverage_policy",
+        "dependency_policy", "retry_policy", "prompt_template", "temperature",
+        "max_prompt_bytes", "max_input_windows", "max_input_objects", "max_beats",
+        "max_obligations", "max_story_threads", "max_merge_proposals",
+        "max_references_per_item", "max_total_text_characters", "minimum_confidence",
+        "canonical_owner_by_object_type", "edge_projections", "attribute_projections",
+        "external_root_projections", "max_attempts", "backoff_seconds",
+    ):
+        assert f"'{field}'" in sql
+    assert "UPDATE runtime.pipeline_runs" not in sql
+    assert "INSERT INTO runtime.pipeline_commands" not in sql
+
+
+def test_new_run_sql_has_ordered_stage1_and_current_profile_claim_predicates() -> None:
+    """Inspect the actual emitted-query source; never open a DB connection."""
+    from inspect import getsource
+
+    from auto_cut_bot.pipeline.runtime.postgres import PostgresPipelineRunStore
+
+    source = getsource(PostgresPipelineRunStore)
+    start = source.index("INSERT INTO runtime.pipeline_commands")
+    insert = source[start:source.index("self._insert_outbox", start)]
+    for ordinal, stage in enumerate(("source_prep", "vlm", "stage1_narrative", "media_preflight")):
+        assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
+    assert insert.count("uuid4(), run_id") == 4
+    assert "candidate.stage NOT IN ('vlm', 'stage1_narrative')" in source
+    assert "->> 'schema_version' = 'pipeline-execution-profile-v6'" in source
+    assert "profile_run.execution_profile ? 'stage1_command_policy'" in source
+    assert "predecessor.ordinal < candidate.ordinal" in source
+    assert "predecessor.state <> 'succeeded'" in source

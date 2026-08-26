@@ -55,8 +55,6 @@ from autocut_kernel.registry.authority_profiles import (
     NativeTimedSpeechProfile,
     ShadowCalibrationProfileSource,
     SourceClockPolicy,
-    Stage1NarrativeProfileReference,
-    Stage1NarrativeProfileSource,
     TimingPolicies,
     decode_shadow_calibration_profile_source,
     decode_stage1_narrative_profile_source,
@@ -80,6 +78,11 @@ from autocut_kernel.store import (
     ShadowMeasurementMemberPlan,
     ShadowMeasurementPlan,
     ShadowMeasurementStagedResponse,
+)
+
+from tests.authority.test_authority_profile_sources import (
+    _narrative_mapping,
+    synthetic_stage1_command_policy,
 )
 
 
@@ -321,12 +324,15 @@ def _fixture() -> tuple[ValidateCalibrationRecordCommand, CalibrationValidationB
         canonical_json_hash([item.to_mapping() for item in locked_members]), tuple(locked_members)
     )
     native_producers = tuple(NativeTimedSpeechProducer(**item.to_mapping()) for item in (asr, vad))
+    # Synthetic grammar fixture: the real decoder binds the complete explicit
+    # policy and its canonical hash; this is not deployed/accepted authority.
+    narrative = decode_stage1_narrative_profile_source(canonical_json_bytes(_narrative_mapping()))
     profile = ShadowCalibrationProfileSource(
         "1",
         _hash("contract"),
         _hash("profile"),
         _hash("placeholder"),
-        Stage1NarrativeProfileReference("1", *[_hash(f"narrative-{i}") for i in range(11)]),
+        narrative.reference,
         NativeTimedSpeechProfile(
             _hash("service"), "1.3.0", "2.8.0", 8192, _hash("native"), native_producers
         ),
@@ -344,13 +350,6 @@ def _fixture() -> tuple[ValidateCalibrationRecordCommand, CalibrationValidationB
         AuthorityProfileCapabilities(True, False, False, False, False, False, False, False, False),
         CalibrationAcceptance(1),
     )
-    narrative_seed = Stage1NarrativeProfileSource(
-        "1", _hash("narrative"), _hash("seed"), profile.stage1_narrative_profile
-    )
-    narrative = decode_stage1_narrative_profile_source(
-        canonical_json_bytes(narrative_seed.to_mapping())
-    )
-    profile = replace(profile, stage1_narrative_profile=narrative.reference)
     profile = decode_shadow_calibration_profile_source(
         canonical_json_bytes(profile.to_mapping()),
         narrative=narrative,
@@ -493,6 +492,20 @@ def _mutate(
     return replace(
         binding, manifest_reference=updated[0].reference, results_reference=updated[1].reference
     )
+
+
+def test_synthetic_fixture_binds_decoded_v2_narrative_and_complete_command_policy() -> None:
+    command, _, _ = _fixture()
+    expected_policy = synthetic_stage1_command_policy()
+    narrative = command.narrative
+    assert narrative.to_mapping()["schema_version"] == "autocut-stage1-narrative-profile-v2"
+    assert narrative.command_policy == expected_policy
+    assert narrative.reference.stage1_command_policy_sha256 == expected_policy.canonical_hash
+    assert narrative.canonical_sha256 == canonical_json_hash(narrative.to_mapping())
+    assert command.profile.stage1_narrative_profile == narrative.reference
+    assert decode_stage1_narrative_profile_source(
+        canonical_json_bytes(narrative.to_mapping())
+    ) == narrative
 
 
 def test_acceptance_recomputes_positive_bounds_and_scopes_local_match_ids() -> None:

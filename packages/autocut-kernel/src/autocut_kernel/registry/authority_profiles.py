@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
 from ..contracts.compiler.canonical import (
@@ -32,11 +32,14 @@ from ..media.stage4_predecessor import (
 from ..media.types import TimeBase
 from ..store.models import ArtifactScope, CommittedArtifactMemberReference
 
+if TYPE_CHECKING:
+    from ..semantic_chain.stage1_command_policy import Stage1CommandPolicy
+
 AUTHORITY_PROFILE_SOURCE_INVALID = "AUTHORITY_PROFILE_SOURCE_INVALID"
 CONTRACT_VERSION = "2.1.3"
-STAGE1_NARRATIVE_SCHEMA_VERSION = "autocut-stage1-narrative-profile-v1"
-SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-shadow-calibration-profile-v1"
-LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v1"
+STAGE1_NARRATIVE_SCHEMA_VERSION = "autocut-stage1-narrative-profile-v2"
+SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-shadow-calibration-profile-v2"
+LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v2"
 
 _ZERO_HASH = "sha256:" + "0" * 64
 _PROFILE_VERSION = re.compile(r"^[1-9][0-9]*$")
@@ -175,9 +178,7 @@ class Stage1NarrativeProfileReference:
     parse_policy_sha256: str
     retry_policy_sha256: str
     window_sampling_policy_sha256: str
-    coverage_policy_sha256: str
-    dependency_policy_sha256: str
-    conflict_policy_sha256: str
+    stage1_command_policy_sha256: str
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -196,9 +197,7 @@ class Stage1NarrativeProfileReference:
             "parse_policy_sha256": self.parse_policy_sha256,
             "retry_policy_sha256": self.retry_policy_sha256,
             "window_sampling_policy_sha256": self.window_sampling_policy_sha256,
-            "coverage_policy_sha256": self.coverage_policy_sha256,
-            "dependency_policy_sha256": self.dependency_policy_sha256,
-            "conflict_policy_sha256": self.conflict_policy_sha256,
+            "stage1_command_policy_sha256": self.stage1_command_policy_sha256,
         }
 
 
@@ -208,6 +207,7 @@ class Stage1NarrativeProfileSource:
     source_sha256: str
     canonical_sha256: str
     reference: Stage1NarrativeProfileReference
+    command_policy: Stage1CommandPolicy
 
     def to_mapping(self) -> dict[str, object]:
         ref = self.reference
@@ -237,10 +237,9 @@ class Stage1NarrativeProfileSource:
                 "parse_policy_sha256": ref.parse_policy_sha256,
                 "retry_policy_sha256": ref.retry_policy_sha256,
                 "window_sampling_policy_sha256": ref.window_sampling_policy_sha256,
-                "coverage_policy_sha256": ref.coverage_policy_sha256,
-                "dependency_policy_sha256": ref.dependency_policy_sha256,
-                "conflict_policy_sha256": ref.conflict_policy_sha256,
+                "stage1_command_policy_sha256": ref.stage1_command_policy_sha256,
             },
+            "stage1_command_policy": self.command_policy.to_mapping(),
             "capabilities": {
                 "narrative_evidence_generation": True,
                 "stage1_compile": True,
@@ -552,8 +551,7 @@ def _decode_narrative_reference(value: object, field_name: str) -> Stage1Narrati
             "adapter_strategy_version", "model_id", "prompt_version",
             "prompt_template_sha256", "response_schema_sha256", "parser_strategy_version",
             "parser_contract_sha256", "request_parameters_sha256", "parse_policy_sha256",
-            "retry_policy_sha256", "window_sampling_policy_sha256", "coverage_policy_sha256",
-            "dependency_policy_sha256", "conflict_policy_sha256",
+            "retry_policy_sha256", "window_sampling_policy_sha256", "stage1_command_policy_sha256",
         }
     )
     mapping = _mapping(value, fields, field_name)
@@ -574,8 +572,7 @@ def _decode_narrative_reference(value: object, field_name: str) -> Stage1Narrati
             for name in (
                 "prompt_template_sha256", "response_schema_sha256", "parser_contract_sha256",
                 "request_parameters_sha256", "parse_policy_sha256", "retry_policy_sha256",
-                "window_sampling_policy_sha256", "coverage_policy_sha256",
-                "dependency_policy_sha256", "conflict_policy_sha256",
+                "window_sampling_policy_sha256", "stage1_command_policy_sha256",
             )
         ),
     )
@@ -583,6 +580,9 @@ def _decode_narrative_reference(value: object, field_name: str) -> Stage1Narrati
 
 def decode_stage1_narrative_profile_source(raw: bytes) -> Stage1NarrativeProfileSource:
     """Decode one locked Stage-1 narrative source without accepting defaults."""
+    # Pure policy decoding must not import pipeline facades or DB adapters.
+    from ..semantic_chain.stage1_command_policy import Stage1CommandPolicy
+
     value, source_sha256, semantic_sha256 = _source_object(raw, "stage1 narrative source")
     mapping = _mapping(
         value,
@@ -590,7 +590,7 @@ def decode_stage1_narrative_profile_source(raw: bytes) -> Stage1NarrativeProfile
             {
                 "schema_version", "contract_version", "profile_id", "profile_version",
                 "profile_state", "provider", "model", "prompt", "response_schema", "parser",
-                "policies", "capabilities",
+                "policies", "stage1_command_policy", "capabilities",
             }
         ),
         "stage1 narrative source",
@@ -633,10 +633,23 @@ def decode_stage1_narrative_profile_source(raw: bytes) -> Stage1NarrativeProfile
     )
     policy_names = (
         "request_parameters_sha256", "parse_policy_sha256", "retry_policy_sha256",
-        "window_sampling_policy_sha256", "coverage_policy_sha256", "dependency_policy_sha256",
-        "conflict_policy_sha256",
+        "window_sampling_policy_sha256", "stage1_command_policy_sha256",
     )
     policies = _mapping(mapping["policies"], frozenset(policy_names), "stage1 narrative source.policies")
+    try:
+        command_policy = Stage1CommandPolicy.from_mapping(mapping["stage1_command_policy"])
+    except (ValueError, TypeError) as error:
+        raise _invalid("stage1 narrative source command policy is invalid") from error
+    _const(
+        command_policy.generation.model_id,
+        "doubao-seed-2-1-pro-260628",
+        "stage1 narrative source command policy model",
+    )
+    if (
+        canonical_json_hash(mapping["stage1_command_policy"]) != command_policy.canonical_hash
+        or policies["stage1_command_policy_sha256"] != command_policy.canonical_hash
+    ):
+        raise _invalid("stage1 narrative source command policy hash does not close")
     capabilities = _mapping(
         mapping["capabilities"],
         frozenset({"narrative_evidence_generation", "stage1_compile", "external_publication"}),
@@ -656,7 +669,7 @@ def decode_stage1_narrative_profile_source(raw: bytes) -> Stage1NarrativeProfile
         _sha(parser["contract_sha256"], "stage1 narrative source.parser.contract_sha256"),
         *(_sha(policies[name], f"stage1 narrative source.policies.{name}") for name in policy_names),
     )
-    return Stage1NarrativeProfileSource(version, source_sha256, semantic_sha256, reference)
+    return Stage1NarrativeProfileSource(version, source_sha256, semantic_sha256, reference, command_policy)
 
 
 def _decode_native_timed_speech(value: object, field_name: str, *, local_run: bool) -> NativeTimedSpeechProfile:

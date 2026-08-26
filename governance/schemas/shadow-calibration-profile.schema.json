@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "schema://governance/shadow-calibration-profile/1.0.0",
+  "$id": "schema://governance/shadow-calibration-profile/2.0.0",
   "title": "ShadowCalibrationProfile",
   "type": "object",
   "additionalProperties": false,
@@ -20,7 +20,7 @@
     "calibration_acceptance"
   ],
   "properties": {
-    "schema_version": {"const": "autocut-shadow-calibration-profile-v1"},
+    "schema_version": {"const": "autocut-shadow-calibration-profile-v2"},
     "contract_version": {"const": "2.1.3"},
     "profile_id": {"const": "shadow_calibration"},
     "profile_version": {"$ref": "#/$defs/profile_version"},
@@ -81,9 +81,7 @@
         "parse_policy_sha256",
         "retry_policy_sha256",
         "window_sampling_policy_sha256",
-        "coverage_policy_sha256",
-        "dependency_policy_sha256",
-        "conflict_policy_sha256"
+        "stage1_command_policy_sha256"
       ],
       "properties": {
         "profile_id": {"const": "stage1_narrative"},
@@ -101,9 +99,7 @@
         "parse_policy_sha256": {"$ref": "#/$defs/sha256"},
         "retry_policy_sha256": {"$ref": "#/$defs/sha256"},
         "window_sampling_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "coverage_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "dependency_policy_sha256": {"$ref": "#/$defs/sha256"},
-        "conflict_policy_sha256": {"$ref": "#/$defs/sha256"}
+        "stage1_command_policy_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "native_timed_speech": {

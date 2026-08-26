@@ -220,7 +220,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime is not None
     assert runtime.authority_profile_resolver is fake_installed_loader
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v5"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v6"
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
@@ -232,6 +232,47 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
     assert str(tmp_path / "verified-media-staging") not in runtime.execution_profile.canonical_json
+    assert runtime.execution_profile.build_stage1_command_policy() == (
+        fake_installed_loader.resource.narrative.command_policy
+    )
+    assert runtime.execution_profile.build_stage1_command_policy().canonical_hash == (
+        fake_installed_loader.resource.narrative.reference.stage1_command_policy_sha256
+    )
+
+
+def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and_media(
+    tmp_path, monkeypatch, fake_installed_loader,
+):
+    from autocut_kernel.pipeline.build_narrative_graph_command import BuildNarrativeGraphCommand
+
+    from auto_cut_bot.pipeline.runtime import composition
+    from auto_cut_bot.pipeline.runtime.stage1_narrative_stage import Stage1NarrativePipelineStage
+    from auto_cut_bot.pipeline.vlm import ark_responses_transport
+    from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("composition must not connect to DB or instantiate a provider SDK client")
+
+    monkeypatch.setattr(composition.psycopg, "connect", forbidden)
+    monkeypatch.setattr(ark_responses_transport, "create_ark_client", forbidden)
+    runtime = compose_pipeline_runtime_from_environment(_environment(tmp_path))
+    assert runtime is not None
+    registry = runtime.worker._runner._registry
+    assert registry.stage_names == ("source_prep", "vlm", "stage1_narrative", "media_preflight")
+    for name in registry.stage_names:
+        assert runtime.worker._reconciler._require(name) is registry.require(name)
+    stage = registry.require("stage1_narrative")
+    assert type(stage) is Stage1NarrativePipelineStage
+    assert stage._installed_profile is fake_installed_loader.resource
+    assert stage._store is runtime.authority_store
+    assert type(stage._command) is BuildNarrativeGraphCommand
+    assert type(stage._command._provider) is DoubaoDraftProvider
+    policy = runtime.execution_profile.build_stage1_command_policy()
+    assert stage._command._provider.strategy_version == policy.generation.adapter_strategy_version
+    assert stage._command._provider._max_request_bytes == policy.draft_policy.max_prompt_bytes
+    assert stage._command._provider._transport._config.max_stream_bytes == (
+        policy.draft_policy.max_response_bytes
+    )
 
 
 @pytest.mark.parametrize("mutation", ("vlm-model", "vlm-parameters", "media-model", "request-limit"))

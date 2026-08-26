@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import replace
 
 from autocut_kernel.registry.installed_local_run import LocalRunResource
+from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
 
@@ -27,10 +28,15 @@ from tests.pipeline.runtime_profile_fixture import media_preflight_policy
 def synthetic_installed_resource(
     policy: DoubaoVlmRequestPolicy | None = None,
     retry_policy: GenerationRetryPolicy | None = None,
+    command_policy: Stage1CommandPolicy | None = None,
 ) -> LocalRunResource:
+    """Grammar-only content with explicitly synthetic Stage 1 prompt/limits."""
     policy = policy or DoubaoVlmRequestPolicy(model_id="doubao-seed-2-1-pro-260628")
     retry_policy = retry_policy or GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (2, 8))
     narrative = _narrative_mapping()
+    if command_policy is not None:
+        narrative["stage1_command_policy"] = command_policy.to_mapping()
+        narrative["policies"]["stage1_command_policy_sha256"] = command_policy.canonical_hash
     narrative["prompt"]["template_sha256"] = vlm_prompt_template_sha256()
     narrative["response_schema"]["schema_sha256"] = _digest(policy.response_schema_json)
     narrative["parser"]["contract_sha256"] = vlm_parser_contract_sha256()

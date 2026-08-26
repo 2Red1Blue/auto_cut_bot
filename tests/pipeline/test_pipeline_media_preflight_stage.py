@@ -16,8 +16,6 @@ from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfile
 from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
-from runtime_profile_fixture import execution_profile, media_preflight_policy
-from test_local_media_preflight import _SpeechPort
 
 from auto_cut_bot.pipeline.media_preflight import (
     BoundedSubprocessRunner,
@@ -49,6 +47,8 @@ from auto_cut_bot.pipeline.source_prep.probe import (
     IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     FFprobeSourceMediaPort,
 )
+from tests.pipeline.runtime_profile_fixture import execution_profile, media_preflight_policy
+from tests.pipeline.test_local_media_preflight import _SpeechPort
 
 try:
     import psycopg
@@ -431,11 +431,12 @@ def _forge_semantic_pack_with_recomputed_member_and_set_hash() -> None:
     "scenario",
     ("valid", "forged-pack", "missing-render-grant", "missing-semantic-grant"),
 )
-async def test_real_restart_reconcile_replays_original_receipt_without_detectors(
+async def test_postgres_restart_reconcile_replays_original_receipt_without_detectors(
     tmp_path: Path,
     scenario: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Media replay with a synthetic Stage 1 control-plane result, not Stage 1 acceptance."""
     assert DSN is not None
     assert psycopg is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -470,6 +471,9 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         request=request,
         request_hash=request.request_hash,
         execution_profile=profile,
+    )
+    assert tuple(command.stage for command in claimed.snapshot.commands) == (
+        "source_prep", "vlm", "stage1_narrative", "media_preflight",
     )
 
     async def claim_context() -> PipelineStageContext:
@@ -524,6 +528,14 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         vlm_result = await VlmPipelineStage(kernel_store, provider).execute(vlm_context)
         await project(vlm_context, vlm_result)
         assert provider.dispatch_calls == 1
+        narrative_context = await claim_context()
+        assert narrative_context.command.stage == "stage1_narrative"
+        # This remote test covers only media replay/control-plane sequencing.
+        # No Kernel Stage 1 members, Admission or production authority are minted.
+        await project(
+            narrative_context,
+            PipelineStageResult(narrative_context.command.command_id, "succeeded", uuid4()),
+        )
 
     if scenario == "forged-pack":
         _forge_semantic_pack_with_recomputed_member_and_set_hash()
@@ -534,11 +546,12 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
         media_context = PipelineStageContext(
             run_id,
             request,
-            snapshot.commands[2],
+            snapshot.commands[3],
             snapshot.execution_profile,
         )
     else:
         media_context = await claim_context()
+    assert media_context.command.stage == "media_preflight"
     speech = _SpeechPort()
     runner = _CountingRunner()
     if scenario in ("missing-render-grant", "missing-semantic-grant"):
@@ -593,7 +606,8 @@ async def test_real_restart_reconcile_replays_original_receipt_without_detectors
     )
     restarted_snapshot = await restarted_run_store.read_run(claimed.snapshot.run_id)
     assert restarted_snapshot is not None
-    persisted_command = restarted_snapshot.commands[2]
+    persisted_command = restarted_snapshot.commands[3]
+    assert persisted_command.stage == "media_preflight"
     assert persisted_command.status == "running"
     changed_environment = _fixture_policy(asr_model_revision="changed-after-restart")
     assert changed_environment.canonical_hash != frozen_policy.canonical_hash
@@ -646,6 +660,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     mapping = execution_profile(media_policy=_fixture_policy()).to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v3"
     del mapping["materialization_limits"]
+    del mapping["stage1_command_policy"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -655,7 +670,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     }
     v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v5"):
+    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v6"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),

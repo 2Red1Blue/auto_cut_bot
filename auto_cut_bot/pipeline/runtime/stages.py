@@ -80,6 +80,8 @@ class PipelineStageRunner:
         pending = next((item for item in snapshot.commands if item.status == "pending"), None)
         if pending is None:
             return None
+        if pending.stage == "stage1_narrative":
+            snapshot.execution_profile.build_stage1_command_policy()
         if pending.stage == "vlm" and snapshot.execution_profile.is_legacy_unresolved:
             raise PipelineRunValidationError(
                 "legacy-unresolved execution profile cannot execute VLM"
@@ -206,6 +208,8 @@ class PipelineStageReconciler:
         )
         if uncertain is None:
             return None
+        if uncertain.stage == "stage1_narrative":
+            snapshot.execution_profile.build_stage1_command_policy()
         command = await self._command_store.read_indeterminate(
             snapshot.run_id,
             expected_version=uncertain.version,
