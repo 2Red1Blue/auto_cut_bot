@@ -334,3 +334,66 @@ BuildEditorialBlueprintCommand, atomic3N+1/exact replay and HTTP registration.
 Reuse the delivered readers/context/request/material owners; do not re-open
 this as another design/discovery wave. Then continue Stage4/Recipe/Render/local
 QC, Agent conformance and remote actual acceptance. Task07 remains in progress.
+
+## Independent Admission and durable Command execution wave
+
+The first registered evaluator is `stage3-ss-unpartitioned-v1`. It evaluates
+the current full-batch, VLM-v3, byte-budget strategy, not the old partitioned
+prototype. This strategy requires exactly these six batch checks and fourteen
+checks for each frozen Story, in addition to a closed full feasibility witness:
+
+| Scope | Required IDs | Actual evidence |
+|---|---|---|
+| Command batch | SS-IN-001 | Actual exact committed Stage1/2/root reads; not latest-head lookup |
+| Command batch | SS-IN-002 | Actual immutable request/raw bytes and exact attempt audit; retry chain on replay |
+| Command batch | SS-CTX-BYTES-001 | Actual complete provider body within frozen byte limit and rebuilt context budgets |
+| Pure batch | SS-BATCH-001 | Complete ordered 3N subjects and frozen target order |
+| Pure batch | SS-REUSE-001 | Full-batch source assignment satisfies frozen reuse policy |
+| Pure batch | SS-SEARCH-001 | Canonical material/timing result recomputed from actual predecessors, never claimed pass |
+| Per Story | SS-REF-001, SS-ENUM-001, SS-OBL-001 | Exact raw-draft refs/types and complete Proposal obligation/fact conservation |
+| Per Story | SS-EV-001, SS-EV-002, SS-CAND-CAP-001 | Whole alternative local coverage and exact eligible/function-supported pools |
+| Per Story | SS-PHYS-DEFER-001, SS-PREF-001, SS-SPAN-001 | Original material/physical requirements, legal preferences and closed span intent |
+| Per Story | SS-CTX-001, SS-CTX-002, SS-HASH-001 | Actual rebuilt closure/context contents and their exact business identities |
+| Per Story | SS-DUR-002, SS-TAINT-001 | Joint rational intent consistency and clean committed semantic dependencies |
+
+The pure evaluator cannot fill the three Command-owned checks. It reconstructs
+context, decodes the actual audited raw draft, reprojects the expected Blueprint
+and compares actual pending/stored members before computing checks. Direct
+positive witness verification complements canonical recomputation; it does not
+prove negative search claims. Local Story feasibility is determined from
+eligible full-event edges, separately from joint Source conflicts or global
+search exhaustion. The existing domain builder becomes the public pure
+editorial_material_requirements owner; do not copy its raw/time-map logic.
+
+This explicit rule strategy replaces the old applicability of SS-CTX-003/004,
+SS-PART-001/002, SS-MERGE-001, SS-BUDGET-001, SS-RECOVERY-001 and SS-DUR-001.
+Those eight old rules are not emitted as pass or N/A: optional pruning,
+partitioning, tokenizer/monetary budgets, the old RecoveryController and
+physical duration allocation are not implemented by this strategy. Complete
+one-batch composition and derived IDs are checked by BATCH/HASH; transport retry
+auditing belongs to IN-002. DUR-002 proves only current contiguous editorial
+intent, with no implicit transition/teaser footage. Stage4 still must prove
+actual material allocation, required media evidence and exact A/V safety.
+No removed check authorizes publication.
+
+One SemanticFeasibilityAdmission binds the exact ordered 3N business subjects,
+raw/canonical draft hashes, complete Command policy hash, separately named
+context and feasibility input bindings, frozen Story rows and full recomputed
+feasibility result. Admission does not belong to its own subject. The strict
+3N+1 decoder proves shape/identity closure; only actual reads plus independent
+re-evaluation prove execution authority.
+
+BuildEditorialBlueprintCommand uses the existing DraftGenerationLifecycle and
+Store transaction/CAS. Complete successful outputs commit in one operation;
+invalid drafts, infeasible intent/material and search exhaustion keep causal
+denial Receipts with zero business outputs. These are not transient transport
+retries. Provider transient errors use the frozen finite retry policy; unknown
+outcomes reconcile the same invocation. Successful replay audits all attempt
+request blobs and any retained earlier response bytes, then re-evaluates actual
+stored 3N+1 members. It cannot regenerate or substitute freshly compiled output.
+
+Shared read_draft_response_bytes/read_committed_draft_audit own transport audit
+for all three semantic Commands; Stage1/2 migrate to that owner in this wave.
+Previous failed raw bytes need integrity checks, not successful-draft parsing.
+No local DB, real provider, Runtime success or full-Pipeline claim follows from
+the in-memory Command tests. Remote transaction/restart acceptance remains open.

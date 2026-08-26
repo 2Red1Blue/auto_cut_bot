@@ -340,10 +340,11 @@ def _material_proof(
             raise EditorialFeasibilityError("eligible candidate does not carry exact required facts")
 
 
-def _domain(
+def editorial_material_requirements(
     stage1: Stage1Values, stage2: StoryDesignValues, projection: EditorialBlueprintProjection, *,
     semantic: CommittedSemanticInputs, job_policy: JobPolicy, policy: EditorialFeasibilityPolicy,
 ) -> tuple[MaterialSearchRequirement, ...]:
+    """Return the complete immutable evidence-backed search domain, not authority."""
     if (type(stage1) is not Stage1Values or type(stage2) is not StoryDesignValues  # noqa: E721
             or type(projection) is not EditorialBlueprintProjection or type(semantic) is not CommittedSemanticInputs  # noqa: E721
             or type(job_policy) is not JobPolicy or type(policy) is not EditorialFeasibilityPolicy):  # noqa: E721
@@ -419,7 +420,7 @@ def evaluate_editorial_feasibility(
     semantic: CommittedSemanticInputs, job_policy: JobPolicy, policy: EditorialFeasibilityPolicy,
 ) -> EditorialFeasibilityResult:
     """Solve complete editorial intent and one joint nonempty material assignment."""
-    requirements = _domain(stage1, stage2, projection, semantic=semantic, job_policy=job_policy, policy=policy)
+    requirements = editorial_material_requirements(stage1, stage2, projection, semantic=semantic, job_policy=job_policy, policy=policy)
     timing = tuple(EditorialTimingWitness(story.story_id, solve_editorial_timing(
         tuple(beat.duration_seconds for beat in story.beats), story.story_duration_seconds, story.ordering_constraints,
     )) for story in projection.blueprints)
@@ -439,7 +440,7 @@ def verify_editorial_feasibility(
     Does not certify canonical search order, negative/completeness claims or
     exact examined-state telemetry. The independent Admission recomputes those.
     """
-    requirements = _domain(stage1, stage2, projection, semantic=semantic, job_policy=job_policy, policy=policy)
+    requirements = editorial_material_requirements(stage1, stage2, projection, semantic=semantic, job_policy=job_policy, policy=policy)
     if (type(result) is not EditorialFeasibilityResult or result.status != "feasible"  # noqa: E721
             or result.input_binding_sha256 != _binding(stage1, stage2, projection, semantic, policy)
             or result.projection_sha256 != projection.canonical_hash or result.policy_sha256 != policy.canonical_hash
