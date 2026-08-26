@@ -257,3 +257,42 @@ shadow lock bundle. The existing grammar only validates the latter two hashes'
 syntax, so current C cannot certify old C. Installed-resource publication and
 local-run/accepted-anchor loading are subsequent work, not implied by this
 shadow-only build slice.
+
+## Local-run predecessor and accepted-anchor integration
+
+The next implementation owns only tools/authority/local_run_context.py,
+tools/authority/local_run_calibration.py and their matching authority tests,
+plus this task record. No runtime permit, bootstrap call, installed resource,
+real source publication, native call or Store write is part of these helpers.
+
+The local-run source builder takes explicit current Git selectors and a frozen
+ShadowSourceSelection (lock repository/commit/path, Registry repository/root,
+profile repository, narrative path, shadow path). It internally calls the
+existing verified builders for both chains; a caller-created context or Registry
+is not an input. Decode the current locked narrative and local-run raw source
+using the current locked local-run-profile.schema.json. Compare predecessor
+version, raw source, Registry source_hash and lock bundle_hash against the old
+independently verified shadow context. Current C cannot stand in for old C.
+The local-run grammar closes native/narrative/clock/timing inheritance. Return a
+source context only; calibration references remain unresolved at this boundary.
+
+A separate read-only binder consumes that builder's context and the existing
+Store read_calibration_record_anchor seam. Read exact local-run record/validation
+refs using the predecessor shadow source and predecessor Registry hashes, not
+the current Registry. Compare the returned aggregate identity in full, both
+producer common identities, child hashes/positive bounds and ordered corpus
+member/anchor references against locked sources. Reuse the existing record-set
+decoder/verifier and reader closure; do not reimplement raw inference validation.
+Return the existing PersistedCalibrationRecordAnchor, never a runtime snapshot.
+
+Source contexts and typed anchors are not capabilities: production composition
+must call the verified builder and real Store reader. Unit fakes must be explicitly
+named and cannot establish deployed authority. Store integration keeps its real
+0/3 aggregate/validation ordinals and canonical logical IDs; simplified grammar
+fixtures are not accepted-record fixtures.
+
+The timed-speech entry registry_contract_sha256 currently has syntax/full-entry
+hash binding only; no canonical contract derivation exists in code. Define and
+test that source binding before installed-resource/bootstrap activation rather
+than substituting the profile schema or Registry hash. This is not satisfied by
+the source-only helpers in this slice.

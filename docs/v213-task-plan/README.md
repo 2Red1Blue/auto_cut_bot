@@ -52,7 +52,11 @@ Git 锁定 Registry 编译与 shadow 配置加载已实现：只读取明确提�
 核对 A/B/C、完整文件覆盖和 schema/profile 来源，不读取工作区配置。
 相关合并回归 **296 passed、零 skipped**，两模块均通过独立只读审查。
 详见 [来源加载审查](08-25-lock-real-test-authority-profiles/review-locked-source-context.md)。
-这仍不代表真实校准或正式运行配置已加载；local-run 前驱及 accepted anchor 接线待完成。
+local-run 前驱来源及 accepted anchor 绑定函数也已实现并通过独立审查：
+**69 个新增测试通过**，相关合并回归 **128 passed、零 skipped**。
+详见 [正式配置接线审查](08-25-lock-real-test-authority-profiles/review-local-run-binding.md)。
+这仍不代表真实校准或正式运行配置已加载：尚无实际 ready 八包 Registry 源，
+仅测试 helper 可生成；还须补齐真实来源、Registry 契约哈希定义、安装资源和 HTTP 接线。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。

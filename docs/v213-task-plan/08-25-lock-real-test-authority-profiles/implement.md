@@ -108,3 +108,32 @@ worker and restore a prior verified snapshot without deleting authority data.
 4. Continue with a separately verified predecessor chain for local-run, then
    installed-resource/anchor loading and runtime injection. No real source,
    lock, native calibration or HTTP activation is performed by steps 1–3.
+
+## Local-run integration checkpoint
+
+Implemented source/anchor functions:
+
+- local_run_context.py independently rebuilds both Git chains and compares the
+  predecessor profile version/raw hash, Registry hash and lock bundle hash.
+- local_run_calibration.py reads the existing immutable Store anchor by exact
+  aggregate/validation refs (0/3), checks the predecessor identity, producer
+  metadata, accepted child bounds/hashes and ordered corpus references.
+- Neither helper grants runtime/bootstrap authority or invokes native inference.
+- Current task context manifests now reference this slice and its existing
+  loaders/grammar instead of pulling historical Phase-1/2 research by default.
+
+Next code/deployment prerequisites, in order:
+
+1. Produce actual closed eight-pack Registry sources. The tracked contracts/source
+   tree has no common/registry_set.yaml or five registry documents; only the test
+   helper currently creates a ready bundle. Do not publish that fixture as real
+   authority or call source loading a completed deployment.
+2. Define the timed-speech registry_contract_sha256 derivation from an actual
+   tracked contract source and test its binding; do not invent a constant hash.
+3. Implement emission/loading of the immutable installed resource; activate only
+   after step 4. Use the existing protected
+   bootstrap/Store anchor and typed HTTP composition seam, with no runtime Git,
+   tools import, caller profile selector or external publication.
+4. Complete real source/model identities, independently annotated calibration,
+   accepted measurement record, and protected source publication before claiming
+   a real HTTP Pipeline run. Source/helper tests cannot substitute for these.
