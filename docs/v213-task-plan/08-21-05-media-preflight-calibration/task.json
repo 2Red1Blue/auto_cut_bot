@@ -21,8 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Local speech window DTO/codec/projector, distinct v2 native endpoint and Pipeline client independently reviewed; 332 synthetic/pure checks pass, 4 native codec cases intentionally desktop-only. Claude adds production-client/server integration and next durable-window design. Composed Runtime still uses full-source speech until window Commands/physical-root split/readers are integrated. Earlier fcc4b7ae had 4 real desktop codec passes; no real speech-model/calibration run claimed.",
+  "notes": "2026-08-26: d1845f5f implements local speech wire; 8464aced adds Claude production-client/server tests and archives the independently reviewed wire task. Final combined checks: 338 passed, 4 desktop-only native codec skips. Claude now implements the physical-root value/codec; root corrected and independently reviewed local-window-command-implementation-plan.md including mapped clocks, unknown/retry and commit reconciliation, per-window admission persistence, and missing shadow-local calibration seam. Composed Runtime remains full-source until those next integrations land; no real speech-model/calibration run claimed.",
   "meta": {
-    "next_action": "Finish Claude client/server tests and scoped checkpoint; implement global physical-root/local-speech split, durable window Command and exact committed-reader replay, then activate matching desktop calibration and Runtime"
+    "next_action": "Review Claude physical-root contract; implement exact mapped local window Command/readers, parent-owned per-window admissions and shadow-local calibration, then wire and verify real desktop Runtime"
   }
 }

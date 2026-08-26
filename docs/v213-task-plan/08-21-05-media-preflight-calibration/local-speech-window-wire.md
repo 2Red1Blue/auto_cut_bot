@@ -104,3 +104,18 @@ requires the subsequent window Command and physical-root/local-speech split.
 it is not full-source coverage or sentence completeness. VAD-only protection
 remains valid, and these provider values still require committed ownership,
 calibration and independent admission at their consumers.
+
+## Accepted wire checkpoint
+
+Implementation is committed in `d1845f5f`. Claude's six production-client/
+ephemeral-service tests passed a separate independent delta review. Final
+combined validation: **338 passed, 4 desktop-only codec tests skipped**; the
+three window HTTP suites account for 58 passing tests. All native model and
+decoder callbacks in this Mac run are synthetic. Scoped Ruff and type checks
+passed; the existing dynamic native service is not claimed globally type-clean.
+
+The completed wire task is archived under
+`.ccg/tasks/archive/2026-08/local-speech-window-wire/`. Task05 remains active:
+the composed Pipeline still needs the physical-root split, durable window
+Commands/readers, real local calibration and Runtime wiring. Its next design is
+[the local-window Command plan](local-window-command-implementation-plan.md).
