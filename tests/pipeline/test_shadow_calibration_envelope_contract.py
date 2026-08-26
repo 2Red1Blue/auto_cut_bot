@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -40,8 +41,21 @@ from autocut_kernel.media import (
     TickRange,
     TimeBase,
     decode_shadow_calibration_raw_response,
+    shadow_calibration_anchor_reference_sha256,
 )
 from autocut_kernel.media.types import canonical_sha256
+from autocut_kernel.pipeline.measure_shadow_calibration_command import (
+    MeasureShadowCalibrationRequest,
+    ShadowCalibrationCorpusMember,
+    ShadowCalibrationInputs,
+)
+from autocut_kernel.store import BlobRef, Job
+from autocut_kernel.store.models import MaterializationLimits, VerifiedMaterializedBlob
+
+from auto_cut_bot.pipeline.media_preflight.shadow_calibration_http import (
+    ShadowCalibrationHttpMeasurementPort,
+    ShadowCalibrationSourceBinding,
+)
 
 HASH = "sha256:" + "1" * 64
 RESPONSE_LIMIT = 1_000_000
@@ -65,6 +79,7 @@ class _AutoModel:
     def __init__(self, **_kwargs: object) -> None:
         self.model = _Module()
         self.vad_model = _Module()
+        self.vad_kwargs: dict[str, object] = {}
 
     def generate(self, **_kwargs: object) -> list[dict[str, object]]:
         return [{"text": "hello", "words": ["hello"], "timestamp": [[100, 200]]}]
@@ -310,6 +325,77 @@ def _headers(manifest: dict[str, object]) -> dict[str, str]:
     }
 
 
+@dataclass
+class _SourceLease:
+    reference: BlobRef
+    path: Path
+    closed: bool = False
+
+    def close(self) -> None:
+        self.path.unlink(missing_ok=True)
+        self.closed = True
+
+
+@dataclass
+class _OwnerStore:
+    """Fixture materialization only; real Store claim verification is tested separately."""
+
+    owner: Job
+    lease: _SourceLease
+
+    def materialize_immutable_blob(
+        self, job: Job, reference: BlobRef, limits: MaterializationLimits
+    ) -> VerifiedMaterializedBlob:
+        assert job == self.owner
+        assert reference == self.lease.reference
+        assert len(SOURCE_BYTES) <= limits.effective_max_source_bytes
+        return self.lease
+
+
+async def _verify_real_adapter(
+    contract: _KernelContract, client: TestClient, tmp_path: Path
+) -> None:
+    context = contract.context
+    member = ShadowCalibrationCorpusMember(
+        context.source.corpus_member_reference_sha256,
+        shadow_calibration_anchor_reference_sha256(context),
+        context,
+        contract.invocation,
+    )
+    request = MeasureShadowCalibrationRequest(
+        ShadowCalibrationInputs(
+            HASH, HASH, HASH, context.native_profile_identity_sha256,
+            context.policies.word_gap_policy_sha256, context.policies.vad_merge_policy_sha256,
+            HASH, HASH, context.asr_identity.producer_id, context.vad_identity.producer_id,
+            CLOCK_ID, TIME_BASE,
+        ),
+        (member,),
+    )
+    source = context.source
+    reference = BlobRef(
+        UUID(source.blob_id), source.blob_sha256, source.blob_byte_length, source.blob_media_type
+    )
+    owner = Job("original-calibration-corpus-owner", "shadow")
+    assert owner != request.job
+    source_path = tmp_path / "verified-adapter-source.mp4"
+    source_path.write_bytes(SOURCE_BYTES)
+    lease = _SourceLease(reference, source_path)
+    adapter = ShadowCalibrationHttpMeasurementPort(
+        expected_request=request,
+        source_bindings=(ShadowCalibrationSourceBinding(member.corpus_member_reference_sha256, owner, reference),),
+        store=_OwnerStore(owner, lease),
+        limits=MaterializationLimits(RESPONSE_LIMIT, RESPONSE_LIMIT, 1024, RESPONSE_LIMIT),
+        endpoint_url=str(client.make_url("/v1/shadow-calibration-funasr-raw")),
+        shared_token="test-shadow-token",
+        timeout_seconds=3,
+        max_response_bytes=RESPONSE_LIMIT,
+    )
+    result = await asyncio.to_thread(adapter.measure, request, member)
+    assert result.invocation == contract.invocation
+    assert result.projection == contract.projection
+    assert lease.closed and not source_path.exists()
+
+
 @pytest.mark.asyncio
 async def test_shadow_service_response_is_a_kernel_decodable_closed_calibration_envelope(
     tmp_path: Path,
@@ -356,6 +442,7 @@ async def test_shadow_service_response_is_a_kernel_decodable_closed_calibration_
 
         assert decoded.projection == contract.projection
         assert json.loads(raw)["request_identity_sha256"] == contract.invocation.request_identity_sha256
+        await _verify_real_adapter(contract, client, tmp_path)
 
         drifted = json.loads(raw)
         drifted["request_identity_sha256"] = HASH
