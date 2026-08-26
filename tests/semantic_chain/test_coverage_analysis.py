@@ -1,14 +1,18 @@
 """Pure coverage checks with synthetic persisted DTOs, not DB acceptance."""
 
+import hashlib
+import json
 from dataclasses import FrozenInstanceError, replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes
 from autocut_kernel.semantic_chain.coverage_analysis import (
     Stage1CoveragePolicy,
     analyze_observation_coverage,
+    coverage_reason_id,
 )
+from autocut_kernel.semantic_chain.member_refs import SemanticMemberIdentity, SemanticObjectRef
 from autocut_kernel.semantic_chain.stage1_draft import stage1_draft_prompt_inputs
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm.models import derive_vlm_global_id
@@ -266,3 +270,146 @@ def test_no_confidence_coercion_or_defaults(value):
 def test_unimplemented_scoped_mode_cannot_be_requested():
     with pytest.raises(ValueError):
         Stage1CoveragePolicy("0.5", "dependency_scoped")
+
+
+def _cause_hash(mapping):
+    raw = json.dumps(mapping, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "kind,affected_kinds",
+    [
+        ("entity", {"fact", "event", "source_window", "obligation"}),
+        ("fact", {"fact", "event", "source_window", "obligation"}),
+        ("event", {"event", "source_window"}),
+    ],
+)
+def test_measurement_hash_retains_exact_raw_low_score_and_only_its_direct_dependents(
+    kind, affected_kinds
+):
+    score = "0.12345678901234567890123456789"
+    collection = "entities" if kind == "entity" else kind + "s"
+
+    def lower(pack):
+        observation = getattr(pack, collection)[0]
+        return replace(pack, **{
+            collection: (replace(observation, support=replace(
+                observation.support, confidence=Decimal(score)
+            )),),
+        })
+
+    inputs = _replace_pack(_clean_inputs(), 0, lower)
+    item = inputs.inputs[0]
+    observation = getattr(item.semantic_pack.semantic_pack, collection)[0]
+    reference = item.semantic_pack.reference
+    owner = SemanticMemberIdentity(
+        reference.artifact_type, reference.logical_id, reference.revision,
+        reference.scope, reference.content_hash,
+    )
+    ref = SemanticObjectRef(owner, "vlm_" + kind, getattr(observation, kind + "_id"))
+    policy = {"minimum_confidence": "0.5", "coverage_mode": "strict_global"}
+    expected = {
+        "observation_ref": ref.to_mapping(), "observation_kind": kind,
+        "value": score, "threshold": "0.5", "policy_sha256": _cause_hash(policy),
+    }
+    with localcontext() as context:
+        context.prec = 1
+        result = _analyze(inputs)
+    assert len(result.low_confidence_causes) == 1
+    measurement = result.low_confidence_causes[0]
+    assert measurement.to_mapping() == expected
+    assert measurement.canonical_hash == _cause_hash(expected)
+    affected = [row for row in result.rows if measurement.canonical_hash in row.cause_ids]
+    assert len(affected) == len(affected_kinds)
+    assert {row.unit_type for row in affected} == affected_kinds
+    assert all(row.cause_ids == (measurement.canonical_hash,) for row in affected)
+    assert all(row.reason_codes == ("low_confidence",) for row in affected)
+    assert all(row.resolution_status == "unresolved" for row in affected)
+    assert all(not row.cause_ids for row in result.rows if row not in affected)
+    # No fabricated measurement using a high-scoring affected Event/Fact value.
+    assert measurement.value != "0.9"
+    changed_policy = _analyze(inputs, minimum="0.6").low_confidence_causes[0]
+    assert changed_policy.observation_ref == ref and changed_policy.value == score
+    assert changed_policy.canonical_hash != measurement.canonical_hash
+
+
+@pytest.mark.parametrize("index", [0, 1])
+def test_low_summary_cause_uses_source_window_owner_and_only_summary_assignments(index):
+    inputs = _replace_pack(_clean_inputs(), index, lambda pack: replace(
+        pack, window_summary=replace(pack.window_summary, confidence=Decimal("0.1")),
+    ))
+    result = _analyze(inputs)
+    window = inputs.inputs[index].source_window.window_manifest_sha256
+    reference = inputs.source_manifest.reference
+    source = SemanticMemberIdentity(
+        reference.artifact_type, reference.logical_id, reference.revision,
+        reference.scope, reference.content_hash,
+    )
+    expected = {
+        "observation_ref": SemanticObjectRef(source, "source_window", window).to_mapping(),
+        "observation_kind": "window_summary", "value": "0.1", "threshold": "0.5",
+        "policy_sha256": _cause_hash({"minimum_confidence": "0.5", "coverage_mode": "strict_global"}),
+    }
+    assert len(result.low_confidence_causes) == 1
+    assert result.low_confidence_causes[0].to_mapping() == expected
+    cause = _cause_hash(expected)
+    assert result.low_confidence_causes[0].canonical_hash == cause
+    affected = [row for row in result.rows if cause in row.cause_ids]
+    # Window 0 has explicit draft assignments; window 1 relies on summary support.
+    assert {row.unit_type for row in affected} == (
+        {"source_window"} if index == 0 else {"fact", "event", "source_window"}
+    )
+    assert all(row.window_manifest_sha256 == window for row in affected)
+    assert all(row.cause_ids == (cause,) and row.reason_codes == ("low_confidence",) for row in affected)
+    assert all(not row.cause_ids for row in result.rows if row not in affected)
+
+
+def test_unassigned_origin_ids_are_retained_not_recreated_for_affected_window():
+    inputs = _replace_pack(_clean_inputs(), 1, lambda pack: replace(
+        pack, window_summary=replace(pack.window_summary, fact_refs=(), event_refs=()),
+    ))
+    result = _analyze(inputs)
+    window = inputs.inputs[1].source_window.window_manifest_sha256
+    rows = {row.unit_type: row for row in result.rows if row.window_manifest_sha256 == window}
+    assert set(rows) == {"fact", "event", "source_window"}
+    origins = {}
+    for kind in ("fact", "event", "source_window"):
+        reason = "summary_evidence_missing" if kind == "source_window" else "unassigned"
+        expected = _cause_hash({
+            "draft_sha256": result.draft_sha256, "reason_code": reason,
+            "unit_type": kind, "unit_id": rows[kind].unit_id,
+        })
+        assert coverage_reason_id(result.draft_sha256, reason, kind, rows[kind].unit_id) == expected
+        origins[kind] = expected
+    assert rows["fact"].cause_ids == (origins["fact"],)
+    assert set(rows["event"].cause_ids) == {origins["fact"], origins["event"]}
+    assert set(rows["source_window"].cause_ids) == set(origins.values())
+    assert not result.low_confidence_causes
+    assert all(not row.cause_ids for row in result.rows if row not in rows.values())
+
+
+def test_assigned_summary_gap_and_unassigned_obligation_have_their_own_exact_origins():
+    inputs = _replace_pack(_clean_inputs(), 0, lambda pack: replace(
+        pack, window_summary=replace(pack.window_summary, fact_refs=(), event_refs=()),
+    ))
+    result = _analyze(inputs)
+    window = inputs.inputs[0].source_window.window_manifest_sha256
+    row = next(row for row in result.rows if row.unit_id == window)
+    assert row.cause_ids == (_cause_hash({
+        "draft_sha256": result.draft_sha256, "reason_code": "summary_evidence_missing",
+        "unit_type": "source_window", "unit_id": window,
+    }),)
+    assert all(not item.cause_ids for item in result.rows if item != row)
+    inputs = _clean_inputs()
+    draft = _draft(inputs)
+    for name in ("beats", "story_threads", "merge_proposals"):
+        draft[name] = []
+    result = _analyze(inputs, draft)
+    obligation = next(row for row in result.rows if row.unit_type == "obligation")
+    assert obligation.cause_ids == (_cause_hash({
+        "draft_sha256": result.draft_sha256, "reason_code": "unassigned",
+        "unit_type": "obligation", "unit_id": obligation.unit_id,
+    }),)
+    assert all(not row.cause_ids for row in result.rows if row != obligation)
+    assert not result.low_confidence_causes

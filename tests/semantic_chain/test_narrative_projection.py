@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 from decimal import Decimal, localcontext
@@ -12,6 +13,7 @@ from autocut_kernel.semantic_chain.narrative_projection import (
     NarrativeProjectionError,
     _confidence,
     _project_edges,
+    draft_node_id,
     project_narrative,
 )
 from autocut_kernel.semantic_chain.stage1_draft import (
@@ -241,3 +243,50 @@ def test_event_card_preserves_the_complete_raw_coarse_mapping(inputs):
     card = json.loads(result.event_cards.payload_json)["events"][0]
     raw_event = inputs.inputs[0].semantic_pack.semantic_pack.events[0]
     assert card["source_range_refs"][0]["mapped_interval"] == raw_event.support.source_interval.to_mapping()
+
+
+@pytest.mark.parametrize(
+    "kind,collection,id_field",
+    [("beat", "beats", "beat_id"), ("obligation", "obligations", "obligation_id"),
+     ("story_thread", "story_threads", "story_thread_id")],
+)
+def test_public_draft_node_id_matches_actual_projected_graph_and_independent_hash(
+    inputs, kind, collection, id_field
+):
+    draft = _decoded(inputs)
+    result = project_narrative(inputs, draft, scope=inputs.source_manifest.reference.scope, revision=1)
+    graph = json.loads(result.narrative_graph.payload_json)
+    actual = {node["node_id"] for node in graph["nodes"] if node["node_type"] == kind}
+    expected = set()
+    for item in getattr(draft, collection):
+        local_id = getattr(item, id_field)
+        raw = json.dumps({
+            "schema_version": "stage1-narrative-projection-id-v1",
+            "input_binding_sha256": draft.input_binding_sha256,
+            "kind": kind, "local_id": local_id,
+        }, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+        node_id = "sha256:" + hashlib.sha256(raw).hexdigest()
+        assert draft_node_id(draft, kind, local_id) == node_id
+        expected.add(node_id)
+    assert expected and actual == expected
+    if kind == "obligation":
+        assigned = {obligation for node in graph["nodes"]
+                    if node["node_type"] in ("beat", "story_thread")
+                    for obligation in node["attributes"]["obligation_ids"]}
+        assert assigned == expected
+
+
+@pytest.mark.parametrize("kind", ["entity", "fact", "event", "unknown", "", None])
+def test_draft_node_id_rejects_unsupported_kind_even_with_a_real_local_id(inputs, kind):
+    draft = _decoded(inputs)
+    with pytest.raises(NarrativeProjectionError, match="type is unsupported"):
+        draft_node_id(draft, kind, draft.beats[0].beat_id)
+
+
+@pytest.mark.parametrize("kind", ["beat", "obligation", "story_thread"])
+def test_draft_node_id_rejects_unknown_and_other_kind_local_ids(inputs, kind):
+    draft = _decoded(inputs)
+    other = draft.obligations[0].obligation_id if kind == "beat" else draft.beats[0].beat_id
+    for local_id in ("missing", "", other):
+        with pytest.raises(NarrativeProjectionError, match="local ID does not exist"):
+            draft_node_id(draft, kind, local_id)

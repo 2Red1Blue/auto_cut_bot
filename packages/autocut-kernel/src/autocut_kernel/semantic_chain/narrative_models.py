@@ -180,6 +180,16 @@ class Confidence:
         return {"value": self.value, "method": self.method}
 
     @classmethod
+    def from_decimal(cls, value: Decimal, *, method: str) -> Confidence:
+        """Canonicalize representation without Decimal-context rounding."""
+        if type(value) is not Decimal or not value.is_finite():  # noqa: E721
+            raise NarrativeModelError("confidence requires a finite exact Decimal")
+        text = format(value, "f")
+        if "." in text:
+            text = text.rstrip("0").rstrip(".")
+        return cls("0" if text == "-0" else text, method)
+
+    @classmethod
     def from_mapping(cls, value: object) -> Confidence:
         item = _closed(value, ("value", "method"))
         return cls(_text(item["value"]), _text(item["method"]))

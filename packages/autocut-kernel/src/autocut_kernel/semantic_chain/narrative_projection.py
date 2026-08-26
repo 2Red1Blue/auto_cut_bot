@@ -109,12 +109,7 @@ def _committed_identity(reference: _MemberReference) -> SemanticMemberIdentity:
 def _confidence(value: Decimal, *, method: str) -> Confidence:
     if type(value) is not Decimal or not Decimal(0) <= value <= Decimal(1):  # noqa: E721
         raise NarrativeProjectionError("VLM confidence must be a closed decimal in [0, 1]")
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    if text == "-0":
-        text = "0"
-    return Confidence(text, method)
+    return Confidence.from_decimal(value, method=method)
 
 
 def _minimum_confidence(values: Iterable[Decimal]) -> Confidence:
@@ -135,7 +130,18 @@ def _derived_id(input_binding_sha256: str, kind: str, local_id: str = "") -> str
     )
 
 
-def _draft_node_id(draft: Stage1Draft, node_type: str, local_id: str) -> str:
+def draft_node_id(draft: Stage1Draft, node_type: str, local_id: str) -> str:
+    """Resolve an existing draft-local identity to its canonical Graph node ID."""
+    if node_type == "beat":
+        ids = {item.beat_id for item in draft.beats}
+    elif node_type == "obligation":
+        ids = {item.obligation_id for item in draft.obligations}
+    elif node_type == "story_thread":
+        ids = {item.story_thread_id for item in draft.story_threads}
+    else:
+        raise NarrativeProjectionError("draft Graph node type is unsupported")
+    if local_id not in ids:
+        raise NarrativeProjectionError("draft Graph node local ID does not exist")
     return _derived_id(draft.input_binding_sha256, node_type, local_id)
 
 
@@ -191,7 +197,7 @@ def _project_edges(
         for effect_id in event.effect_event_refs:
             add_edge("causes", event.event_id, effect_id, (event_ref,))
     for beat in draft.beats:
-        beat_id = _draft_node_id(draft, "beat", beat.beat_id)
+        beat_id = draft_node_id(draft, "beat", beat.beat_id)
         for draft_event_ref in beat.event_refs:
             add_edge("supports", draft_event_ref.object_id, beat_id, (events[draft_event_ref.object_id][1],))
     return tuple(
@@ -393,7 +399,7 @@ def project_narrative(
             obligation_refs.append(fact_ref)
             obligation_confidences.append(fact.support.confidence)
             fact_ids.append(fact.fact_id)
-        node_id = _draft_node_id(draft, "obligation", obligation.obligation_id)
+        node_id = draft_node_id(draft, "obligation", obligation.obligation_id)
         obligation_evidence[obligation.obligation_id] = tuple(obligation_refs)
         obligation_confidence[obligation.obligation_id] = _minimum_confidence(obligation_confidences)
         nodes.append(
@@ -419,13 +425,13 @@ def project_narrative(
             beat_confidences.append(event.support.confidence)
         nodes.append(
             GraphNode(
-                _draft_node_id(draft, "beat", beat.beat_id),
+                draft_node_id(draft, "beat", beat.beat_id),
                 "beat",
                 beat.summary,
                 BeatAttributes(
                     beat.summary,
                     beat.phase,
-                    tuple(_draft_node_id(draft, "obligation", item) for item in beat.obligation_ids),
+                    tuple(draft_node_id(draft, "obligation", item) for item in beat.obligation_ids),
                 ),
                 tuple(beat_refs),
                 _minimum_confidence(beat_confidences),
@@ -440,13 +446,13 @@ def project_narrative(
         )
         nodes.append(
             GraphNode(
-                _draft_node_id(draft, "story_thread", thread.story_thread_id),
+                draft_node_id(draft, "story_thread", thread.story_thread_id),
                 "story_thread",
                 thread.title,
                 StoryThreadAttributes(
                     thread.title,
                     thread.premise,
-                    tuple(_draft_node_id(draft, "obligation", item) for item in thread.obligation_ids),
+                    tuple(draft_node_id(draft, "obligation", item) for item in thread.obligation_ids),
                 ),
                 thread_refs,
                 _minimum_confidence(

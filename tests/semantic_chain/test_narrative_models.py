@@ -4,7 +4,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, fields, replace
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 from autocut_kernel.media.types import TickRange, TimeBase
@@ -241,6 +241,48 @@ def test_confidence_is_canonical_exact_decimal_without_float_rounding(value):
     result = Confidence(value, "source")
     assert result.value == value
     assert Confidence.from_mapping(result.to_mapping()) == result
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("0.123456789012345678901234567890", "0.12345678901234567890123456789"),
+        ("-0.000", "0"), ("0E+8", "0"), ("1.000", "1"),
+        ("1E-29", "0.00000000000000000000000000001"),
+    ],
+)
+@pytest.mark.parametrize("method", ["model", "rule", "source"])
+def test_from_decimal_is_exact_even_under_extremely_low_ambient_precision(value, expected, method):
+    original = Decimal(value)
+    with localcontext() as context:
+        context.prec = 1
+        context.Emax = 1
+        context.Emin = -1
+        result = Confidence.from_decimal(original, method=method)
+        assert Decimal(result.value) == original
+    assert result == Confidence(expected, method)
+    assert Confidence.from_mapping(result.to_mapping()) == result
+
+
+@pytest.mark.parametrize(
+    "value",
+    [Decimal("NaN"), Decimal("sNaN"), Decimal("Infinity"), Decimal("-Infinity"),
+     Decimal("-0.01"), Decimal("1.01"), True, False, 0, 1, 0.1, "0.1", None],
+)
+def test_from_decimal_rejects_nonfinite_out_of_range_and_non_decimal_values(value):
+    with pytest.raises(NarrativeModelError):
+        Confidence.from_decimal(value, method="source")
+
+
+def test_from_decimal_does_not_coerce_subclasses_or_invalid_methods():
+    class CustomDecimal(Decimal):
+        pass
+
+    with pytest.raises(NarrativeModelError):
+        Confidence.from_decimal(CustomDecimal("0.5"), method="source")
+    for method in (None, True, "accepted", ""):
+        with pytest.raises(NarrativeModelError):
+            Confidence.from_decimal(Decimal("0.5"), method=method)
 
 
 @pytest.mark.parametrize("value", ["-12.003", "0", "23", "123456789012345678901234567890.001"])

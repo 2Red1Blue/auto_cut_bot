@@ -20,6 +20,7 @@ from decimal import Decimal
 from ..contracts.compiler.canonical import canonical_json_hash
 from ..store.models import CommittedSemanticInputs
 from .continuity_analysis import analyze_continuity
+from .diagnostic_models import ConfidenceMeasurement
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 from .narrative_models import Confidence
 from .stage1_draft import Stage1DraftPolicy, decode_stage1_draft
@@ -81,6 +82,7 @@ class CoverageAnalysis:
     draft_sha256: str
     coverage_policy_sha256: str
     rows: tuple[ObservationCoverage, ...]
+    low_confidence_causes: tuple[ConfidenceMeasurement, ...]
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -88,11 +90,22 @@ class CoverageAnalysis:
             "draft_sha256": self.draft_sha256,
             "coverage_policy_sha256": self.coverage_policy_sha256,
             "rows": [row.to_mapping() for row in self.rows],
+            "low_confidence_causes": [cause.to_mapping() for cause in self.low_confidence_causes],
         }
 
     @property
     def canonical_hash(self) -> str:
         return canonical_json_hash(self.to_mapping())
+
+
+def coverage_reason_id(draft_sha256: str, reason_code: str, unit_type: str, unit_id: str) -> str:
+    """Stable origin of a missing assignment/summary, not a safety result."""
+    if reason_code not in ("unassigned", "summary_evidence_missing"):
+        raise ValueError("coverage reason has no local-unit cause encoding")
+    return canonical_json_hash({
+        "draft_sha256": draft_sha256, "reason_code": reason_code,
+        "unit_type": unit_type, "unit_id": unit_id,
+    })
 
 
 def analyze_observation_coverage(
@@ -159,6 +172,18 @@ def analyze_observation_coverage(
 
     rows: list[ObservationCoverage] = []
     fact_rows: dict[str, ObservationCoverage] = {}
+    measurements: dict[str, ConfidenceMeasurement] = {}
+
+    def low_confidence(ref: SemanticObjectRef, kind: str, value: Decimal) -> set[str]:
+        if value >= threshold:
+            return set()
+        measurement = ConfidenceMeasurement(
+            ref, kind, Confidence.from_decimal(value, method="source").value,
+            coverage_policy.minimum_confidence, coverage_policy.canonical_hash,
+        )
+        cause_id = measurement.canonical_hash
+        measurements[cause_id] = measurement
+        return {cause_id}
 
     def make_row(
         kind: str, unit_id: str, window: str | None, disposition: str,
@@ -167,6 +192,7 @@ def analyze_observation_coverage(
     ) -> ObservationCoverage:
         if disposition == "unassigned":
             reasons.add("unassigned")
+            causes.add(coverage_reason_id(draft.canonical_hash, "unassigned", kind, unit_id))
         conflict = "continuity_conflict" in reasons
         status = "conflicted" if conflict else "unresolved" if reasons else "resolved"
         if status == "unresolved":
@@ -182,7 +208,15 @@ def analyze_observation_coverage(
         window = item.source_window.window_manifest_sha256
         summary_id = f"summary:{window}"
         summary_ok = pack.window_summary.confidence >= threshold
-        entities = {entity.entity_id: entity for entity in pack.entities}
+        summary_causes = low_confidence(
+            SemanticObjectRef(source_owner, "source_window", window),
+            "window_summary", pack.window_summary.confidence,
+        )
+        entity_confidence_causes = {
+            entity.entity_id: low_confidence(raw_ref(window, "entity", entity.entity_id),
+                                              "entity", entity.support.confidence)
+            for entity in pack.entities
+        }
         event_facts: dict[str, set[str]] = {}
         supporting_facts: set[str] = set(pack.window_summary.fact_refs)
         for event in pack.events:
@@ -207,10 +241,14 @@ def analyze_observation_coverage(
             entity_ids = (fact.subject_ref,) + ((fact.object_ref,) if fact.object_ref else ())
             reasons = set(window_reasons)
             causes = set(window_causes)
-            if fact.support.confidence < threshold or any(entities[key].support.confidence < threshold for key in entity_ids):
+            low_causes = low_confidence(raw_ref(window, "fact", fact.fact_id), "fact", fact.support.confidence)
+            for entity_id in entity_ids:
+                low_causes.update(entity_confidence_causes[entity_id])
+            if disposition == "supporting":
+                low_causes.update(summary_causes)
+            if low_causes:
                 reasons.add("low_confidence")
-            if disposition == "supporting" and not summary_ok:
-                reasons.add("low_confidence")
+                causes.update(low_causes)
             for entity_id in entity_ids:
                 if entity_id in merge_causes:
                     reasons.add("identity_unresolved")
@@ -226,10 +264,14 @@ def analyze_observation_coverage(
             if disposition == "supporting":
                 assignments = {summary_id}
             reasons, causes = set(window_reasons), set(window_causes)
-            if event.support.confidence < threshold or any(entities[key].support.confidence < threshold for key in event.participant_refs):
+            low_causes = low_confidence(raw_ref(window, "event", event.event_id), "event", event.support.confidence)
+            for entity_id in event.participant_refs:
+                low_causes.update(entity_confidence_causes[entity_id])
+            if disposition == "supporting":
+                low_causes.update(summary_causes)
+            if low_causes:
                 reasons.add("low_confidence")
-            if disposition == "supporting" and not summary_ok:
-                reasons.add("low_confidence")
+                causes.update(low_causes)
             for entity_id in event.participant_refs:
                 if entity_id in merge_causes:
                     reasons.add("identity_unresolved")
@@ -250,16 +292,19 @@ def analyze_observation_coverage(
         # an ungrounded summary remains an explicit missing-evidence condition.
         if not pack.window_summary.fact_refs and not pack.window_summary.event_refs:
             window_reasons.add("summary_evidence_missing")
+            window_causes.add(coverage_reason_id(draft.canonical_hash, "summary_evidence_missing", "source_window", window))
         # Entities that occur in neither a Fact nor an Event still cannot hide
         # unresolved identity or low-confidence evidence from window coverage.
         for entity in pack.entities:
             if entity.support.confidence < threshold:
                 window_reasons.add("low_confidence")
+                window_causes.update(entity_confidence_causes[entity.entity_id])
             if entity.entity_id in merge_causes:
                 window_reasons.add("identity_unresolved")
                 window_causes.update(merge_causes[entity.entity_id])
         if not summary_ok:
             window_reasons.add("low_confidence")
+            window_causes.update(summary_causes)
         disposition = "narrative" if any(row.disposition == "narrative" for row in contents) else "supporting"
         rows.append(make_row(
             "source_window", window, window, disposition, {summary_id},
@@ -283,4 +328,5 @@ def analyze_observation_coverage(
     return CoverageAnalysis(
         draft.input_binding_sha256, draft.canonical_hash, coverage_policy.canonical_hash,
         tuple(sorted(rows, key=lambda row: (row.unit_type, row.unit_id))),
+        tuple(measurements[key] for key in sorted(measurements)),
     )
