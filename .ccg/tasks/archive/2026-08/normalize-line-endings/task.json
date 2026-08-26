@@ -1,0 +1,11 @@
+{
+  "id": "normalize-line-endings",
+  "title": "统一跨平台 Git 行尾策略",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "repository-hygiene",
+  "currentPhase": "completed",
+  "nextAction": "Archived after repository and desktop verification.",
+  "branch": "feat/v213-contract-codegen"
+}
