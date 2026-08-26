@@ -32,4 +32,27 @@ unnecessarily required ASR/VAD CalibrationRecord hashes to differ; root caught
 and removed that constraint. One Record may contain both independently checked
 producer roles, and a regression test now requires that valid case to work.
 
-Other foundation slices are being reviewed separately; task05 is not complete.
+## Shadow-local case and raw projection — ALLOW
+
+review_calibration_migration authored; root independently read both production
+files and both tests. Root reproduced 303 pure passes (150 new plus prior
+shadow/raw/window regressions), with scoped Ruff/types clean. One test-only
+relative import initially failed ordinary pytest collection; the author fixed
+it to the project's absolute test import convention and root reran the default
+pytest command successfully. No production blocking findings remain.
+
+Case hash binds independent local anchors, original source/provenance, actual
+extraction, decoder/model/service/policy identities without future Record or
+accepted bounds. The request binds that case. Projection reuses the existing
+raw decoder/projector and matches all observations in order; no sorting/clipping
+gold or guessing matches. Real zero error and explicit empty observations remain
+measurements, not a fabricated positive bound or accepted calibration.
+
+```sh
+uv run --no-sync pytest -q tests/media/test_shadow_local_calibration.py tests/media/test_shadow_local_calibration_projection.py tests/media/test_local_speech_window_codec.py tests/media/test_local_speech_window_projection.py tests/media/test_shadow_calibration_raw.py
+# 303 passed
+```
+
+This is not a deployed shadow-local service, persisted CalibrationRecord,
+independent acceptance or normal Runtime activation. Mapped assessment is still
+being reviewed separately; task05 is not complete.
