@@ -11,7 +11,6 @@ import json
 from dataclasses import dataclass, fields
 from decimal import Decimal
 from typing import cast
-from uuid import UUID
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash, sha256_bytes
 from ..semantic_chain.candidate_catalog import CandidateCatalogPolicy
@@ -45,41 +44,8 @@ from ..vlm.retry_policy import GenerationRetryPolicy
 from .build_narrative_graph_command import COMMAND_NAME as STAGE1_COMMAND_NAME
 from .build_narrative_graph_command import PersistedNarrativeGraphSet
 from .build_narrative_graph_request import BuildNarrativeGraphRequest, prepare_stage1_request
+from .committed_outcome import succeeded_outcome_from_mapping, succeeded_outcome_mapping
 from .story_design_inputs import CommittedStoryDesignInputs
-
-
-def _outcome_mapping(outcome: CommandOutcome) -> dict[str, object]:
-    if (type(outcome) is not CommandOutcome or type(outcome.state) is not str  # noqa: E721
-            or outcome.state != "succeeded" or type(outcome.is_fresh_claim) is not bool  # noqa: E721
-            or outcome.failure_code is not None or outcome.failure_detail_json is not None
-            or any(type(value) is not UUID for value in (
-                outcome.job_id, outcome.command_slot_id, outcome.receipt_id, outcome.artifact_set_id,
-            ))):
-        raise ValueError("Stage 2 requires an exact succeeded Stage 1 Job/slot/Receipt/Set outcome")
-    # Freshness is transport history, not persisted identity. In particular,
-    # CommandOutcome equality excludes job_id, so it must never prove this join.
-    return {"job_id": str(outcome.job_id), "command_slot_id": str(outcome.command_slot_id),
-            "state": outcome.state, "receipt_id": str(outcome.receipt_id),
-            "artifact_set_id": str(outcome.artifact_set_id)}
-
-
-def _uuid(value: object) -> UUID:
-    if type(value) is not str:  # noqa: E721
-        raise ValueError("Stage 1 outcome identity must use canonical UUID strings")
-    result = UUID(value)
-    if str(result) != value:
-        raise ValueError("Stage 1 outcome UUID spelling is not canonical")
-    return result
-
-
-def _outcome_from_mapping(value: object) -> CommandOutcome:
-    item = require_closed_mapping(value, {"job_id", "command_slot_id", "state", "receipt_id", "artifact_set_id"}, "Stage 1 outcome")
-    if type(item["state"]) is not str or item["state"] != "succeeded":  # noqa: E721
-        raise ValueError("Stage 1 outcome must be succeeded")
-    return CommandOutcome(
-        _uuid(item["command_slot_id"]), "succeeded", receipt_id=_uuid(item["receipt_id"]),
-        artifact_set_id=_uuid(item["artifact_set_id"]), job_id=_uuid(item["job_id"]),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +65,7 @@ class CompileStoryPortfolioRequest:
     def __post_init__(self) -> None:
         if type(self.stage1_request) is not BuildNarrativeGraphRequest:  # noqa: E721
             raise ValueError("Stage 2 requires the full frozen Stage 1 request")
-        _outcome_mapping(self.stage1_outcome)
+        succeeded_outcome_mapping(self.stage1_outcome)
         require_nonempty_text(self.idempotency_key, "idempotency_key")
         _ = self.command_policy
 
@@ -120,7 +86,7 @@ class CompileStoryPortfolioRequest:
 
     def to_mapping(self) -> dict[str, object]:
         return {"stage1_request": self.stage1_request.to_mapping(),
-                "stage1_outcome": _outcome_mapping(self.stage1_outcome),
+                "stage1_outcome": succeeded_outcome_mapping(self.stage1_outcome),
                 "idempotency_key": self.idempotency_key, **self.command_policy.to_mapping()}
 
     @classmethod
@@ -129,7 +95,7 @@ class CompileStoryPortfolioRequest:
         item = require_closed_mapping(value, policy_fields | {"stage1_request", "stage1_outcome", "idempotency_key"}, "Stage 2 request")
         policy = Stage2CommandPolicy.from_mapping({key: item[key] for key in policy_fields})
         return policy.build_request(BuildNarrativeGraphRequest.from_mapping(item["stage1_request"]),
-                                    _outcome_from_mapping(item["stage1_outcome"]), cast(str, item["idempotency_key"]))
+                                    succeeded_outcome_from_mapping(item["stage1_outcome"]), cast(str, item["idempotency_key"]))
 
 
 @dataclass(frozen=True, slots=True)
