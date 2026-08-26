@@ -849,6 +849,34 @@ class CommittedArtifactMemberReference:
             },
         }
 
+    @classmethod
+    def from_mapping(cls, value: object) -> CommittedArtifactMemberReference:
+        """Decode a full reference value, without proving its persistence."""
+        if type(value) is not dict:  # noqa: E721
+            raise StoreValidationError("committed member reference must be an object")
+        item = cast(dict[str, object], value)
+        if set(item) != {
+            "receipt_id", "artifact_set_id", "member_ordinal", "scope",
+            "artifact_type", "logical_id", "revision", "content_hash",
+        } or type(item["scope"]) is not dict:
+            raise StoreValidationError("committed member reference has missing or unknown fields")
+        scope = cast(dict[str, object], item["scope"])
+        if set(scope) != {"namespace", "kind", "key"}:
+            raise StoreValidationError("committed member reference scope is not closed")
+        for name in ("receipt_id", "artifact_set_id"):
+            _text(cast(str, item[name]), name)
+        try:
+            receipt_id = UUID(cast(str, item["receipt_id"]))
+            artifact_set_id = UUID(cast(str, item["artifact_set_id"]))
+        except ValueError as error:
+            raise StoreValidationError("committed member reference UUID is invalid") from error
+        return cls(
+            receipt_id, artifact_set_id, cast(int, item["member_ordinal"]),
+            ArtifactScope(cast(str, scope["namespace"]), cast(str, scope["kind"]), cast(str, scope["key"])),
+            cast(str, item["artifact_type"]), cast(str, item["logical_id"]),
+            cast(int, item["revision"]), cast(str, item["content_hash"]),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class PersistedCommittedArtifactMember:
@@ -874,6 +902,66 @@ class PersistedCommittedArtifactMember:
             )
         if not isinstance(self.command_slot_id, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise StoreValidationError("persisted committed member command_slot_id must be a UUID")
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedCommittedArtifactSet:
+    """Exact persisted set content; constructing this value grants no authority.
+
+    The Store reader establishes the succeeded Receipt/slot/Job join. This value
+    checks its internal member identities, order and hashes, not domain admission.
+    """
+
+    job: Job
+    job_id: UUID
+    command_slot_id: UUID
+    receipt_id: UUID
+    artifact_set_id: UUID
+    request_hash: str
+    command_name: str
+    execution_kind: CommandExecutionKind
+    set_hash: str
+    members: tuple[PersistedCommittedArtifactMember, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.job) is not Job or self.job.profile not in ("test", "shadow", "production", "authority"):  # noqa: E721
+            raise StoreValidationError("committed set requires an exact Job and profile")
+        for value in (self.job_id, self.command_slot_id, self.receipt_id, self.artifact_set_id):
+            if type(value) is not UUID:  # noqa: E721
+                raise StoreValidationError("committed set identifiers must be UUIDs")
+        _sha256(self.request_hash, "committed set request_hash")
+        _text(self.command_name, "committed set command_name")
+        if type(self.execution_kind) is not str or self.execution_kind not in ("deterministic", "generation"):  # noqa: E721
+            raise StoreValidationError("committed set execution kind is unsupported")
+        if type(self.members) is not tuple or not self.members or any(  # noqa: E721
+            type(item) is not PersistedCommittedArtifactMember for item in self.members
+        ):
+            raise StoreValidationError("committed set requires ordered persisted members")
+        for ordinal, member in enumerate(self.members):
+            reference = member.reference
+            if (
+                member.command_slot_id != self.command_slot_id
+                or reference.receipt_id != self.receipt_id
+                or reference.artifact_set_id != self.artifact_set_id
+                or reference.member_ordinal != ordinal
+            ):
+                raise StoreValidationError("committed set member ownership or order differs")
+        CommandSuccess(self.command_slot_id, self.set_hash, self.artifacts)
+
+    @property
+    def references(self) -> tuple[CommittedArtifactMemberReference, ...]:
+        return tuple(member.reference for member in self.members)
+
+    @property
+    def artifacts(self) -> tuple[ArtifactMember, ...]:
+        return tuple(
+            ArtifactMember(
+                ref.artifact_type, ref.logical_id, ref.revision, ref.scope,
+                ref.content_hash, member.payload_json,
+            )
+            for member in self.members
+            for ref in (member.reference,)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1440,25 +1528,30 @@ class CommandSuccess:
 
     @property
     def expected_set_hash(self) -> str:
-        canonical_members = [
-            {
-                "artifact_type": item.artifact_type,
-                "content_hash": item.content_hash,
-                "logical_id": item.logical_id,
-                "payload_json": json.loads(item.payload_json),
-                "revision": item.revision,
-                "scope": {
-                    "key": item.scope.key,
-                    "kind": item.scope.kind,
-                    "namespace": item.scope.namespace,
-                },
-            }
-            for item in self.artifacts
-        ]
-        encoded = json.dumps(
-            canonical_members, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode()
-        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return artifact_set_hash(self.artifacts)
+
+
+def artifact_set_hash(artifacts: tuple[ArtifactMember, ...]) -> str:
+    """Hash the actual ordered Store member representation, without committing it."""
+    canonical_members = [
+        {
+            "artifact_type": item.artifact_type,
+            "content_hash": item.content_hash,
+            "logical_id": item.logical_id,
+            "payload_json": json.loads(item.payload_json),
+            "revision": item.revision,
+            "scope": {
+                "key": item.scope.key,
+                "kind": item.scope.kind,
+                "namespace": item.scope.namespace,
+            },
+        }
+        for item in artifacts
+    ]
+    encoded = json.dumps(
+        canonical_members, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

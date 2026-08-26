@@ -93,6 +93,7 @@ from .models import (
     BlobRef,
     CalibrationValidationBinding,
     CommandClaim,
+    CommandExecutionKind,
     CommandOutcome,
     CommandRejection,
     CommandSuccess,
@@ -109,6 +110,7 @@ from .models import (
     MediaEvidenceReference,
     PersistedCalibrationRecordAnchor,
     PersistedCommittedArtifactMember,
+    PersistedCommittedArtifactSet,
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
@@ -648,41 +650,10 @@ def _decode_committed_member_reference(
     value: object,
     field_name: str,
 ) -> CommittedArtifactMemberReference:
-    mapping = _closed_mapping(
-        value,
-        frozenset(
-            {
-                "artifact_set_id",
-                "artifact_type",
-                "content_hash",
-                "logical_id",
-                "member_ordinal",
-                "receipt_id",
-                "revision",
-                "scope",
-            }
-        ),
-        field_name,
-    )
-    scope = _closed_mapping(
-        mapping["scope"],
-        frozenset({"key", "kind", "namespace"}),
-        f"{field_name}.scope",
-    )
-    return CommittedArtifactMemberReference(
-        receipt_id=UUID(_text(mapping["receipt_id"])),
-        artifact_set_id=UUID(_text(mapping["artifact_set_id"])),
-        member_ordinal=cast(int, mapping["member_ordinal"]),
-        scope=ArtifactScope(
-            _text(scope["namespace"]),
-            _text(scope["kind"]),
-            _text(scope["key"]),
-        ),
-        artifact_type=_text(mapping["artifact_type"]),
-        logical_id=_text(mapping["logical_id"]),
-        revision=cast(int, mapping["revision"]),
-        content_hash=_text(mapping["content_hash"]),
-    )
+    try:
+        return CommittedArtifactMemberReference.from_mapping(value)
+    except StoreValidationError as error:
+        raise StoreValidationError(f"{field_name} is not an exact committed member reference") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +855,8 @@ class _CommittedSet:
     command_name: str
     set_hash: str
     members: tuple[tuple[int, ArtifactMember], ...]
+    request_hash: str
+    execution_kind: CommandExecutionKind
 
 
 def _closed_mapping(
@@ -3179,24 +3152,121 @@ class PostgresRuntimeStore:
             job_id, profile = job_row
             if _text(profile) != job.profile:
                 raise JobProfileMismatchError("job_key belongs to a different profile")
+            return self._read_generation_attempt_chain_by_slot(
+                cursor, UUID(str(job_id)), command_slot_id,
+            )
+
+        return self._transaction(operation)
+
+    def _read_generation_attempt_chain_by_slot(
+        self, cursor: DbCursor, job_id: UUID, command_slot_id: UUID,
+    ) -> tuple[GenerationAttempt, ...]:
+        cursor.execute(
+            """
+            SELECT attempt_id
+              FROM runtime.generation_attempts
+             WHERE job_id = %s AND command_slot_id = %s
+             ORDER BY attempt_ordinal
+            """,
+            (job_id, command_slot_id),
+        )
+        attempt_ids: list[UUID] = []
+        while (row := cursor.fetchone()) is not None:
+            attempt_ids.append(UUID(str(row[0])))
+        return tuple(
+            self._read_generation_attempt_by_id(cursor, item, for_update=False)
+            for item in attempt_ids
+        )
+
+    def read_committed_generation_attempt_chain(
+        self,
+        job: Job,
+        *,
+        command_slot_id: UUID,
+        receipt_id: UUID,
+        artifact_set_id: UUID,
+        expected_request_hash: str,
+    ) -> tuple[GenerationAttempt, ...]:
+        """Verify the complete durable Attempt/Receipt chain of one succeeded set.
+
+        Request/response Blob bytes and domain semantics remain the caller's
+        exact-reader responsibility; this checks durable invocation ownership.
+        """
+        if type(job) is not Job or job.profile not in ("test", "shadow", "production", "authority"):  # noqa: E721
+            raise StoreValidationError("committed generation reader requires an exact Job and profile")
+        for name, value in (
+            ("command_slot_id", command_slot_id), ("receipt_id", receipt_id),
+            ("artifact_set_id", artifact_set_id),
+        ):
+            self._validate_uuid(value, name)
+        self._validate_sha256(expected_request_hash, "expected_request_hash")
+
+        def operation(cursor: DbCursor) -> tuple[GenerationAttempt, ...]:
+            committed = self._read_exact_committed_set_by_ids(
+                cursor, job, receipt_id=receipt_id, artifact_set_id=artifact_set_id,
+            )
+            if (
+                committed.command_slot_id != command_slot_id
+                or committed.request_hash != expected_request_hash
+                or committed.execution_kind != "generation"
+            ):
+                raise SemanticInputIntegrityError("committed generation slot/request identity differs")
+            attempts = self._read_generation_attempt_chain_by_slot(
+                cursor, committed.job_id, command_slot_id,
+            )
+            if not attempts or len({item.attempt_id for item in attempts}) != len(attempts):
+                raise SemanticInputIntegrityError("committed generation Attempt chain is missing or duplicated")
+            first = attempts[0]
+            for index, attempt in enumerate(attempts):
+                if (
+                    attempt.job_id != committed.job_id
+                    or attempt.command_slot_id != command_slot_id
+                    or attempt.request_hash != expected_request_hash
+                    or attempt.attempt_ordinal != index + 1
+                    or attempt.previous_attempt_id != (None if index == 0 else attempts[index - 1].attempt_id)
+                    or (attempt.provider_id, attempt.request_payload, attempt.retry_policy_hash, attempt.max_attempts)
+                    != (first.provider_id, first.request_payload, first.retry_policy_hash, first.max_attempts)
+                ):
+                    raise SemanticInputIntegrityError("committed generation Attempt chain identity differs")
+                if index < len(attempts) - 1:
+                    if attempt.state != "failed" or attempt.failure_disposition != "retryable":
+                        raise SemanticInputIntegrityError("committed generation predecessor is not retryable failed")
+                elif (
+                    attempt.state != "committed" or attempt.receipt_id != receipt_id
+                    or attempt.artifact_set_id != artifact_set_id
+                ):
+                    raise SemanticInputIntegrityError("final generation Attempt does not bind the exact succeeded set")
             cursor.execute(
                 """
-                SELECT attempt_id
-                  FROM runtime.generation_attempts
-                 WHERE job_id = %s AND command_slot_id = %s
-                 ORDER BY attempt_ordinal
+                SELECT link.receipt_id, link.attempt_id, link.attempt_ordinal,
+                       attempt.job_id, attempt.command_slot_id
+                  FROM runtime.generation_receipt_attempts AS link
+                  FULL JOIN runtime.generation_attempts AS attempt
+                    ON attempt.attempt_id = link.attempt_id
+                 WHERE link.receipt_id = %s OR attempt.command_slot_id = %s
+                 ORDER BY link.attempt_ordinal, link.attempt_id
                 """,
-                (UUID(str(job_id)), command_slot_id),
+                (receipt_id, command_slot_id),
             )
-            attempt_ids: list[UUID] = []
+            # FULL JOIN also exposes an unlinked extra Attempt under this slot,
+            # including a corrupt foreign Job owner filtered by the chain read.
+            links: list[tuple[UUID, UUID, int, UUID, UUID]] = []
             while (row := cursor.fetchone()) is not None:
-                attempt_ids.append(UUID(str(row[0])))
-            return tuple(
-                self._read_generation_attempt_by_id(
-                    cursor, item, for_update=False
-                )
-                for item in attempt_ids
+                try:
+                    link_receipt, link_attempt, ordinal, owner_job, owner_slot = row
+                    links.append((
+                        UUID(str(link_receipt)), UUID(str(link_attempt)), int(_text(ordinal)),
+                        UUID(str(owner_job)), UUID(str(owner_slot)),
+                    ))
+                except (TypeError, ValueError) as error:
+                    raise SemanticInputIntegrityError("generation Receipt links have invalid identities") from error
+            expected = tuple(
+                (receipt_id, item.attempt_id, item.attempt_ordinal, committed.job_id, command_slot_id)
+                for item in attempts
             )
+            if tuple(links) != expected:
+                raise SemanticInputIntegrityError("generation Receipt links do not exactly cover the Attempt chain")
+            return attempts
 
         return self._transaction(operation)
 
@@ -3565,6 +3635,64 @@ class PostgresRuntimeStore:
         if tuple(_text(value) for value in row[:8]) != expected_hashes:
             raise StoreValidationError("calibration anchor hashes do not bind its exact accepted members")
         return PersistedCalibrationRecordAnchor(record, members[0], members[3])
+
+    def read_committed_artifact_set(
+        self,
+        job: Job,
+        *,
+        command_slot_id: UUID,
+        receipt_id: UUID,
+        artifact_set_id: UUID,
+        expected_request_hash: str,
+        expected_command_name: str,
+        expected_execution_kind: str,
+    ) -> PersistedCommittedArtifactSet:
+        """Read one exact succeeded set without guessing a member hash or a head.
+
+        This generic persistence check establishes neither generation Attempt
+        provenance nor domain admission. Domain readers must verify both.
+        """
+        if type(job) is not Job or job.profile not in ("test", "shadow", "production", "authority"):  # noqa: E721
+            raise StoreValidationError("committed set reader requires an exact Job and profile")
+        for name, value in (
+            ("command_slot_id", command_slot_id), ("receipt_id", receipt_id),
+            ("artifact_set_id", artifact_set_id),
+        ):
+            self._validate_uuid(value, name)
+        self._validate_sha256(expected_request_hash, "expected_request_hash")
+        _required_text(expected_command_name, "expected_command_name")
+        if type(expected_execution_kind) is not str or expected_execution_kind not in ("deterministic", "generation"):  # noqa: E721
+            raise StoreValidationError("expected execution kind is unsupported")
+
+        def operation(cursor: DbCursor) -> PersistedCommittedArtifactSet:
+            committed = self._read_exact_committed_set_by_ids(
+                cursor, job, receipt_id=receipt_id, artifact_set_id=artifact_set_id,
+            )
+            if (
+                committed.command_slot_id != command_slot_id
+                or committed.request_hash != expected_request_hash
+                or committed.command_name != expected_command_name
+                or committed.execution_kind != expected_execution_kind
+            ):
+                raise SemanticInputIntegrityError("committed set producer/request identity differs")
+            return PersistedCommittedArtifactSet(
+                job, committed.job_id, committed.command_slot_id, receipt_id,
+                artifact_set_id, committed.request_hash, committed.command_name,
+                committed.execution_kind, committed.set_hash,
+                tuple(
+                    PersistedCommittedArtifactMember(
+                        CommittedArtifactMemberReference(
+                            receipt_id, artifact_set_id, ordinal, member.scope,
+                            member.artifact_type, member.logical_id, member.revision,
+                            member.content_hash,
+                        ),
+                        member.payload_json, committed.command_slot_id,
+                    )
+                    for ordinal, member in committed.members
+                ),
+            )
+
+        return self._transaction(operation)
 
     def read_committed_artifact_member(
         self,
@@ -5334,6 +5462,26 @@ class PostgresRuntimeStore:
         job: Job,
         reference: CommittedArtifactMemberReference,
     ) -> _CommittedSet:
+        committed = self._read_exact_committed_set_by_ids(
+            cursor, job, receipt_id=reference.receipt_id,
+            artifact_set_id=reference.artifact_set_id,
+        )
+        if reference.member_ordinal >= len(committed.members) or not self._member_matches_reference(
+            committed.members[reference.member_ordinal], reference
+        ):
+            raise SemanticInputUnavailableError(
+                "exact committed semantic member identity is unavailable"
+            )
+        return committed
+
+    def _read_exact_committed_set_by_ids(
+        self,
+        cursor: DbCursor,
+        job: Job,
+        *,
+        receipt_id: UUID,
+        artifact_set_id: UUID,
+    ) -> _CommittedSet:
         cursor.execute(
             "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
             (job.job_key,),
@@ -5350,7 +5498,7 @@ class PostgresRuntimeStore:
         cursor.execute(
             """
             SELECT slot.command_slot_id, slot.command_name, artifact_set.set_hash,
-                   artifact_set.member_count
+                   artifact_set.member_count, slot.request_hash, slot.execution_kind
               FROM runtime.command_receipts AS receipt
               JOIN runtime.command_slots AS slot
                 ON slot.command_slot_id = receipt.command_slot_id
@@ -5366,8 +5514,8 @@ class PostgresRuntimeStore:
             """,
             (
                 durable_job_id,
-                reference.receipt_id,
-                reference.artifact_set_id,
+                receipt_id,
+                artifact_set_id,
             ),
         )
         set_rows: list[tuple[object, ...]] = []
@@ -5377,8 +5525,15 @@ class PostgresRuntimeStore:
             raise SemanticInputUnavailableError(
                 "exact committed semantic Receipt/ArtifactSet is unavailable"
             )
-        command_slot_id, command_name, set_hash, member_count = set_rows[0]
+        command_slot_id, command_name, set_hash, member_count, request_hash, execution_kind = set_rows[0]
         slot_id = UUID(str(command_slot_id))
+        try:
+            self._validate_sha256(request_hash, "committed slot request_hash")
+            _required_text(command_name, "committed slot command_name")
+            if type(execution_kind) is not str or execution_kind not in ("deterministic", "generation"):  # noqa: E721
+                raise StoreValidationError("committed slot execution kind is unsupported")
+        except StoreValidationError as error:
+            raise SemanticInputIntegrityError("committed slot producer identity is invalid") from error
         cursor.execute(
             """
             SELECT member.ordinal, artifact.artifact_type, artifact.logical_id,
@@ -5393,7 +5548,7 @@ class PostgresRuntimeStore:
              WHERE member.artifact_set_id = %s
              ORDER BY member.ordinal
             """,
-            (durable_job_id, reference.artifact_set_id),
+            (durable_job_id, artifact_set_id),
         )
         members: list[tuple[int, ArtifactMember]] = []
         while (row := cursor.fetchone()) is not None:
@@ -5454,18 +5609,14 @@ class PostgresRuntimeStore:
             raise SemanticInputIntegrityError(
                 "committed semantic ArtifactSet hash is invalid"
             ) from error
-        if reference.member_ordinal >= len(member_tuple) or not self._member_matches_reference(
-            member_tuple[reference.member_ordinal], reference
-        ):
-            raise SemanticInputUnavailableError(
-                "exact committed semantic member identity is unavailable"
-            )
         return _CommittedSet(
             durable_job_id,
             slot_id,
             _text(command_name),
             _text(set_hash),
             member_tuple,
+            _text(request_hash),
+            execution_kind,
         )
 
     @staticmethod
