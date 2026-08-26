@@ -21,8 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: d1845f5f implements local speech wire; 8464aced adds Claude production-client/server tests and archives the independently reviewed wire task. Final combined checks: 338 passed, 4 desktop-only native codec skips. Claude now implements the physical-root value/codec; root corrected and independently reviewed local-window-command-implementation-plan.md including mapped clocks, unknown/retry and commit reconciliation, per-window admission persistence, and missing shadow-local calibration seam. Composed Runtime remains full-source until those next integrations land; no real speech-model/calibration run claimed.",
+  "notes": "2026-08-26: d1845f5f implements local speech wire; 8464aced adds Claude production-client/server tests (338 combined passed, 4 desktop-only codec skips). 950fc896 closes the durable-window design. Claude's isolated six-set PhysicalRootMediaEvidence value/codec is now independently reviewed ALLOW after root fixed direct-constructor UTF8 roundtrip rejection and strengthened duplicate-key coverage. Physical-root plus old-root/codec/firewall regression: 2331 passed; scoped Ruff and two-module BasedPyright clean. This is a pure data-contract checkpoint: physical prelude Command, mapped local window Commands/readers/admissions, shadow-local calibration and Runtime wiring remain incomplete. Composed Runtime remains full-source; no real speech-model/calibration run claimed.",
   "meta": {
-    "next_action": "Review Claude physical-root contract; implement exact mapped local window Command/readers, parent-owned per-window admissions and shadow-local calibration, then wire and verify real desktop Runtime"
+    "next_action": "Implement the claim-owned three-member physical prelude Command, exact mapped local window Commands/readers and parent-owned admissions; add shadow-local calibration before wiring and verifying real desktop Runtime"
   }
 }

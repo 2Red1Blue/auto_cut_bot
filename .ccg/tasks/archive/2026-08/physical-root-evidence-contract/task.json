@@ -1,12 +1,12 @@
 {
   "id": "physical-root-evidence-contract",
   "title": "Separate six physical source evidence sets from candidate-local speech",
-  "status": "in_progress",
+  "status": "completed",
   "complexity": "M",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "Claude implements the isolated physical-root value and strict codec; root integrates after independent review. Runtime and durable window commands remain later task05 work.",
+  "currentPhase": "completed",
+  "nextAction": "Pure six-set DTO/codec accepted after independent delta review; archive this checkpoint. Runtime and durable window commands remain later task05 work.",
   "createdAt": "2026-08-26",
   "branch": "feat/v213-contract-codegen"
 }
