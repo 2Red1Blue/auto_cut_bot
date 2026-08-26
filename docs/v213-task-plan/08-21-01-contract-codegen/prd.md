@@ -1,5 +1,14 @@
 # Contract Codegen
 
+## 当前适用范围（2026-08-26）
+
+本任务保留完整通用 Registry/codegen 的未完成工作，不是当前本地 Pipeline 的启动前置。
+用户已撤回并删除总契约 `v2-production-system-contracts.md`；下文“五份”及其相关来源描述
+是历史计划，不能据此恢复该文档或要求本地运行先补齐 19 个通用发布命令。
+当前本地配置编译、校准和安装加载由 `08-25-lock-real-test-authority-profiles` 负责，
+使用独立 domain hash，不能把其成功宣称为本任务完整 Registry 已 ready。
+保留的 Stage 原理、显式来源、封闭字段、整数时间及无 legacy 依赖约束继续适用。
+
 ## Goal
 
 将五份 v2.1.3 权威 Markdown 中已经冻结的契约，逐项转录为可审计的机器源，并确定性编译成唯一的 JSON Schema、Pydantic 模型、Rule / Command / Trace / Strategy Registry 与 hash manifest。Markdown 保持规范权威；机器源是其可执行镜像，二者差异必须被 CI 拒绝。

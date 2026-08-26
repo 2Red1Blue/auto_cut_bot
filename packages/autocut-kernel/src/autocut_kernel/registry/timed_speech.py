@@ -74,7 +74,14 @@ class TimedSpeechProfileKey:
 
 @dataclass(frozen=True, slots=True)
 class AuthorityRegistrySnapshot:
-    """A verified compiler output projected into the runtime composition seam."""
+    """A deployment identity projected into the runtime composition seam.
+
+    On the local-only path the wire-named registry_set_sha256 is the
+    domain-separated local-profile source identity, not generic RegistrySet
+    completeness or publication permission. Construction alone verifies neither
+    build provenance nor calibrated model acceptance; the installed loader and
+    immutable Store anchors establish those separate boundaries.
+    """
 
     registry_set_sha256: str
     enabled_profile: TimedSpeechProfileKey

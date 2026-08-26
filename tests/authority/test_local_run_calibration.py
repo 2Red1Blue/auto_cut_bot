@@ -25,6 +25,10 @@ from autocut_kernel.media.calibration_record import (
     validator_internal_assemble_accepted_artifact_set,
 )
 from autocut_kernel.media.types import TimeBase
+from autocut_kernel.registry.calibration_binding import (
+    CalibrationBindingError,
+    bind_profile_calibration,
+)
 from autocut_kernel.store.models import (
     ArtifactScope,
     CommittedArtifactMemberReference,
@@ -71,7 +75,7 @@ def _fixture_record(shadow_context: LockedShadowSourceContext) -> CalibrationRec
     shadow = shadow_context.profiles.shadow
     policy, clock = shadow.timing_policies, shadow.source_clock_policy
     identity = CalibrationRecordIdentity(
-        shadow.source_sha256, shadow_context.compilation.registry_set.source_hash,
+        shadow.source_sha256, shadow_context.compilation.registry_sha256,
         shadow.calibration_corpus.corpus_set_sha256,
         shadow.native_timed_speech.native_port_identity_sha256, clock.clock_id, clock.time_base,
         policy.timed_speech_policy_sha256, policy.word_gap_policy_sha256,
@@ -155,11 +159,11 @@ def test_two_git_chains_bind_exact_accepted_refs_using_old_not_new_registry(acce
     context, anchor = accepted_context
     reader = FakeAcceptedAnchorReader(anchor)
     assert bind_local_run_calibration(context=context, store=reader) is anchor
-    assert context.compilation.registry_set.source_hash != context.predecessor.compilation.registry_set.source_hash
+    assert context.compilation.registry_sha256 != context.predecessor.compilation.registry_sha256
     assert reader.calls == [(context.local_run.calibration.record_ref,
                              context.local_run.calibration.validation_receipt_ref,
                              context.predecessor.profiles.shadow.source_sha256,
-                             context.predecessor.compilation.registry_set.source_hash)]
+                             context.predecessor.compilation.registry_sha256)]
     assert (anchor.aggregate.reference.member_ordinal, anchor.validation.reference.member_ordinal) == (0, 3)
     assert not hasattr(anchor, "bootstrap_request") and not hasattr(anchor, "snapshot")
 
@@ -236,3 +240,42 @@ def test_absent_or_denied_store_anchor_is_not_retried_or_replaced(accepted_conte
     with pytest.raises(LookupError) as caught:
         bind_local_run_calibration(context=context, store=reader)
     assert caught.value is error and reader.calls == 1
+
+
+def test_kernel_binding_matches_build_adapter_without_tools_dependency(accepted_context) -> None:
+    context, anchor = accepted_context
+    reader = FakeAcceptedAnchorReader(anchor)
+    assert bind_profile_calibration(
+        local_run=context.local_run,
+        shadow=context.predecessor.profiles.shadow,
+        predecessor_registry_sha256=context.predecessor.compilation.registry_sha256,
+        store=reader,
+    ) is anchor
+    assert len(reader.calls) == 1
+
+
+@pytest.mark.parametrize("identity", [None, "", "sha256:" + "0" * 64, "sha256:bad"])
+def test_kernel_binding_rejects_invalid_registry_before_store_read(accepted_context, identity) -> None:
+    context, anchor = accepted_context
+    reader = FakeAcceptedAnchorReader(anchor)
+    with pytest.raises(CalibrationBindingError):
+        bind_profile_calibration(
+            local_run=context.local_run, shadow=context.predecessor.profiles.shadow,
+            predecessor_registry_sha256=identity, store=reader,
+        )
+    assert reader.calls == []
+
+
+@pytest.mark.parametrize("field", ["local_run", "shadow"])
+def test_kernel_binding_requires_typed_sources_before_store_read(accepted_context, field) -> None:
+    context, anchor = accepted_context
+    reader = FakeAcceptedAnchorReader(anchor)
+    arguments = {
+        "local_run": context.local_run, "shadow": context.predecessor.profiles.shadow,
+        "predecessor_registry_sha256": context.predecessor.compilation.registry_sha256,
+        "store": reader,
+    }
+    arguments[field] = {}
+    with pytest.raises(CalibrationBindingError):
+        bind_profile_calibration(**arguments)
+    assert reader.calls == []

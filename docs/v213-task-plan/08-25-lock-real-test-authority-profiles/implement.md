@@ -124,17 +124,38 @@ Implemented source/anchor functions:
 
 Next code/deployment prerequisites, in order:
 
-1. Produce actual closed eight-pack Registry sources. The tracked contracts/source
-   tree has no common/registry_set.yaml or five registry documents; only the test
-   helper currently creates a ready bundle. Do not publish that fixture as real
-   authority or call source loading a completed deployment.
+1. Replace the accidental full eight-pack Registry prerequisite with the explicit
+   domain-separated local profile compiler described in the 2026-08-26 scope
+   correction. Preserve all source and calibration checks; generic Registry
+   readiness remains false and separate. No test Registry fixture is deployable.
 2. Completed: derive timed-speech registry_contract_sha256 from the locked
    local-run schema's reachable definition closure and reject substituted or
    stale component identities. See review-timed-speech-contract-binding.md.
-3. Implement emission/loading of the immutable installed resource; activate only
+3. Resource byte emission and fixed Kernel resource loading are implemented;
+   complete explicit packaging for both wheels and installed activation checks
    after step 4. Use the existing protected
    bootstrap/Store anchor and typed HTTP composition seam, with no runtime Git,
    tools import, caller profile selector or external publication.
 4. Complete real source/model identities, independently annotated calibration,
    accepted measurement record, and protected source publication before claiming
    a real HTTP Pipeline run. Source/helper tests cannot substitute for these.
+
+## Local profile resource checkpoint
+
+The local profile builders now verify only their exact narrative/profile/schema
+roles through the same complete A/B/C source verifier. They derive a distinct
+local-profile-registry-v1 hash and never instantiate a generic RegistrySet.
+The generic full Registry loader and its 19-command checks remain unchanged.
+The build emitter internally calls these builders and the accepted calibration
+binder before producing canonical raw-source resource bytes. The fixed installed
+reader has bounded reads, strict digests/base64/source grammars, both Registry
+identity recomputations and predecessor/component binding. It reads no checkout,
+environment profile or caller-selected path.
+
+The accepted-calibration comparison is shared in Kernel for build and future
+startup use; no database record is rewritten. This checkpoint does not activate
+HTTP, package any production profile or certify installed native models.
+Next: explicit two-wheel resource packaging, immutable admin bootstrap, full-entry
+and calibration anchor validation before worker recovery, then provider-policy
+compatibility and actual measured local execution. Actual inventory/lock renewal
+must exclude the withdrawn total contract; do not restore it to satisfy old tools.

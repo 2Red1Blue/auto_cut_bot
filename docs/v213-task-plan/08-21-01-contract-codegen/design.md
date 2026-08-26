@@ -1,5 +1,10 @@
 # Contract Codegen Design
 
+> 2026-08-26 范围更正：本设计描述通用完整 Registry，不控制当前本地 profile 编译路径。
+> 以下已删除总契约的引用仅为历史依据，不再授予实现或运行权限；当前本地边界见
+> `08-25-lock-real-test-authority-profiles/design.md` 的 Local profile compiler scope correction。
+> 不修改通用 Registry 的完整性判断，也不将局部 profile identity 冒充其 readiness。
+
 ## Authority and package boundary
 
 `v2-production-system-contracts.md` 与四份 Stage 文档是唯一业务权威。它们不能由 parser 在运行时“猜测”结构；每个可执行条目先被人工逐条转录到版本化机器源，转录记录含 `contract_path`、source document SHA-256、section anchor 与 reviewer。编译器只接受这些 machine sources。

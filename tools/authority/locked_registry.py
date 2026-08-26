@@ -84,19 +84,16 @@ def read_locked_blob(
     return raw
 
 
-def compile_locked_registry(
+def verify_locked_authority_sources(
     *,
     repository_roots: Mapping[str, Path],
     lock_repository: str,
     lock_commit: str,
     lock_path: str,
-    registry_repository: str,
-    registry_root: str,
-) -> LockedRegistryCompilation:
-    """Verify C→B→A, materialize exactly the locked Registry, and require ready."""
+) -> bytes:
+    """Verify the complete immutable source chain without assuming a Registry kind."""
     validate_relative_path(lock_path, where="lock_path")
-    validate_relative_path(registry_root, where="registry_root")
-    if lock_repository not in repository_roots or registry_repository not in repository_roots:
+    if lock_repository not in repository_roots:
         raise GateViolation("AUTH-REGISTRY-REPOSITORY", "selected repository is unbound")
     lock_raw = _regular_git_blob(repository_roots[lock_repository], lock_commit, lock_path)
     lock = load_mapping_bytes(lock_raw, where=f"{lock_commit}:{lock_path}", suffix=Path(lock_path).suffix)
@@ -112,6 +109,27 @@ def compile_locked_registry(
         repository_roots=repository_roots,
     )
     verify_authority_lock_data(lock, repository_roots)
+    return lock_raw
+
+
+def compile_locked_registry(
+    *,
+    repository_roots: Mapping[str, Path],
+    lock_repository: str,
+    lock_commit: str,
+    lock_path: str,
+    registry_repository: str,
+    registry_root: str,
+) -> LockedRegistryCompilation:
+    """Verify C→B→A, materialize exactly the full Registry, and require ready."""
+    validate_relative_path(registry_root, where="registry_root")
+    if registry_repository not in repository_roots:
+        raise GateViolation("AUTH-REGISTRY-REPOSITORY", "selected repository is unbound")
+    lock_raw = verify_locked_authority_sources(
+        repository_roots=repository_roots, lock_repository=lock_repository,
+        lock_commit=lock_commit, lock_path=lock_path,
+    )
+    lock = load_mapping_bytes(lock_raw, where="verified authority source lock")
     prefix = registry_root + "/"
     selected = [entry for entry in lock["entries"] if entry["repository"] == registry_repository and entry["path"].startswith(prefix)]
     if not selected or any(entry["class"] != "registry_source" for entry in selected):

@@ -17,12 +17,12 @@ from authority.local_run_context import (
     build_locked_local_run_context,
 )
 from authority.lock import build_authority_lock
-from autocut_kernel.contracts.compiler.canonical import canonical_json_hash, sha256_bytes
+from authority.shadow_context import build_locked_shadow_context
+from autocut_kernel.contracts.compiler.canonical import sha256_bytes
 
 from tests.authority.test_authority_profile_sources import REPO_ROOT, _hash, _raw, _run_mapping
 from tests.authority.test_lock_and_schema import _commit, _git
-from tests.authority.test_shadow_context import NARRATIVE_PATH, REGISTRY_ROOT, Sources, _sources
-from tests.contracts.test_registry_source_manifest import _yaml
+from tests.authority.test_shadow_context import NARRATIVE_PATH, Sources, _sources
 
 LOCAL_RUN_PATH = "governance/registry-sources/profiles/local-run.json"
 
@@ -49,19 +49,15 @@ def _local_sources(
     root = old.root
     narrative, shadow = json.loads(old.narrative_raw), json.loads(old.shadow_raw)
     run = _run_mapping(narrative, shadow)
-    registry_path = root / REGISTRY_ROOT / "common/registry_set.yaml"
-    registry = yaml.safe_load(registry_path.read_bytes())
-    old_registry_hash = registry["registry_set_hash"]
-    registry["registry_set_version"] = "1.0.1"
-    registry["registry_set_hash"] = canonical_json_hash({key: value for key, value in registry.items() if key != "registry_set_hash"})
-    registry_path.write_text(_yaml(registry) + "\n")
+    old_context = build_locked_shadow_context(**old.options)
+    old_registry_hash = old_context.compilation.registry_sha256
     run["predecessor_shadow_profile"]["registry_set_sha256"] = old_registry_hash
     run["predecessor_shadow_profile"]["authority_lock_sha256"] = old.lock["bundle_hash"]
     if mutation.startswith("predecessor-"):
         field = mutation.removeprefix("predecessor-")
         run["predecessor_shadow_profile"][field] = "2" if field == "profile_version" else _hash("foreign-predecessor")
     elif mutation == "current-registry":
-        run["predecessor_shadow_profile"]["registry_set_sha256"] = registry["registry_set_hash"]
+        run["predecessor_shadow_profile"]["registry_set_sha256"] = _hash("current-local-profile-registry")
     elif mutation == "contract":
         run["profile_contract_sha256"] = _hash("other-contract")
     elif mutation == "timing":
@@ -77,7 +73,7 @@ def _local_sources(
     elif mutation == "whole-schema-as-contract":
         run["timed_speech_registry_entry"]["registry_contract_sha256"] = run["profile_contract_sha256"]
     elif mutation == "registry-set-as-contract":
-        run["timed_speech_registry_entry"]["registry_contract_sha256"] = registry["registry_set_hash"]
+        run["timed_speech_registry_entry"]["registry_contract_sha256"] = old_registry_hash
     if customize_run is not None:
         customize_run(run, old)
     raw = _raw(run)
@@ -102,11 +98,11 @@ def _local_sources(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
     source_commit = _commit(root, "successor synthetic sources A")
-    entries = [{key: entry[key] for key in ("repository", "class", "path")} for entry in old.lock["entries"]]
-    entries.extend([
+    entries = [
+        {"repository": "fixture", "class": "registry_source", "path": NARRATIVE_PATH},
         {"repository": "fixture", "class": "registry_source", "path": LOCAL_RUN_PATH},
         {"repository": "fixture", "class": "schema_source", "path": LOCAL_RUN_PROFILE_SCHEMA_PATH},
-    ])
+    ]
     for role, path in (("narrative", NARRATIVE_PATH), ("local-run", LOCAL_RUN_PATH), ("schema", LOCAL_RUN_PROFILE_SCHEMA_PATH)):
         if mutation == f"missing-{role}":
             entries = [entry for entry in entries if entry["path"] != path]
@@ -134,14 +130,14 @@ def _local_sources(
 def test_current_and_predecessor_are_independently_verified_without_accepting_calibration(tmp_path: Path) -> None:
     fixture = _local_sources(tmp_path)
     context = build_locked_local_run_context(**fixture.options)
-    assert context.compilation.registry_set.ready and context.predecessor.compilation.registry_set.ready
-    assert context.compilation.registry_set.source_hash != context.predecessor.compilation.registry_set.source_hash
+    assert context.compilation.registry_sha256 != context.predecessor.compilation.registry_sha256
+    assert not hasattr(context.compilation, "registry_set")
     assert context.authority_lock_sha256 == fixture.lock["bundle_hash"] != context.predecessor.authority_lock_sha256
     assert context.profile_source_commit == fixture.source_commit != context.predecessor.profile_source_commit
     assert context.local_run.source_sha256 == sha256_bytes(fixture.local_run_raw)
     assert context.local_run.profile_contract_sha256 == sha256_bytes(fixture.schema_raw)
     assert context.narrative.source_sha256 == sha256_bytes(fixture.old.narrative_raw)
-    assert context.local_run.predecessor_shadow_profile.registry_set_sha256 == context.predecessor.compilation.registry_set.source_hash
+    assert context.local_run.predecessor_shadow_profile.registry_set_sha256 == context.predecessor.compilation.registry_sha256
     assert context.predecessor.authority_lock_sha256 == fixture.old.lock["bundle_hash"]
     assert context.profile_repository == "fixture"
     assert context.narrative_path == NARRATIVE_PATH and context.local_run_path == LOCAL_RUN_PATH

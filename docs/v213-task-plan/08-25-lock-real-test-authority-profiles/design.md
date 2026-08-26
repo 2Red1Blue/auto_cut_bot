@@ -2,7 +2,7 @@
 
 ```text
 protected Git source -> shadow calibration profile -> CalibrationRecord
-  -> protected run profile -> verified RegistrySet snapshot
+  -> protected run profile -> verified local-profile identity snapshot
   -> authority-only PostgreSQL bootstrap anchor -> HTTP runtime injection
   -> local-only Pipeline work
 ```
@@ -18,8 +18,9 @@ and non-zero acceptance criteria. It may invoke calibration but cannot enable
 HTTP media-preflight.
 
 `local_run_v1` is a successor source profile. It repeats the frozen policy and
-adds the exact CalibrationRecord member hash. Only this state is compiled into
-a RegistrySet, bootstrapped into the authority Store and injected into runtime.
+adds the exact CalibrationRecord member hash. Only this state may supply the
+local-profile identity snapshot, be bootstrapped into the authority Store and
+be injected into runtime.
 New calibration means a new profile version, never an anchor mutation.
 
 ## Calibration authority boundary
@@ -334,3 +335,122 @@ Ownership for this slice: Kernel registry/timed_speech_contract.py and its new
 authority tests (worker); tools/authority/local_run_context.py, the two existing
 authority profile/source test fixtures and this task record (integration owner).
 No real lock/profile/native/runtime activation changes belong to this slice.
+
+## Installed local-run resource and startup binding
+
+The next delivery completes a deployment transport, not generic Registry
+readiness. Local profile compilation (defined in the scope correction below)
+and both protected Git chains remain mandatory. No production resource can be emitted from
+fixtures, caller contexts or repeated hashes.
+
+Trust root: the installed wheel is a controlled build artifact, like installed
+Python code. A sibling digest detects resource drift; it does NOT authenticate
+an arbitrary replacement wheel or replace Git verification. Runtime does not
+replay Git or accept a resource path, profile selector or environment snapshot.
+
+The closed canonical JSON wire is installed-local-run-authority-v1, containing
+exactly schema_version, current and predecessor. Each chain has exactly:
+registry_set_sha256, authority_lock_sha256, narrative_raw_base64,
+profile_raw_base64 and schema_raw_base64. All six encoded sources preserve the
+exact locked bytes (strict canonical base64). Current profile/schema are
+local-run; predecessor profile/schema are shadow. Keep both narrative sources:
+their bytes must not be assumed identical. No serialized ready/accepted,
+snapshot, entry, profile key or calibration references are allowed. Those values
+are derived by the existing grammar decoders from the original raw sources.
+
+The Kernel decoder strictly parses the resource; validates nonzero hashes;
+re-decodes both narratives, shadow and local-run with raw schema hashes;
+recomputes the timed-speech schema-closure digest; and verifies predecessor
+version/source/Registry/lock identities. Its typed result describes content only.
+It cannot certify build provenance or substitute for a committed calibration.
+Errors are a dedicated ValueError subtype and never include source bytes/secrets.
+
+The fixed installed reader uses importlib.resources beneath autocut_kernel at
+_authority/local-run.json and _authority/local-run.sha256. It accepts no
+arguments. Missing, mismatched or malformed files fail closed. No valid default
+resource is checked in. A private pure decoder remains directly testable.
+The explicit build/admin emitter calls the existing dual-chain builder and
+accepted-record binder itself, rereads exact locked source bytes, emits canonical
+resource bytes and their digest, and never accepts caller snapshot/context.
+Ordinary wheel build must not connect to DB or infer profiles. Both root and
+standalone Kernel wheel packaging must include only an explicitly prepared
+resource; fixture output is confined to test temporary directories.
+
+Move the existing source-to-accepted-record comparison into one Kernel owner,
+preserving all producer/corpus/0-and-3 member/bound checks. The tools binder
+delegates rather than duplicating it. The installed startup path uses that same
+comparison with the real Store, then resolves the existing immutable timed-speech
+bootstrap anchor and compares the ENTIRE returned entry to the installed entry.
+Only then may worker reconstruction occur. It performs no bootstrap or Store
+write. The independent admin path alone can construct the existing protected
+bootstrap request after the same accepted-calibration comparison.
+
+Do not wire the resource into standard composition until decoder, build emitter,
+both wheel paths and anchor verification have tests. Keep the old explicit typed
+test seam distinct from standard no-argument installed loading; it must not
+become an HTTP/caller capability. Narrative/provider policy compatibility is a
+separate required activation check, not implied by matching the ASR profile.
+
+Test boundaries: synthetic Git chains and fake accepted Store readers prove
+transport/closure only. Cover duplicate/extra fields, invalid base64, changed
+sources/hashes/refs, whole-schema-vs-component digest substitution, absent
+resource, entry substitution, and denial before worker recovery. Installed-wheel
+checks must run without the checkout/tools/Git on import paths. Real Registry
+sources and actual measured calibration remain outstanding.
+
+Ownership: resource codec/fixed loader + focused tests (calibration_contract);
+local profile source compiler + context builders/tests (calibration_migration); shared calibration binding,
+packaging/composition integration and task records (root). Files may be assigned
+only after interfaces are frozen; the independent reviewer writes none.
+
+## Local profile compiler scope correction — 2026-08-26
+
+This section supersedes earlier requirements in this task to compile all eight
+generic Registry packs before calibration/local-only execution. The withdrawn
+v2-production-system-contracts.md is not restored. The generic compiler and its
+19-command completeness check remain unchanged for their own full Registry
+scope; they are not the current Pipeline's executable command catalogue.
+
+Current local authority consists of the closed narrative, shadow/local-run and
+profile-schema sources, the existing protected timed-speech bootstrap writer,
+and immutable calibration/profile anchors. Its identity must not masquerade as
+generic Registry readiness. Define the domain-separated identity:
+
+    canonical_json_hash({
+      "schema_version": "local-profile-registry-v1",
+      "profile_kind": "shadow_calibration_v1" | "local_run_v1",
+      "sources": [
+        {"role": "narrative", "sha256": SHA256(original narrative bytes)},
+        {"role": "profile", "sha256": SHA256(original profile bytes)},
+        {"role": "profile_schema", "sha256": SHA256(original schema bytes)}
+      ]
+    })
+
+The kind must match the decoded profile state; roles are fixed and ordered.
+A locked profile compiler verifies the complete A/B/C chain and lock-covered
+bytes, then reads these three exact source roles with their expected classes.
+Both profile context builders retain all grammar/identity/inheritance checks.
+They return a dedicated LockedProfileCompilation with registry_sha256, not a
+RegistrySet, ready flag or generic compilation result. Obsolete generic Registry
+repository/root selectors are removed rather than silently ignored.
+
+The installed resource codec recomputes this domain hash for each chain from
+its exact raw sources. It rejects old generic hashes, swapped profile kinds or
+another source set. Existing registry_set_sha256 / registry_snapshot_sha256
+fields in the timed-speech snapshot and calibration record retain their wire
+names but carry this local, purpose-specific identity on this path. They confer
+no full command-matrix completeness or publication permission. Never reinterpret
+an existing accepted anchor under the new identity: a different hash is a
+different immutable profile/record, not an in-place migration.
+
+This changes source compilation scope, not media safety or calibrated evidence:
+real model/service identity checks, independent measured calibration, exact
+accepted member references and whole bootstrap-entry comparison still apply.
+There is no zero/default profile, fake readiness or legacy implementation reuse.
+Publishing the actual new inventory/lock must remove references to the withdrawn
+document; existing historic locks remain historical, not deployment authority.
+
+Delivery order: (1) domain identity + fixed resource codec, (2) replace accidental
+generic compiler dependency and share the calibration comparison, (3) explicit
+emitter/wheel packaging, (4) installed bootstrap and provider-compatible HTTP
+composition, (5) real calibration and local Pipeline verification.

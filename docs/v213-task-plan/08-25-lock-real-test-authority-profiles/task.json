@@ -5,7 +5,7 @@
   "description": "Freeze the user-approved Doubao Seed 2.1 Pro, SenseVoiceSmall and FSMN test/shadow profiles as protected Git authority sources; rebuild the authority lock, bootstrap them in the disposable real PostgreSQL test environment, and inject only the verified snapshot into HTTP composition.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "packages/autocut-kernel/src/autocut_kernel/registry/timed_speech_contract.py,tools/authority/local_run_context.py,tests/authority/test_timed_speech_contract.py,tests/authority/test_authority_profile_sources.py,tests/authority/test_local_run_context.py",
+  "scope": "packages/autocut-kernel/src/autocut_kernel/registry/installed_local_run.py,packages/autocut-kernel/src/autocut_kernel/registry/calibration_binding.py,packages/autocut-kernel/src/autocut_kernel/registry/timed_speech.py,tools/authority/locked_registry.py,tools/authority/profile_sources.py,tools/authority/shadow_context.py,tools/authority/local_run_context.py,tools/authority/local_run_calibration.py,tools/authority/local_run_resource.py,tests/authority/test_installed_local_run.py,tests/authority/test_local_profile_sources.py,tests/authority/test_shadow_context.py,tests/authority/test_local_run_context.py,tests/authority/test_local_run_calibration.py,tests/authority/test_local_run_resource.py",
   "package": "auto_cut_bot",
   "priority": "P0",
   "creator": "liuzx",

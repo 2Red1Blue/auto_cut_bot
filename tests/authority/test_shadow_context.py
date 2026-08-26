@@ -21,11 +21,10 @@ from tests.authority.test_authority_profile_sources import (
     _shadow_mapping,
 )
 from tests.authority.test_lock_and_schema import _commit, _git
-from tests.contracts.test_registry_source_manifest import _write_closed_source
 
 NARRATIVE_PATH = "governance/registry-sources/profiles/narrative.json"
 SHADOW_PATH = "governance/registry-sources/profiles/shadow.json"
-REGISTRY_ROOT = "governance/registry-sources/contracts"
+GENERIC_PATH = "governance/registry-sources/profiles/generic-registry-source.json"
 
 
 @dataclass
@@ -43,7 +42,6 @@ def _sources(tmp_path: Path, mutation: str = "") -> Sources:
     root = tmp_path / "synthetic-authority"
     root.mkdir()
     _git(root, "init", "-b", "main")
-    _write_closed_source(root / REGISTRY_ROOT)
     narrative = _narrative_mapping()
     shadow = _shadow_mapping(narrative)
     if mutation == "contract":
@@ -63,16 +61,19 @@ def _sources(tmp_path: Path, mutation: str = "") -> Sources:
     if mutation == "duplicate-json-key":
         shadow_raw = shadow_raw[:-1] + b',"profile_version":"1"}'
     schema_raw = (REPO_ROOT / SHADOW_PROFILE_SCHEMA_PATH).read_bytes()
-    for path, raw in ((NARRATIVE_PATH, narrative_raw), (SHADOW_PATH, shadow_raw),
-                      (SHADOW_PROFILE_SCHEMA_PATH, schema_raw)):
+    source_files = [(NARRATIVE_PATH, narrative_raw), (SHADOW_PATH, shadow_raw),
+                    (SHADOW_PROFILE_SCHEMA_PATH, schema_raw)]
+    if mutation == "generic-profile":
+        source_files.append((GENERIC_PATH, b'{"kind":"generic-registry-source"}'))
+    for path, raw in source_files:
         target = root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw)
     source_commit = _commit(root, "synthetic reviewed sources A")
-    entries = [{"repository": "fixture", "class": "registry_source", "path": str(path.relative_to(root))}
-               for path in sorted((root / REGISTRY_ROOT).rglob("*")) if path.is_file()]
-    entries += [{"repository": "fixture", "class": "registry_source", "path": path}
-                for path in (NARRATIVE_PATH, SHADOW_PATH)]
+    entries = [{"repository": "fixture", "class": "registry_source", "path": path}
+               for path in (NARRATIVE_PATH, SHADOW_PATH)]
+    if mutation == "generic-profile":
+        entries.append({"repository": "fixture", "class": "registry_source", "path": GENERIC_PATH})
     entries.append({"repository": "fixture", "class": "schema_source", "path": SHADOW_PROFILE_SCHEMA_PATH})
     for role, path in (("narrative", NARRATIVE_PATH), ("shadow", SHADOW_PATH), ("schema", SHADOW_PROFILE_SCHEMA_PATH)):
         if mutation == f"missing-{role}":
@@ -92,7 +93,7 @@ def _sources(tmp_path: Path, mutation: str = "") -> Sources:
     lock_commit = _commit(root, "generated-lock-only C")
     return Sources(root, {
         "repository_roots": {"fixture": root}, "lock_repository": "fixture", "lock_commit": lock_commit,
-        "lock_path": "authority-lock.yaml", "registry_repository": "fixture", "registry_root": REGISTRY_ROOT,
+        "lock_path": "authority-lock.yaml",
         "profile_repository": "fixture", "narrative_path": NARRATIVE_PATH, "shadow_path": SHADOW_PATH,
     }, narrative_raw, shadow_raw, schema_raw, lock, source_commit)
 
@@ -105,7 +106,8 @@ def test_git_verified_shadow_context_derives_every_identity_and_grants_no_runtim
     assert context.profiles.shadow.source_sha256 == sha256_bytes(fixture.shadow_raw)
     assert context.profiles.narrative.source_sha256 == sha256_bytes(fixture.narrative_raw)
     assert context.profiles.shadow.profile_contract_sha256 == sha256_bytes(fixture.schema_raw)
-    context.compilation.registry_set.require_ready()
+    assert context.compilation.registry_sha256.startswith("sha256:")
+    assert not hasattr(context.compilation, "registry_set")
     assert context.profiles.local_run is None
     assert context.profiles.resolution_state == "grammar_only_unresolved"
     assert not hasattr(context, "bootstrap_request") and not hasattr(context, "snapshot")
@@ -147,3 +149,9 @@ def test_caller_cannot_substitute_unlocked_profile_locations(tmp_path: Path, fie
     fixture = _sources(tmp_path)
     with pytest.raises(GateViolation):
         build_locked_shadow_context(**{**fixture.options, field: value})
+
+
+def test_locked_generic_registry_bytes_cannot_be_substituted_for_a_shadow_profile(tmp_path: Path) -> None:
+    fixture = _sources(tmp_path, "generic-profile")
+    with pytest.raises(GateViolation, match="AUTH-SHADOW-PROFILE"):
+        build_locked_shadow_context(**{**fixture.options, "shadow_path": GENERIC_PATH})

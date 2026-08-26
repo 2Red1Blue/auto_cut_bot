@@ -24,7 +24,7 @@ from autocut_kernel.registry.timed_speech_contract import (
 
 from .common import load_mapping_bytes, sha256_bytes, validate_relative_path
 from .errors import GateViolation
-from .locked_registry import LockedRegistryCompilation, compile_locked_registry, read_locked_blob
+from .profile_sources import LockedProfileCompilation, compile_locked_profile_sources
 from .shadow_context import LockedShadowSourceContext, build_locked_shadow_context
 
 LOCAL_RUN_PROFILE_SCHEMA_PATH = "governance/schemas/local-run-profile.schema.json"
@@ -35,8 +35,6 @@ class ShadowSourceSelection:
     lock_repository: str
     lock_commit: str
     lock_path: str
-    registry_repository: str
-    registry_root: str
     profile_repository: str
     narrative_path: str
     shadow_path: str
@@ -44,7 +42,7 @@ class ShadowSourceSelection:
 
 @dataclass(frozen=True, slots=True)
 class LockedLocalRunSourceContext:
-    compilation: LockedRegistryCompilation
+    compilation: LockedProfileCompilation
     predecessor: LockedShadowSourceContext
     narrative: Stage1NarrativeProfileSource
     local_run: LocalRunProfileSource
@@ -61,8 +59,6 @@ def build_locked_local_run_context(
     lock_repository: str,
     lock_commit: str,
     lock_path: str,
-    registry_repository: str,
-    registry_root: str,
     profile_repository: str,
     narrative_path: str,
     local_run_path: str,
@@ -80,37 +76,33 @@ def build_locked_local_run_context(
     old = build_locked_shadow_context(
         repository_roots=repository_roots, lock_repository=predecessor.lock_repository,
         lock_commit=predecessor.lock_commit, lock_path=predecessor.lock_path,
-        registry_repository=predecessor.registry_repository, registry_root=predecessor.registry_root,
         profile_repository=predecessor.profile_repository, narrative_path=predecessor.narrative_path,
         shadow_path=predecessor.shadow_path,
     )
-    compilation = compile_locked_registry(
-        repository_roots=repository_roots, lock_repository=lock_repository, lock_commit=lock_commit,
-        lock_path=lock_path, registry_repository=registry_repository, registry_root=registry_root,
+    compilation = compile_locked_profile_sources(
+        repository_roots=repository_roots,
+        lock_repository=lock_repository,
+        lock_commit=lock_commit,
+        lock_path=lock_path,
+        profile_repository=profile_repository,
+        narrative_path=narrative_path,
+        profile_path=local_run_path,
+        schema_path=LOCAL_RUN_PROFILE_SCHEMA_PATH,
+        profile_kind="local_run_v1",
     )
     lock = load_mapping_bytes(compilation.lock_raw, where="verified local-run authority lock")
-    narrative_raw = read_locked_blob(
-        lock=lock, repository_roots=repository_roots, repository=profile_repository,
-        path=narrative_path, expected_class="registry_source",
-    )
-    local_run_raw = read_locked_blob(
-        lock=lock, repository_roots=repository_roots, repository=profile_repository,
-        path=local_run_path, expected_class="registry_source",
-    )
-    schema_raw = read_locked_blob(
-        lock=lock, repository_roots=repository_roots, repository=profile_repository,
-        path=LOCAL_RUN_PROFILE_SCHEMA_PATH, expected_class="schema_source",
-    )
     try:
-        narrative = decode_stage1_narrative_profile_source(narrative_raw)
+        narrative = decode_stage1_narrative_profile_source(compilation.narrative_raw)
         local_run = decode_local_run_profile_source(
-            local_run_raw, narrative=narrative, shadow=old.profiles.shadow,
-            expected_profile_contract_sha256=sha256_bytes(schema_raw),
+            compilation.profile_raw,
+            narrative=narrative,
+            shadow=old.profiles.shadow,
+            expected_profile_contract_sha256=sha256_bytes(compilation.schema_raw),
         )
     except AuthorityProfileSourceError as error:
         raise GateViolation("AUTH-LOCAL-RUN-PROFILE", "locked local-run profile grammar does not close") from error
     try:
-        registry_contract_hash = timed_speech_registry_contract_sha256(schema_raw)
+        registry_contract_hash = timed_speech_registry_contract_sha256(compilation.schema_raw)
     except TimedSpeechContractError as error:
         raise GateViolation("AUTH-LOCAL-RUN-CONTRACT", "locked Registry schema closure is invalid") from error
     if local_run.timed_speech_registry_entry.registry_contract_sha256 != registry_contract_hash:
@@ -121,7 +113,7 @@ def build_locked_local_run_context(
         reference.registry_set_sha256, reference.authority_lock_sha256,
     ) != (
         old.profiles.shadow.profile_version, old.profiles.shadow.source_sha256,
-        old.compilation.registry_set.source_hash, old.authority_lock_sha256,
+        old.compilation.registry_sha256, old.authority_lock_sha256,
     ):
         raise GateViolation("AUTH-LOCAL-RUN-PREDECESSOR", "local-run does not name the independently verified shadow chain")
     return LockedLocalRunSourceContext(

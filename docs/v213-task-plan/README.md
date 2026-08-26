@@ -55,12 +55,22 @@ Git 锁定 Registry 编译与 shadow 配置加载已实现：只读取明确提�
 local-run 前驱来源及 accepted anchor 绑定函数也已实现并通过独立审查：
 **69 个新增测试通过**，相关合并回归 **128 passed、零 skipped**。
 详见 [正式配置接线审查](08-25-lock-real-test-authority-profiles/review-local-run-binding.md)。
-这仍不代表真实校准或正式运行配置已加载：尚无实际 ready 八包 Registry 源，
-仅测试 helper 可生成；还须补齐真实来源、安装资源和 HTTP 接线。
+这仍不代表真实校准或正式运行配置已加载。完整通用八包 Registry 仍未完成，
+但不再是本地运行的前置；当前本地来源使用独立身份，不冒充通用 Registry readiness。
+还须补齐真实来源、安装资源打包和 HTTP 接线。
 timed-speech Registry 契约哈希已改为从锁定 Schema 的可达定义闭包推导，
 拒绝错用整个 Profile/Registry 哈希及过期定义。新增投影测试 96 项通过，
 相关来源/绑定回归 115 项通过、零 skipped；独立审查无缺陷。
 详见 [契约哈希绑定审查](08-25-lock-real-test-authority-profiles/review-timed-speech-contract-binding.md)。
+
+2026-08-26 已修正本地加载工具误依赖旧 19-command 通用 Registry 的问题，
+并在 Task 01 和当前任务中同步范围：不恢复用户已删除的总契约。
+本地三来源编译、受审校准核验后的资源字节生成、固定安装资源读取现已实现；
+校准比较归一到 Kernel，未修改数据库。读取器尚未接入 HTTP 启动，
+真实资源未安装；双 wheel 打包、provider/policy 匹配及启动前两类 anchor 核验仍待完成。
+相关联合回归 272 项通过；来源/资源补充回归 109 项通过，最终冻结后来源与校准回归
+116 项通过（包含重复覆盖，不累加）；独立审查通过，详见
+[本地配置编译与资源传输审查](08-25-lock-real-test-authority-profiles/review-local-profile-resource.md)。
 
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。
