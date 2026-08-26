@@ -14,8 +14,11 @@ from ..media.root_evidence import (
     AudioSourceOutcome,
     CoverageOutcome,
     EvidenceCompleteness,
+    EvidenceContext,
     RootMediaEvidenceBundle,
+    SpeechActivitySet,
     SpeechSourceOutcome,
+    TranscriptSet,
     TranscriptSourceOutcome,
 )
 from ..media.types import TimeBase, canonical_sha256, require_pts, sha256_prefixed
@@ -375,26 +378,46 @@ class SourceDialogueGuardEvidence:
         return canonical_sha256(self.to_mapping())
 
 
-def _validate_source_range(
-    evidence: RootMediaEvidenceBundle, start: int, end: int, field_name: str
+def _validate_audio_range(
+    audio_context: EvidenceContext, start: int, end: int, field_name: str
 ) -> None:
-    context = evidence.audio_sample_boundaries.context
-    if start < context.origin_tick or end > context.end_tick or start >= end:
+    if start < audio_context.origin_tick or end > audio_context.end_tick or start >= end:
         raise DialogueGuardError(f"{field_name} is outside the source audio clock")
 
 
-def _validate_words(evidence: RootMediaEvidenceBundle) -> None:
-    context = evidence.transcript.context
+def _require_audio_context(audio_context: EvidenceContext) -> None:
+    if type(audio_context) is not EvidenceContext:  # noqa: E721
+        raise DialogueGuardError("audio context must be an exact EvidenceContext")
+    if audio_context.media_kind.value != "audio":
+        raise DialogueGuardError("dialogue guard requires an audio evidence context")
+
+
+def _validate_words(transcript: TranscriptSet, audio_context: EvidenceContext) -> None:
+    if type(transcript) is not TranscriptSet:  # noqa: E721
+        raise DialogueGuardError("word grouping requires an exact TranscriptSet")
+    context = transcript.context
+    if (
+        context.source_id,
+        context.source_sha256,
+        context.clock_id,
+        context.time_base,
+    ) != (
+        audio_context.source_id,
+        audio_context.source_sha256,
+        audio_context.clock_id,
+        audio_context.time_base,
+    ):
+        raise DialogueGuardError("transcript timing is not bound to the source audio clock")
     previous_end: int | None = None
-    for word in evidence.transcript.words:
+    for word in transcript.words:
         if (
-            word.source_id != context.source_id
-            or word.source_sha256 != context.source_sha256
-            or word.clock_id != context.clock_id
-            or word.time_base != context.time_base
+            word.source_id != audio_context.source_id
+            or word.source_sha256 != audio_context.source_sha256
+            or word.clock_id != audio_context.clock_id
+            or word.time_base != audio_context.time_base
         ):
             raise DialogueGuardError("word timing is not bound to the source audio clock")
-        _validate_source_range(evidence, word.in_tick, word.out_tick, "word timing")
+        _validate_audio_range(audio_context, word.in_tick, word.out_tick, "word timing")
         if previous_end is not None and previous_end > word.in_tick:
             raise DialogueGuardError("word timings must be monotonic and non-overlapping")
         previous_end = word.out_tick
@@ -480,19 +503,30 @@ def _require_complete_audio_success_evidence(evidence: RootMediaEvidenceBundle) 
         raise DialogueGuardError("partial transcript sentences cannot produce an audio dialogue guard")
 
 
-def derive_utterance_ranges(
-    evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
+def group_transcript_words(
+    transcript: TranscriptSet,
+    audio_context: EvidenceContext,
+    *,
+    word_gap_tick: int,
 ) -> tuple[tuple[int, int], ...]:
-    """Group ordered words; exactly-threshold gaps remain in the same utterance."""
-    _validate_policy_clock(evidence, policy)
-    _validate_words(evidence)
-    words = evidence.transcript.words
+    """Group complete, source-clock words with the frozen gap threshold.
+
+    The caller supplies the original root audio context.  Candidate-local
+    evidence can therefore reuse the exact word grouping without changing or
+    re-hashing the root transcript evidence.
+    """
+    _require_audio_context(audio_context)
+    gap = require_pts(word_gap_tick, "word_gap_tick")
+    if gap < 0:
+        raise DialogueGuardError("word_gap_tick must be non-negative")
+    _validate_words(transcript, audio_context)
+    words = transcript.words
     if not words:
         return ()
     ranges: list[tuple[int, int]] = []
     start, end = words[0].in_tick, words[0].out_tick
     for word in words[1:]:
-        if word.in_tick - end > policy.word_gap_tick:
+        if word.in_tick - end > gap:
             ranges.append((start, end))
             start = word.in_tick
         end = word.out_tick
@@ -500,49 +534,87 @@ def derive_utterance_ranges(
     return tuple(ranges)
 
 
-def merge_vad_ranges(
-    evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
+def merge_speech_activity(
+    speech: SpeechActivitySet,
+    audio_context: EvidenceContext,
+    *,
+    vad_merge_gap_tick: int,
 ) -> tuple[tuple[int, int], ...]:
-    """Merge FSMN-VAD activity with the frozen inclusive gap policy."""
-    _validate_policy_clock(evidence, policy)
-    context = evidence.speech_activity.context
+    """Merge source-clock VAD segments with the frozen inclusive gap policy."""
+    _require_audio_context(audio_context)
+    if type(speech) is not SpeechActivitySet:  # noqa: E721
+        raise DialogueGuardError("VAD merge requires an exact SpeechActivitySet")
+    gap = require_pts(vad_merge_gap_tick, "vad_merge_gap_tick")
+    if gap < 0:
+        raise DialogueGuardError("vad_merge_gap_tick must be non-negative")
+    context = speech.context
+    if (
+        context.source_id,
+        context.source_sha256,
+        context.clock_id,
+        context.time_base,
+    ) != (
+        audio_context.source_id,
+        audio_context.source_sha256,
+        audio_context.clock_id,
+        audio_context.time_base,
+    ):
+        raise DialogueGuardError("VAD timing is not bound to the source audio clock")
     ranges: list[tuple[int, int]] = []
     previous_end: int | None = None
-    for segment in evidence.speech_activity.segments:
+    for segment in speech.segments:
         if (
-            segment.source_id != context.source_id
-            or segment.source_sha256 != context.source_sha256
-            or segment.clock_id != context.clock_id
-            or segment.time_base != context.time_base
+            segment.source_id != audio_context.source_id
+            or segment.source_sha256 != audio_context.source_sha256
+            or segment.clock_id != audio_context.clock_id
+            or segment.time_base != audio_context.time_base
         ):
             raise DialogueGuardError("VAD timing is not bound to the source audio clock")
-        _validate_source_range(evidence, segment.in_tick, segment.out_tick, "VAD timing")
+        _validate_audio_range(audio_context, segment.in_tick, segment.out_tick, "VAD timing")
         if previous_end is not None and previous_end > segment.in_tick:
             raise DialogueGuardError("VAD timings must be monotonic and non-overlapping")
         previous_end = segment.out_tick
-        if ranges and segment.in_tick - ranges[-1][1] <= policy.vad_merge_gap_tick:
+        if ranges and segment.in_tick - ranges[-1][1] <= gap:
             ranges[-1] = (ranges[-1][0], segment.out_tick)
         else:
             ranges.append((segment.in_tick, segment.out_tick))
     return tuple(ranges)
 
 
-def _merge_and_roll(
-    evidence: RootMediaEvidenceBundle,
+def roll_protected_audio_ranges(
     ranges: tuple[tuple[int, int], ...],
-    policy: TimedSpeechGuardPolicy,
+    audio_context: EvidenceContext,
+    *,
+    pre_roll_tick: int,
+    post_roll_tick: int,
 ) -> tuple[ProtectedAudioRange, ...]:
+    """Union and roll audio ranges, never extending beyond the root clock."""
+    _require_audio_context(audio_context)
+    if type(ranges) is not tuple:  # noqa: E721
+        raise DialogueGuardError("protected audio ranges must be an exact tuple")
+    pre_roll = require_pts(pre_roll_tick, "pre_roll_tick")
+    post_roll = require_pts(post_roll_tick, "post_roll_tick")
+    if pre_roll < 0 or post_roll < 0:
+        raise DialogueGuardError("protected audio rolls must be non-negative")
+    checked: list[tuple[int, int]] = []
+    for item in ranges:
+        if type(item) is not tuple or len(item) != 2:  # noqa: E721
+            raise DialogueGuardError("protected audio range must be an exact tick pair")
+        start = require_pts(item[0], "protected_audio_range.in_tick")
+        end = require_pts(item[1], "protected_audio_range.out_tick")
+        _validate_audio_range(audio_context, start, end, "protected audio range")
+        checked.append((start, end))
+
     merged: list[tuple[int, int]] = []
-    for start, end in sorted(ranges):
+    for start, end in sorted(checked):
         if merged and start <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end))
         else:
             merged.append((start, end))
-    context = evidence.audio_sample_boundaries.context
     rolled = [
         (
-            max(context.origin_tick, start - policy.pre_roll_tick),
-            min(context.end_tick, end + policy.post_roll_tick),
+            max(audio_context.origin_tick, start - pre_roll),
+            min(audio_context.end_tick, end + post_roll),
         )
         for start, end in merged
     ]
@@ -554,14 +626,51 @@ def _merge_and_roll(
             final.append((start, end))
     return tuple(
         ProtectedAudioRange(
-            context.source_id,
-            context.source_sha256,
-            context.clock_id,
-            context.time_base,
+            audio_context.source_id,
+            audio_context.source_sha256,
+            audio_context.clock_id,
+            audio_context.time_base,
             start,
             end,
         )
         for start, end in final
+    )
+
+
+def derive_utterance_ranges(
+    evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
+) -> tuple[tuple[int, int], ...]:
+    """Group ordered words; exactly-threshold gaps remain in the same utterance."""
+    _validate_policy_clock(evidence, policy)
+    return group_transcript_words(
+        evidence.transcript,
+        evidence.audio_sample_boundaries.context,
+        word_gap_tick=policy.word_gap_tick,
+    )
+
+
+def merge_vad_ranges(
+    evidence: RootMediaEvidenceBundle, policy: TimedSpeechGuardPolicy
+) -> tuple[tuple[int, int], ...]:
+    """Merge FSMN-VAD activity with the frozen inclusive gap policy."""
+    _validate_policy_clock(evidence, policy)
+    return merge_speech_activity(
+        evidence.speech_activity,
+        evidence.audio_sample_boundaries.context,
+        vad_merge_gap_tick=policy.vad_merge_gap_tick,
+    )
+
+
+def _merge_and_roll(
+    evidence: RootMediaEvidenceBundle,
+    ranges: tuple[tuple[int, int], ...],
+    policy: TimedSpeechGuardPolicy,
+) -> tuple[ProtectedAudioRange, ...]:
+    return roll_protected_audio_ranges(
+        ranges,
+        evidence.audio_sample_boundaries.context,
+        pre_roll_tick=policy.pre_roll_tick,
+        post_roll_tick=policy.post_roll_tick,
     )
 
 
@@ -635,7 +744,7 @@ def derive_dialogue_guard(
                 raise DialogueGuardIndeterminateError(
                     "sentence guard requires complete word and sentence proof"
                 )
-            _validate_words(evidence)
+            _validate_words(transcript, evidence.audio_sample_boundaries.context)
             utterances = derive_utterance_ranges(evidence, policy)
             sentence_ranges = tuple((item.in_tick, item.out_tick) for item in transcript.sentences)
         elif (
@@ -691,5 +800,8 @@ __all__ = [
     "TimedSpeechProducerRecord",
     "derive_dialogue_guard",
     "derive_utterance_ranges",
+    "group_transcript_words",
+    "merge_speech_activity",
     "merge_vad_ranges",
+    "roll_protected_audio_ranges",
 ]

@@ -29,6 +29,7 @@ from ..media.types import (
     require_pts,
     sha256_prefixed,
 )
+from .boundary_checks import subtitle_clear, visual_stable
 from .dialogue_guard import (
     DialogueGuardError,
     DialogueRequirement,
@@ -669,38 +670,15 @@ def _visual_stable(
     is_out: bool,
     policy: ExactAvSpanPolicy,
 ) -> bool:
-    context = evidence.visual_validity.context
-    width = policy.endpoint_stability_video_tick
-    start, end = (endpoint - width, endpoint) if is_out else (endpoint, endpoint + width)
-    if start < context.origin_tick or end > context.end_tick:
-        return False
-    cursor = start
-    for interval in evidence.visual_validity.intervals:
-        overlap_start = max(start, interval.in_tick)
-        overlap_end = min(end, interval.out_tick)
-        if overlap_start >= overlap_end:
-            continue
-        if overlap_start != cursor:
-            return False
-        if (
-            interval.classification in policy.forbidden_visual_classes
-            or interval.classification is not VisualClassification.VALID_CONTENT
-        ):
-            return False
-        cursor = overlap_end
-    return cursor == end
+    return visual_stable(
+        evidence, endpoint, is_out=is_out, width=policy.endpoint_stability_video_tick,
+    )
 
 
 def _subtitle_clear(
     evidence: RootMediaEvidenceBundle, endpoint: int, policy: ExactAvSpanPolicy
 ) -> bool:
-    floor = policy.subtitle_clearance_floor_video_tick
-    return not any(
-        cue.in_tick - cue.timing_error_bound.in_tick - floor
-        < endpoint
-        < cue.out_tick + cue.timing_error_bound.out_tick + floor
-        for cue in evidence.subtitle_cues.cues
-    )
+    return subtitle_clear(evidence, endpoint, clearance=policy.subtitle_clearance_floor_video_tick)
 
 
 def _dialogue_clear(guard: SourceDialogueGuardEvidence, endpoint: int) -> bool:

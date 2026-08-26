@@ -11,6 +11,9 @@ from autocut_kernel.media import (
     CandidateTimedEvidenceSet,
     CandidateWindowAssessment,
     CandidateWindowOutcome,
+    Coverage,
+    CoverageOutcome,
+    EvidenceContext,
     MediaKind,
     MediaValidationError,
     SentenceCompleteness,
@@ -57,6 +60,8 @@ from tests.media.test_root_evidence import (
     _audio_boundaries,
     _context,
     _frame_pts,
+    _no_speech_transcript,
+    _no_speech_vad,
     _speech,
     _subtitles,
     _transcript,
@@ -477,6 +482,123 @@ def test_candidate_timed_evidence_requires_conjunctive_audio_video_and_calibrati
             visual_validity=visual,
             subtitle_cues=subtitles,
             calibration_bindings=_bindings(evidence_values)[:-1],
+        )
+
+
+def _candidate_with_absolute_audio_coverage(
+    *,
+    audio_origin_tick: int,
+    audio_duration_tick: int,
+) -> CandidateTimedEvidenceSet:
+    """Use a delayed audio clock on the source's shared presentation timeline."""
+    plan, manifest, policy = _initial_plan()
+    closed_plan = advance_candidate_evidence_window(
+        plan,
+        _assessment(plan.final_window),
+        manifest.frame_pts_index_set,
+        policy,
+    )
+    window = closed_plan.final_window
+    assessment = closed_plan.final_assessment
+    assert assessment is not None
+    transcript_context = replace(
+        _context(MediaKind.AUDIO, "asr-v1"),
+        origin_tick=audio_origin_tick,
+        duration_tick=audio_duration_tick,
+    )
+    speech_context = replace(transcript_context, producer_id="vad-v1")
+    boundary_context = replace(transcript_context, producer_id="audio-boundary-v1")
+    transcript = replace(
+        _no_speech_transcript(_context(MediaKind.AUDIO, "asr-v1")),
+        context=transcript_context,
+        coverage=_full_context_coverage(transcript_context),
+    )
+    speech = replace(
+        _no_speech_vad(_context(MediaKind.AUDIO, "vad-v1")),
+        context=speech_context,
+        coverage=_full_context_coverage(speech_context),
+    )
+    boundary_template = _audio_boundaries()
+    audio_boundaries = replace(
+        boundary_template,
+        context=boundary_context,
+        coverage=_full_context_coverage(boundary_context),
+        points=tuple(
+            replace(point, clock_id=boundary_context.clock_id, tick=tick)
+            for point, tick in zip(
+                boundary_template.points,
+                (
+                    audio_origin_tick,
+                    audio_origin_tick + audio_duration_tick // 2,
+                    audio_origin_tick + audio_duration_tick,
+                ),
+                strict=True,
+            )
+        ),
+    )
+    frame_set = manifest.frame_pts_index_set
+    shots, scenes = _video_boundary_sets(frame_set)
+    video_context = _context(MediaKind.VIDEO, "visual-detector-v1")
+    visual = _visual(video_context)
+    subtitles = _subtitles(replace(video_context, producer_id="subtitle-detector-v1"))
+    values = (
+        transcript,
+        speech,
+        audio_boundaries,
+        frame_set,
+        shots,
+        scenes,
+        visual,
+        subtitles,
+    )
+    return CandidateTimedEvidenceSet(
+        window,
+        assessment,
+        transcript,
+        speech,
+        audio_boundaries,
+        frame_set,
+        shots,
+        scenes,
+        visual,
+        subtitles,
+        _bindings(values),
+    )
+
+
+def _full_context_coverage(context: EvidenceContext) -> Coverage:
+    return Coverage(
+        context.source_id,
+        context.source_sha256,
+        context.clock_id,
+        context.time_base,
+        context.origin_tick,
+        context.end_tick,
+        CoverageOutcome.COMPLETE,
+    )
+
+
+def test_candidate_evidence_coverage_uses_absolute_time_across_delayed_audio_origin() -> None:
+    # Video [25, 75] / 90k lies wholly in audio [13, 41] / 48k.  Rebasing both
+    # origins independently would incorrectly shorten the audio coverage to
+    # [0, 28] / 48k and reject this valid delayed-audio observation.
+    evidence = _candidate_with_absolute_audio_coverage(
+        audio_origin_tick=13,
+        audio_duration_tick=28,
+    )
+
+    assert evidence.transcript.coverage.in_tick == 13
+    assert evidence.transcript.coverage.out_tick == 41
+
+
+def test_candidate_evidence_rejects_rebased_only_audio_coverage() -> None:
+    # This interval looked sufficient only under the old independently-rebased
+    # calculation ([0, 41] / 48k).  On source presentation time it starts at
+    # 40 / 48k, after the VLM candidate has already begun.
+    with pytest.raises(MediaValidationError, match="coverage does not cover"):
+        _candidate_with_absolute_audio_coverage(
+            audio_origin_tick=40,
+            audio_duration_tick=41,
         )
 
 

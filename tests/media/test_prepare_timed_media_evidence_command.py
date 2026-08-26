@@ -22,6 +22,9 @@ from autocut_kernel.media import (
     PTSIndex,
     RationalPresentationInterval,
     RootMediaEvidenceBundle,
+    SpeechActivitySegment,
+    SpeechActivitySet,
+    SpeechSourceOutcome,
     Stage4PredecessorError,
     TimedSpeechCapability,
     TimedSpeechGuardPolicy,
@@ -29,8 +32,10 @@ from autocut_kernel.media import (
     TimedSpeechProfileKind,
     TimedSpeechProfileRegistryEntry,
     TranscriptCompleteness,
+    TranscriptSegment,
     TranscriptSet,
     TranscriptSourceOutcome,
+    TranscriptWord,
     derive_presentation_timeline_facts,
 )
 from autocut_kernel.media.ffprobe_port import ProbeResult
@@ -1458,7 +1463,7 @@ def test_command_requires_an_explicit_store_anchored_resolver() -> None:
         PrepareTimedMediaEvidenceCommand(_Store(), _Producer(_bundle()))
 
 
-def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> None:
+def test_vad_only_nonlexical_candidate_preserves_explicit_sentence_not_applicable() -> None:
     store = _Store()
     request = _request(store)
     template = _bundle()
@@ -1494,7 +1499,99 @@ def test_vad_only_nonlexical_candidate_commits_with_unknown_sentence_fact() -> N
     candidate_payloads = [
         json.loads(content) for content in store.blobs.values() if b'"window_assessment"' in content
     ]
-    assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "unknown"
+    assert candidate_payloads[0]["window_assessment"]["sentence_completeness"] == "not_applicable"
+
+
+def test_assessment_uses_absolute_audio_time_for_offset_boundary_touch() -> None:
+    template = _bundle()
+    audio_context = replace(
+        template.audio_sample_boundaries.context,
+        origin_tick=10,
+        duration_tick=100,
+    )
+    transcript_context = replace(template.transcript.context, origin_tick=10, duration_tick=100)
+    speech_context = replace(template.speech_activity.context, origin_tick=10, duration_tick=100)
+    audio = replace(
+        template.audio_sample_boundaries,
+        context=audio_context,
+        coverage=replace(template.audio_sample_boundaries.coverage, in_tick=10, out_tick=110),
+        points=tuple(
+            replace(point, tick=tick)
+            for point, tick in zip(template.audio_sample_boundaries.points, (10, 60, 110), strict=True)
+        ),
+    )
+    word = TranscriptWord(
+        "offset-word",
+        template.source_id,
+        template.source_sha256,
+        transcript_context.clock_id,
+        transcript_context.time_base,
+        13,
+        15,
+        "crosses video start",
+    )
+    transcript = TranscriptSet(
+        "offset-transcript",
+        transcript_context,
+        replace(template.transcript.coverage, in_tick=10, out_tick=110),
+        TranscriptSourceOutcome.TRANSCRIPT_AVAILABLE,
+        TranscriptCompleteness(
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.COMPLETE,
+            EvidenceCompleteness.NOT_APPLICABLE,
+        ),
+        (
+            TranscriptSegment(
+                "offset-segment",
+                template.source_id,
+                template.source_sha256,
+                transcript_context.clock_id,
+                transcript_context.time_base,
+                13,
+                15,
+                (),
+                "crosses video start",
+            ),
+        ),
+        (word,),
+        (),
+    )
+    speech = SpeechActivitySet(
+        "offset-vad",
+        speech_context,
+        replace(template.speech_activity.coverage, in_tick=10, out_tick=110),
+        SpeechSourceOutcome.SPEECH_DETECTED,
+        (
+            SpeechActivitySegment(
+                "offset-speech",
+                template.source_id,
+                template.source_sha256,
+                speech_context.clock_id,
+                speech_context.time_base,
+                13,
+                15,
+                900_000,
+            ),
+        ),
+    )
+    root = replace(template, audio_sample_boundaries=audio, transcript=transcript, speech_activity=speech)
+    manifest, semantic_pack, candidate = _manifest_and_candidate()
+    window = command_module.plan_candidate_evidence_window(
+        candidate,
+        semantic_pack,
+        manifest,
+        manifest.frame_pts_index_set,
+        command_module.AdaptiveEvidenceWindowPolicy(
+            "offset-assessment-v1", manifest.source_time_base, 0, 0, 1, 2, 2
+        ),
+    ).final_window
+
+    assessment = command_module._assess_window(window, root, margin_tick=2)
+
+    assert assessment.transcript_left_boundary_touch is True
+    assert assessment.speech_left_boundary_touch is True
+    assert assessment.left_truncated is True
+    assert assessment.sentence_completeness.value == "not_applicable"
 
 
 def test_command_retries_busy_once_but_never_retries_unknown_result(

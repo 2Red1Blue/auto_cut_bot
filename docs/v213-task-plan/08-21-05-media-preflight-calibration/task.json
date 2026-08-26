@@ -21,6 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "",
-  "meta": {}
+  "notes": "2026-08-26: Actual runtime still performs full-source ASR/VAD then derives windows from root; candidate-local guard/compiler support alone does not satisfy adaptive producer I/O. See candidate-local-io-followup.md. Desktop private configs transferred; real models/calibration/run not yet executed.",
+  "meta": {
+    "next_action": "Close global physical-root versus local-speech contract, real cropped speech protocol, durable per-window execution and exact committed-reader replay before claiming candidate-local ASR"
+  }
 }

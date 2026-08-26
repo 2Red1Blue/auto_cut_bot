@@ -45,8 +45,13 @@ Authority、Profile 或 CalibrationRecord。
   及向外取整造成的假覆盖；52 项相关纯测试通过。它尚未接进完整 ExactSpan/Recipe。
 - Stage3 蓝图到整批媒体证据的只读连接已实现：同一 Source/Job/Catalog/raw VLM
   身份逐项校验，保留所有备选组与候选顺序。6 项集成回归及独立审查通过；模型回复、
-  detector 与 Store I/O 仍是测试替身，不代表真实模型验收。下一波接候选局部语音保护
-  与分段时钟精确编译，详见 [候选物理编译](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/candidate-physical-compiler-wave.md)。
+  detector 与 Store I/O 仍是测试替身，不代表真实模型验收。
+- 候选局部语音保护与原生分段时钟 A/V 搜索已实现：不改写原始 root，不要求局部
+  ASR 词是整集 ASR 的子集；ASR/FSMN、字幕余量、稳定镜头与视觉有效性合取检查。
+  搜索逐一枚举对齐 sample，预算耗尽不返回部分最优。20 项新编译器测试含独立
+  四域穷举对照、跨 gap、字幕、短镜头、unknown、源尾哨兵与不同音视频尾长；
+  联合相关回归 249 项通过。仍是纯编译层，不是持久化 Stage4/Recipe 或发布许可。
+  详见 [候选物理编译](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/candidate-physical-compiler-wave.md)。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
@@ -156,13 +161,21 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧正在接 Stage 4：单集/整批严格读取与累计预算已接通，下一步连接真实
-Blueprint/Catalog，再让编译器原生使用局部语音证据与分段时钟证明；现有 fixture
-Recipe/视频-only Render 不能直接当作生产 A/V 成片链。
+代码侧已接通单集/整批严格读取、真实 Blueprint/Catalog 连接和局部证据纯编译。
+下一步是 VLM 模式/Blueprint 到精确搜索策略的生成、独立物理 Admission、持久化
+Stage4/Recipe 与 A/V Render；现有 fixture Recipe/视频-only Render 不能直接当作生产成片链。
+另外，实际 LocalMediaPreflightPort/FunASR 仍执行整集语音后从 root 派生候选证据；
+尚未真正按候选窗口调用、扩窗和持久化局部 ASR/VAD。需要同时修改 producer 请求、
+服务裁音/绝对时钟输出与 committed reader 重放，不能只改编译器来宣称接通。
 详见 [Stage 4 当前实施波次](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/production-integration-wave.md)。
 台式机侧准备真实模型、校准、narrative/shadow v2、local-run v4 及 reviewed Stage 1/2/3 策略，运行单集并
 检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。
 之后接 Stage 4/Render/QC，再扩到全剧。当前目标仍只产出本地文件。
+
+2026-08-26 已通过 SSH 将五份私有配置复制到台式机
+`D:\code\auto_cut\private-config-import-20260826`，并校验 SHA-256；未覆盖运行配置，
+未入 Git。新版仓库已拉取至 `ccd8350c`。这不是模型/素材/校准迁移完成，也没有启动
+真实 VLM/ASR。旧 ac_auto_cut 拉取受 GitHub 认证阻断，不阻塞新版纯代码开发。
 
 v9 新增必填 `AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON`，其中
 `max_blob_bytes` 限制单个证据 JSON，`max_total_blob_bytes` 限制完整批次累计大小。

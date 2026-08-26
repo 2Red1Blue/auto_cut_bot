@@ -395,23 +395,21 @@ def _context_key(evidence: object) -> tuple[str, str, str, TimeBase]:
     return (context.source_id, context.source_sha256, context.clock_id, context.time_base)
 
 
-def _physical_tick(tick: int, origin: int, time_base: TimeBase) -> Fraction:
-    return Fraction(tick - origin) * Fraction(time_base.numerator, time_base.denominator)
+def _physical_tick(tick: int, time_base: TimeBase) -> Fraction:
+    return Fraction(tick * time_base.numerator, time_base.denominator)
 
 
 def _coverage_contains_range(
     coverage: Coverage,
     candidate_range: TickRange,
     candidate_time_base: TimeBase,
-    candidate_origin: int,
-    coverage_origin: int,
 ) -> bool:
-    candidate_start = _physical_tick(
-        candidate_range.start_pts, candidate_origin, candidate_time_base
-    )
-    candidate_end = _physical_tick(candidate_range.end_pts, candidate_origin, candidate_time_base)
-    coverage_start = _physical_tick(coverage.in_tick, coverage_origin, coverage.time_base)
-    coverage_end = _physical_tick(coverage.out_tick, coverage_origin, coverage.time_base)
+    # Source clocks share a demuxed presentation timeline; independently
+    # subtracting each origin invents alignment for delayed audio tracks.
+    candidate_start = _physical_tick(candidate_range.start_pts, candidate_time_base)
+    candidate_end = _physical_tick(candidate_range.end_pts, candidate_time_base)
+    coverage_start = _physical_tick(coverage.in_tick, coverage.time_base)
+    coverage_end = _physical_tick(coverage.out_tick, coverage.time_base)
     return coverage_start <= candidate_start and candidate_end <= coverage_end
 
 
@@ -498,8 +496,6 @@ class CandidateTimedEvidenceSet(CanonicalEvidence):
                 evidence.coverage,
                 window.current_range,
                 window.source_time_base,
-                self.frame_pts_index.context.origin_tick,
-                evidence.context.origin_tick,
             ):
                 raise TimedEvidenceValidationError(
                     "evidence coverage does not cover the candidate window"

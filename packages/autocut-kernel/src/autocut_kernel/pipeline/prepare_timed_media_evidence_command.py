@@ -29,7 +29,6 @@ from ..media import (
     RootMediaEvidenceBundle,
     SentenceCompleteness,
     Stage4PredecessorError,
-    TranscriptSourceOutcome,
     admit_timed_speech_profile,
     advance_candidate_evidence_window,
     derive_presentation_timeline_facts,
@@ -1014,14 +1013,13 @@ def _assess_window(
     speech_records = root.speech_activity.segments
 
     def interval(record: object, context: object) -> tuple[Fraction, Fraction]:
-        origin = getattr(context, "origin_tick")
         time_base = getattr(context, "time_base")
         return (
             Fraction(
-                (getattr(record, "in_tick") - origin) * time_base.numerator, time_base.denominator
+                getattr(record, "in_tick") * time_base.numerator, time_base.denominator
             ),
             Fraction(
-                (getattr(record, "out_tick") - origin) * time_base.numerator, time_base.denominator
+                getattr(record, "out_tick") * time_base.numerator, time_base.denominator
             ),
         )
 
@@ -1037,13 +1035,11 @@ def _assess_window(
 
     left_truncated = any(item[0] < start < item[1] for item in transcript_intervals)
     right_truncated = any(item[0] < end < item[1] for item in transcript_intervals)
-    if root.transcript.source_outcome is TranscriptSourceOutcome.NO_SPEECH:
+    if root.transcript.completeness.sentence.value == "not_applicable":
         sentence = SentenceCompleteness.NOT_APPLICABLE
-    elif root.transcript.source_outcome is TranscriptSourceOutcome.NO_LEXICAL_CONTENT:
-        sentence = SentenceCompleteness.UNKNOWN
     elif root.transcript.completeness.sentence.value == "complete":
         sentence = SentenceCompleteness.COMPLETE
-    elif root.transcript.completeness.sentence.value == "partial":
+    elif root.transcript.completeness.sentence.value in {"partial", "failed"}:
         sentence = SentenceCompleteness.PARTIAL
     else:
         sentence = SentenceCompleteness.UNKNOWN
@@ -1064,9 +1060,8 @@ def _assess_window(
 
 
 def _physical(tick: int, context: object) -> Fraction:
-    origin = getattr(context, "origin_tick")
     time_base = getattr(context, "time_base")
-    return Fraction((tick - origin) * time_base.numerator, time_base.denominator)
+    return Fraction(tick * time_base.numerator, time_base.denominator)
 
 
 def _artifact(

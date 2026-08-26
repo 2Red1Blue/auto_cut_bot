@@ -5,7 +5,7 @@
   "description": "",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "Exact five-member and whole-batch readers with v9 independent cumulative evidence budgets implemented and reviewed. Next editorial-media-join-wave.md, then native local-evidence/piecewise-clock physical compilation. No legacy/config/real local execution.",
+  "scope": "Exact child/batch readers, actual Stage3/Catalog join, replayed piecewise clock and candidate-local pure A/V compiler implemented. Next Blueprint/VLM domain derivation, independent physical Admission and durable Stage4/Recipe/Render; actual candidate-local producer I/O remains open. No legacy/config/real local execution.",
   "package": "autocut_kernel",
   "priority": "P0",
   "creator": "liuzx",
@@ -21,13 +21,13 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Stage1-3 Commands and strict media codecs/child/batch readers exist. Actual Stage3/Catalog join, committed v2 clock consumption, local-evidence physical admission, durable Stage4 and production A/V Recipe/Render remain open. Fixture-only rendering is not production completion.",
+  "notes": "2026-08-26: Stage3 join ccd8350c and v2 clock deb08c40 committed. Local guard/native exact selection now pure-tested; physical Admission, editorial policy derivation, durable Stage4/A/V Recipe/Render remain open. Runtime still produces full-source speech: local compiler support does not prove local producer I/O. Fixture-only rendering is not production completion.",
   "meta": {
-    "current_wave": "editorial-media-join-wave.md",
+    "current_wave": "candidate-physical-compiler-wave.md",
     "producer_prerequisite_checkpoint": "fd515321",
     "codec_checkpoint": "4955d1a7",
-    "local_validation": "2356 related pure regressions plus 8 batch tests passed; scoped Ruff/types clean; 112 remote/pure test cases collected only; no real DB/provider execution",
-    "next_action": "Read actual Stage3/Catalog and join every alternative to the exact timed-media batch; then candidate-local speech plus committed piecewise-clock physical compilation",
+    "local_validation": "249 related pure regressions passed including 20 native compiler cases; scoped Ruff/types and independent review; no real DB/provider execution",
+    "next_action": "Close Blueprint/VLM-to-span policy and independent physical Admission/Command; Task05 must also replace full-source speech production with real adaptive candidate-local I/O and matching reader replay",
     "remote_acceptance": "not executed locally"
   }
 }

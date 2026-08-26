@@ -70,3 +70,16 @@ VAD-only protection, subtitles/short shots, empty relation and budget exhaustion
 
 Run only provider-free checks on this Mac. Real native/DB/model acceptance is
 on the desktop when private configuration and media paths are supplied.
+
+## Implementation checkpoint — 2026-08-26
+
+Pure candidate guard and native exact compiler implemented; scope and measured
+test results are in [independent review](review-candidate-physical-compiler.md).
+The next consumer must derive the query from actual Blueprint/VLM policy and
+independently admit it before any committed Recipe is produced.
+
+The actual Task05 producer still invokes whole-source speech and its reader
+replays root-derived windows. Local evidence support here does not remove that
+constraint. See [candidate-local I/O follow-up](../08-21-05-media-preflight-calibration/candidate-local-io-followup.md)
+for the real service/request/root/reader changes; never label root slicing as
+fresh adaptive-window model inference.
