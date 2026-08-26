@@ -4,6 +4,8 @@ RUN useradd --create-home --uid 10001 funasr
 WORKDIR /service
 COPY deploy/funasr/requirements.lock ./requirements.lock
 RUN pip install --no-cache-dir -r requirements.lock
+COPY packages/autocut-kernel /build/autocut-kernel
+RUN pip install --no-cache-dir /build/autocut-kernel
 COPY deploy/funasr/service.py ./service.py
 USER funasr
 EXPOSE 8765

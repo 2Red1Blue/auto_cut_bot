@@ -21,7 +21,7 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Actual runtime still performs full-source ASR/VAD then derives windows from root; candidate-local guard/compiler support alone does not satisfy adaptive producer I/O. See candidate-local-io-followup.md. Desktop private configs transferred; real models/calibration/run not yet executed.",
+  "notes": "2026-08-26: Native exact local PCM extraction and shared sample tracker implemented and independently reviewed; desktop real codec acceptance pending. Actual HTTP/runtime still performs full-source ASR/VAD; candidate-local-io-followup.md and local-pcm-extraction-wave.md distinguish the remaining window wire/Command/root split. Desktop configs transferred, no real model/calibration run claimed.",
   "meta": {
     "next_action": "Close global physical-root versus local-speech contract, real cropped speech protocol, durable per-window execution and exact committed-reader replay before claiming candidate-local ASR"
   }

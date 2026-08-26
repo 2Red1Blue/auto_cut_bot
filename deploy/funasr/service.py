@@ -10,11 +10,13 @@ import fcntl
 import hashlib
 import hmac
 import importlib.metadata
+import importlib.resources
 import json
 import os
 import platform
 import re
 import stat
+import struct
 import subprocess
 import tempfile
 import threading
@@ -22,10 +24,17 @@ from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import Any, BinaryIO, Callable, NoReturn, TypeVar, cast
 
 import torch
 from aiohttp import web
+from autocut_kernel.media.local_audio_window import (
+    DecodedAudioFrameClock,
+    LocalAudioWindowError,
+    LocalAudioWindowSpec,
+    LocalAudioWindowTracker,
+)
+from autocut_kernel.media.types import TimeBase
 from funasr import AutoModel
 
 PROVIDER_ID = "funasr-http-v1"
@@ -41,6 +50,7 @@ NORMAL_PROFILE_SCHEMA = "funasr-measured-profile-v1"
 SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-shadow-calibration-profile-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
+_InferenceResult = TypeVar("_InferenceResult")
 
 
 @dataclass(frozen=True)
@@ -274,6 +284,298 @@ def service_hash() -> str:
         while block := source.read(1024 * 1024):
             digest.update(block)
     return "sha256:" + digest.hexdigest()
+
+
+def _pcm_dependencies() -> tuple[Any, Any, Any]:
+    # The old full-source HTTP path does not load the new decoder implicitly.
+    import av
+    import numpy
+    import soundfile
+
+    return av, numpy, soundfile
+
+
+def decoder_identity() -> dict[str, object]:
+    """Measured implementation identity, not a calibration/acceptance claim."""
+    av, numpy, soundfile = _pcm_dependencies()
+    libraries: dict[str, list[int]] = {}
+    for name, version in cast(dict[str, object], av.library_versions).items():
+        if type(version) is not tuple:
+            raise LocalAudioWindowError("decoder library identity is malformed")
+        values = cast(tuple[object, ...], version)
+        if (type(name) is not str or len(values) != 3
+                or any(type(item) is not int or item < 0 for item in values)):
+            raise LocalAudioWindowError("decoder library identity is malformed")
+        libraries[name] = list(cast(tuple[int, int, int], values))
+    versions = {
+        "pyav": av.__version__, "numpy": numpy.__version__,
+        "soundfile": soundfile.__version__, "libsndfile": soundfile.__libsndfile_version__,
+    }
+    if not libraries or any(type(value) is not str or not value for value in versions.values()):
+        raise LocalAudioWindowError("decoder dependency identity is unavailable")
+    sources: list[dict[str, str]] = []
+    for name in ("local_audio_window.py", "types.py"):
+        resource = importlib.resources.files("autocut_kernel").joinpath("media", name)
+        with resource.open("rb") as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if not raw or len(raw) > 4 * 1024 * 1024:
+            raise LocalAudioWindowError("installed audio planner source is missing or oversized")
+        sources.append({"path": f"media/{name}", "sha256": sha(raw)})
+    return {
+        "schema_version": "local-pcm-decoder-identity-v1",
+        "service_sha256": service_hash(), "versions": versions,
+        "libav_versions": libraries, "planner_sources": sources,
+        "pcm_encoding": "interleaved-little-endian-float32",
+        "wav_subtype": "FLOAT", "resampling": "none",
+    }
+
+
+def decoder_identity_sha256() -> str:
+    return sha(canon(decoder_identity()))
+
+
+@dataclass(frozen=True, slots=True)
+class DecodedLocalPcmReport:
+    """Path-free measured extraction facts; no committed/accepted authority."""
+
+    source_sha256: str
+    spec_sha256: str
+    decoder_identity_sha256: str
+    pcm_sha256: str
+    wav_sha256: str
+    wav_byte_length: int
+    sample_rate: int
+    channels: int
+    sample_count: int
+    decoded_frames: int
+
+    def __post_init__(self) -> None:
+        if any(not is_sha256(value) for value in (
+            self.source_sha256, self.spec_sha256, self.decoder_identity_sha256,
+            self.pcm_sha256, self.wav_sha256,
+        )):
+            raise LocalAudioWindowError("local PCM report hashes are invalid")
+        if any(type(value) is not int or value <= 0 for value in (
+            self.wav_byte_length, self.sample_rate, self.channels,
+            self.sample_count, self.decoded_frames,
+        )):
+            raise LocalAudioWindowError("local PCM report counts must be positive integers")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": "decoded-local-pcm-report-v1",
+            "source_sha256": self.source_sha256, "spec_sha256": self.spec_sha256,
+            "decoder_identity_sha256": self.decoder_identity_sha256,
+            "pcm_sha256": self.pcm_sha256, "wav_sha256": self.wav_sha256,
+            "wav_byte_length": self.wav_byte_length, "sample_rate": self.sample_rate,
+            "channels": self.channels, "sample_count": self.sample_count,
+            "decoded_frames": self.decoded_frames,
+        }
+
+    @property
+    def canonical_hash(self) -> str:
+        return sha(canon(self.to_mapping()))
+
+
+def _bounded_file_hash(stream: BinaryIO, maximum: int) -> tuple[str, int]:
+    stream.seek(0)
+    digest = hashlib.sha256()
+    count = 0
+    while block := stream.read(min(1024 * 1024, maximum - count + 1)):
+        count += len(block)
+        if count > maximum:
+            raise LocalAudioWindowError("file exceeds explicit byte limit")
+        digest.update(block)
+    return "sha256:" + digest.hexdigest(), count
+
+
+def _frame_pcm(frame: Any, selected: Any, spec: LocalAudioWindowSpec, numpy: Any) -> Any:
+    """Convert one checked frame slice; no resampling, clipping or channel mix."""
+    formats = {
+        "u8": ("u", 1, 128), "s16": ("i", 2, 32768),
+        "s32": ("i", 4, 2147483648), "s64": ("i", 8, 9223372036854775808),
+        "flt": ("f", 4, None), "dbl": ("f", 8, None),
+    }
+    name = frame.format.name
+    planar = frame.format.is_planar
+    if type(name) is not str or type(planar) is not bool:
+        raise LocalAudioWindowError("decoded sample format is malformed")
+    base_name = name[:-1] if planar and name.endswith("p") else name
+    if base_name not in formats or name != base_name + ("p" if planar else ""):
+        raise LocalAudioWindowError("decoded sample format is unsupported")
+    kind, width, divisor = formats[base_name]
+    plane_bytes = 0
+    for plane in frame.planes:
+        size = plane.buffer_size
+        if type(size) is not int or size < 0:
+            raise LocalAudioWindowError("decoded audio plane size is invalid")
+        plane_bytes += size
+    if plane_bytes > spec.max_frame_bytes:
+        raise LocalAudioWindowError("decoded audio planes exceed frame byte limit")
+    raw = frame.to_ndarray()
+    expected_shape = (spec.channels, frame.samples) if planar else (1, spec.channels * frame.samples)
+    if (not isinstance(raw, numpy.ndarray) or raw.shape != expected_shape
+            or raw.dtype.kind != kind or raw.dtype.itemsize != width
+            or raw.nbytes > spec.max_frame_bytes):
+        raise LocalAudioWindowError("decoded ndarray does not match the declared frame")
+    interleaved = raw.T if planar else raw.reshape(frame.samples, spec.channels)
+    selected_data = interleaved[selected.start_sample:selected.end_sample]
+    if not numpy.isfinite(selected_data).all():
+        raise LocalAudioWindowError("decoded PCM contains non-finite samples")
+    with numpy.errstate(over="ignore", invalid="ignore"):
+        pcm = numpy.array(selected_data, dtype="<f4", order="C", copy=True)
+        if base_name == "u8":
+            pcm -= 128
+        if divisor is not None:
+            pcm /= divisor
+    if not numpy.isfinite(pcm).all():
+        raise LocalAudioWindowError("FLOAT PCM conversion is non-finite")
+    return pcm
+
+
+def _remove_created_output(path: Path, identity: tuple[int, int]) -> None:
+    try:
+        current = path.lstat()
+        if (current.st_dev, current.st_ino) == identity:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _canonical_float_wav(stream: BinaryIO, spec: LocalAudioWindowSpec) -> None:
+    """Remove libsndfile's PEAK wall-clock timestamp, never alter PCM samples."""
+    stream.seek(0, os.SEEK_END)
+    length = stream.tell()
+    stream.seek(0)
+    header = stream.read(12)
+    if (len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE"
+            or struct.unpack("<I", header[4:8])[0] != length - 8):
+        raise LocalAudioWindowError("local WAV container is not a bounded RIFF WAVE")
+    seen: set[bytes] = set()
+    while stream.tell() < min(length, 4096):
+        chunk = stream.read(8)
+        if len(chunk) != 8:
+            break
+        kind, size = chunk[:4], struct.unpack("<I", chunk[4:])[0]
+        if kind in seen or kind not in {b"fmt ", b"fact", b"PEAK", b"data"}:
+            break
+        seen.add(kind)
+        offset = stream.tell()
+        if kind == b"data":
+            if (not {b"fmt ", b"fact"} <= seen or size != spec.expected_samples * spec.channels * 4
+                    or offset + size != length):
+                break
+            stream.flush()
+            return
+        if size > 4096 or offset + size > min(length, 4096):
+            break
+        payload = stream.read(size)
+        if kind == b"fmt " and payload != struct.pack(
+            "<HHIIHH", 3, spec.channels, spec.sample_rate,
+            spec.sample_rate * spec.channels * 4, spec.channels * 4, 32,
+        ):
+            break
+        if kind == b"fact" and payload != struct.pack("<I", spec.expected_samples):
+            break
+        if kind == b"PEAK":
+            if size != 8 + 8 * spec.channels or payload[:4] != struct.pack("<I", 1):
+                break
+            stream.seek(offset + 4)
+            stream.write(b"\0" * 4)
+        stream.seek(offset + size + size % 2)
+    raise LocalAudioWindowError("local FLOAT WAV header or sample length is invalid")
+
+
+def _deny_secondary_audio_io(_url: str, _flags: int, _options: object) -> NoReturn:
+    raise LocalAudioWindowError("local decoder forbids secondary container resources")
+
+
+def decode_local_pcm(
+    source_path: Path, spec: LocalAudioWindowSpec, output_path: Path,
+) -> DecodedLocalPcmReport:
+    """Decode a verified descriptor to an exclusively created local FLOAT WAV."""
+    if type(spec) is not LocalAudioWindowSpec:
+        raise LocalAudioWindowError("local decoder requires an exact extraction spec")
+    if not source_path.is_absolute() or not output_path.is_absolute():
+        raise LocalAudioWindowError("local decoder requires private absolute paths")
+    if spec.expected_samples * spec.channels * 4 > 2**32 - 4096:
+        raise LocalAudioWindowError("requested PCM exceeds the RIFF WAV format bound")
+    identity = decoder_identity_sha256()
+    if identity != spec.decoder_identity_sha256:
+        raise LocalAudioWindowError("local decoder identity differs from extraction spec")
+    av, numpy, soundfile = _pcm_dependencies()
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    created: tuple[int, int] | None = None
+    try:
+        with os.fdopen(os.open(source_path, flags), "rb") as source:
+            initial = os.fstat(source.fileno())
+            if not stat.S_ISREG(initial.st_mode) or not 0 < initial.st_size <= spec.max_source_bytes:
+                raise LocalAudioWindowError("source must be a bounded nonempty regular file")
+            source_hash, source_size = _bounded_file_hash(source, spec.max_source_bytes)
+            if source_hash != spec.source_sha256 or source_size != initial.st_size:
+                raise LocalAudioWindowError("original source hash or size differs")
+            source.seek(0)
+            tracker = LocalAudioWindowTracker(spec)
+            pcm_digest = hashlib.sha256()
+            pcm_bytes = 0
+            with av.open(source, mode="r", io_open=_deny_secondary_audio_io) as container:
+                streams = [item for item in container.streams
+                           if item.index == spec.audio_stream_index and item.type == "audio"]
+                if len(streams) != 1:
+                    raise LocalAudioWindowError("requested audio stream does not exist")
+                output_fd = os.open(output_path, os.O_RDWR | os.O_CREAT | os.O_EXCL
+                                    | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                with os.fdopen(output_fd, "w+b") as output:
+                    output_stat = os.fstat(output.fileno())
+                    created = (output_stat.st_dev, output_stat.st_ino)
+                    with soundfile.SoundFile(output, mode="w", samplerate=spec.sample_rate,
+                                             channels=spec.channels, format="WAV", subtype="FLOAT",
+                                             endian="LITTLE", closefd=False) as wav:
+                        for frame in container.decode(streams[0]):
+                            base = frame.time_base
+                            if base is None:
+                                raise LocalAudioWindowError("decoded audio frame has no time base")
+                            clock = DecodedAudioFrameClock(
+                                frame.pts, TimeBase(base.numerator, base.denominator),
+                                frame.sample_rate, len(frame.layout.channels), frame.samples,
+                            )
+                            selected = tracker.take(clock)
+                            if selected is not None:
+                                pcm = _frame_pcm(frame, selected, spec, numpy)
+                                block = pcm.tobytes(order="C")
+                                pcm_bytes += len(block)
+                                if pcm_bytes > spec.max_pcm_bytes:
+                                    raise LocalAudioWindowError("local PCM exceeds byte budget")
+                                wav.write(pcm)
+                                pcm_digest.update(block)
+                                del pcm, block
+                            del frame
+                            if tracker.complete:
+                                break
+                        samples = tracker.finish()
+                    if pcm_bytes != samples * spec.channels * 4:
+                        raise LocalAudioWindowError("written PCM sample count differs from coverage")
+                    output.flush()
+                    _canonical_float_wav(output, spec)
+                    # FLOAT WAV has a small format header, separate from the PCM budget.
+                    wav_hash, wav_size = _bounded_file_hash(output, spec.max_pcm_bytes + 4096)
+            final_hash, final_size = _bounded_file_hash(source, spec.max_source_bytes)
+            final = os.fstat(source.fileno())
+            if ((final_hash, final_size) != (source_hash, source_size)
+                    or (initial.st_mtime_ns, initial.st_ctime_ns) != (final.st_mtime_ns, final.st_ctime_ns)):
+                raise LocalAudioWindowError("original source changed during extraction")
+        actual_output = output_path.lstat()
+        if (actual_output.st_dev, actual_output.st_ino) != created:
+            raise LocalAudioWindowError("local PCM output path changed during extraction")
+        return DecodedLocalPcmReport(
+            source_hash, spec.canonical_hash, identity,
+            "sha256:" + pcm_digest.hexdigest(), wav_hash, wav_size,
+            spec.sample_rate, spec.channels, samples, tracker.decoded_frames,
+        )
+    except BaseException:
+        if created is not None:
+            _remove_created_output(output_path, created)
+        raise
 
 
 def module_device(module: object) -> str:
@@ -758,6 +1060,16 @@ class Service:
             str(p), model=self.model.vad_model, kwargs=copy.deepcopy(self.model.vad_kwargs)
         )
 
+    def infer_window(
+        self, source_path: Path, spec: LocalAudioWindowSpec,
+    ) -> tuple[DecodedLocalPcmReport, object, object]:
+        """Internal native seam only; no old-profile acceptance or HTTP opt-in."""
+        with tempfile.TemporaryDirectory(prefix="funasr-local-pcm-") as directory:
+            wav_path = Path(directory) / "window.wav"
+            report = decode_local_pcm(source_path, spec, wav_path)
+            asr, vad_output = self.infer(wav_path)
+            return report, asr, vad_output
+
     async def admit(self) -> None:
         async with self.admission_lock:
             try:
@@ -780,26 +1092,57 @@ class Service:
             self.model = None
             self.singleton.release()
 
-    def fatal(self, code: int) -> None:
+    def fatal(self, code: int) -> NoReturn:
         self.ready = False
         self._fatal_exit(code)
         raise RuntimeError("fatal exit returned")
 
-    async def run_inference(self, path: Path) -> tuple[object, object]:
+    async def _run_serial_inference(
+        self, operation: Callable[[], _InferenceResult], *, allow_window_error: bool,
+    ) -> _InferenceResult:
+        """Cancellation cannot release native ownership or extend its deadline."""
         async with self.lock:
-            task = asyncio.create_task(asyncio.to_thread(self.infer, path))
-            try:
-                return await asyncio.wait_for(asyncio.shield(task), self.timeout)
-            except asyncio.CancelledError:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self.timeout
+            task = asyncio.create_task(asyncio.to_thread(operation))
+            cancelled = False
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    self.fatal(70)
                 try:
-                    await asyncio.shield(task)
+                    result = await asyncio.wait_for(asyncio.shield(task), remaining)
+                except asyncio.CancelledError:
+                    # Repeated cancellation still drains the same worker under
+                    # the same lock and original absolute timeout.
+                    cancelled = True
+                    continue
+                except TimeoutError:
+                    self.fatal(70)
+                except LocalAudioWindowError:
+                    if allow_window_error:
+                        if cancelled:
+                            raise asyncio.CancelledError from None
+                        raise
+                    self.fatal(71)
                 except Exception:
                     self.fatal(71)
-                raise
-            except TimeoutError:
-                self.fatal(70)
-            except Exception:
-                self.fatal(71)
+                if cancelled:
+                    raise asyncio.CancelledError
+                return result
+
+    async def run_inference(self, path: Path) -> tuple[object, object]:
+        return await self._run_serial_inference(
+            lambda: self.infer(path), allow_window_error=False,
+        )
+
+    async def run_window_inference(
+        self, source_path: Path, spec: LocalAudioWindowSpec,
+    ) -> tuple[DecodedLocalPcmReport, object, object]:
+        """Keep extraction and both native calls within the existing model lock."""
+        return await self._run_serial_inference(
+            lambda: self.infer_window(source_path, spec), allow_window_error=True,
+        )
 
     def validate_manifest_identity(self, manifest: dict[str, object]) -> None:
         if self.measured_profile is None:

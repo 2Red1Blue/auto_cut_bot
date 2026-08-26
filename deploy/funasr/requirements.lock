@@ -1,7 +1,9 @@
-# Exact direct-package host lock observed during the successful bounded CPU smoke on 2026-08-25.
+# Original direct-package host lock observed during bounded CPU smoke on 2026-08-25.
+# Added av==18.1.0 has synthetic extraction coverage only; real codec acceptance is separate.
 # External interpreter precondition: CPython==3.13.13; installer used: pip==26.0.1.
 # This is not deployment approval until the clean locked-model smoke in README.md is recorded.
 aiohttp==3.14.3
+av==18.1.0
 funasr==1.4.1
 modelscope==1.39.1
 numpy==2.4.6
