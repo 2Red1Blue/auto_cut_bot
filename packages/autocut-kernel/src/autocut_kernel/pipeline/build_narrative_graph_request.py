@@ -96,6 +96,66 @@ class Stage1GenerationPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class Stage1CommandPolicy:
+    """Closed input-free configuration, never committed input or authority.
+
+    Building a request still requires real full predecessor references; policy
+    decoding does not synthesize a Job, Source, VLM owner or acceptance claim.
+    """
+
+    artifact_revision: int
+    generation: Stage1GenerationPolicy
+    draft_policy: Stage1DraftPolicy
+    coverage_policy: Stage1CoveragePolicy
+    dependency_policy: DependencyProjectionPolicy
+    retry_policy: GenerationRetryPolicy
+
+    def __post_init__(self) -> None:
+        if type(self.artifact_revision) is not int or not 1 <= self.artifact_revision <= _SAFE:  # noqa: E721
+            raise ValueError("artifact_revision must be a positive safe integer")
+        if any(type(item) is not kind for item, kind in (
+            (self.generation, Stage1GenerationPolicy), (self.draft_policy, Stage1DraftPolicy),
+            (self.coverage_policy, Stage1CoveragePolicy), (self.dependency_policy, DependencyProjectionPolicy),
+            (self.retry_policy, GenerationRetryPolicy),
+        )):
+            raise ValueError("request policies must be exact registered values")
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "artifact_revision": self.artifact_revision,
+            "generation": self.generation.to_mapping(), "draft_policy": self.draft_policy.to_mapping(),
+            "coverage_policy": self.coverage_policy.to_mapping(), "dependency_policy": self.dependency_policy.to_mapping(),
+            "retry_policy": self.retry_policy.to_mapping(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: object) -> Stage1CommandPolicy:
+        item = _closed(value, {field.name for field in fields(cls)}, "Stage 1 command policy")
+        retry = _closed(item["retry_policy"], {"strategy_version", "max_attempts", "backoff_seconds"}, "retry policy")
+        if type(retry["backoff_seconds"]) is not list:  # noqa: E721
+            raise ValueError("retry backoff_seconds must be an exact JSON array")
+        return cls(
+            cast(int, item["artifact_revision"]), Stage1GenerationPolicy.from_mapping(item["generation"]),
+            Stage1DraftPolicy(**cast(dict[str, int], _closed(item["draft_policy"], {field.name for field in fields(Stage1DraftPolicy)}, "draft policy"))),
+            Stage1CoveragePolicy(**cast(dict[str, str], _closed(item["coverage_policy"], {"minimum_confidence", "coverage_mode"}, "coverage policy"))),
+            _dependency_policy(item["dependency_policy"]),
+            GenerationRetryPolicy(cast(str, retry["strategy_version"]), cast(int, retry["max_attempts"]), tuple(cast(list[int], retry["backoff_seconds"]))),
+        )
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_json_hash(self.to_mapping())
+
+    def build_request(
+        self, inputs: CommittedSemanticInputsRequest, idempotency_key: str,
+    ) -> BuildNarrativeGraphRequest:
+        return BuildNarrativeGraphRequest(
+            inputs, idempotency_key, self.artifact_revision, self.generation,
+            self.draft_policy, self.coverage_policy, self.dependency_policy, self.retry_policy,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class BuildNarrativeGraphRequest:
     inputs: CommittedSemanticInputsRequest
     idempotency_key: str
@@ -110,14 +170,8 @@ class BuildNarrativeGraphRequest:
         if type(self.inputs) is not CommittedSemanticInputsRequest:  # noqa: E721
             raise ValueError("request requires exact committed semantic input request")
         _text(self.idempotency_key, "idempotency_key")
-        if type(self.artifact_revision) is not int or not 1 <= self.artifact_revision <= _SAFE:  # noqa: E721
-            raise ValueError("artifact_revision must be a positive safe integer")
-        if any(type(item) is not kind for item, kind in (
-            (self.generation, Stage1GenerationPolicy), (self.draft_policy, Stage1DraftPolicy),
-            (self.coverage_policy, Stage1CoveragePolicy), (self.dependency_policy, DependencyProjectionPolicy),
-            (self.retry_policy, GenerationRetryPolicy),
-        )):
-            raise ValueError("request policies must be exact registered values")
+        # Policy construction owns the shared exact-type and revision checks.
+        _ = self.command_policy
         source = self.inputs.source_manifest
         if (source.artifact_type, source.logical_id, source.member_ordinal, source.scope) != (
             "whole_series_source_manifest", "whole_series_source_manifest", 0, canonical_recipe_scope(self.inputs.job)
@@ -136,13 +190,17 @@ class BuildNarrativeGraphRequest:
     def artifact_scope(self) -> ArtifactScope:
         return canonical_recipe_scope(self.inputs.job)
 
+    @property
+    def command_policy(self) -> Stage1CommandPolicy:
+        return Stage1CommandPolicy(
+            self.artifact_revision, self.generation, self.draft_policy,
+            self.coverage_policy, self.dependency_policy, self.retry_policy,
+        )
+
     def to_mapping(self) -> dict[str, object]:
         return {
             "inputs": {"job": {"job_key": self.job.job_key, "profile": self.job.profile}, "source_manifest": self.inputs.source_manifest.to_mapping(), "vlm_semantic_pack_set": self.inputs.vlm_semantic_pack_set.to_mapping()},
-            "idempotency_key": self.idempotency_key, "artifact_revision": self.artifact_revision,
-            "generation": self.generation.to_mapping(), "draft_policy": self.draft_policy.to_mapping(),
-            "coverage_policy": self.coverage_policy.to_mapping(), "dependency_policy": self.dependency_policy.to_mapping(),
-            "retry_policy": self.retry_policy.to_mapping(),
+            "idempotency_key": self.idempotency_key, **self.command_policy.to_mapping(),
         }
 
     @classmethod
@@ -150,16 +208,11 @@ class BuildNarrativeGraphRequest:
         item = _closed(value, {"inputs", "idempotency_key", "artifact_revision", "generation", "draft_policy", "coverage_policy", "dependency_policy", "retry_policy"}, "BuildNarrativeGraph request")
         inputs = _closed(item["inputs"], {"job", "source_manifest", "vlm_semantic_pack_set"}, "request inputs")
         job = _closed(inputs["job"], {"job_key", "profile"}, "request job")
-        retry = _closed(item["retry_policy"], {"strategy_version", "max_attempts", "backoff_seconds"}, "retry policy")
-        if type(retry["backoff_seconds"]) is not list:  # noqa: E721
-            raise ValueError("retry backoff_seconds must be an exact JSON array")
+        policy = Stage1CommandPolicy.from_mapping({field.name: item[field.name] for field in fields(Stage1CommandPolicy)})
         return cls(
             CommittedSemanticInputsRequest(Job(cast(str, job["job_key"]), cast(JobProfile, job["profile"])), CommittedArtifactMemberReference.from_mapping(inputs["source_manifest"]), CommittedArtifactMemberReference.from_mapping(inputs["vlm_semantic_pack_set"])),
-            cast(str, item["idempotency_key"]), cast(int, item["artifact_revision"]), Stage1GenerationPolicy.from_mapping(item["generation"]),
-            Stage1DraftPolicy(**cast(dict[str, int], _closed(item["draft_policy"], {field.name for field in fields(Stage1DraftPolicy)}, "draft policy"))),
-            Stage1CoveragePolicy(**cast(dict[str, str], _closed(item["coverage_policy"], {"minimum_confidence", "coverage_mode"}, "coverage policy"))),
-            _dependency_policy(item["dependency_policy"]),
-            GenerationRetryPolicy(cast(str, retry["strategy_version"]), cast(int, retry["max_attempts"]), tuple(cast(list[int], retry["backoff_seconds"]))),
+            cast(str, item["idempotency_key"]), policy.artifact_revision, policy.generation,
+            policy.draft_policy, policy.coverage_policy, policy.dependency_policy, policy.retry_policy,
         )
 
 

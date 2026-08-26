@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes, sha256_bytes
 from autocut_kernel.pipeline.build_narrative_graph_request import (
     BuildNarrativeGraphRequest,
     Stage1GenerationPolicy,
@@ -122,3 +123,28 @@ def test_changed_generation_policy_changes_durable_hash_and_attempt_keys():
     assert first.input_binding_sha256 == changed.input_binding_sha256
     assert first.request_hash != changed.request_hash
     assert first.provider_idempotency_key_for(1) != changed.provider_idempotency_key_for(1)
+
+
+def test_policy_extraction_preserves_preexisting_request_wire_and_prepared_bytes():
+    """Golden hashes captured before extraction from this synthetic input fixture."""
+    inputs, request = _request()
+    rebuilt = request.command_policy.build_request(request.inputs, request.idempotency_key)
+    assert rebuilt == request
+    assert tuple(rebuilt.to_mapping()) == (
+        "inputs", "idempotency_key", "artifact_revision", "generation", "draft_policy",
+        "coverage_policy", "dependency_policy", "retry_policy",
+    )
+    assert sha256_bytes(canonical_json_bytes(rebuilt.to_mapping())) == (
+        "sha256:0ed8743fb83fbaeac405f61342595fdb53df77e6fcf6ad89093ed41986c13773"
+    )
+    prepared = prepare_stage1_request(rebuilt, inputs)
+    assert prepared.request_hash == "sha256:ef10f0750177fcc4859c06463eb4735ebcc589e791950dae32784447a8a6517b"
+    assert len(prepared.request_payload) == 14371
+    assert sha256_bytes(prepared.provider_payload) == (
+        "sha256:fe398e94c3c5bc57bba6fc72a65cd4da929deda131611eaa63c111d8a0f15ac9"
+    )
+    assert len(prepared.provider_payload) == 9435
+    assert [prepared.provider_idempotency_key_for(ordinal) for ordinal in (1, 2)] == [
+        "sha256:d35a95ee61e934f58d01ec08d47329b4401ebfbece0fd7291312f8360a22d88a",
+        "sha256:33a2ad8de26282c7b47579f8d51b25d6b62e300195326416e0079a8d57764ca5",
+    ]
