@@ -266,11 +266,12 @@ def test_composition_registers_real_stage1_execute_and_reconcile_between_vlm_and
     assert stage._installed_profile is fake_installed_loader.resource
     assert stage._store is runtime.authority_store
     assert type(stage._command) is BuildNarrativeGraphCommand
-    assert type(stage._command._provider) is DoubaoDraftProvider
+    provider = stage._command._lifecycle._provider
+    assert type(provider) is DoubaoDraftProvider
     policy = runtime.execution_profile.build_stage1_command_policy()
-    assert stage._command._provider.strategy_version == policy.generation.adapter_strategy_version
-    assert stage._command._provider._max_request_bytes == policy.draft_policy.max_prompt_bytes
-    assert stage._command._provider._transport._config.max_stream_bytes == (
+    assert provider.strategy_version == policy.generation.adapter_strategy_version
+    assert provider._max_request_bytes == policy.draft_policy.max_prompt_bytes
+    assert provider._transport._config.max_stream_bytes == (
         policy.draft_policy.max_response_bytes
     )
 

@@ -69,6 +69,7 @@ class MemoryNarrativeGraphStore:
         self.slot = UUID(int=9000)
         self.clock = datetime(2026, 8, 26, tzinfo=timezone.utc)
         self.counter = 10000
+        self.command_name = COMMAND_NAME
         self.claim = None
         self.outcome = None
         self.attempts = []
@@ -113,7 +114,7 @@ class MemoryNarrativeGraphStore:
     def claim_command(self, claim):
         self.events.append(("claim", claim))
         assert claim.job == self.job and claim.execution_kind == "generation"
-        assert claim.command_name == COMMAND_NAME
+        assert claim.command_name == self.command_name
         if self.claim is not None and self.claim != claim:
             raise IdempotencyConflictError("same key has different frozen request")
         if self.claim is None:
@@ -376,7 +377,7 @@ class MemoryNarrativeGraphStore:
             receipt,
             artifact_set,
             self.claim.request_hash,
-            COMMAND_NAME,
+            self.command_name,
             "generation",
             artifact_set_hash(artifacts),
             members,
