@@ -21,7 +21,7 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Native exact local PCM extraction and shared sample tracker implemented and independently reviewed; desktop real codec acceptance pending. Actual HTTP/runtime still performs full-source ASR/VAD; candidate-local-io-followup.md and local-pcm-extraction-wave.md distinguish the remaining window wire/Command/root split. Desktop configs transferred, no real model/calibration run claimed.",
+  "notes": "2026-08-26: Native local PCM extraction checkpoint fcc4b7ae independently reviewed; 253 local checks and 4 real desktop AAC/MP4 codec tests passed. Actual HTTP/runtime still performs full-source ASR/VAD; candidate-local-io-followup.md and local-pcm-extraction-wave.md distinguish remaining window wire/Command/root split. No real model/calibration run claimed.",
   "meta": {
     "next_action": "Close global physical-root versus local-speech contract, real cropped speech protocol, durable per-window execution and exact committed-reader replay before claiming candidate-local ASR"
   }

@@ -71,5 +71,34 @@ they prove orchestration and conversion, not real MP4 decoder behavior.
 Real encoded-source PyAV/native tests belong on the desktop, not this Mac.
 No successful result of this wave grants calibration, Recipe or publication.
 
+### Verified checkpoint
+
+Implementation commit `fcc4b7ae`: 253 pure/synthetic/regression checks passed
+on the Mac; four codec cases were intentionally skipped there. Independent
+review fixed repeated-cancellation/native-lock ownership and denied decoder
+secondary I/O before approval. FLOAT WAV PEAK timestamps are canonicalized in
+the bounded header; PCM samples are unchanged.
+
+On the desktop's Ubuntu-24.04 WSL, all four real AAC/MP4 codec cases passed:
+44.1/48 kHz, zero/nonzero PTS origin, exact decoded-source-to-WAV comparison,
+and both model input callbacks. Runtime: CPython 3.13.13 / PyAV 18.1.0 /
+NumPy 2.4.6 / SoundFile 0.14.0. The models themselves were fake. This does not
+claim real model timing calibration, local-window HTTP activation or complete
+Pipeline readiness.
+
+Reproduce only on the desktop with the above interpreter/libraries, pytest,
+pytest-asyncio and aiohttp 3.14.3 available:
+
+```sh
+cd /mnt/d/code/auto_cut/auto_cut_bot
+AUTOCUT_RUN_NATIVE_AUDIO_TESTS=1 python -m pytest --noconftest \
+  tests/pipeline/test_funasr_local_pcm_native.py -q
+```
+
+`--noconftest` isolates this self-contained codec suite from unrelated Agent
+session fixtures; the suite creates its own private temp source/WAV files and
+does not open application configuration. It is not a bypass of any codec
+assertion. Desktop GPU compose/README edits were preserved unchanged.
+
 API references: [PyAV audio](https://pyav.basswood.io/docs/stable/api/audio.html),
 [container decoding](https://pyav.basswood.io/docs/stable/api/container.html).

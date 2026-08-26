@@ -1,4 +1,4 @@
-# Candidate-local PCM extraction review
+# Candidate-local PCM extraction review — accepted slice
 
 Scope: source-clock exact sample tracker, native extraction/private WAV input,
 shared package installation, synthetic tests and desktop-only codec tests.
@@ -42,7 +42,21 @@ Independent reviewer: `review_calibration_migration`, read-only separate agent.
   its existing dynamic-model diagnostics and absent third-party stubs remain.
 - Reviewer independently ran 66 tests and deliberately skipped four desktop
   real-codec cases; final verdict ALLOW for this bounded implementation scope.
-- Four real AAC/MP4 codec cases remain pending desktop execution at checkpoint.
-  No real SenseVoice/FSMN inference, Profile activation or DB execution occurred
-  in this review. Source transfer/prefix decode costs remain; per-frame limits
-  are not a guarantee about total native process RSS.
+- The combined Mac regression command completed with **253 passed / 4
+  intentionally skipped**; it did not run real codecs/models.
+- Desktop Ubuntu-24.04 WSL at commit `fcc4b7ae`: **4 real AAC/MP4 codec cases
+  passed in 2.23s**, CPython 3.13.13, PyAV 18.1.0, NumPy 2.4.6, SoundFile
+  0.14.0. Both 44.1 kHz and 48 kHz, zero and nonzero PTS origins, exact WAV
+  sample comparison, both model input callbacks and private-file cleanup ran.
+  Model callbacks were deliberately fake; this is real codec acceptance, not
+  real SenseVoice/FSMN inference, Profile activation or DB acceptance.
+- The standalone desktop test uses `--noconftest`: the repository-wide root
+  conftest requires Agent/session packages unrelated to this self-contained
+  codec suite. The codec test owns its temp directory and fake model modules;
+  no Agent config, service or database is accessed. Initial launch without
+  this isolation failed on missing `certifi`, before tests ran.
+- Desktop setup bypassed its stale inherited proxy for this command only and
+  bootstrapped a newer uv in its tool cache (existing uv could not select
+  Python 3.13.13). No global proxy, service config or existing virtualenv was
+  changed. Source transfer/prefix decode costs remain; per-frame limits are
+  not a guarantee about total native process RSS.

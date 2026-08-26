@@ -1,13 +1,14 @@
 {
   "id": "candidate-local-pcm-extraction",
   "title": "Implement source-clock verified local PCM extraction for SenseVoice/FSMN",
-  "status": "in_progress",
+  "status": "completed",
   "complexity": "L",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "review",
-  "nextAction": "Native/pure implementation and independent review passed; checkpoint commit then desktop opt-in codec acceptance. Window HTTP/Command and physical-root split remain subsequent work, not production-complete",
+  "currentPhase": "completed",
+  "nextAction": "PCM primitive accepted: 253 local tests plus 4 real desktop codec cases, independent review ALLOW. Continue separate window HTTP/Command and physical-root split; full Trellis task 05 and overall goal remain in progress",
   "createdAt": "2026-08-26",
+  "completedAt": "2026-08-26",
   "branch": "feat/v213-contract-codegen",
   "trellisTask": ".trellis/tasks/08-21-05-media-preflight-calibration"
 }
