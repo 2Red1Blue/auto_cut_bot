@@ -28,6 +28,10 @@ from autocut_kernel.registry.timed_speech_contract import timed_speech_registry_
 from autocut_kernel.semantic_chain.candidate_catalog import CandidateCatalogPolicy
 from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
+from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
+from autocut_kernel.semantic_chain.editorial_context_models import EditorialContextPolicy
+from autocut_kernel.semantic_chain.editorial_draft import EditorialDraftPolicy
+from autocut_kernel.semantic_chain.editorial_feasibility import EditorialFeasibilityPolicy
 from autocut_kernel.semantic_chain.stage1_command_policy import (
     Stage1CommandPolicy,
     Stage1GenerationPolicy,
@@ -188,6 +192,32 @@ def synthetic_stage2_command_policy() -> Stage2CommandPolicy:
     )
 
 
+def synthetic_stage3_command_policy() -> Stage3CommandPolicy:
+    """Explicit synthetic full-batch prompt/budgets, not deployable defaults."""
+    return Stage3CommandPolicy(
+        artifact_revision=1,
+        generation=Stage1GenerationPolicy(
+            "doubao-ark-text-responses-stream", "doubao-seed-2-1-pro-260628",
+            "synthetic-stage3-draft-v1", "Synthetic test prompt: propose every frozen Story Blueprint as narrative intent.",
+            "doubao-ark-text-responses-stream-v1", 4096, "0",
+        ),
+        max_prompt_bytes=2_097_152,
+        draft_policy=EditorialDraftPolicy(
+            budget_unit="bytes", max_response_bytes=1_048_576, max_json_depth=32,
+            max_stories=16, max_beats_per_story=32, max_total_beats=128,
+            max_requirements_per_beat=16, max_total_requirements=512,
+            max_alternatives_per_requirement=16, max_total_alternatives=1024,
+            max_references_per_field=128, max_total_references=8192,
+            max_ordering_constraints_per_story=128, max_total_ordering_constraints=1024,
+            max_text_characters=4096, max_total_text_characters=100_000,
+        ),
+        context_policy=EditorialContextPolicy("unpartitioned-batch-v1", "bytes", 2_097_152, 2_097_152, 128),
+        feasibility_policy=EditorialFeasibilityPolicy("editorial-material-feasibility-v1", 10_000),
+        retry_policy=GenerationRetryPolicy("generation-retry-v1", 3, (2, 8)),
+        blueprint_strategy_version="unpartitioned-batch-v1",
+    )
+
+
 def _narrative_reference(narrative: dict[str, object]) -> dict[str, object]:
     provider = narrative["provider"]
     model = narrative["model"]
@@ -340,6 +370,7 @@ def _member_ref(
 
 def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dict[str, object]:
     stage2_policy = synthetic_stage2_command_policy()
+    stage3_policy = synthetic_stage3_command_policy()
     native = copy.deepcopy(shadow["native_timed_speech"])
     assert isinstance(native, dict)
     producers = native["producers"]
@@ -386,13 +417,15 @@ def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dic
         }
 
     return {
-        "schema_version": "autocut-local-run-profile-v3",
+        "schema_version": "autocut-local-run-profile-v4",
         "contract_version": "2.1.3",
         "profile_id": "local_run",
         "profile_version": "1",
         "profile_state": "local_run_v1",
         "stage2_command_policy": stage2_policy.to_mapping(),
         "stage2_command_policy_sha256": stage2_policy.canonical_hash,
+        "stage3_command_policy": stage3_policy.to_mapping(),
+        "stage3_command_policy_sha256": stage3_policy.canonical_hash,
         "profile_contract_sha256": _profile_contract_hash("local-run-profile.schema.json"),
         "predecessor_shadow_profile": {
             "profile_id": "shadow_calibration",

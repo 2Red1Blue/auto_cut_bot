@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "schema://governance/local-run-profile/3.0.0",
+  "$id": "schema://governance/local-run-profile/4.0.0",
   "title": "LocalRunProfile",
   "type": "object",
   "additionalProperties": false,
@@ -20,10 +20,12 @@
     "calibration",
     "timed_speech_registry_entry",
     "stage2_command_policy",
-    "stage2_command_policy_sha256"
+    "stage2_command_policy_sha256",
+    "stage3_command_policy",
+    "stage3_command_policy_sha256"
   ],
   "properties": {
-    "schema_version": {"const": "autocut-local-run-profile-v3"},
+    "schema_version": {"const": "autocut-local-run-profile-v4"},
     "contract_version": {"const": "2.1.3"},
     "profile_id": {"const": "local_run"},
     "profile_version": {"$ref": "#/$defs/profile_version"},
@@ -38,9 +40,65 @@
     "calibration": {"$ref": "#/$defs/calibration"},
     "timed_speech_registry_entry": {"$ref": "#/$defs/timed_speech_registry_entry"},
     "stage2_command_policy": {"$ref": "#/$defs/stage2_command_policy"},
-    "stage2_command_policy_sha256": {"$ref": "#/$defs/sha256"}
+    "stage2_command_policy_sha256": {"$ref": "#/$defs/sha256"},
+    "stage3_command_policy": {"$ref": "#/$defs/stage3_command_policy"},
+    "stage3_command_policy_sha256": {"$ref": "#/$defs/sha256"}
   },
   "$defs": {
+    "stage3_command_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_revision", "generation", "max_prompt_bytes", "draft_policy", "context_policy", "feasibility_policy", "retry_policy", "blueprint_strategy_version"],
+      "properties": {
+        "artifact_revision": {"$ref": "#/$defs/safe_positive_integer"},
+        "generation": {"$ref": "#/$defs/stage2_generation"},
+        "max_prompt_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "draft_policy": {"$ref": "#/$defs/stage3_draft_policy"},
+        "context_policy": {"$ref": "#/$defs/stage3_context_policy"},
+        "feasibility_policy": {"$ref": "#/$defs/stage3_feasibility_policy"},
+        "retry_policy": {"$ref": "#/$defs/stage2_retry_policy"},
+        "blueprint_strategy_version": {"const": "unpartitioned-batch-v1"}
+      }
+    },
+    "stage3_draft_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["budget_unit", "max_response_bytes", "max_json_depth", "max_stories", "max_beats_per_story", "max_total_beats", "max_requirements_per_beat", "max_total_requirements", "max_alternatives_per_requirement", "max_total_alternatives", "max_references_per_field", "max_total_references", "max_ordering_constraints_per_story", "max_total_ordering_constraints", "max_text_characters", "max_total_text_characters"],
+      "properties": {
+        "budget_unit": {"const": "bytes"},
+        "max_response_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "max_json_depth": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_stories": {"type": "integer", "minimum": 1, "maximum": 128},
+        "max_beats_per_story": {"type": "integer", "minimum": 1, "maximum": 128},
+        "max_total_beats": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "max_requirements_per_beat": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_total_requirements": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "max_alternatives_per_requirement": {"type": "integer", "minimum": 1, "maximum": 128},
+        "max_total_alternatives": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "max_references_per_field": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "max_total_references": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "max_ordering_constraints_per_story": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "max_total_ordering_constraints": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "max_text_characters": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "max_total_text_characters": {"type": "integer", "minimum": 1, "maximum": 4194304}
+      }
+    },
+    "stage3_context_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy", "budget_unit", "max_story_context_bytes", "max_batch_context_bytes", "max_source_members"],
+      "properties": {
+        "strategy": {"const": "unpartitioned-batch-v1"}, "budget_unit": {"const": "bytes"},
+        "max_story_context_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "max_batch_context_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "max_source_members": {"type": "integer", "minimum": 1, "maximum": 8192}
+      }
+    },
+    "stage3_feasibility_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy_version", "max_search_states"],
+      "properties": {
+        "strategy_version": {"const": "editorial-material-feasibility-v1"},
+        "max_search_states": {"type": "integer", "minimum": 1, "maximum": 1000000}
+      }
+    },
     "stage2_command_policy": {
       "type": "object", "additionalProperties": false,
       "required": ["artifact_revision", "generation", "max_prompt_bytes", "draft_policy", "candidate_policy", "job_policy", "story_policy", "retry_policy"],

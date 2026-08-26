@@ -77,11 +77,11 @@ def _change_resource(wire, change):
     return wire
 
 
-def test_v3_has_exact_frozen_policy_and_no_change_to_v2_dependencies():
+def test_current_source_has_exact_frozen_stage2_policy_and_unchanged_v2_dependencies():
     narrative, shadow, source = _profiles()
     assert narrative["schema_version"] == "autocut-stage1-narrative-profile-v2"
     assert shadow["schema_version"] == "autocut-shadow-calibration-profile-v2"
-    assert source["schema_version"] == "autocut-local-run-profile-v3"
+    assert source["schema_version"] == "autocut-local-run-profile-v4"
     assert source["profile_state"] == "local_run_v1"
     _validator().validate(source)
     decoded = _decode_source(source)
@@ -306,10 +306,12 @@ def test_new_version_reuses_identical_fake_accepted_calibration_without_measurem
     assert after.current_registry_sha256 != before.current_registry_sha256
 
 
-def test_real_store_anchor_guard_requires_new_profile_key_with_scripted_io(monkeypatch):
+@pytest.mark.parametrize("policy_field", ["stage2_command_policy", "stage3_command_policy"])
+def test_real_store_anchor_guard_requires_new_profile_key_with_scripted_io(monkeypatch, policy_field):
     resource = _decode(_resource_mapping())
     changed = _change_resource(_resource_mapping(), lambda source: (
-        source["stage2_command_policy"].update(max_prompt_bytes=12345), _rehash(source)))
+        source[policy_field].update(max_prompt_bytes=12345),
+        source.update({policy_field + "_sha256": canonical_json_hash(source[policy_field])})))
     job_id, slot_id = UUID(int=1), UUID(int=2)
     for new_version in (False, True):
         if new_version:
