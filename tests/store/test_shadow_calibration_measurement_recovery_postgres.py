@@ -184,6 +184,28 @@ def test_normal_plan_stage_and_atomic_two_member_finalization() -> None:
     with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT member_count FROM runtime.artifact_sets WHERE artifact_set_id = %s", (outcome.artifact_set_id,))
         assert cursor.fetchone() == (2,)
+        cursor.execute(
+            """
+            SELECT artifact.artifact_type, artifact.payload_json
+              FROM runtime.artifact_set_members AS member
+              JOIN runtime.artifacts AS artifact ON artifact.artifact_id = member.artifact_id
+             WHERE member.artifact_set_id = %s
+             ORDER BY member.ordinal
+            """,
+            (outcome.artifact_set_id,),
+        )
+        persisted = cursor.fetchall()
+        assert [row[0] for row in persisted] == [
+            "calibration_measurement_manifest",
+            "calibration_measurement_results",
+        ]
+        manifest = persisted[0][1]
+        assert manifest["schema_version"] == "shadow-calibration-measurement-manifest-v3"
+        for expected, item in zip(plan.members, manifest["native_invocations"], strict=True):
+            assert item["corpus_member_reference_sha256"] == expected.corpus_member_reference_sha256
+            assert item["expected_anchor_reference_sha256"] == expected.expected_anchor_reference_sha256
+            assert item["native_invocation"] == json.loads(expected.invocation_json)
+            assert item["raw_context"] == json.loads(expected.context_json)
 
 
 def test_staged_recovery_never_requires_a_second_native_call() -> None:

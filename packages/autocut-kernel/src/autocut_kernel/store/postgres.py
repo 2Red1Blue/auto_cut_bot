@@ -5689,13 +5689,45 @@ class PostgresRuntimeStore:
         for member, encoded in zip(attempt.members, encoded_members, strict=True):
             if member.raw_blob is None or member.projection_json is None or not isinstance(encoded, dict):
                 raise CommandStateError("shadow finalizer lost staged member evidence")
+            encoded_member = cast(dict[str, object], encoded)
             invocation = _strict_json_object(member.invocation_json, "shadow staged invocation")
+            raw_context = _strict_json_object(member.context_json, "shadow staged raw context")
             projection = _strict_json_object(member.projection_json, "shadow staged projection")
+            if (
+                set(encoded_member)
+                != {
+                    "corpus_member_reference_sha256",
+                    "expected_anchor_reference_sha256",
+                    "native_invocation",
+                    "raw_context",
+                }
+                or encoded_member["corpus_member_reference_sha256"]
+                != member.corpus_member_reference_sha256
+                or encoded_member["expected_anchor_reference_sha256"]
+                != member.expected_anchor_reference_sha256
+                or json.dumps(
+                    encoded_member["native_invocation"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ) != member.invocation_json
+                or json.dumps(
+                    encoded_member["raw_context"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ) != member.context_json
+            ):
+                raise CommandStateError(
+                    "shadow finalizer member context drifts from its immutable plan"
+                )
             blob = _shadow_blob_mapping(member.raw_blob)
             native_invocations.append({
                 "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
+                "expected_anchor_reference_sha256": member.expected_anchor_reference_sha256,
                 "native_invocation": invocation,
                 "native_response_blob": blob,
+                "raw_context": raw_context,
             })
             result_members.append({
                 "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
@@ -5713,7 +5745,7 @@ class PostgresRuntimeStore:
             "native_invocations": native_invocations,
             "native_port_identity_sha256": inputs["native_port_identity_sha256"],
             "registry_snapshot_sha256": inputs["registry_snapshot_sha256"],
-            "schema_version": "shadow-calibration-measurement-manifest-v2",
+            "schema_version": "shadow-calibration-measurement-manifest-v3",
             "shadow_profile_source_sha256": inputs["profile_source_sha256"],
             "vad_merge_policy_sha256": inputs["vad_merge_policy_sha256"],
             "word_gap_policy_sha256": inputs["word_gap_policy_sha256"],

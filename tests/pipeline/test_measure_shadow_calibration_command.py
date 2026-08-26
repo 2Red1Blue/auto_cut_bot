@@ -46,6 +46,8 @@ from autocut_kernel.store import (
     BlobRef,
     CommandClaim,
     CommandOutcome,
+    CommandStateError,
+    PostgresRuntimeStore,
     ShadowMeasurementAttempt,
     ShadowMeasurementMember,
     ShadowMeasurementMemberLease,
@@ -785,3 +787,70 @@ def test_two_member_failure_after_first_stage_never_finalizes_partial_artifact_s
     assert attempt.members[0].state == "staged"
     assert attempt.members[1].state == "pending"
     assert store.finalizations == 0
+
+
+def test_finalized_measurement_manifest_v3_preserves_independent_raw_context() -> None:
+    request, store = _two_member_request(), _Store()
+    MeasureShadowCalibrationCommand(store, _member_port(request)).execute(request)
+    attempt = store.attempts[store.initial_attempt_id]  # type: ignore[index]
+
+    manifest, results = PostgresRuntimeStore(lambda: object())._shadow_measurement_artifacts(
+        attempt
+    )
+    payload = json.loads(manifest.payload_json)
+
+    assert payload["schema_version"] == "shadow-calibration-measurement-manifest-v3"
+    assert len(payload["native_invocations"]) == len(attempt.members)
+    for persisted, member in zip(payload["native_invocations"], attempt.members, strict=True):
+        assert persisted == {
+            "corpus_member_reference_sha256": member.corpus_member_reference_sha256,
+            "expected_anchor_reference_sha256": member.expected_anchor_reference_sha256,
+            "native_invocation": json.loads(member.invocation_json),
+            "native_response_blob": {
+                "byte_length": member.raw_blob.byte_length,  # type: ignore[union-attr]
+                "content_hash": member.raw_blob.content_hash,  # type: ignore[union-attr]
+                "media_type": member.raw_blob.media_type,  # type: ignore[union-attr]
+                "object_id": str(member.raw_blob.object_id),  # type: ignore[union-attr]
+            },
+            "raw_context": json.loads(member.context_json),
+        }
+    assert json.loads(results.payload_json)["measurement_manifest_sha256"] == manifest.content_hash
+
+
+def test_finalized_measurement_manifest_rejects_context_drift_from_immutable_plan() -> None:
+    request, store = _request(), _Store()
+    MeasureShadowCalibrationCommand(store, _Port(_result())).execute(request)
+    attempt = store.attempts[store.initial_attempt_id]  # type: ignore[index]
+    drifted = replace(
+        attempt,
+        members=(replace(attempt.members[0], context_json='{"tampered":true}'),),
+    )
+
+    with pytest.raises(CommandStateError, match="context drifts from its immutable plan"):
+        PostgresRuntimeStore(lambda: object())._shadow_measurement_artifacts(drifted)
+
+
+@pytest.mark.parametrize("field_name", ["context_json", "invocation_json"])
+@pytest.mark.parametrize("replacement", [False, 0.0])
+def test_finalized_manifest_rejects_equal_but_differently_typed_plan_drift(
+    field_name: str, replacement: bool | float
+) -> None:
+    request, store = _request(), _Store()
+    MeasureShadowCalibrationCommand(store, _Port(_result())).execute(request)
+    attempt = store.attempts[store.initial_attempt_id]  # type: ignore[index]
+    member = attempt.members[0]
+    value = json.loads(getattr(member, field_name))
+    clock_owner = value if field_name == "context_json" else value["request_mapping"]
+    assert clock_owner["audio_clock"]["origin_tick"] == 0
+    clock_owner["audio_clock"]["origin_tick"] = replacement
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    drifted_member = (
+        replace(member, context_json=encoded)
+        if field_name == "context_json"
+        else replace(member, invocation_json=encoded)
+    )
+
+    with pytest.raises(CommandStateError, match="context drifts from its immutable plan"):
+        PostgresRuntimeStore(lambda: object())._shadow_measurement_artifacts(
+            replace(attempt, members=(drifted_member,))
+        )
