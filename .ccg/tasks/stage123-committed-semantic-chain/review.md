@@ -1,4 +1,36 @@
-# Latest review: Stage 1 HTTP integration (2026-08-26)
+# Latest review: Stage 2 pure business chain (2026-08-26)
+
+Task 07 remains in progress. Runtime registration, durable Stage 2 generation
+Command/exact output reader, Stage 3 and remote execution are not completed.
+
+Independent review accepted candidate projection/context, acyclic portfolio
+values, four-business-member composition, strict five-member structural decoder,
+closed nineteen-check Admission values and seventeen-rule business evaluation.
+The final material-value delta was independently checked ALLOW before commit.
+
+Findings addressed in this wave:
+
+- Exact Candidate cannot claim different Sources in different assignments.
+- Decoded Source grant/payload hash/window set/proxy/clock/episode and VLM child
+  request identities must close; output scope cannot differ from predecessors.
+- Structurally valid low-confidence/missing-measurement candidates remain
+  diagnosed alternatives, not a whole-Catalog structural failure.
+- Fact witnesses must name a candidate's direct anchor/supporting/payoff Event,
+  not merely the same Card owner or a context-only Event.
+- Material proofs retain full original proposals, required-fact witnesses and
+  taint exclusions. Primary taint counts must not exceed retained tainted refs.
+- A later feasible tuple and rehashed fake unsupported earlier proposal both
+  fail independent canonical/material checks. No compiler result or supplied
+  check map is accepted as evaluation truth.
+
+Evidence: 1995 semantic-chain/architecture pure regression tests passed after
+the final taint-count delta; changed-file Ruff and production BasedPyright are
+clean. Candidate, material, compiler, decoder and evaluator use real algorithms
+over synthetic media/MemoryStore; no DB/provider/whole-Pipeline execution.
+Final delta evidence is recorded in stage2-production-wave.md. Material evidence
+is committed in 261488d5; composition/independent business evaluation in 53cda7bc.
+
+## Earlier review: Stage 1 HTTP integration (2026-08-26)
 
 Decision: ALLOW for this local implementation slice. Task 07 stays in progress.
 
