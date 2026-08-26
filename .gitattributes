@@ -1,2 +1,12 @@
-# Ensure shell scripts always use LF line endings (Docker/Linux compat)
+# Text is canonical LF everywhere, including Windows checkouts.  This keeps
+# Python, JSON, YAML, Docker and shell sources from becoming whole-file CRLF
+# diffs when contributors move between macOS, Linux and Git Bash.
+* text=auto eol=lf
+
+# Windows command interpreters are the explicit exception.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Keep this explicit because these files are mounted into Linux containers.
 *.sh text eol=lf
