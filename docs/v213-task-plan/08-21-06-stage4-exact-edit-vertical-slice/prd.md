@@ -11,10 +11,11 @@ publication permission.
 
 ## Requirements
 
-- Consume only committed root input plus an owner-bound real VLM observation.
-  Until Stage 1--3 is live, a marked editorial fixture may project the exact
-  observation/candidate refs; the production profile rejects caller dicts,
-  paths and unbound float seconds.
+- Consume the actual admitted Stage3 batch, its committed Stage2/Catalog/root
+  predecessors and owner-bound VLM observations. Stage1-3 Commands now exist:
+  the earlier temporary editorial-fixture allowance no longer applies to new
+  production work. The production profile rejects caller dicts, paths, fixture
+  Recipes and unbound float seconds.
 - Endpoints are real FramePtsIndex frame PTS and AudioSampleBoundarySet sample
   ticks joined through a committed presentation-timeline clock-map certificate.
   The certificate maps equal source presentation time with exact rational

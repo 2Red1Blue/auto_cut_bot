@@ -1,5 +1,11 @@
 # Implementation Plan
 
+Current wave: [Committed-media integration](production-integration-wave.md).
+Start with strict existing-wire evidence codecs, then an exact five-member and
+batch reader, actual Stage3/Catalog join, committed piecewise-clock consumption,
+physical Admission and production A/V Recipe/Command. The steps below retain
+the target cut-quality and real-acceptance requirements.
+
 1. Require the committed media-preflight execution profile, real timed
    evidence ArtifactSet and presentation-timeline A/V clock certificate from
    Task 05; reject full-range duration interpolation and unproved identity.

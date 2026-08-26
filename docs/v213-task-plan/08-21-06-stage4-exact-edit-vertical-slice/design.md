@@ -1,5 +1,11 @@
 # Exact Physical A/V Edit Design
 
+Current implementation sequence and file ownership are in
+[Committed-media integration wave](production-integration-wave.md).
+Root/timed evidence codecs and exact readers come before physical admission;
+existing fixture Recipe/Render and root-derived primitive clock maps are not
+production authority.
+
 ```text
 Doubao VLM coarse interval + VLM editing modes
   + SenseVoice word ticks -> deterministic utterance protected ranges

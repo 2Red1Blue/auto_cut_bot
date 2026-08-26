@@ -1,0 +1,13 @@
+{
+  "id": "stage4-committed-media-integration",
+  "title": "Connect admitted Stage3 and committed timed media to production physical editing",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "First deliver strict existing-wire root/candidate/presentation evidence codecs, then exact timed batch reader and actual Stage3/Catalog join. No fixture authority or local real execution.",
+  "branch": "feat/v213-contract-codegen",
+  "trellisTask": ".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice",
+  "createdAt": "2026-08-26"
+}
