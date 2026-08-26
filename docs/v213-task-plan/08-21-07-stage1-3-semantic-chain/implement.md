@@ -1,18 +1,18 @@
 # Implementation
 
-Current business-code delivery: [diagnostics, Ledger and dependency projection](stage1-diagnostics-ledger-wave.md).
-The six-member compiler and full-domain dependency projection are implemented and
-independently reviewed. Proof/Admission, independent KC evaluation and the exact
-eight-member reader/Command remain open. Earlier [narrative projection and coverage
-analysis](stage1-coverage-projection-wave.md) remains useful background.
+Current delivery: [Stage 1 proof, independent admission and durable Command](stage1-proof-admission-wave.md)
+and [Stage 1 HTTP runtime integration](stage1-runtime-wave.md). The exact
+eight-member reader, seventeen-rule admission, finite audited generation/replay,
+v6 execution profile and four-stage runtime registration are implemented.
+Local regression/review is recorded per wave; real DB/model acceptance is still
+remote-only. Task 07 remains in progress, not complete.
 
-Current code wave: [Stage 1 production preparation](stage1-production-wave.md).
-Generic generation persistence and strict draft decoding are delivered before
-the real compiler/Command; the inactive prototype is not production authority.
-
-Next compiler wave: [production model and reference binding](stage1-model-binding.md).
-This closes the precommit identity model without inventing database artifact IDs;
-the actual Graph model, KC evaluators and eight-member Command remain required.
+Next: real Stage 2 candidate/Portfolio and Stage 3 Blueprint Commands, then
+shared Runtime consumers and real one-episode acceptance. Earlier
+[diagnostics/Ledger](stage1-diagnostics-ledger-wave.md),
+[production preparation](stage1-production-wave.md) and
+[model binding](stage1-model-binding.md) are historical implementation evidence,
+not a second unfinished Stage 1 authority.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。

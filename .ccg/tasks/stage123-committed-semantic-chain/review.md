@@ -1,4 +1,29 @@
-# Review checkpoints
+# Latest review: Stage 1 HTTP integration (2026-08-26)
+
+Decision: ALLOW for this local implementation slice. Task 07 stays in progress.
+
+Source v2 and execution profile v6 freeze the complete Stage 1 policy. The thin
+adapter reads actual Source/VLM predecessors and delegates the same durable
+Kernel Command on execute/reconcile. The four-stage plan cannot claim full-run
+success. Historical pre-v6 rows are not silently rewritten.
+
+The cross-release scope is explicit: Stage 1 checks its own installed policy;
+Store verifies prior VLM raw bytes under the original frozen policy. This is not
+an assertion that every old run field matches the currently installed release.
+
+An isolated-wheel regression exposed an execution-facade dependency while
+loading pure configuration. The policy owner moved to semantic_chain, preserving
+request bytes/hashes. No dependency was installed to hide the boundary error.
+Independent review confirmed the move and fixture corrections.
+
+Evidence: 2322 selected pure/regression tests passed; another 2 media pure tests
+passed with 4 PG cases excluded. 63 DB/media cases collected only. Changed-file
+Ruff and production BasedPyright passed. No database migration, real VLM/ASR/VAD,
+service startup or complete Pipeline was executed on this workstation.
+
+See docs/v213-task-plan/08-21-07-stage1-3-semantic-chain/stage1-runtime-wave.md.
+
+## Historical review checkpoints (superseded implementation status)
 
 ## VLM Semantic Pack v3 and Source authorization wave
 

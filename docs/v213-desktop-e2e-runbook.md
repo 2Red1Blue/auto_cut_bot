@@ -99,7 +99,8 @@ uv run pytest tests/store/test_runtime_core_migration.py \
   tests/pipeline/test_funasr_timed_speech.py -q
 ```
 
-预期结果为 `60 passed`。这证明基础契约和组合代码可运行，不代表已经完成真实整集剪辑。
+测试应全部通过，数量随开发增加；不要把旧的固定用例数量当成验收条件。
+这证明基础契约和组合代码可运行，不代表已经完成真实整集剪辑。
 
 ## 4. 启动 FunASR
 
@@ -169,6 +170,9 @@ done
 ```
 
 这段迁移命令只用于全新空库。已有数据库在正式 migration runner 落地前不要重复执行。
+`0019` 要求旧版本的 accepted/running 任务先被明确处理；不会自动修改旧任务的策略、
+补阶段或把它们判成功。`AUTOCUT_TEST_POSTGRES_DSN` 仅用于可丢弃的验收库：对应 pytest
+会重建 schema，**绝不能指向这里保存真实运行数据的 `autocut` 库**。
 
 ## 6. 启动当前 HTTP 服务
 
@@ -187,8 +191,18 @@ uv run auto_cut_bot serve \
   --host 127.0.0.1 --port 8765
 ```
 
-当前 `/v1/pipeline/run` 路由已经存在，但完整的 Authority bootstrap 和真实 Stage 注册
-还没有接完，因此路由返回 `503 Pipeline run service is not configured` 是预期状态。
+当前 `/v1/pipeline/run` 路由及真实阶段注册已经接线。仅启动 UI/API、不配置 Pipeline
+运行环境时，才会返回 `503 Pipeline run service is not configured`。它不是固定占位路由。
+
+启用 Pipeline 还需要完整的 `AUTO_CUT_BOT_PIPELINE_*` 数据库、SourceCatalog、Ark 配置，
+`AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON`、staging 目录、materialization limits，以及
+与实际校准一致的 installed local-run resource。参数检查入口见
+[`composition.py`](../auto_cut_bot/pipeline/runtime/composition.py)。缺项、策略不匹配或
+未安装有效资源必须先解决，不能通过复制测试 fixture 激活。
+
+本次 Stage 1 接线使用 execution profile v6；三份 installed profile source 的 wire
+schema 已升到 v2，并要求完整 Stage 1 模型/提示词/预算策略。旧 source v1 不自动升级。
+详细兼容边界见 [Stage 1 运行接线](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage1-runtime-wave.md)。
 
 ## 7. 当前真实进度
 
@@ -199,19 +213,22 @@ uv run auto_cut_bot serve \
 - SenseVoiceSmall + FSMN-VAD 的 timed evidence 接口；
 - Stage 4 整数 tick、A/V 边界与 ExactSpan 基础；
 - Pipeline HTTP 到共享 Kernel 的边界；
+- Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
+- HTTP 新任务的 `source_prep → vlm → stage1_narrative → media_preflight` 调度；
 - 本地测试和 Podman 部署文件。
 
 尚未闭合：
 
 1. Authority bootstrap 与真实运行 Profile；
-2. Stage 1–3 语义链的完整注册；
+2. Stage 1 的真实模型/数据库验收，以及 Stage 2–3 真实故事与脚本链；
 3. Stage 4 到 Recipe 的真实整集组合；
 4. FFmpeg Render 与本地 Publication QC；
 5. 一个真实剧集的 HTTP 端到端运行；
 6. Agent Runtime 的共享 Kernel conformance。
 
-所以现在可以启动基础设施、服务和测试，但还不能用一条 HTTP 请求跑完整部剧。下一项
-实现应从“Authority bootstrap → 单集真实 Pipeline → 本地成片”继续，外部发布保持关闭。
+所以现在可以启动基础设施、配置好的服务和测试，但还不能用一条 HTTP 请求跑完整部剧。
+即使当前四个阶段全部成功，整个 run 也不会冒充完整成片成功。下一项代码工作是 Stage
+2–3；台式机并行准备真实校准/Profile 和单集验真。外部发布保持关闭。
 
 ## 8. 常用停止与更新命令
 

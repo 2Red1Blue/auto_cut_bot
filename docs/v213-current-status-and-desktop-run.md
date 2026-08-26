@@ -30,6 +30,11 @@ Authority、Profile 或 CalibrationRecord。
   针对性契约测试。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
+- Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
+  committed reader 已实现。HTTP 新任务按 `source_prep → vlm → stage1_narrative →
+  media_preflight` 调度；Stage 2–3 尚未接通，四阶段通过不代表完整 run 成功。
+- execution profile v6 冻结完整 Stage 1 提示词与策略；三份 profile source 使用 v2
+  wire schema。旧 source 不能直接使用，需要按实际策略重新生成资源；不得安装测试 fixture。
 
 上述描述表示“已实现并经过单元/契约测试”，不表示“已经成功跑完一部真实剧”。
 
@@ -42,8 +47,8 @@ Authority、Profile 或 CalibrationRecord。
 2. **CalibrationRecord 与运行 Profile**：用真实 SenseVoice/FSMN 输出完成 shadow
    calibration，独立验证非零误差界，再生成受保护的 local-run Profile。没有该
    Profile，服务应拒绝普通 Media Preflight，这是预期行为。
-3. **Stage 1–3 语义链**：把 committed VLM evidence 接入 Narrative Graph、Story
-   Proposal 和 Blueprint 的已提交命令链。
+3. **Stage 1–3 语义链**：Stage 1 的本地实现已交付，仍需真实模型/数据库验收；下一项
+   开发是 Stage 2 Story Portfolio 与 Stage 3 Blueprint 的已提交命令链。
 4. **真实一集 Stage 4**：以 admitted Blueprint 与完整 ASR/VAD MediaEvidence 编译
    ExactSpan/Recipe；只输出本地 Artifact/Receipt，不发布。
 5. **本地 Render 与 Publication QC**：由已提交 Recipe 渲染，完成结构、媒体、编辑
@@ -102,8 +107,9 @@ fail-closed，不是 Podman 故障。
 
 ### 5. 启动 PostgreSQL 与执行真实一集
 
-PostgreSQL 的迁移、Authority bootstrap、shadow calibration 和“单集 HTTP Pipeline”
-还没有被封装为一个台式机一键脚本。下一项实现任务就是提供该受控启动器。它必须：
+PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP Pipeline”
+尚没有一键入口。HTTP composition 和 worker 已存在，但仅安装代码不等于已经具备有效
+校准/Profile。台式机按以下顺序准备，具体命令见快速启动手册：
 
 1. 连接新的真实 PostgreSQL 数据库，绝不复用/清空旧库；
 2. 应用 Kernel migrations；
@@ -112,10 +118,16 @@ PostgreSQL 的迁移、Authority bootstrap、shadow calibration 和“单集 HTT
 5. 仅在上述步骤成功后接受一个本地 HTTP Pipeline run；
 6. 默认不配置任何外部发布端点。
 
-在该启动器落地前，可以启动 nanobot gateway/UI，但它不等于“整剧 Pipeline 已运行”。
+`0019` 迁移保留旧终态记录，只允许 v6 新任务；旧未结束任务须先明确处理，不得自动
+改写。只在空库按顺序运行全部迁移。数据库 pytest 使用独立、可丢弃的验收库，不得
+把 `AUTOCUT_TEST_POSTGRES_DSN` 指向保存真实运行数据的库。
+
+只有 nanobot gateway/UI 启动，不等于“整剧 Pipeline 已运行”。当前 whole-runtime
+启动仍要求校准资源，尽管 Stage 1 本身不读取 ASR/VAD。
 
 ## 当前最短下一步
 
-在台式机先验证 Podman/FunASR 真模型能启动、记录资源峰值；随后实现并运行“PostgreSQL
-bootstrap → shadow calibration → 单集 HTTP Pipeline”的受控启动器。通过一个真实剧集的
-完整 Receipt/ArtifactSet 后，才扩展到全剧和 Render/QC。
+代码侧继续 Stage 2–3，不再把已完成的 Stage 1 Command 当作待设计任务。
+台式机侧准备真实模型、校准、source v2 与 reviewed Stage 1 提示词/预算，运行单集并
+检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。
+之后接 Stage 4/Render/QC，再扩到全剧。当前目标仍只产出本地文件。
