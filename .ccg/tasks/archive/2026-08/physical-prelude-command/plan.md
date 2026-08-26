@@ -44,7 +44,7 @@ committed frame/audio detector hashes and source provenance. Physical policy
 canonical JSON must hash to the frozen physical_policy_sha256. Physical root
 must exactly match resolved root id/input hash/source/manifest/frame/audio.
 
-## Kernel ownership — Claude worker B
+## Kernel ownership — native `calibration_contract`
 
 Only new `physical_media_contract.py`,
 `prepare_physical_media_evidence_command.py`, `committed_physical_media.py` in
@@ -98,7 +98,7 @@ ambiguous commit observed committed vs still-running without re-invocation;
 unknown/failed same-key no redispatch. Pure fake Store only on Mac; actual
 PostgreSQL race/restart acceptance remains desktop work.
 
-## Producer ownership — Claude worker A
+## Producer ownership — native `calibration_migration`
 
 Only `auto_cut_bot/pipeline/media_preflight/port.py`, new
 `physical_models.py`, new `physical_adapter.py`, and
@@ -144,6 +144,10 @@ Root also narrows the existing resolver's parameter annotation to the public
 the physical Store must not implement a fake speech-registry API to type-check.
 Root owns `tests/pipeline/test_physical_preflight_compatibility.py`, a golden
 synthetic whole-source hash captured before the port refactor at f2c59f35.
+Root also owns `tests/pipeline/test_physical_preflight_command_integration.py`:
+the actual adapter, Command and bounded reader run together over synthetic
+Store/physical facts; foreign calibration rejects before Blob writes and
+same-key replay never invokes the physical port again.
 
 ## Validation and remaining scope
 

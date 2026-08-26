@@ -67,6 +67,11 @@ from .models import (
     ToolInvocationTrace,
     ToolTrace,
 )
+from .physical_models import (
+    PhysicalMediaPolicy,
+    PhysicalMediaRequest,
+    PhysicalMediaResult,
+)
 from .process import BoundedSubprocessRunner, CommandOutput, CommandRunner
 from .speech_port import (
     TimedSpeechEvidence,
@@ -82,6 +87,12 @@ _SHOWINFO = re.compile(
 )
 _TERMINAL_PUNCTUATION = re.compile(r"[.!?。！？…][\]\[)'\"”’】》」』）]*\s*\Z")
 _HASH_BLOCK_SIZE = 1024 * 1024
+
+# Physical helpers accept either the old whole-source request/policy or the
+# speech-free physical prelude request/policy; both expose the same physical
+# fields the detectors read.
+_PhysicalRequest = LocalMediaPreflightRequest | PhysicalMediaRequest
+_PhysicalPolicy = LocalMediaPreflightPolicy | PhysicalMediaPolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +111,18 @@ class _SampleAnalysis:
     confidences: tuple[int, ...]
     change_ppm: tuple[int, ...]
     subtitle_presence: tuple[bool, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProducedPhysical:
+    """The shared physical block's unchanged outputs shared by both paths."""
+
+    initial_hash: str
+    traces: tuple[ToolInvocationTrace, ...]
+    shot_boundaries: ShotBoundarySet
+    scene_boundaries: SceneBoundarySet
+    visual_validity: VisualValiditySet
+    subtitle_cues: SubtitleCueSet
 
 
 def _sha_bytes(value: bytes) -> str:
@@ -228,9 +251,16 @@ class LocalMediaPreflightPort:
     ) -> None:
         self._ffprobe = self._resolve_executable(ffprobe_executable, "ffprobe")
         self._ffmpeg = self._resolve_executable(ffmpeg_executable, "ffmpeg")
-        self._speech_port = speech_port or FunASRHttpTimedSpeechEvidencePort()
+        # The speech client is constructed lazily on the whole-source speech
+        # path only, so physical-only execution needs no speech configuration.
+        self._speech_port = speech_port
         self._whisper: Path  # legacy parser methods are unreachable compatibility code
         self._runner = runner or BoundedSubprocessRunner()
+
+    def _speech_client(self) -> TimedSpeechEvidencePort:
+        if self._speech_port is None:
+            self._speech_port = FunASRHttpTimedSpeechEvidencePort()
+        return cast(TimedSpeechEvidencePort, self._speech_port)
 
     @staticmethod
     def _resolve_executable(value: str | None, name: str) -> Path:
@@ -245,15 +275,20 @@ class LocalMediaPreflightPort:
             raise LocalMediaToolError(f"required {name} executable is not a file")
         return path
 
-    def prepare(
+    def _produce_physical(
         self,
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
         *,
         kernel_max_source_bytes: int,
         service_max_request_bytes: int,
-    ) -> LocalMediaPreflightResult:
-        """Build all root evidence conjunctively from one immutable MP4 materialization."""
+    ) -> _ProducedPhysical:
+        """Shared bounded physical extraction: source/-verify, probe, analysis.
 
+        Runs every physical detector from one verified materialization and
+        returns the six sets plus the initial verified hash and tool trace. It
+        never touches speech; the whole-source ``prepare`` appends ASR/VAD and
+        ``prepare_physical`` stops here.
+        """
         for value, name in (
             (kernel_max_source_bytes, "kernel_max_source_bytes"),
             (service_max_request_bytes, "service_max_request_bytes"),
@@ -263,11 +298,12 @@ class LocalMediaPreflightPort:
         effective_max_source_bytes = min(kernel_max_source_bytes, service_max_request_bytes)
 
         try:
-            source_is_symlink = request.source_path.is_symlink()
-            path = request.source_path.resolve(strict=True)
+            source_path = Path(request.source_path)
+            source_is_symlink = source_path.is_symlink()
+            path = source_path.resolve(strict=True)
         except OSError as error:
             raise LocalMediaSourceError("source_path materialization is unavailable") from error
-        if path != request.source_path or source_is_symlink or not path.is_file():
+        if str(path) != str(source_path) or source_is_symlink or not path.is_file():
             raise LocalMediaSourceError("source_path must be a direct regular-file materialization")
         initial_hash, initial_size = _sha_file(path)
         if initial_size > effective_max_source_bytes:
@@ -331,6 +367,27 @@ class LocalMediaPreflightPort:
         shot_boundaries, scene_boundaries = self._boundary_sets(samples, request)
         visual_validity = self._visual_set(samples, request)
 
+        embedded_cues = self._physical_subtitle_cues(streams, request, path, versions, traces)
+        subtitle_cues = self._subtitle_set(samples, embedded_cues, bool(streams and any(
+            item.codec_type == "subtitle" for item in streams
+        )), request)
+        return _ProducedPhysical(
+            initial_hash,
+            tuple(traces),
+            shot_boundaries,
+            scene_boundaries,
+            visual_validity,
+            subtitle_cues,
+        )
+
+    def _physical_subtitle_cues(
+        self,
+        streams: tuple[_Stream, ...],
+        request: _PhysicalRequest,
+        path: Path,
+        versions: dict[Path, str],
+        traces: list[ToolInvocationTrace],
+    ) -> tuple[SubtitleCue, ...]:
         embedded_cues: tuple[SubtitleCue, ...] = ()
         subtitle_streams = tuple(item for item in streams if item.codec_type == "subtitle")
         if subtitle_streams:
@@ -361,14 +418,80 @@ class LocalMediaPreflightPort:
                 subtitle_streams,
                 request,
             )
-        subtitle_cues = self._subtitle_set(samples, embedded_cues, bool(subtitle_streams), request)
+        return embedded_cues
+
+    def prepare_physical(
+        self,
+        request: PhysicalMediaRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
+    ) -> PhysicalMediaResult:
+        """Run the physical detectors only; no ASR/VAD and no speech config.
+
+        The speech client is never constructed. The six physical sets and
+        their identities/bindings are produced from one verified materialization.
+        """
+        if type(request) is not PhysicalMediaRequest:  # noqa: E721
+            raise LocalMediaPolicyError("prepare_physical requires an exact physical request")
+        produced = self._produce_physical(
+            request,
+            kernel_max_source_bytes=kernel_max_source_bytes,
+            service_max_request_bytes=service_max_request_bytes,
+        )
+        final_hash, _ = _sha_file(Path(request.source_path))
+        if final_hash != produced.initial_hash:
+            raise LocalMediaSourceError("materialized source changed during evidence production")
+        identities = tuple(
+            self._physical_identity(kind, request)
+            for kind in (
+                "frame",
+                "audio",
+                "shot",
+                "scene",
+                "visual",
+                "subtitle",
+            )
+        )
+        bindings = tuple(self._calibration_binding(item, request) for item in identities)
+        return PhysicalMediaResult(
+            request.frame_pts_index,
+            produced.shot_boundaries,
+            produced.scene_boundaries,
+            request.audio_sample_boundaries,
+            produced.visual_validity,
+            produced.subtitle_cues,
+            ToolTrace(produced.traces),
+            identities,
+            bindings,
+            request.source_provenance_sha256,
+        )
+
+    def prepare(
+        self,
+        request: LocalMediaPreflightRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
+    ) -> LocalMediaPreflightResult:
+        """Build all root evidence conjunctively from one immutable MP4 materialization."""
+
+        if type(request) is not LocalMediaPreflightRequest:  # noqa: E721
+            raise LocalMediaPolicyError("prepare requires an exact whole-source request")
+        produced = self._produce_physical(
+            request,
+            kernel_max_source_bytes=kernel_max_source_bytes,
+            service_max_request_bytes=service_max_request_bytes,
+        )
+        path = Path(request.source_path)
+        speech_traces: tuple[ToolInvocationTrace, ...] = ()
 
         if request.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
             timed: TimedSpeechEvidence | None = None
             transcript = self._not_applicable_transcript(request)
             speech_activity = self._not_applicable_speech(request)
         else:
-            timed = self._speech_port.produce(
+            timed = self._speech_client().produce(
                 self._speech_request(
                     path,
                     request,
@@ -377,11 +500,11 @@ class LocalMediaPreflightPort:
                 )
             )
             self._validate_timed_speech_evidence(timed, request)
-            traces.extend(self._timed_speech_traces(timed))
+            speech_traces = self._timed_speech_traces(timed)
             transcript, speech_activity = timed.transcript, timed.speech_activity
 
         final_hash, _ = _sha_file(path)
-        if final_hash != initial_hash:
+        if final_hash != produced.initial_hash:
             raise LocalMediaSourceError("materialized source changed during evidence production")
         bundle = RootMediaEvidenceBundle(
             root_media_evidence_bundle_id=f"{request.episode_id}:root-media-evidence",
@@ -390,13 +513,13 @@ class LocalMediaPreflightPort:
             source_manifest_sha256=request.source_manifest_sha256,
             root_input_manifest_sha256=request.root_input_manifest_sha256,
             frame_pts_index=request.frame_pts_index,
-            shot_boundaries=shot_boundaries,
-            scene_boundaries=scene_boundaries,
+            shot_boundaries=produced.shot_boundaries,
+            scene_boundaries=produced.scene_boundaries,
             audio_sample_boundaries=request.audio_sample_boundaries,
             transcript=transcript,
             speech_activity=speech_activity,
-            visual_validity=visual_validity,
-            subtitle_cues=subtitle_cues,
+            visual_validity=produced.visual_validity,
+            subtitle_cues=produced.subtitle_cues,
         )
         identities = tuple(
             self._producer_identity(kind, request, timed)
@@ -414,7 +537,7 @@ class LocalMediaPreflightPort:
         bindings = tuple(self._calibration_binding(item, request) for item in identities)
         return LocalMediaPreflightResult(
             bundle,
-            ToolTrace(tuple(traces)),
+            ToolTrace(tuple((*produced.traces, *speech_traces))),
             identities,
             bindings,
             request.source_provenance_sha256,
@@ -434,7 +557,7 @@ class LocalMediaPreflightPort:
 
     def _detector_identity_sha256s(
         self,
-        policy: LocalMediaPreflightPolicy,
+        policy: _PhysicalPolicy,
         *,
         versions: dict[Path, str],
     ) -> dict[ProducerKind, str]:
@@ -475,7 +598,7 @@ class LocalMediaPreflightPort:
 
     @staticmethod
     def _validate_detector_identities(
-        policy: LocalMediaPreflightPolicy,
+        policy: _PhysicalPolicy,
         measured: dict[ProducerKind, str],
     ) -> None:
         for kind, detector_sha256 in measured.items():
@@ -485,7 +608,7 @@ class LocalMediaPreflightPort:
                 )
 
     @staticmethod
-    def _validate_physical_calibrations(request: LocalMediaPreflightRequest) -> None:
+    def _validate_physical_calibrations(request: _PhysicalRequest) -> None:
         physical: tuple[tuple[ProducerKind, EvidenceContext], ...] = (
             ("frame", request.frame_pts_index.context),
             ("audio", request.audio_sample_boundaries.context),
@@ -500,7 +623,7 @@ class LocalMediaPreflightPort:
                     f"{kind} calibration does not bind the committed physical producer policy"
                 )
 
-    def _version(self, executable: Path, policy: LocalMediaPreflightPolicy) -> str:
+    def _version(self, executable: Path, policy: _PhysicalPolicy) -> str:
         flag = "-version"
         argv = [str(executable)]
         if executable == self._ffmpeg:
@@ -524,7 +647,7 @@ class LocalMediaPreflightPort:
         producer_kind: str,
         executable: Path,
         argv: list[str],
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
         versions: dict[Path, str],
         *,
         timeout: int,
@@ -570,11 +693,11 @@ class LocalMediaPreflightPort:
         return output, trace
 
     @staticmethod
-    def _analysis_stdout_limit(policy: LocalMediaPreflightPolicy) -> int:
+    def _analysis_stdout_limit(policy: _PhysicalPolicy) -> int:
         required = policy.analysis_width * policy.analysis_height * policy.max_analysis_frames
         return min(required, policy.max_stdout_bytes)
 
-    def _analysis_argv(self, path: Path, policy: LocalMediaPreflightPolicy) -> list[str]:
+    def _analysis_argv(self, path: Path, policy: _PhysicalPolicy) -> list[str]:
         return [
             str(self._ffmpeg),
             "-nostdin",
@@ -622,7 +745,7 @@ class LocalMediaPreflightPort:
 
     @staticmethod
     def _validate_probe(
-        payload: dict[str, Any], request: LocalMediaPreflightRequest
+        payload: dict[str, Any], request: _PhysicalRequest
     ) -> tuple[_Stream, ...]:
         format_object = payload.get("format")
         if not isinstance(format_object, dict):
@@ -687,7 +810,7 @@ class LocalMediaPreflightPort:
     def _analyze_samples(
         raw: bytes,
         stderr: bytes,
-        policy: LocalMediaPreflightPolicy,
+        policy: _PhysicalPolicy,
         context: EvidenceContext,
     ) -> _SampleAnalysis:
         frame_size = policy.analysis_width * policy.analysis_height
@@ -813,7 +936,7 @@ class LocalMediaPreflightPort:
     def _boundary_sets(
         self,
         samples: _SampleAnalysis,
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
     ) -> tuple[ShotBoundarySet, SceneBoundarySet]:
         points_by_kind: dict[ProducerKind, list[VideoBoundaryPoint]] = {
             "shot": [],
@@ -887,7 +1010,7 @@ class LocalMediaPreflightPort:
     @staticmethod
     def _visual_set(
         samples: _SampleAnalysis,
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
     ) -> VisualValiditySet:
         context = replace(
             request.frame_pts_index.context,
@@ -967,7 +1090,7 @@ class LocalMediaPreflightPort:
     def _embedded_cues(
         payload: dict[str, Any],
         streams: tuple[_Stream, ...],
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
     ) -> tuple[SubtitleCue, ...]:
         by_index = {item.index: item for item in streams}
         video_context = request.frame_pts_index.context
@@ -1019,7 +1142,7 @@ class LocalMediaPreflightPort:
         samples: _SampleAnalysis,
         embedded: tuple[SubtitleCue, ...],
         has_embedded_stream: bool,
-        request: LocalMediaPreflightRequest,
+        request: _PhysicalRequest,
     ) -> SubtitleCueSet:
         context = replace(
             request.frame_pts_index.context,
@@ -1560,6 +1683,29 @@ class LocalMediaPreflightPort:
         )
 
     @staticmethod
+    def _physical_identity(
+        kind: Literal["frame", "audio", "shot", "scene", "visual", "subtitle"],
+        request: _PhysicalRequest,
+    ) -> ProducerIdentity:
+        calibration = request.policy.calibration(kind)
+        time_base = (
+            request.audio_sample_boundaries.context.time_base
+            if kind == "audio"
+            else request.frame_pts_index.context.time_base
+        )
+        return ProducerIdentity(
+            kind,
+            calibration.producer_id,
+            calibration.producer_version,
+            request.policy.producer_policy_sha256(kind),
+            calibration.detector_sha256,
+            calibration.calibration_policy_sha256,
+            calibration.calibration_record_sha256,
+            _microseconds_tick(calibration.timing_error_bound_microseconds, time_base),
+            None,
+        )
+
+    @staticmethod
     def _producer_identity(
         kind: ProducerKind,
         request: LocalMediaPreflightRequest,
@@ -1603,7 +1749,7 @@ class LocalMediaPreflightPort:
 
     @staticmethod
     def _calibration_binding(
-        identity: ProducerIdentity, request: LocalMediaPreflightRequest
+        identity: ProducerIdentity, request: _PhysicalRequest
     ) -> CalibrationBinding:
         time_base = (
             request.audio_sample_boundaries.context.time_base

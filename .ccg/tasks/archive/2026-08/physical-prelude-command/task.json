@@ -1,0 +1,12 @@
+{
+  "id": "physical-prelude-command",
+  "title": "Persist physical prelude independently of local speech",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Physical prelude accepted after native cross-review and 909 pure checks; continue audio facts, local speech Commands/calibration and desktop Runtime separately.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}
