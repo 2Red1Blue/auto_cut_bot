@@ -1,5 +1,9 @@
 # Implementation
 
+Current business-code delivery: [narrative projection and coverage analysis](stage1-coverage-projection-wave.md).
+The Graph models and direct coverage analysis are implemented; full diagnostics,
+Ledger/proof/independent KC evaluation and the eight-member Command remain open.
+
 Current code wave: [Stage 1 production preparation](stage1-production-wave.md).
 Generic generation persistence and strict draft decoding are delivered before
 the real compiler/Command; the inactive prototype is not production authority.

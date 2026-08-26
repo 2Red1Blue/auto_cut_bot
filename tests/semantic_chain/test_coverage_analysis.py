@@ -95,6 +95,20 @@ def test_unassigned_is_not_water_content_or_graph_presence_support():
     assert all("unassigned" in row.reason_codes for row in second)
 
 
+def test_all_units_assigned_does_not_ground_an_unreferenced_window_summary():
+    inputs = _clean_inputs()
+    inputs = _replace_pack(inputs, 0, lambda pack: replace(
+        pack, window_summary=replace(pack.window_summary, fact_refs=(), event_refs=()),
+    ))
+    result = _analyze(inputs)
+    first_window = inputs.inputs[0].source_window.window_manifest_sha256
+    unit_rows = [row for row in result.rows if row.window_manifest_sha256 == first_window and row.unit_type != "source_window"]
+    assert all(row.resolution_status == "resolved" and row.disposition == "narrative" for row in unit_rows)
+    window = next(row for row in result.rows if row.unit_type == "source_window" and row.unit_id == first_window)
+    assert window.resolution_status == "unresolved"
+    assert "summary_evidence_missing" in window.reason_codes
+
+
 def test_eventless_window_retains_fact_without_fabricating_event():
     inputs = _clean_inputs()
     payload = _draft(inputs)

@@ -176,3 +176,8 @@ Doubao/SenseVoiceSmall/FSMN/whole-pipeline acceptance remain remote desktop work
 The next delivery remains the actual eight output wire models/compiler,
 independent KC evaluators and generation Command, followed by Stage 2/3 and
 downstream Runtime integration. Do not register this algorithm as BuildNarrativeGraph.
+
+Subsequent checkpoint: Graph/Card/Digest values and direct coverage/continuity
+analysis are now implemented. See [the current code-wave record](stage1-coverage-projection-wave.md)
+for projection review, test evidence and the remaining Ledger/proof/Admission
+and Command work. The first two primitives above are still not a Stage admission.

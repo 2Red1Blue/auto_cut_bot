@@ -245,6 +245,11 @@ def analyze_observation_coverage(
         for row in contents:
             window_reasons.update(row.reason_codes)
             window_causes.update(row.cause_ids)
+        # A window reference records where a summary was observed, not why its
+        # claims are supported. Even if every Fact is assigned by the draft,
+        # an ungrounded summary remains an explicit missing-evidence condition.
+        if not pack.window_summary.fact_refs and not pack.window_summary.event_refs:
+            window_reasons.add("summary_evidence_missing")
         # Entities that occur in neither a Fact nor an Event still cannot hide
         # unresolved identity or low-confidence evidence from window coverage.
         for entity in pack.entities:
