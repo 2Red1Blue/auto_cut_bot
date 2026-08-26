@@ -151,3 +151,28 @@ must be explicit and input-bound. No ASR/VAD/physical endpoint enters Stage 1–
 
 This workstation runs code checks only. Database upgrade/restart/replay and real
 Doubao/SenseVoiceSmall/FSMN/whole-pipeline acceptance remain remote desktop work.
+
+## 6. Implementation checkpoint
+
+- member_refs.py and its 118 unit cases are implemented and independently
+  reviewed (ALLOW), committed as bf88fb16.
+- dependency_graph.py implements iterative SCC/condensation/seed reachability,
+  not the Graph-to-arcs projector or completeness evaluator. Independent review
+  is ALLOW. Its eight unit tests include a 1,200-node chain, an independent BFS
+  oracle and all 512 three-node directed graphs: every root, SCC partition,
+  SCC identity and condensation arcs.
+- Combined selected semantic/VLM/Store/media/HTTP/runtime/architecture checks:
+  554 passed, 6 skipped after the exhaustive oracle was added and independently
+  delta-reviewed (ALLOW). Ruff and production BasedPyright pass. This is not
+  whole-repository or PostgreSQL/model acceptance.
+- Reproduce combined collection with
+  `python -m pytest --import-mode=importlib -o 'pythonpath=packages/autocut-kernel/src tests/pipeline'`
+  followed by the selected test paths. Default prepend-mode collection of HTTP
+  and architecture tests together can resolve tests/tools instead of repository
+  tools.architecture; importlib also requires the existing pipeline fixture path.
+  The two collection failures were test-import failures, not a service startup
+  or database failure. No production import path was altered to hide them.
+
+The next delivery remains the actual eight output wire models/compiler,
+independent KC evaluators and generation Command, followed by Stage 2/3 and
+downstream Runtime integration. Do not register this algorithm as BuildNarrativeGraph.

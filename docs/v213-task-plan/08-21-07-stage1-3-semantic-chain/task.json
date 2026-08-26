@@ -21,6 +21,6 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: execution-kind Store migration and strict Stage1 draft decoding implemented and independently reviewed; combined regression 413 passed/6 skipped plus 15 architecture tests passed. Draft commit 05a0cd2f; see review-stage1-preparation.md. Actual Stage1 compiler/Command not yet delivered. Real DB/model/complete Pipeline acceptance stays on remote desktop.",
+  "notes": "2026-08-26: draft 05a0cd2f, generic generation Store 590aca0f and immutable semantic references bf88fb16 committed/pushed. Dependency SCC/reachability primitive independently reviewed ALLOW with all 512 three-node graph oracle; combined selected regression 554 passed/6 skipped. See stage1-model-binding.md and review-stage1-preparation.md. Actual Stage1 Graph models/compiler/KC evaluators/Command remain in progress; no new HTTP stage enabled. DB/model/full Pipeline execution remains remote-only.",
   "meta": {}
 }
