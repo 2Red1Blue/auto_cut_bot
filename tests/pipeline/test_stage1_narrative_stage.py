@@ -267,6 +267,7 @@ def _context(*, stage1_policy: Stage1CommandPolicy | None = None,
         stage1_policy=policy,
         stage2_policy=base.build_stage2_command_policy() if stage2_policy is None else stage2_policy,
         stage3_policy=base.build_stage3_command_policy(),
+        evidence_read_limits=base.to_evidence_read_limits(),
     )
     return PipelineStageContext(
         RUN_ID,

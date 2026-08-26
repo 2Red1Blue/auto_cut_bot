@@ -196,6 +196,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         execution_profile.build_stage1_command_policy()
         execution_profile.build_stage2_command_policy()
         execution_profile.build_stage3_command_policy()
+        execution_profile.to_evidence_read_limits()
         source_kind = "root" if request.source_root is not None else "reference"
         source_value = request.source_root or request.source_reference
         if source_value is None:
@@ -528,10 +529,11 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v8'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v9'
                               AND profile_run.execution_profile ? 'stage1_command_policy'
                               AND profile_run.execution_profile ? 'stage2_command_policy'
                               AND profile_run.execution_profile ? 'stage3_command_policy'
+                              AND profile_run.execution_profile ? 'evidence_read_limits'
                        )
                    )
                    AND (
@@ -540,7 +542,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v8'
+                                  ->> 'schema_version' = 'pipeline-execution-profile-v9'
                               AND profile_run.execution_profile
                                   ? 'media_preflight_policy'
                               AND profile_run.execution_profile
@@ -553,6 +555,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                                   ? 'stage2_command_policy'
                               AND profile_run.execution_profile
                                   ? 'stage3_command_policy'
+                              AND profile_run.execution_profile
+                                  ? 'evidence_read_limits'
                        )
                    )
                    AND NOT EXISTS (

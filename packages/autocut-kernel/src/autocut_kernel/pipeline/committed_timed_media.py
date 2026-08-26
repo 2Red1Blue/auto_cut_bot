@@ -102,6 +102,14 @@ class PersistedTimedMediaEvidence:
     certificate: CommittedVideoToAudioClockMapCertificate
 
 
+@dataclass(frozen=True, slots=True)
+class TimedMediaEvidenceMetadata:
+    """Exact Store metadata for budget planning, not evidence admission."""
+
+    record: PersistedCommittedArtifactSet
+    blob_refs: tuple[BlobRef, ...]
+
+
 def _object(value: object, fields: tuple[str, ...]) -> dict[str, object]:
     if type(value) is not dict or set(cast(dict[object, object], value)) != set(fields):  # noqa: E721
         raise TimedMediaReadError("committed timed-media object has missing or unknown fields")
@@ -260,17 +268,37 @@ def read_committed_timed_media_evidence(
         raise TimedMediaReadError(f"committed timed-media evidence is invalid: {error}") from error
 
 
-def _read_committed_timed_media_evidence(
+def inspect_committed_timed_media_evidence(
     store: TimedMediaReadStore, request: PrepareTimedMediaEvidenceRequest, outcome: CommandOutcome,
     *, authority_profile_resolver: InstalledLocalRunProfileResolver, limits: TimedMediaReadLimits,
-) -> PersistedTimedMediaEvidence:
+) -> TimedMediaEvidenceMetadata:
+    """Inspect exact committed metadata without materializing evidence blobs.
+
+    Batch consumers first budget every child, then must run the full reader for
+    every child. This result proves neither blob validity nor calibration safety.
+    """
+    try:
+        _, metadata, _ = _inspect_committed_timed_media_evidence(
+            store, request, outcome, authority_profile_resolver=authority_profile_resolver,
+            limits=limits,
+        )
+        return metadata
+    except TimedMediaReadError:
+        raise
+    except ValueError as error:
+        raise TimedMediaReadError(f"committed timed-media metadata is invalid: {error}") from error
+
+
+def _inspect_committed_timed_media_evidence(
+    store: TimedMediaReadStore, request: PrepareTimedMediaEvidenceRequest, outcome: CommandOutcome,
+    *, authority_profile_resolver: InstalledLocalRunProfileResolver, limits: TimedMediaReadLimits,
+) -> tuple[ResolvedPrepareTimedMediaEvidenceRequest, TimedMediaEvidenceMetadata, tuple[object, ...]]:
     if type(authority_profile_resolver) is not InstalledLocalRunProfileResolver:  # noqa: E721
         raise TimedMediaReadError("reader requires the installed accepted-profile resolver")
     if type(limits) is not TimedMediaReadLimits:  # noqa: E721
         raise TimedMediaReadError("reader requires exact explicit limits")
     resolved = resolve_committed_timed_media_request(store, request)
     record = _record(store, resolved, outcome, authority_profile_resolver)
-    profile = authority_profile_resolver.resolve(store)
     payloads = tuple(decode_media_evidence_json(member.payload_json.encode("utf-8"),
                                               max_bytes=limits.max_blob_bytes)
                      for member in record.members)
@@ -304,6 +332,23 @@ def _read_committed_timed_media_evidence(
             or sum(ref.byte_length for ref in refs) > limits.max_total_blob_bytes
             or len({ref.object_id for ref in refs}) != len(refs)):
         raise TimedMediaReadError("evidence BlobRefs exceed byte ceilings or alias each other")
+    return resolved, TimedMediaEvidenceMetadata(record, refs), payloads
+
+
+def _read_committed_timed_media_evidence(
+    store: TimedMediaReadStore, request: PrepareTimedMediaEvidenceRequest, outcome: CommandOutcome,
+    *, authority_profile_resolver: InstalledLocalRunProfileResolver, limits: TimedMediaReadLimits,
+) -> PersistedTimedMediaEvidence:
+    resolved, metadata, payloads = _inspect_committed_timed_media_evidence(
+        store, request, outcome, authority_profile_resolver=authority_profile_resolver,
+        limits=limits,
+    )
+    record, refs = metadata.record, metadata.blob_refs
+    # The shared inspector validated these exact closed object shapes above.
+    root_data = cast(dict[str, object], payloads[0])
+    index = cast(dict[str, object], payloads[1])
+    expected_count = len(request.semantic_pack.candidate_hypotheses)
+    profile = authority_profile_resolver.resolve(store)
     root_value = _read_blob(store, request.job, refs[0], limits)
     policy_value = _read_blob(store, request.job, refs[1], limits)
     provenance_value = _read_blob(store, request.job, refs[2], limits)

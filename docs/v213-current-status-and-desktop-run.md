@@ -29,19 +29,23 @@ Authority、Profile 或 CalibrationRecord。
 - Stage 4 的整数 tick、A/V 端点、边界证据与候选选择的 Kernel 基础已实现并有
   针对性契约测试。
 - Stage 4 的 root/timed/分段时钟证据严格解码已交付 `4955d1a7`，1795 项相关回归
-  通过并完成独立审查。它们还不是数据库整批读取器或生产剪辑准入；后两者正在接入。
+  通过并完成独立审查。严格解码和整批读取已接通，生产剪辑准入仍待下一波。
 - Media Preflight 的真实 Source/VLM 引用绑定、空候选完整校准检查与持久化已修复
   并提交 `fd515321`；相关联合回归 1953 项通过，4 项远端数据库用例未在本机执行。
   缺少新必填引用或校准绑定的旧产物不能自动补全后复用。
 - 单集五成员持久化媒体读取器已实现：重新核对已提交 Source/VLM、真实安装的校准
   绑定、候选计划、独立准入与分段时钟证明；有界读取并核验 Blob，逐次释放文件租约。
-  这是共享 Kernel 读取能力，尚未接入整批 finalizer 或 Stage 4 生产 Command。
+  已接入整批 finalizer：核对真实 Source 集数、每集完整五成员和共享 Job 身份；
+  先检查整批累计字节预算，再逐集重算、释放完整证据，只保留精确引用与摘要。
+  整批公共读取器不 claim/写入，不把 pending/running 当成功；尚未接 Stage 4 生产 Command。
+  本波 2356 项相关纯测试及 8 项整批测试通过，完成独立审查；新增数据库验收用例
+  仅完成收集和静态检查，未在本机运行 PostgreSQL。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
   committed reader 已实现。HTTP 新任务按 `source_prep → vlm → stage1_narrative →
   stage2_portfolio → stage3_blueprint → media_preflight` 调度；六阶段通过仍不代表完整 run 成功。
-- execution profile v8 冻结完整 Stage 1/2/3 提示词与策略；narrative/shadow source 仍是 v2，
+- execution profile v9 冻结完整 Stage 1/2/3 提示词、策略及独立证据读取预算；narrative/shadow source 仍是 v2，
   local-run source 为 v4。全部语义策略必须来自实际安装资源；不得安装测试 fixture。
 - Stage 2 已实现候选投影、素材支持、确定性故事组合、目标冻结，以及持久化生成
   Command、19 项独立校验、五成员原子提交与精确重放。Stage 1/2 共用流式生成、
@@ -136,7 +140,7 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 5. 仅在上述步骤成功后接受一个本地 HTTP Pipeline run；
 6. 默认不配置任何外部发布端点。
 
-`0021` 迁移保留旧终态记录，只允许 v8 新任务；旧未结束任务须先明确处理，不得自动
+`0022` 迁移保留旧终态记录，只允许 v9 新任务；旧未结束任务须先明确处理，不得自动
 改写。只在空库按顺序运行全部迁移。数据库 pytest 使用独立、可丢弃的验收库，不得
 把 `AUTOCUT_TEST_POSTGRES_DSN` 指向保存真实运行数据的库。
 
@@ -145,12 +149,19 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧正在接 Stage 4：单集严格读取之后，补整批完整性与累计读取预算，再接真实 Blueprint/Catalog 和
-分段时钟证明；现有 fixture Recipe/视频-only Render 不能直接当作生产 A/V 成片链。
+代码侧正在接 Stage 4：单集/整批严格读取与累计预算已接通，下一步连接真实
+Blueprint/Catalog，再让编译器原生使用局部语音证据与分段时钟证明；现有 fixture
+Recipe/视频-only Render 不能直接当作生产 A/V 成片链。
 详见 [Stage 4 当前实施波次](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/production-integration-wave.md)。
 台式机侧准备真实模型、校准、narrative/shadow v2、local-run v4 及 reviewed Stage 1/2/3 策略，运行单集并
 检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。
 之后接 Stage 4/Render/QC，再扩到全剧。当前目标仍只产出本地文件。
+
+v9 新增必填 `AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON`，其中
+`max_blob_bytes` 限制单个证据 JSON，`max_total_blob_bytes` 限制完整批次累计大小。
+两者不是视频上传上限，也不是 RSS 承诺；必须明确配置，旧 v8 run 不自动补值。
+保留有效校准即可，不因这次预算字段变更重跑模型校准。读取器新增身份检查也暴露了
+真实 LocalMediaPreflightPort 的 adapter/bound 输出缺口，本次在生产端修正，未放松读取器。
 
 新增语义策略不要求重做有效 ASR/VAD 校准，但已 bootstrap 的旧 local-run key 不能绑定
 新的 registry hash。发布新的 local-run profile_version 和对应 timed-speech entry 版本，

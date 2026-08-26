@@ -153,6 +153,7 @@ def _v2_execution_profile() -> PipelineExecutionProfile:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -174,6 +175,7 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -311,6 +313,7 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
             stage1_policy=profile.build_stage1_command_policy(),
             stage2_policy=profile.build_stage2_command_policy(),
             stage3_policy=stage3_command_policy(),
+            evidence_read_limits=profile.to_evidence_read_limits(),
         )
         == profile
     )
@@ -388,6 +391,7 @@ def test_execution_profile_rejects_media_policy_hash_or_capability_tampering() -
             stage1_policy=profile.build_stage1_command_policy(),
             stage2_policy=profile.build_stage2_command_policy(),
             stage3_policy=stage3_command_policy(),
+            evidence_read_limits=profile.to_evidence_read_limits(),
         )
 
 
@@ -866,7 +870,7 @@ async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(oper
     snapshot = replace(_snapshot(command), execution_profile=_v5_execution_profile())
     store = NoStore()
     execute_stage, reconcile_stage = FakeStage(), FakeReconcileStage()
-    with pytest.raises(PipelineRunValidationError, match="profile v6, v7 or v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v6, v7, v8 or v9"):
         if operation == "execute":
             runner = PipelineStageRunner(
                 PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)), store,

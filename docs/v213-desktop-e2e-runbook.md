@@ -170,7 +170,7 @@ done
 ```
 
 这段迁移命令只用于全新空库。已有数据库在正式 migration runner 落地前不要重复执行。
-最新 `0021` 要求 pre-v8 的 accepted/running 任务先被明确处理；不会自动修改旧任务的策略、
+最新 `0022` 要求 pre-v9 的 accepted/running 任务先被明确处理；不会自动修改旧任务的策略、
 补阶段或把它们判成功。`AUTOCUT_TEST_POSTGRES_DSN` 仅用于可丢弃的验收库：对应 pytest
 会重建 schema，**绝不能指向这里保存真实运行数据的 `autocut` 库**。
 
@@ -195,15 +195,24 @@ uv run auto_cut_bot serve \
 运行环境时，才会返回 `503 Pipeline run service is not configured`。它不是固定占位路由。
 
 启用 Pipeline 还需要完整的 `AUTO_CUT_BOT_PIPELINE_*` 数据库、SourceCatalog、Ark 配置，
-`AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON`、staging 目录、materialization limits，以及
+`AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON`、staging 目录、materialization limits，
+`AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON`，以及
 与实际校准一致的 installed local-run resource。参数检查入口见
 [`composition.py`](../auto_cut_bot/pipeline/runtime/composition.py)。缺项、策略不匹配或
 未安装有效资源必须先解决，不能通过复制测试 fixture 激活。
 
-当前 Stage 3 接线使用 execution profile v8，冻结完整 Stage 1/2/3 模型、提示词、预算和
+当前接线使用 execution profile v9，冻结完整 Stage 1/2/3 模型、提示词、预算和
 故事/蓝图策略。narrative/shadow source 保持 v2；local-run source 为 v4，必填
 `stage2_command_policy`、`stage3_command_policy` 与各自 hash。
 旧 source 不自动补字段，不能用测试 fixture 激活。
+
+新增证据读取配置是封闭 JSON 对象，只有 `max_blob_bytes` 和 `max_total_blob_bytes`
+两个必填正整数字段：前者限制每个证据 JSON，后者限制整批累计量，不能每集重新计数。
+按台式机资源与真实证据大小显式配置，不能照搬视频上传的 GiB 上限。单 Blob 上限不能
+小于 staging 的 `copy_chunk_bytes`，且不能大于累计上限；非法组合在注册服务前拒绝。
+它限制输入字节数，不保证相同大小的进程内存。旧 v8 记录只读，不补预算、不覆盖旧
+Command；创建新的 v9 run。有效 ASR/VAD 校准及 narrative/shadow/local-run source
+版本不因这两个资源字段而改变。
 
 已有有效校准不必重跑：保留原 narrative/shadow 文件和 accepted CalibrationRecord。
 如果台式机已 bootstrap 旧 local-run 版本，新配置必须使用新的 `profile_version`，并
@@ -224,9 +233,10 @@ Media Preflight 从 `fd515321` 起要求完整的已提交 Source/VLM 引用，�
 - Doubao Ark streaming VLM 接口；
 - SenseVoiceSmall + FSMN-VAD 的 timed evidence 接口；
 - Stage 4 整数 tick、A/V 边界与 ExactSpan 基础；
-- Stage 4 三类媒体证据严格解码（`4955d1a7`）；整批持久化读取与物理准入尚未接通；
+- Stage 4 三类媒体证据严格解码（`4955d1a7`）；物理准入尚未接通；
 - Media Preflight 的已提交 Source/VLM 绑定与空候选完整校准检查（`fd515321`）；
-- 单集五成员媒体证据的精确持久化读取与重算；尚未接入整批 finalizer/生产 Stage 4；
+- 单集五成员和整批媒体证据的精确读取与重算，已接入 finalizer；逐集释放完整
+  证据，累计预算超限时不读取 Blob、不提交批次；尚未接入生产 Stage 4；
 - Pipeline HTTP 到共享 Kernel 的边界；
 - Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；
@@ -248,7 +258,7 @@ Media Preflight 从 `fd515321` 起要求完整的已提交 Source/VLM 引用，�
 
 所以现在可以启动基础设施、配置好的服务和测试，但还不能用一条 HTTP 请求跑完整部剧。
 即使当前六个阶段全部成功，整个 run 也不会冒充完整成片成功。下一项代码工作是
-Stage 4 的已提交媒体读取、蓝图/候选连接、生产 A/V Recipe 与 Render/QC；不能复用
+Stage 4 的蓝图/候选连接、生产 A/V Recipe 与 Render/QC；不能复用
 fixture Recipe 作为生产成片。台式机并行准备真实校准/Profile 和单集验真。外部发布保持关闭。
 
 ## 8. 常用停止与更新命令

@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "Exact five-member timed-media reader implemented: 1920 core regressions plus 22 reader tests passed. Next whole-batch reader with v9 explicit cumulative evidence budgets; actual Stage3/Catalog join and production physical Command/Recipe/Render remain open. No fixture authority or local real execution.",
+  "nextAction": "Exact child/batch media readers, v9 independent cumulative budgets and actual adapter/bound producer wiring verified: 2356 core plus 8 batch tests. Next editorial-media-join-wave.md; actual Stage3/Catalog join and production local-evidence/piecewise-clock physical Command/Recipe/Render remain open. No fixture authority or local real execution.",
   "branch": "feat/v213-contract-codegen",
   "trellisTask": ".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice",
   "createdAt": "2026-08-26"

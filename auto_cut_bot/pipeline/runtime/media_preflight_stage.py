@@ -19,15 +19,14 @@ from autocut_kernel.pipeline import (
     ProducedTimedMediaEvidence,
     TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
-    TimedMediaEvidenceStore,
 )
+from autocut_kernel.pipeline.committed_timed_media import TimedMediaReadLimits, TimedMediaReadStore
 from autocut_kernel.pipeline.prepare_timed_media_evidence_command import (
     ResolvedPrepareTimedMediaEvidenceRequest,
 )
 from autocut_kernel.registry import (
     StoreAnchoredTimedSpeechProfileResolver,
 )
-from autocut_kernel.registry.calibration_binding import CalibrationRecordAnchorReader
 from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.store import (
     ArtifactScope,
@@ -40,6 +39,7 @@ from autocut_kernel.store import (
     SemanticInputUnavailableError,
 )
 from autocut_kernel.store.models import (
+    MaterializationLimits,
     VerifiedMaterializedBlob,
     canonical_recipe_scope,
 )
@@ -63,7 +63,12 @@ from auto_cut_bot.pipeline.vlm.policy_binding import (
 )
 
 from .errors import PipelineRunValidationError
-from .models import PipelineStageContext, PipelineStageResult, validate_run_id
+from .models import (
+    PipelineExecutionProfile,
+    PipelineStageContext,
+    PipelineStageResult,
+    validate_run_id,
+)
 from .source_prep_stage import (
     require_committed_source_operation,
     source_prep_kernel_idempotency_key,
@@ -74,8 +79,27 @@ MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequenti
 _ARTIFACT_REVISION = 1
 
 
+def media_evidence_read_limits(profile: PipelineExecutionProfile) -> TimedMediaReadLimits:
+    """Use explicit evidence ceilings and shared host-only staging controls."""
+    budget = profile.to_evidence_read_limits()
+    transfer = profile.to_materialization_limits()
+    if transfer.copy_chunk_bytes > budget.max_blob_bytes:
+        raise PipelineRunValidationError("evidence blob ceiling is smaller than the staging copy chunk")
+    # Evidence never goes to the timed-speech service. Reuse the Store's
+    # bounded lease mechanism with its own byte ceiling, sharing only the
+    # explicitly frozen host copy/quota controls with source staging.
+    return TimedMediaReadLimits(
+        budget.max_blob_bytes, budget.max_total_blob_bytes,
+        profile.to_doubao_policy().parse_policy.max_candidate_hypotheses,
+        MaterializationLimits(
+            budget.max_blob_bytes, budget.max_blob_bytes,
+            transfer.copy_chunk_bytes, transfer.staging_quota_bytes,
+        ),
+    )
+
+
 class MediaPreflightPipelineStore(
-    SourcePrepStore, TimedMediaEvidenceStore, CalibrationRecordAnchorReader, Protocol,
+    SourcePrepStore, TimedMediaReadStore, Protocol,
 ):
     def read_committed_vlm_semantic_pack_set_reference(
         self,
@@ -96,9 +120,11 @@ class _ClaimOwnedLocalProducer:
         self,
         port: LocalMediaPreflightPort,
         policy: LocalMediaPreflightPolicy,
+        timed_speech_adapter_sha256: str,
     ) -> None:
         self._port = port
         self._policy = policy
+        self._timed_speech_adapter_sha256 = timed_speech_adapter_sha256
 
     def prepare(
         self,
@@ -125,6 +151,7 @@ class _ClaimOwnedLocalProducer:
                     frame_detector_sha256=request.frame_detector_sha256,
                     audio_detector_sha256=request.audio_detector_sha256,
                     policy=self._policy,
+                    timed_speech_adapter_sha256=self._timed_speech_adapter_sha256,
                 ),
                 kernel_max_source_bytes=request.materialization_limits.max_source_bytes,
                 service_max_request_bytes=(
@@ -193,18 +220,15 @@ class MediaPreflightPipelineStage:
         self,
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
-        authority_profile_resolver: StoreAnchoredTimedSpeechProfileResolver | InstalledLocalRunProfileResolver,
+        authority_profile_resolver: InstalledLocalRunProfileResolver,
     ) -> None:
         self._store = store
         self._port = port
-        if type(authority_profile_resolver) not in (
-            StoreAnchoredTimedSpeechProfileResolver, InstalledLocalRunProfileResolver,
-        ):
+        if type(authority_profile_resolver) is not InstalledLocalRunProfileResolver:  # noqa: E721
             raise PipelineRunValidationError(
-                "media-preflight requires an explicit authority profile resolver"
+                "media-preflight requires the installed accepted-profile resolver"
             )
         self._authority_profile_resolver = authority_profile_resolver
-        self._finalizer = FinalizeTimedMediaEvidenceBatchCommand(store)
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -223,18 +247,18 @@ class MediaPreflightPipelineStage:
         policy: LocalMediaPreflightPolicy,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
         materialization_limits = context.execution_profile.to_materialization_limits()
+        media_evidence_read_limits(context.execution_profile)
         job = self._job(context)
         resolver = self._authority_profile_resolver
-        if isinstance(resolver, InstalledLocalRunProfileResolver):
-            validate_installed_media_policy(resolver.resource, policy)
-            validate_installed_vlm_policy(
-                resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
-                context.execution_profile.to_generation_retry_policy(),
-            )
-            if materialization_limits.timed_speech_max_request_bytes != (
-                resolver.resource.local_run.native_timed_speech.max_request_bytes
-            ):
-                raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
+        validate_installed_media_policy(resolver.resource, policy)
+        validate_installed_vlm_policy(
+            resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
+            context.execution_profile.to_generation_retry_policy(),
+        )
+        if materialization_limits.timed_speech_max_request_bytes != (
+            resolver.resource.local_run.native_timed_speech.max_request_bytes
+        ):
+            raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
         source_outcome = self._store.read_outcome(
             job,
             source_prep_kernel_idempotency_key(context.run_id),
@@ -252,8 +276,7 @@ class MediaPreflightPipelineStage:
             artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
             artifact_revision=_ARTIFACT_REVISION,
         )
-        if isinstance(resolver, InstalledLocalRunProfileResolver):
-            validate_installed_source_sampling(source_bundle)
+        validate_installed_source_sampling(source_bundle)
         require_committed_source_operation(source_bundle, "render_source")
         require_committed_source_operation(source_bundle, "semantic_analysis")
         vlm_batch_key = vlm_batch_kernel_idempotency_key(
@@ -377,15 +400,16 @@ class MediaPreflightPipelineStage:
         policy: LocalMediaPreflightPolicy,
     ) -> FinalizeTimedMediaEvidenceBatchResult | PrepareTimedMediaEvidenceResult:
         resolver = self._authority_profile_resolver
-        if isinstance(resolver, InstalledLocalRunProfileResolver):
-            # Check the complete installed binding before delegating to the
-            # existing Kernel command's per-request immutable anchor resolver.
-            await asyncio.to_thread(resolver.resolve, self._store)
-            resolver = StoreAnchoredTimedSpeechProfileResolver(resolver.snapshot)
+        # Check accepted installation before claim-owned detector work. The
+        # finalizer independently replays all committed children afterwards.
+        await asyncio.to_thread(resolver.resolve, self._store)
         command = PrepareTimedMediaEvidenceCommand(
             self._store,
-            _ClaimOwnedLocalProducer(self._port, policy),
-            resolver,
+            _ClaimOwnedLocalProducer(
+                self._port, policy,
+                resolver.resource.local_run.native_timed_speech.native_port_identity_sha256,
+            ),
+            StoreAnchoredTimedSpeechProfileResolver(resolver.snapshot),
         )
         children: list[TimedMediaEvidenceBatchChild] = []
         for request in requests:
@@ -405,25 +429,20 @@ class MediaPreflightPipelineStage:
                 raise PipelineRunValidationError(
                     "succeeded media-preflight child lost its ArtifactSet"
                 )
-            children.append(
-                TimedMediaEvidenceBatchChild(
-                    request.episode_index,
-                    request.idempotency_key,
-                    outcome.receipt_id,
-                    outcome.artifact_set_id,
-                )
-            )
+            children.append(TimedMediaEvidenceBatchChild(request, outcome))
         job = Job(context.run_id, context.request.profile)
         finalizer = FinalizeTimedMediaEvidenceBatchRequest(
             job,
             self._batch_idempotency_key(context, source_bundle, policy),
             canonical_recipe_scope(job),
             _ARTIFACT_REVISION,
-            source_bundle.artifact_reference.content_hash,
-            source_bundle.canonical_hash,
             tuple(children),
         )
-        return await asyncio.to_thread(self._finalizer.execute, finalizer)
+        command_batch = FinalizeTimedMediaEvidenceBatchCommand(
+            self._store, authority_profile_resolver=resolver,
+            limits=media_evidence_read_limits(context.execution_profile),
+        )
+        return await asyncio.to_thread(command_batch.execute, finalizer)
 
     def _batch_idempotency_key(
         self,
@@ -435,6 +454,7 @@ class MediaPreflightPipelineStage:
             {
                 "producer_policy_sha256": policy.canonical_hash,
                 "materialization_policy_sha256": context.execution_profile.to_materialization_limits().policy_sha256,
+                "evidence_read_limits": context.execution_profile.to_evidence_read_limits().to_mapping(),
                 "run_id": context.run_id,
                 "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
                 "source_provenance_sha256": source_bundle.canonical_hash,
@@ -470,4 +490,5 @@ __all__ = (
     "MediaPreflightPipelineStage",
     "MediaPreflightPipelineStore",
     "media_preflight_kernel_idempotency_key",
+    "media_evidence_read_limits",
 )

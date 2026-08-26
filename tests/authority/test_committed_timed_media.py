@@ -20,6 +20,7 @@ from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline.committed_timed_media import (
     TimedMediaReadError,
     TimedMediaReadLimits,
+    inspect_committed_timed_media_evidence,
     read_committed_timed_media_evidence,
 )
 from autocut_kernel.pipeline.prepare_timed_media_evidence_command import (
@@ -573,3 +574,23 @@ def test_chinese_transcript_bytes_replay_without_collapsing_to_root_canonical_ha
 
     assert "中文证据".encode() in raw
     assert "sha256:" + hashlib.sha256(raw).hexdigest() != value.produced.root_bundle.canonical_hash
+
+
+def test_metadata_inspection_does_not_materialize_or_accept_corrupt_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, request, outcome, resolver = _case(tmp_path, monkeypatch)
+    store.corrupt = True
+    before = store.materialization_attempts
+    metadata = inspect_committed_timed_media_evidence(
+        store, request, outcome, authority_profile_resolver=resolver, limits=_limits(request),
+    )
+    assert metadata.record is store.record
+    assert len(metadata.blob_refs) == 5
+    assert store.materialization_attempts == before
+    with pytest.raises(TimedMediaReadError, match="raw hash"):
+        read_committed_timed_media_evidence(
+            store, request, outcome, authority_profile_resolver=resolver, limits=_limits(request),
+        )
+    assert store.materialization_attempts == before + 1
+    assert not tuple(tmp_path.glob("*.blob"))

@@ -43,12 +43,9 @@ from autocut_kernel.media.types import (
     canonical_sha256,
 )
 from autocut_kernel.pipeline import (
-    FinalizeTimedMediaEvidenceBatchCommand,
-    FinalizeTimedMediaEvidenceBatchRequest,
     PrepareTimedMediaEvidenceCommand,
     PrepareTimedMediaEvidenceRequest,
     ProducedTimedMediaEvidence,
-    TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
 )
 from autocut_kernel.registry import (
@@ -1131,6 +1128,45 @@ def test_provenance_producer_text_preserves_valid_unicode_without_normalization(
     assert json.loads(updated.producer_provenance_json)["producer_identities"][0]["producer_version"] == version
 
 
+def test_provenance_requires_explicit_adapter_and_allows_null_only_for_physical_producers():
+    store = _Store()
+    request = _request(store, with_candidates=False)
+    resolved = command_module.resolve_committed_timed_media_request(store, request)
+    produced = _Producer(_bundle()).prepare(resolved, _Lease(request.source_blob, store))
+    provenance = json.loads(produced.producer_provenance_json)
+    provenance["producer_identities"][0]["adapter_sha256"] = None
+    accepted = replace(
+        produced,
+        calibration_bindings=(
+            replace(produced.calibration_bindings[0], adapter_sha256=None),
+            *produced.calibration_bindings[1:],
+        ),
+        producer_provenance_json=json.dumps(
+            provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ),
+    )
+    command_module.validate_produced_timed_media_evidence(resolved, accepted)
+
+    provenance["producer_identities"][0]["adapter_sha256"] = "not-a-hash"
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="adapter hash"):
+        replace(
+            produced,
+            producer_provenance_json=json.dumps(
+                provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ),
+        )
+
+    provenance = json.loads(produced.producer_provenance_json)
+    provenance["producer_identities"][2]["adapter_sha256"] = None
+    with pytest.raises(command_module.TimedMediaEvidenceCommandError, match="speech producer adapter"):
+        replace(
+            produced,
+            producer_provenance_json=json.dumps(
+                provenance, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+            ),
+        )
+
+
 def test_exact_semantic_selector_is_required_and_fully_hash_bound():
     store = _Store()
     request = _request(store)
@@ -1676,36 +1712,6 @@ def test_required_detector_gap_commits_terminal_receipt_without_artifact_set() -
     assert result.outcome.failure_code == "SUBTITLE_EVIDENCE_INDETERMINATE"
     assert producer.calls == 1
     assert store.successes == []
-
-
-def test_batch_receipt_is_committed_only_after_rereading_exact_child() -> None:
-    store = _Store()
-    request = _request(store)
-    child = _command(store, _Producer(_bundle())).execute(request)
-    assert child.outcome.receipt_id is not None
-    assert child.outcome.artifact_set_id is not None
-    batch_request = FinalizeTimedMediaEvidenceBatchRequest(
-        request.job,
-        "media-preflight:batch",
-        request.artifact_scope,
-        1,
-        request.source_manifest_sha256,
-        request.source_provenance_sha256,
-        (
-            TimedMediaEvidenceBatchChild(
-                0,
-                request.idempotency_key,
-                child.outcome.receipt_id,
-                child.outcome.artifact_set_id,
-            ),
-        ),
-    )
-
-    result = FinalizeTimedMediaEvidenceBatchCommand(store).execute(batch_request)
-
-    assert result.outcome.state == "succeeded"
-    assert result.artifact is not None
-    assert result.artifact.artifact_type == "timed_media_evidence_batch"
 
 
 def test_presentation_map_preserves_unequal_nonzero_source_pts() -> None:

@@ -22,6 +22,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_EVIDENCE_READ_LIMITS_ENV,
     PIPELINE_KERNEL_POSTGRES_DSN_ENV,
     PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
@@ -81,6 +82,9 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_ARK_BASE_URL_ENV: "https://ark.example.invalid/api/v3",
         PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV: json.dumps(_media_policy(path)),
         PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV: str(staging_root),
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV: json.dumps({
+            "max_blob_bytes": 100_000, "max_total_blob_bytes": 500_000,
+        }),
         PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV: json.dumps(
             {
                 "max_source_bytes": 8 * 1024 * 1024,
@@ -220,7 +224,10 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime is not None
     assert runtime.authority_profile_resolver is fake_installed_loader
     assert runtime.execution_profile.kind == "doubao_vlm"
-    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v8"
+    assert runtime.execution_profile.schema_version == "pipeline-execution-profile-v9"
+    assert runtime.execution_profile.to_evidence_read_limits().to_mapping() == {
+        "max_blob_bytes": 100_000, "max_total_blob_bytes": 500_000,
+    }
     assert runtime.execution_profile.provider_id == "doubao-ark-responses-stream"
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
@@ -443,6 +450,7 @@ def test_environment_rejects_qwen_as_a_doubao_fallback(tmp_path: Path) -> None:
     [
         PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
         PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV,
     ],
 )
 def test_media_preflight_composition_has_no_materialization_defaults(
@@ -453,6 +461,33 @@ def test_media_preflight_composition_has_no_materialization_defaults(
     del environment[required_name]
 
     with pytest.raises(PipelineRuntimeConfigurationError, match=required_name):
+        compose_pipeline_runtime_from_environment(environment)
+
+
+@pytest.mark.parametrize("raw", (
+    'null', '[]', '{}',
+    '{"max_blob_bytes":true,"max_total_blob_bytes":500000}',
+    '{"max_blob_bytes":1.0,"max_total_blob_bytes":500000}',
+    '{"max_blob_bytes":-1,"max_total_blob_bytes":500000}',
+    '{"max_blob_bytes":600000,"max_total_blob_bytes":500000}',
+    '{"max_blob_bytes":1,"max_total_blob_bytes":500000}',
+    '{"max_blob_bytes":100000,"max_total_blob_bytes":500000,"default":true}',
+    '{"max_blob_bytes":100000,"max_blob_bytes":1,"max_total_blob_bytes":500000}',
+))
+def test_evidence_read_limits_are_closed_before_any_store_or_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    from auto_cut_bot.pipeline.runtime import composition
+
+    environment = _environment(tmp_path)
+    environment[PIPELINE_EVIDENCE_READ_LIMITS_ENV] = raw
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid evidence budget reached side-effecting composition")
+
+    monkeypatch.setattr(composition, "PostgresRuntimeStore", forbidden)
+    monkeypatch.setattr(composition, "DoubaoArkVlmProvider", forbidden)
+    with pytest.raises(PipelineRuntimeConfigurationError):
         compose_pipeline_runtime_from_environment(environment)
 
 

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
+from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
 from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
 from autocut_kernel.store.models import canonical_payload_hash
@@ -47,6 +48,8 @@ from auto_cut_bot.pipeline.source_prep.probe import (
     IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     FFprobeSourceMediaPort,
 )
+from tests.pipeline.installed_profile_fixture import synthetic_installed_resource
+from tests.pipeline.media_preflight_acceptance_fixture import seed_media_preflight_authority
 from tests.pipeline.runtime_profile_fixture import execution_profile, media_preflight_policy
 from tests.pipeline.test_local_media_preflight import _SpeechPort
 
@@ -66,6 +69,10 @@ AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
 
 def _fixture_policy(**changes: object) -> LocalMediaPreflightPolicy:
     changes.setdefault("timed_speech_service_sha256", "sha256:" + "2" * 64)
+    changes.setdefault("timed_speech_provider_id", "funasr-http-v1")
+    changes.setdefault("timed_speech_provider_version", "1.0.0")
+    changes.setdefault("asr_model_sha256", "sha256:" + "3" * 64)
+    changes.setdefault("vad_model_sha256", "sha256:" + "4" * 64)
     return media_preflight_policy(**changes)
 
 
@@ -220,8 +227,11 @@ class _MustNotDetectPort:
         self.asr_calls = 0
         self.visual_calls = 0
 
-    def prepare(self, request: LocalMediaPreflightRequest) -> LocalMediaPreflightResult:
-        del request
+    def prepare(
+        self, request: LocalMediaPreflightRequest, *,
+        kernel_max_source_bytes: int, service_max_request_bytes: int,
+    ) -> LocalMediaPreflightResult:
+        del request, kernel_max_source_bytes, service_max_request_bytes
         self.asr_calls += 1
         self.visual_calls += 1
         raise AssertionError("persisted media evidence must replay without detector calls")
@@ -436,7 +446,12 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     scenario: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Media replay with a synthetic Stage 1 control-plane result, not Stage 1 acceptance."""
+    """Real PG/media replay; synthetic raw calibration, VLM and Stage1-3 scheduling.
+
+    Calibration acceptance is produced by the real independent validator and
+    bootstrapped through the installed admin path. No real model is invoked and
+    the synthetic Stage1-3 control-plane receipts are not semantic acceptance.
+    """
     assert DSN is not None
     assert psycopg is not None
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -451,7 +466,6 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     source = source_root / "episode.mp4"
     _make_media(source)
     frozen_policy = _frozen_policy(source)
-    profile = execution_profile(media_policy=frozen_policy)
     request = PipelineRunRequest("test", source_root=str(source_root.resolve()))
 
     def factory():
@@ -464,6 +478,15 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
         factory,
         materialization_staging_root=materialization_root,
     )
+    resolver, frozen_policy = seed_media_preflight_authority(
+        kernel_store, tmp_path, monkeypatch, frozen_policy,
+    )
+    profile = execution_profile(
+        media_policy=frozen_policy,
+        stage1_policy=resolver.resource.narrative.command_policy,
+        stage2_policy=resolver.resource.local_run.stage2_command_policy,
+        stage3_policy=resolver.resource.local_run.stage3_command_policy,
+    )
     run_id = f"pipeline_run_{uuid4().hex}"
     claimed = await run_store.claim_run(
         run_id=run_id,
@@ -473,7 +496,8 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
         execution_profile=profile,
     )
     assert tuple(command.stage for command in claimed.snapshot.commands) == (
-        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight",
+        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio",
+        "stage3_blueprint", "media_preflight",
     )
 
     async def claim_context() -> PipelineStageContext:
@@ -525,7 +549,9 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     provider = _VisibleSemanticPackProvider()
     if scenario != "missing-semantic-grant":
         vlm_context = await claim_context()
-        vlm_result = await VlmPipelineStage(kernel_store, provider).execute(vlm_context)
+        vlm_result = await VlmPipelineStage(
+            kernel_store, provider, installed_profile=resolver.resource,
+        ).execute(vlm_context)
         await project(vlm_context, vlm_result)
         assert provider.dispatch_calls == 1
         narrative_context = await claim_context()
@@ -544,6 +570,13 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
             portfolio_context,
             PipelineStageResult(portfolio_context.command.command_id, "succeeded", uuid4()),
         )
+        editorial_context = await claim_context()
+        assert editorial_context.command.stage == "stage3_blueprint"
+        # Scheduler-only progression: no Kernel Stage3 ArtifactSet is invented.
+        await project(
+            editorial_context,
+            PipelineStageResult(editorial_context.command.command_id, "succeeded", uuid4()),
+        )
 
     if scenario == "forged-pack":
         _forge_semantic_pack_with_recomputed_member_and_set_hash()
@@ -554,7 +587,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
         media_context = PipelineStageContext(
             run_id,
             request,
-            snapshot.commands[4],
+            snapshot.commands[5],
             snapshot.execution_profile,
         )
     else:
@@ -580,7 +613,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     first_stage = MediaPreflightPipelineStage(
         kernel_store,
         LocalMediaPreflightPort(speech_port=speech, runner=runner),
-        StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT),
+        resolver,
     )
     if scenario in ("missing-render-grant", "missing-semantic-grant"):
         missing_purpose = (
@@ -614,7 +647,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     )
     restarted_snapshot = await restarted_run_store.read_run(claimed.snapshot.run_id)
     assert restarted_snapshot is not None
-    persisted_command = restarted_snapshot.commands[4]
+    persisted_command = restarted_snapshot.commands[5]
     assert persisted_command.stage == "media_preflight"
     assert persisted_command.status == "running"
     changed_environment = _fixture_policy(asr_model_revision="changed-after-restart")
@@ -623,7 +656,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
     restarted_stage = MediaPreflightPipelineStage(
         restarted_kernel_store,
         must_not_detect,  # type: ignore[arg-type]
-        StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT),
+        InstalledLocalRunProfileResolver(resolver.resource),
     )
     replay = await restarted_stage.reconcile(
         PipelineStageContext(
@@ -647,7 +680,7 @@ async def test_postgres_restart_reconcile_replays_original_receipt_without_detec
 
 
 def test_media_preflight_stage_constructor_requires_an_explicit_resolver() -> None:
-    resolver = StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT)
+    resolver = InstalledLocalRunProfileResolver(synthetic_installed_resource())
 
     stage = MediaPreflightPipelineStage(
         object(),  # type: ignore[arg-type]
@@ -656,11 +689,54 @@ def test_media_preflight_stage_constructor_requires_an_explicit_resolver() -> No
     )
 
     assert isinstance(stage, MediaPreflightPipelineStage)
-    with pytest.raises(PipelineRunValidationError, match="explicit authority profile resolver"):
-        MediaPreflightPipelineStage(
-            object(),  # type: ignore[arg-type]
-            object(),  # type: ignore[arg-type]
-            object(),  # type: ignore[arg-type]
+    for invalid in (object(), StoreAnchoredTimedSpeechProfileResolver(AUTHORITY_SNAPSHOT)):
+        with pytest.raises(PipelineRunValidationError, match="installed"):
+            MediaPreflightPipelineStage(
+                object(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+                invalid,  # type: ignore[arg-type]
+            )
+
+
+def test_calibration_seed_raw_derives_exact_bound_without_accepted_fixture() -> None:
+    from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes
+    from autocut_kernel.registry.authority_profiles import (
+        decode_shadow_calibration_profile_source,
+        decode_stage1_narrative_profile_source,
+    )
+
+    from auto_cut_bot.pipeline.media_preflight.shadow_calibration_service_profile import (
+        build_funasr_shadow_service_profile,
+    )
+    from tests.pipeline.media_preflight_acceptance_fixture import (
+        SyntheticCalibrationRawPort,
+        calibration_measurement_request,
+        calibration_seed_values,
+    )
+
+    base = _fixture_policy()
+    policy = replace(base, calibrations=tuple(
+        replace(item, detector_sha256=base.timed_speech_detector_sha256(item.producer_kind))
+        if item.producer_kind in ("asr", "vad") else item for item in base.calibrations
+    ))
+    narrative_raw, shadow_raw, contexts = calibration_seed_values(policy)
+    narrative = decode_stage1_narrative_profile_source(canonical_json_bytes(narrative_raw))
+    shadow = decode_shadow_calibration_profile_source(
+        canonical_json_bytes(shadow_raw), narrative=narrative,
+        expected_profile_contract_sha256=shadow_raw["profile_contract_sha256"],
+    )
+    assert build_funasr_shadow_service_profile(
+        profile=shadow, narrative=narrative,
+        expected_profile_contract_sha256=shadow.profile_contract_sha256,
+    )
+    request = calibration_measurement_request(shadow, "sha256:" + "a" * 64, contexts)
+    assert len(request.corpus_members) == 2
+    for member in request.corpus_members:
+        result = SyntheticCalibrationRawPort().measure(request, member)
+        assert result.projection.summary.asr.accepted_bound_tick == 4800
+        assert result.projection.summary.vad.accepted_bound_tick == 4800
+        assert member.raw_context.source_byte_limits.service_max_request_bytes == (
+            shadow.native_timed_speech.max_request_bytes
         )
 
 
@@ -671,6 +747,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -680,7 +757,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     }
     v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v9"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),

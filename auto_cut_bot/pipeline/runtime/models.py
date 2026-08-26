@@ -190,6 +190,7 @@ _EXECUTION_PROFILE_SCHEMA_VERSION_V5 = "pipeline-execution-profile-v5"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V6 = "pipeline-execution-profile-v6"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V7 = "pipeline-execution-profile-v7"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V8 = "pipeline-execution-profile-v8"
+_EXECUTION_PROFILE_SCHEMA_VERSION_V9 = "pipeline-execution-profile-v9"
 _RETRY_POLICY_FIELDS = frozenset({"backoff_seconds", "max_attempts", "strategy_version"})
 _HISTORICAL_PROFILE_READ_TOKEN = object()
 _FAIL_CLOSED_BOOTSTRAP_STAGES = (
@@ -199,6 +200,46 @@ _V6_FAIL_CLOSED_BOOTSTRAP_STAGES = (
     "source_prep", "vlm", "stage1_narrative", "media_preflight",
 )
 _HISTORICAL_BOOTSTRAP_STAGES = ("source_prep", "vlm", "media_preflight")
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceReadLimits:
+    """Independent evidence JSON byte budgets, not source-transfer or RSS limits.
+
+    max_total_blob_bytes covers a complete batch; consumers must not reset it
+    per episode. These explicit values grant no evidence or execution authority.
+    """
+
+    max_blob_bytes: int
+    max_total_blob_bytes: int
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("max_blob_bytes", self.max_blob_bytes),
+            ("max_total_blob_bytes", self.max_total_blob_bytes),
+        ):
+            if type(value) is not int or not 1 <= value <= 9_007_199_254_740_991:  # noqa: E721
+                raise PipelineRunValidationError(f"evidence_read_limits.{name} must be a positive safe integer")
+        if self.max_blob_bytes > self.max_total_blob_bytes:
+            raise PipelineRunValidationError("evidence per-blob budget exceeds the total batch budget")
+
+    @classmethod
+    def from_mapping(cls, value: object) -> EvidenceReadLimits:
+        if type(value) is not dict:  # noqa: E721
+            raise PipelineRunValidationError("evidence_read_limits must be a closed JSON object")
+        mapping = cast(dict[object, object], value)
+        if set(mapping) != {"max_blob_bytes", "max_total_blob_bytes"} or any(
+            type(key) is not str for key in mapping  # noqa: E721
+        ):
+            raise PipelineRunValidationError("evidence_read_limits fields are invalid")
+        return cls(cast(int, mapping["max_blob_bytes"]), cast(int, mapping["max_total_blob_bytes"]))
+
+    def to_mapping(self) -> dict[str, int]:
+        return {"max_blob_bytes": self.max_blob_bytes, "max_total_blob_bytes": self.max_total_blob_bytes}
+
+    @property
+    def canonical_hash(self) -> str:
+        return "sha256:" + hashlib.sha256(_canonical_json(self.to_mapping()).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,7 +267,8 @@ class PipelineExecutionProfile:
     stage1_command_policy_json: str | None = None
     stage2_command_policy_json: str | None = None
     stage3_command_policy_json: str | None = None
-    schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V8
+    evidence_read_limits_json: str | None = None
+    schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V9
     kind: PipelineExecutionProfileKind = "doubao_vlm"
     _historical_read_token: InitVar[object | None] = None
 
@@ -251,6 +293,7 @@ class PipelineExecutionProfile:
                     self.stage1_command_policy_json,
                     self.stage2_command_policy_json,
                     self.stage3_command_policy_json,
+                    self.evidence_read_limits_json,
                 )
             ):
                 raise PipelineRunValidationError(
@@ -264,7 +307,7 @@ class PipelineExecutionProfile:
         if self.kind != "doubao_vlm":
             raise PipelineRunValidationError("execution profile kind is unsupported")
         if (
-            self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V8
+            self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9
             and _historical_read_token is not _HISTORICAL_PROFILE_READ_TOKEN
         ):
             raise PipelineRunValidationError(
@@ -318,6 +361,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             expected_parse_policy_fields = _PARSE_POLICY_FIELDS
         elif self.schema_version in {
@@ -397,6 +441,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             self._decode_generation_retry_policy()
             self._decode_media_preflight_policy()
@@ -405,6 +450,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             }:
                 self._decode_materialization_limits()
         else:
@@ -413,6 +459,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             self.build_stage1_command_policy()
         elif self.stage1_command_policy_json is not None:
@@ -420,15 +467,20 @@ class PipelineExecutionProfile:
         if self.schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             self.build_stage2_command_policy()
         elif self.stage2_command_policy_json is not None:
             raise PipelineRunValidationError("historical execution profiles cannot claim Stage 2 policy")
-        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8:
+        if self.schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             self.build_stage3_command_policy()
-            _build_registered_doubao_policy(self)
         elif self.stage3_command_policy_json is not None:
             raise PipelineRunValidationError("historical execution profiles cannot claim Stage 3 policy")
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            self.to_evidence_read_limits()
+            _build_registered_doubao_policy(self)
+        elif self.evidence_read_limits_json is not None:
+            raise PipelineRunValidationError("historical execution profiles cannot claim evidence read limits")
 
     @classmethod
     def legacy_unresolved(cls) -> PipelineExecutionProfile:
@@ -463,6 +515,7 @@ class PipelineExecutionProfile:
         stage1_policy: Stage1CommandPolicy,
         stage2_policy: Stage2CommandPolicy,
         stage3_policy: Stage3CommandPolicy,
+        evidence_read_limits: EvidenceReadLimits,
     ) -> PipelineExecutionProfile:
         """Freeze explicit VLM, semantic compilation and physical-evidence policies."""
 
@@ -497,6 +550,8 @@ class PipelineExecutionProfile:
             raise PipelineRunValidationError("execution profile requires exact Stage2CommandPolicy")
         if type(stage3_policy) is not Stage3CommandPolicy:  # noqa: E721
             raise PipelineRunValidationError("execution profile requires exact Stage3CommandPolicy")
+        if type(evidence_read_limits) is not EvidenceReadLimits:  # noqa: E721
+            raise PipelineRunValidationError("execution profile requires exact EvidenceReadLimits")
         return cls(
             provider_id=policy.provider_id,
             model_id=policy.model_id,
@@ -523,7 +578,8 @@ class PipelineExecutionProfile:
             stage1_command_policy_json=_canonical_json(stage1_policy.to_mapping()),
             stage2_command_policy_json=_canonical_json(stage2_policy.to_mapping()),
             stage3_command_policy_json=_canonical_json(stage3_policy.to_mapping()),
-            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            evidence_read_limits_json=_canonical_json(evidence_read_limits.to_mapping()),
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         )
 
     @classmethod
@@ -566,6 +622,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             allowed = base_allowed | {
                 "generation_retry_policy",
@@ -577,6 +634,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             }:
                 allowed = allowed | {"materialization_limits"}
         else:
@@ -585,12 +643,15 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             allowed = allowed | {"stage1_command_policy"}
-        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8}:
+        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             allowed = allowed | {"stage2_command_policy"}
-        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8:
+        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             allowed = allowed | {"stage3_command_policy"}
+        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            allowed = allowed | {"evidence_read_limits"}
         unsupported = set(value) - allowed
         if unsupported:
             raise PipelineRunValidationError(
@@ -611,6 +672,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             embedded_objects.add("media_preflight_policy")
         if schema_version in {
@@ -618,18 +680,22 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             embedded_objects.add("materialization_limits")
         if schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             embedded_objects.add("stage1_command_policy")
-        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8}:
+        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             embedded_objects.add("stage2_command_policy")
-        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8:
+        if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             embedded_objects.add("stage3_command_policy")
+        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            embedded_objects.add("evidence_read_limits")
         for field_name in embedded_objects:
             if type(value[field_name]) is not dict:  # noqa: E721
                 raise PipelineRunValidationError(
@@ -645,6 +711,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             }
             else _LEGACY_PARSE_POLICY_FIELDS
         )
@@ -689,6 +756,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 }
                 else None
             ),
@@ -705,6 +773,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 }
                 else None
             ),
@@ -715,6 +784,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 }
                 else None
             ),
@@ -724,15 +794,20 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 } else None
             ),
             stage2_command_policy_json=(
                 _canonical_json(value["stage2_command_policy"])
-                if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8} else None
+                if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9} else None
             ),
             stage3_command_policy_json=(
                 _canonical_json(value["stage3_command_policy"])
-                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8 else None
+                if schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9} else None
+            ),
+            evidence_read_limits_json=(
+                _canonical_json(value["evidence_read_limits"])
+                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9 else None
             ),
             schema_version=cast(str, schema_version),
             _historical_read_token=(
@@ -746,6 +821,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V5,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                 }
                 else None
             ),
@@ -759,7 +835,7 @@ class PipelineExecutionProfile:
     def has_media_preflight_policy(self) -> bool:
         """Whether this profile can execute the media-preflight stage."""
 
-        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8
+        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9
 
     def to_mapping(self) -> dict[str, object]:
         if self.is_legacy_unresolved:
@@ -794,6 +870,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             result["generation_retry_policy"] = _decode_canonical_json(
                 self.generation_retry_policy_json,
@@ -806,6 +883,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             result["media_preflight_policy"] = _decode_canonical_json(
                 self.media_preflight_policy_json,
@@ -817,6 +895,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             result["materialization_limits"] = _decode_canonical_json(
                 self.materialization_limits_json,
@@ -826,18 +905,21 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             result["stage1_command_policy"] = _decode_canonical_json(
                 self.stage1_command_policy_json, "stage1_command_policy_json",
             )
-        if self.schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8}:
+        if self.schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             result["stage2_command_policy"] = _decode_canonical_json(
                 self.stage2_command_policy_json, "stage2_command_policy_json",
             )
-        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V8:
+        if self.schema_version in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9}:
             result["stage3_command_policy"] = _decode_canonical_json(
                 self.stage3_command_policy_json, "stage3_command_policy_json",
             )
+        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            result["evidence_read_limits"] = self.to_evidence_read_limits().to_mapping()
         return result
 
     @property
@@ -856,8 +938,9 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         } or self.is_legacy_unresolved:
-            raise PipelineRunValidationError("Stage 1 requires persisted execution profile v6, v7 or v8")
+            raise PipelineRunValidationError("Stage 1 requires persisted execution profile v6, v7, v8 or v9")
         value = _decode_canonical_json(self.stage1_command_policy_json, "stage1_command_policy_json")
         try:
             policy = Stage1CommandPolicy.from_mapping(value)
@@ -871,8 +954,8 @@ class PipelineExecutionProfile:
         """Reconstruct only the Stage 2 policy frozen in a current profile."""
         from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
 
-        if self.schema_version not in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8} or self.is_legacy_unresolved:
-            raise PipelineRunValidationError("Stage 2 requires persisted execution profile v7 or v8")
+        if self.schema_version not in {_EXECUTION_PROFILE_SCHEMA_VERSION_V7, _EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9} or self.is_legacy_unresolved:
+            raise PipelineRunValidationError("Stage 2 requires persisted execution profile v7, v8 or v9")
         value = _decode_canonical_json(self.stage2_command_policy_json, "stage2_command_policy_json")
         try:
             policy = Stage2CommandPolicy.from_mapping(value)
@@ -883,11 +966,11 @@ class PipelineExecutionProfile:
         return policy
 
     def build_stage3_command_policy(self) -> Stage3CommandPolicy:
-        """Reconstruct only the Stage 3 policy frozen in a v8 profile."""
+        """Reconstruct only the Stage 3 policy frozen in a v8 or v9 profile."""
         from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
 
-        if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V8 or self.is_legacy_unresolved:
-            raise PipelineRunValidationError("Stage 3 requires persisted execution profile v8")
+        if self.schema_version not in {_EXECUTION_PROFILE_SCHEMA_VERSION_V8, _EXECUTION_PROFILE_SCHEMA_VERSION_V9} or self.is_legacy_unresolved:
+            raise PipelineRunValidationError("Stage 3 requires persisted execution profile v8 or v9")
         value = _decode_canonical_json(self.stage3_command_policy_json, "stage3_command_policy_json")
         try:
             policy = Stage3CommandPolicy.from_mapping(value)
@@ -920,6 +1003,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             raise PipelineRunValidationError(
                 "execution profile has no frozen media-preflight policy"
@@ -952,6 +1036,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V6,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         }:
             raise PipelineRunValidationError(
                 "execution profile has no frozen materialization limits"
@@ -982,6 +1067,14 @@ class PipelineExecutionProfile:
             )
         except (TypeError, StoreValidationError) as error:
             raise PipelineRunValidationError("materialization limits are invalid") from error
+
+    def to_evidence_read_limits(self) -> EvidenceReadLimits:
+        """Rebuild independent evidence JSON budgets; history has no defaults."""
+        if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            raise PipelineRunValidationError("evidence reads require execution profile v9")
+        return EvidenceReadLimits.from_mapping(
+            _decode_canonical_json(self.evidence_read_limits_json, "evidence_read_limits_json")
+        )
 
     def to_materialization_limits(self) -> MaterializationLimits:
         """Rebuild the exact source-transfer limits frozen in this run profile."""
@@ -1054,9 +1147,9 @@ def _build_registered_doubao_policy(
         raise PipelineRunValidationError(
             "legacy-unresolved execution profile cannot reconstruct a Doubao policy"
         )
-    if profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V8:
+    if profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
         raise PipelineRunValidationError(
-            "historical execution profile is read-only and cannot map to v8 policy"
+            "historical execution profile is read-only and cannot map to v9 policy"
         )
     parameters = _decode_canonical_json(
         profile.request_parameters_json,
@@ -1126,6 +1219,7 @@ def _build_registered_doubao_policy(
     registered_mapping["stage1_command_policy"] = profile.build_stage1_command_policy().to_mapping()
     registered_mapping["stage2_command_policy"] = profile.build_stage2_command_policy().to_mapping()
     registered_mapping["stage3_command_policy"] = profile.build_stage3_command_policy().to_mapping()
+    registered_mapping["evidence_read_limits"] = profile.to_evidence_read_limits().to_mapping()
     if _canonical_json(registered_mapping) != profile.canonical_json:
         raise PipelineRunValidationError(
             "execution profile cannot exactly reconstruct its registered Doubao policy"
@@ -1409,10 +1503,10 @@ class PipelineStageContext:
             self.command.stage in (
                 "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight",
             )
-            and self.execution_profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V8
+            and self.execution_profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9
         ):
             raise PipelineRunValidationError(
-                "stage execution requires a persisted execution profile v8"
+                "stage execution requires a persisted execution profile v9"
             )
 
     @property

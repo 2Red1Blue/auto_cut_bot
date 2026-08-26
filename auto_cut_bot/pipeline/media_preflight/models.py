@@ -512,7 +512,11 @@ class LocalMediaPreflightPolicy:
 
 @dataclass(frozen=True, slots=True)
 class LocalMediaPreflightRequest:
-    """An immutable materialized source plus already committed physical endpoints."""
+    """Materialized source/endpoints plus the explicitly installed native identity.
+
+    The adapter identity is supplied by controlled runtime composition, never
+    derived from the service hash or inferred from an untrusted response.
+    """
 
     source_path: Path
     episode_id: str
@@ -526,6 +530,7 @@ class LocalMediaPreflightRequest:
     frame_detector_sha256: str
     audio_detector_sha256: str
     policy: LocalMediaPreflightPolicy
+    timed_speech_adapter_sha256: str
 
     def __post_init__(self) -> None:
         if not self.source_path.is_absolute():
@@ -540,11 +545,17 @@ class LocalMediaPreflightRequest:
             "root_input_manifest_sha256",
             "frame_detector_sha256",
             "audio_detector_sha256",
+            "timed_speech_adapter_sha256",
         ):
             try:
                 sha256_prefixed(getattr(self, name), name)
             except ValueError as error:
                 raise LocalMediaSourceError(str(error)) from error
+        if (
+            type(self.timed_speech_adapter_sha256) is not str
+            or self.timed_speech_adapter_sha256 == "sha256:" + "0" * 64
+        ):
+            raise LocalMediaSourceError("timed_speech_adapter_sha256 must be a nonzero identity")
         for evidence in (self.frame_pts_index, self.audio_sample_boundaries):
             if (
                 evidence.context.source_id != self.source_id
@@ -601,9 +612,23 @@ class ProducerIdentity:
     calibration_policy_sha256: str
     calibration_record_sha256: str
     timing_error_bound_tick: int
+    adapter_sha256: str | None
+
+    def __post_init__(self) -> None:
+        if self.adapter_sha256 is None:
+            if self.producer_kind in {"asr", "vad"}:
+                raise LocalMediaEvidenceError("timed speech producer adapter identity is required")
+            return
+        try:
+            sha256_prefixed(self.adapter_sha256, "adapter_sha256")
+        except ValueError as error:
+            raise LocalMediaEvidenceError(str(error)) from error
+        if type(self.adapter_sha256) is not str or self.adapter_sha256 == "sha256:" + "0" * 64:
+            raise LocalMediaEvidenceError("adapter_sha256 must be a nonzero identity")
 
     def to_mapping(self) -> dict[str, object]:
         return {
+            "adapter_sha256": self.adapter_sha256,
             "calibration_policy_sha256": self.calibration_policy_sha256,
             "calibration_record_sha256": self.calibration_record_sha256,
             "detector_sha256": self.detector_sha256,

@@ -52,6 +52,7 @@ from autocut_kernel.vlm import (
 
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.models import (
+    EvidenceReadLimits,
     PipelineCommand,
     PipelineExecutionProfile,
     PipelineRunRequest,
@@ -815,6 +816,7 @@ def _profile() -> PipelineExecutionProfile:
         stage1_policy=stage1_command_policy(),
         stage2_policy=stage2_command_policy(),
         stage3_policy=stage3_command_policy(),
+        evidence_read_limits=EvidenceReadLimits(100_000, 500_000),
     )
 
 
@@ -825,6 +827,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -834,7 +837,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     }
     historical = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="authorized-source"),

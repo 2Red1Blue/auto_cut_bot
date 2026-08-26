@@ -32,6 +32,7 @@ RUN_ID = "pipeline_run_" + "1" * 32
 def _historical_v5():
     wire = execution_profile().to_mapping()
     wire["schema_version"] = "pipeline-execution-profile-v5"
+    del wire["evidence_read_limits"]
     del wire["stage1_command_policy"]
     del wire["stage2_command_policy"]
     del wire["stage3_command_policy"]
@@ -41,10 +42,10 @@ def _historical_v5():
     return wire, PipelineExecutionProfile.from_mapping(wire)
 
 
-def test_v8_round_trips_complete_immutable_stage1_policy_without_defaults():
+def test_v9_round_trips_complete_immutable_stage1_policy_without_defaults():
     policy = stage1_command_policy()
     profile = execution_profile(stage1_policy=policy)
-    assert profile.schema_version == "pipeline-execution-profile-v8"
+    assert profile.schema_version == "pipeline-execution-profile-v9"
     assert profile.to_mapping()["stage1_command_policy"] == policy.to_mapping()
     assert profile.build_stage1_command_policy() == policy
     assert type(profile.build_stage1_command_policy()) is Stage1CommandPolicy
@@ -124,14 +125,14 @@ def test_stage1_policy_requires_all_sections(field):
 
 
 @pytest.mark.parametrize("invalid", [None, {}, [], "{}", True])
-def test_v8_requires_complete_object_policy(invalid):
+def test_v9_requires_complete_object_policy(invalid):
     wire = execution_profile().to_mapping()
     wire["stage1_command_policy"] = invalid
     with pytest.raises(PipelineRunValidationError):
         PipelineExecutionProfile.from_mapping(wire)
 
 
-def test_v8_cannot_omit_policy_or_supply_noncanonical_embedded_json():
+def test_v9_cannot_omit_policy_or_supply_noncanonical_embedded_json():
     profile = execution_profile()
     wire = profile.to_mapping()
     del wire["stage1_command_policy"]
@@ -148,6 +149,7 @@ def test_from_policies_requires_explicit_typed_stage_policies():
     arguments = {
         "retry_policy": profile.to_generation_retry_policy(),
         "materialization_limits": profile.to_materialization_limits(),
+        "evidence_read_limits": profile.to_evidence_read_limits(),
     }
     with pytest.raises(TypeError, match="stage1_policy"):
         PipelineExecutionProfile.from_policies(
@@ -170,6 +172,7 @@ def test_from_policies_requires_explicit_typed_stage_policies():
 def _historical_v6():
     wire = execution_profile().to_mapping()
     wire["schema_version"] = "pipeline-execution-profile-v6"
+    del wire["evidence_read_limits"]
     del wire["stage2_command_policy"]
     del wire["stage3_command_policy"]
     return wire, PipelineExecutionProfile.from_mapping(wire)
@@ -200,7 +203,7 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
         historical.build_stage2_command_policy()
     with pytest.raises(PipelineRunValidationError, match="read-only"):
         historical.to_doubao_policy()
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="synthetic-source"),
@@ -213,7 +216,7 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
 @pytest.mark.parametrize("status", ["pending", "indeterminate"])
 def test_historical_v5_cannot_form_execute_or_reconcile_context(stage, status):
     _, historical = _historical_v5()
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
         PipelineStageContext(
             RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
             PipelineCommand("command-history", stage, status), historical,
@@ -256,6 +259,7 @@ def test_historical_v6_four_stage_completion_remains_fail_closed_history():
 def test_historical_v7_five_stage_completion_does_not_gain_stage3_or_whole_run_success():
     mapping = execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v7"
+    del mapping["evidence_read_limits"]
     del mapping["stage3_command_policy"]
     historical = PipelineExecutionProfile.from_mapping(mapping)
     stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight")

@@ -31,6 +31,7 @@ def _matching_context():
         stage1_policy=resource.narrative.command_policy,
         stage2_policy=old.build_stage2_command_policy(),
         stage3_policy=old.build_stage3_command_policy(),
+        evidence_read_limits=old.to_evidence_read_limits(),
     )
     return replace(context, execution_profile=profile), resource, policy
 
@@ -46,6 +47,7 @@ async def test_resumed_media_mismatch_stops_before_store_or_native(operation):
         stage1_policy=old.build_stage1_command_policy(),
         stage2_policy=old.build_stage2_command_policy(),
         stage3_policy=old.build_stage3_command_policy(),
+        evidence_read_limits=old.to_evidence_read_limits(),
     )
     context = replace(context, execution_profile=changed)
 

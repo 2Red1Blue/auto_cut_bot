@@ -22,6 +22,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     ProducerCalibrationIdentity,
 )
 from auto_cut_bot.pipeline.runtime import PipelineExecutionProfile
+from auto_cut_bot.pipeline.runtime.models import EvidenceReadLimits
 from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 
@@ -192,6 +193,7 @@ def execution_profile(
     stage1_policy: Stage1CommandPolicy | None = None,
     stage2_policy: Stage2CommandPolicy | None = None,
     stage3_policy: Stage3CommandPolicy | None = None,
+    evidence_limits: EvidenceReadLimits | None = None,
 ) -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_policies(
         DoubaoVlmRequestPolicy(model_id=model_id),
@@ -210,4 +212,8 @@ def execution_profile(
         stage1_policy=stage1_command_policy() if stage1_policy is None else stage1_policy,
         stage2_policy=stage2_command_policy() if stage2_policy is None else stage2_policy,
         stage3_policy=stage3_command_policy() if stage3_policy is None else stage3_policy,
+        # Synthetic evidence JSON budgets are independent of source transfer.
+        evidence_read_limits=(
+            EvidenceReadLimits(100_000, 500_000) if evidence_limits is None else evidence_limits
+        ),
     )

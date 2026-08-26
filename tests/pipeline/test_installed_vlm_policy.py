@@ -85,6 +85,7 @@ async def test_resumed_policy_mismatch_blocks_before_store_or_provider(operation
         stage1_policy=resource.narrative.command_policy,
         stage2_policy=original.build_stage2_command_policy(),
         stage3_policy=original.build_stage3_command_policy(),
+        evidence_read_limits=original.to_evidence_read_limits(),
     )
     context = replace(context, execution_profile=changed)
 
@@ -148,6 +149,7 @@ def test_matching_persisted_policy_and_identity_samples_build_requests(monkeypat
         stage1_policy=resource.narrative.command_policy,
         stage2_policy=original.build_stage2_command_policy(),
         stage3_policy=original.build_stage3_command_policy(),
+        evidence_read_limits=original.to_evidence_read_limits(),
     ))
     monkeypatch.setattr(vlm_stage, "read_persisted_prepared_sources_bundle", lambda *a, **k: bundle)
     provider = Provider({})

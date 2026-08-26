@@ -19,11 +19,11 @@ from tests.pipeline.runtime_profile_fixture import execution_profile, stage2_com
 RUN_ID = "pipeline_run_" + "2" * 32
 
 
-def test_v8_round_trips_exact_typed_stage2_policy_and_binds_its_identity() -> None:
+def test_v9_round_trips_exact_typed_stage2_policy_and_binds_its_identity() -> None:
     policy = stage2_command_policy()
     profile = execution_profile(stage2_policy=policy)
 
-    assert profile.schema_version == "pipeline-execution-profile-v8"
+    assert profile.schema_version == "pipeline-execution-profile-v9"
     assert profile.to_mapping()["stage2_command_policy"] == policy.to_mapping()
     assert profile.build_stage2_command_policy() == policy
     assert type(profile.build_stage2_command_policy()) is Stage2CommandPolicy
@@ -105,17 +105,18 @@ def test_stage2_policy_requires_all_closed_sections(field: str) -> None:
 
 
 @pytest.mark.parametrize("raw", [None, {}, [], "{}", True])
-def test_v8_requires_typed_closed_stage2_policy(raw: object) -> None:
+def test_v9_requires_typed_closed_stage2_policy(raw: object) -> None:
     mapping = execution_profile().to_mapping()
     mapping["stage2_command_policy"] = raw
     with pytest.raises(PipelineRunValidationError):
         PipelineExecutionProfile.from_mapping(mapping)
 
 
-def test_stage2_context_requires_v8_and_never_backfills_historical_policy() -> None:
+def test_stage2_context_requires_v9_and_never_backfills_historical_policy() -> None:
     current = execution_profile()
     mapping = current.to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v6"
+    del mapping["evidence_read_limits"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
     historical = PipelineExecutionProfile.from_mapping(mapping)
@@ -123,12 +124,12 @@ def test_stage2_context_requires_v8_and_never_backfills_historical_policy() -> N
 
     with pytest.raises(PipelineRunValidationError, match="profile v7"):
         historical.build_stage2_command_policy()
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
         PipelineStageContext(
             RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
             PipelineCommand("historical-context", "stage1_narrative", "pending"), historical,
         )
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
         PipelineStageContext(
             RUN_ID,
             request,
@@ -153,11 +154,13 @@ def test_profile_rejects_noncanonical_stage2_embedded_json() -> None:
         replace(profile, stage2_command_policy_json=" " + profile.stage2_command_policy_json)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8])
 def test_every_historical_version_round_trips_but_cannot_execute(version: int) -> None:
     mapping = execution_profile().to_mapping()
     mapping["schema_version"] = f"pipeline-execution-profile-v{version}"
-    del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
+    if version < 8:
+        del mapping["stage3_command_policy"]
     if version < 7:
         del mapping["stage2_command_policy"]
     if version < 6:
@@ -184,11 +187,14 @@ def test_every_historical_version_round_trips_but_cannot_execute(version: int) -
             historical.build_stage2_command_policy()
     else:
         assert historical.build_stage2_command_policy() == stage2_command_policy()
-    assert historical.stage3_command_policy_json is None
-    with pytest.raises(PipelineRunValidationError, match="profile v8"):
-        historical.build_stage3_command_policy()
-    for stage in ("vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight"):
+    if version < 8:
+        assert historical.stage3_command_policy_json is None
         with pytest.raises(PipelineRunValidationError, match="profile v8"):
+            historical.build_stage3_command_policy()
+    else:
+        assert historical.build_stage3_command_policy() == execution_profile().build_stage3_command_policy()
+    for stage in ("vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight"):
+        with pytest.raises(PipelineRunValidationError, match="profile v9"):
             PipelineStageContext(
                 RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
                 PipelineCommand("historical-context", stage, "pending"), historical,

@@ -45,8 +45,8 @@ from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
 from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_policy
 
 from .highlight_projection import PipelineHighlightReadService
-from .media_preflight_stage import MediaPreflightPipelineStage
-from .models import PipelineExecutionProfile, PipelineRunRequest
+from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_read_limits
+from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
 from .service import DurablePipelineRunService
@@ -72,6 +72,7 @@ PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGIN
 PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
     "AUTO_CUT_BOT_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_JSON"
 )
+PIPELINE_EVIDENCE_READ_LIMITS_ENV = "AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON"
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -88,6 +89,7 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
     PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
     PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+    PIPELINE_EVIDENCE_READ_LIMITS_ENV,
 )
 _MATERIALIZATION_LIMIT_FIELDS = frozenset(
     {
@@ -381,6 +383,10 @@ def compose_pipeline_runtime_from_environment(
         materialization_limits = _materialization_limits_from_json(
             values[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV].strip()
         )
+        evidence_read_limits = EvidenceReadLimits.from_mapping(json.loads(
+            values[PIPELINE_EVIDENCE_READ_LIMITS_ENV].strip(),
+            object_pairs_hook=_closed_json_object,
+        ))
         staging_root = _staging_root(
             values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip()
         )
@@ -393,10 +399,12 @@ def compose_pipeline_runtime_from_environment(
             media_policy,
             retry_policy=DOUBAO_GENERATION_RETRY_POLICY,
             materialization_limits=materialization_limits,
+            evidence_read_limits=evidence_read_limits,
             stage1_policy=stage1_policy,
             stage2_policy=stage2_policy,
             stage3_policy=stage3_policy,
         )
+        media_evidence_read_limits(execution_profile)
         validate_installed_vlm_policy(
             authority_profile_resolver.resource.narrative,
             policy,
@@ -605,6 +613,7 @@ __all__ = (
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",
     "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
+    "PIPELINE_EVIDENCE_READ_LIMITS_ENV",
     "PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV",
     "PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV",
     "PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV",

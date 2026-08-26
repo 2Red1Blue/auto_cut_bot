@@ -1571,10 +1571,11 @@ class LocalMediaPreflightPort:
             if kind in {"audio", "asr", "vad"}
             else request.frame_pts_index.context.time_base
         )
+        accepted_bound = _microseconds_tick(calibration.timing_error_bound_microseconds, time_base)
+        adapter_sha256 = request.timed_speech_adapter_sha256 if kind in {"asr", "vad"} else None
         if kind in {"asr", "vad"} and timed is not None:
             position = 0 if kind == "asr" else 1
             measured = timed.producer_identities[position]
-            bound = timed.timing_error_bounds[position]
             return ProducerIdentity(
                 kind,
                 measured.producer_id,
@@ -1583,7 +1584,10 @@ class LocalMediaPreflightPort:
                 measured.detector_sha256,
                 measured.calibration_policy_sha256,
                 measured.calibration_record_sha256,
-                max(bound.early_tick, bound.late_tick),
+                # The response has already been checked against this accepted
+                # bound. A smaller observation cannot replace frozen calibration.
+                accepted_bound,
+                adapter_sha256,
             )
         return ProducerIdentity(
             kind,
@@ -1593,7 +1597,8 @@ class LocalMediaPreflightPort:
             calibration.detector_sha256,
             calibration.calibration_policy_sha256,
             calibration.calibration_record_sha256,
-            _microseconds_tick(calibration.timing_error_bound_microseconds, time_base),
+            accepted_bound,
+            adapter_sha256,
         )
 
     @staticmethod
@@ -1614,6 +1619,7 @@ class LocalMediaPreflightPort:
             time_base=time_base,
             timing_error_bound_tick=identity.timing_error_bound_tick,
             active=True,
+            adapter_sha256=identity.adapter_sha256,
         )
 
 

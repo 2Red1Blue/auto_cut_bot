@@ -74,7 +74,6 @@ from ..vlm import VlmSemanticPack, WindowManifest
 
 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
-TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION = "timed-media-evidence-batch-v1"
 TIMED_SPEECH_BUSY_RETRY_COUNT = 1
 TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS = 1
 
@@ -453,150 +452,6 @@ class PrepareTimedMediaEvidenceResult:
     outcome: CommandOutcome
     root_bundle_sha256: str | None = None
     candidate_count: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class TimedMediaEvidenceBatchChild:
-    episode_index: int
-    idempotency_key: str
-    receipt_id: UUID
-    artifact_set_id: UUID
-
-    def __post_init__(self) -> None:
-        if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
-            raise TimedMediaEvidenceCommandError("batch episode_index must be non-negative")
-        if not self.idempotency_key or self.idempotency_key != self.idempotency_key.strip():
-            raise TimedMediaEvidenceCommandError("batch idempotency_key must be canonical")
-        if not isinstance(self.receipt_id, UUID) or not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
-            self.artifact_set_id, UUID
-        ):
-            raise TimedMediaEvidenceCommandError(
-                "batch child requires exact Receipt and ArtifactSet identities"
-            )
-
-    def to_mapping(self) -> dict[str, object]:
-        return {
-            "artifact_set_id": str(self.artifact_set_id),
-            "episode_index": self.episode_index,
-            "idempotency_key": self.idempotency_key,
-            "receipt_id": str(self.receipt_id),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class FinalizeTimedMediaEvidenceBatchRequest:
-    job: Job
-    idempotency_key: str
-    artifact_scope: ArtifactScope
-    artifact_revision: int
-    source_manifest_sha256: str
-    source_provenance_sha256: str
-    children: tuple[TimedMediaEvidenceBatchChild, ...]
-
-    def __post_init__(self) -> None:
-        if type(self.job) is not Job or self.artifact_scope != canonical_recipe_scope(self.job):  # noqa: E721
-            raise TimedMediaEvidenceCommandError("batch Job scope is invalid")
-        if not self.idempotency_key or self.idempotency_key != self.idempotency_key.strip():
-            raise TimedMediaEvidenceCommandError("batch idempotency_key must be canonical")
-        if type(self.artifact_revision) is not int or self.artifact_revision < 1:  # noqa: E721
-            raise TimedMediaEvidenceCommandError("batch artifact_revision must be positive")
-        if not _is_sha256(self.source_manifest_sha256) or not _is_sha256(
-            self.source_provenance_sha256
-        ):
-            raise TimedMediaEvidenceCommandError("batch source identities must be sha256")
-        children = tuple(self.children)
-        if not children or any(type(item) is not TimedMediaEvidenceBatchChild for item in children):  # noqa: E721
-            raise TimedMediaEvidenceCommandError("batch children must be exact typed values")
-        if tuple(item.episode_index for item in children) != tuple(range(len(children))):
-            raise TimedMediaEvidenceCommandError(
-                "batch children must cover all ordered episode indexes"
-            )
-        keys = tuple(item.idempotency_key for item in children)
-        if len(keys) != len(set(keys)):
-            raise TimedMediaEvidenceCommandError("batch child keys must be unique")
-        object.__setattr__(self, "children", children)
-
-    @property
-    def request_hash(self) -> str:
-        return canonical_sha256(
-            {
-                "artifact_revision": self.artifact_revision,
-                "artifact_scope": _scope_mapping(self.artifact_scope),
-                "children": [item.to_mapping() for item in self.children],
-                "job": {"job_key": self.job.job_key, "profile": self.job.profile},
-                "source_manifest_sha256": self.source_manifest_sha256,
-                "source_provenance_sha256": self.source_provenance_sha256,
-                "strategy_version": TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION,
-            }
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class FinalizeTimedMediaEvidenceBatchResult:
-    outcome: CommandOutcome
-    artifact: ArtifactMember | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _BatchArtifactRequest:
-    artifact_scope: ArtifactScope
-    artifact_revision: int
-
-
-class FinalizeTimedMediaEvidenceBatchCommand:
-    """Commit an aggregate Receipt only after independently rereading every child."""
-
-    def __init__(self, store: TimedMediaEvidenceStore) -> None:
-        self._store = store
-
-    def execute(
-        self,
-        request: FinalizeTimedMediaEvidenceBatchRequest,
-    ) -> FinalizeTimedMediaEvidenceBatchResult:
-        for child in request.children:
-            outcome = self._store.read_outcome(request.job, child.idempotency_key)
-            if (
-                outcome is None
-                or outcome.state != "succeeded"
-                or outcome.receipt_id != child.receipt_id
-                or outcome.artifact_set_id != child.artifact_set_id
-            ):
-                raise TimedMediaEvidenceCommandError(
-                    "batch child does not match its persisted succeeded outcome"
-                )
-        claimed = self._store.claim_command(
-            CommandClaim(
-                request.job,
-                request.idempotency_key,
-                "FinalizeTimedMediaEvidenceBatch@2.1.3",
-                request.request_hash,
-                execution_kind="deterministic",
-            )
-        )
-        if not claimed.is_fresh_claim:
-            return FinalizeTimedMediaEvidenceBatchResult(claimed)
-        payload = {
-            "children": [item.to_mapping() for item in request.children],
-            "completion_policy": "all_committed_episodes",
-            "declared_episode_count": len(request.children),
-            "source_manifest_sha256": request.source_manifest_sha256,
-            "source_provenance_sha256": request.source_provenance_sha256,
-            "strategy_version": TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION,
-        }
-        artifact = _artifact(
-            _BatchArtifactRequest(request.artifact_scope, request.artifact_revision),
-            "timed_media_evidence_batch",
-            "timed_media_evidence_batch",
-            payload,
-        )
-        committed = self._store.commit_command_success(
-            CommandSuccess(
-                claimed.command_slot_id,
-                _artifact_set_hash((artifact,)),
-                (artifact,),
-            )
-        )
-        return FinalizeTimedMediaEvidenceBatchResult(committed, artifact)
 
 
 class PrepareTimedMediaEvidenceCommand:
@@ -1215,7 +1070,7 @@ def _physical(tick: int, context: object) -> Fraction:
 
 
 def _artifact(
-    request: ResolvedPrepareTimedMediaEvidenceRequest | _BatchArtifactRequest,
+    request: ResolvedPrepareTimedMediaEvidenceRequest,
     artifact_type: str,
     logical_id: str,
     payload: object,
@@ -1399,7 +1254,7 @@ def _validate_producer_provenance_json(value: object) -> None:
         if type(identity_raw) is not dict:  # noqa: E721
             raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
         identity = cast(dict[str, object], identity_raw)
-        if set(identity) not in (identity_fields, identity_fields | {"adapter_sha256"}):
+        if set(identity) != identity_fields | {"adapter_sha256"}:
             raise TimedMediaEvidenceCommandError("producer identity schema is not closed")
         if identity["producer_kind"] != expected_kinds[position]:
             raise TimedMediaEvidenceCommandError("producer identity order is not canonical")
@@ -1422,7 +1277,10 @@ def _validate_producer_provenance_json(value: object) -> None:
         ):
             if not _is_sha256(identity[field]):
                 raise TimedMediaEvidenceCommandError("producer identity hash is invalid")
-        if "adapter_sha256" in identity and not _is_sha256(identity["adapter_sha256"]):
+        adapter_sha256 = identity["adapter_sha256"]
+        if identity["producer_kind"] in ("asr", "vad") and not _is_sha256(adapter_sha256):
+            raise TimedMediaEvidenceCommandError("speech producer adapter hash is invalid")
+        if adapter_sha256 is not None and not _is_sha256(adapter_sha256):
             raise TimedMediaEvidenceCommandError("producer identity adapter hash is invalid")
 
 
@@ -1450,17 +1308,12 @@ __all__ = (
     "validate_produced_timed_media_evidence",
     "close_timed_media_candidates",
     "PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND",
-    "TIMED_MEDIA_EVIDENCE_BATCH_STRATEGY_VERSION",
     "TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION",
-    "FinalizeTimedMediaEvidenceBatchCommand",
-    "FinalizeTimedMediaEvidenceBatchRequest",
-    "FinalizeTimedMediaEvidenceBatchResult",
     "PrepareTimedMediaEvidenceCommand",
     "PrepareTimedMediaEvidenceRequest",
     "PrepareTimedMediaEvidenceResult",
     "ProducedTimedMediaEvidence",
     "TimedMediaEvidenceCommandError",
-    "TimedMediaEvidenceBatchChild",
     "TimedMediaEvidenceProducerError",
     "TimedMediaEvidenceProducerPort",
     "TimedMediaEvidenceStore",

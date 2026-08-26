@@ -80,7 +80,8 @@ by candidate count is not a safe evidence-memory policy. The next Runtime wire
 must explicitly add evidence_read_limits with max_blob_bytes and
 max_total_blob_bytes; candidate count comes from the frozen VLM parse policy.
 This requires execution-profile v9 and a closed migration, not defaults for
-old v8 rows. Current execution remains v8 until that implementation lands.
+old v8 rows. This slice now implements v9 with migration 0022; old terminal rows
+remain read-only and active pre-v9 rows must be resolved before migration.
 
 The batch total is cumulative across every episode, not reset for each child.
 Validate all lightweight committed metadata and sum Blob lengths before any
@@ -91,6 +92,38 @@ No episode is omitted from batch validation, including zero-candidate episodes.
 Serialized-byte ceilings do not promise an equal RSS ceiling: decoding and replay
 may temporarily hold several representations. Add multi-episode cumulative-limit,
 zero-blob-read-on-overflow and sequential-release regression tests.
+
+Delivered batch checkpoint: exact whole-series coverage, same Job identity,
+compact first-pass metadata, cumulative pre-read byte checks, sequential full
+replay and read-only aggregate replay are implemented. The actual producer now
+preserves the installed speech adapter and accepted timing bound. Independent
+reviews accepted the profile/producer and reader/batch slices. Local validation:
+2356 related pure tests plus eight batch tests; no real DB/provider run. The
+batch lifetime observer checks full metadata/decoded DTO references, not merely
+closed file leases. Remote SQL tests include 33 new 0022 cases; only collection
+and static checks ran here. Continue with [editorial/media join](editorial-media-join-wave.md).
+
+## Batch implementation ownership and newly exposed producer boundary
+
+The first exact reader is committed as c3625b58. The next parallel slice assigns
+execution-profile v9/migration to the profile agent, the batch Command/reader
+and tests to the batch agent, and Runtime/metadata-inspection wiring to root.
+Cross-review is read-only; the original reader approval does not approve this
+subsequent slice.
+
+Real LocalMediaPreflightPort inspection exposed missing speech adapter identity:
+the synthetic reader fixture had supplied this identity, but the actual port did
+not. Fix the producer owner: LocalMediaPreflightRequest explicitly carries the
+installed native_port_identity_sha256; the Runtime supplies it from the accepted
+installation, never substitutes timed_speech_service_sha256. ProducerIdentity
+and CalibrationBinding preserve it. The accepted frozen timing bound is retained;
+a smaller per-response bound is checked against it, not promoted to a new
+accepted calibration. Do not weaken the reader or manufacture data in a consumer.
+
+The old remote replay test also missed Stage3 and used an unbootstrapped registry
+snapshot. Update it to six stages and actual Store measurement/independent
+validation/bootstrap with clearly synthetic raw/gold calibration data. No test
+claims real SenseVoice/FSMN inference; no database is started on this workstation.
 
 ## Acceptance checks
 

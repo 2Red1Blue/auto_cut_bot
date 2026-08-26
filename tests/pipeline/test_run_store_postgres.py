@@ -24,10 +24,12 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineStageResult,
     PostgresPipelineRunStore,
     PostgresPipelineScheduler,
+    ResumeNotAllowedError,
     SourceDeniedError,
     StaleRunVersionError,
 )
 from auto_cut_bot.pipeline.runtime.composition import ConfiguredSourceCatalog, SourceCatalogEntry
+from auto_cut_bot.pipeline.runtime.models import EvidenceReadLimits
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     SourceOperationPolicy,
@@ -75,12 +77,17 @@ def migrated_database() -> None:
 def test_0021_sql_guard_rejects_nested_stage3_policy_invalid_leaves(path, value) -> None:
     """Remote-only executable SQL guard; collection never contacts PostgreSQL."""
     assert DSN is not None
-    profile = frozen_execution_profile().to_mapping()
+    profile = _v8_execution_profile().to_mapping()
     nested = profile["stage3_command_policy"]
     for key in path[:-1]:
         nested = nested[key]
     nested[path[-1]] = value
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT runtime.execution_profile_semantic_v8_is_valid(%s::jsonb, 'accepted')",
+            (_v8_execution_profile().canonical_json,),
+        )
+        assert cursor.fetchone() == (True,)
         cursor.execute(
             "SELECT runtime.execution_profile_semantic_v8_is_valid(%s::jsonb, 'accepted')",
             (json.dumps(profile),),
@@ -156,6 +163,7 @@ def _historical_execution_profile(
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     mapping["parse_policy"] = {
         "max_observations": 64,
         "max_response_bytes": 64_000,
@@ -181,6 +189,7 @@ def _v4_execution_profile() -> PipelineExecutionProfile:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     del mapping["materialization_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
@@ -191,6 +200,7 @@ def _v5_execution_profile() -> PipelineExecutionProfile:
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -199,6 +209,7 @@ def _v6_execution_profile() -> PipelineExecutionProfile:
     mapping["schema_version"] = "pipeline-execution-profile-v6"
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -206,6 +217,14 @@ def _v7_execution_profile() -> PipelineExecutionProfile:
     mapping = _execution_profile().to_mapping()
     mapping["schema_version"] = "pipeline-execution-profile-v7"
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
+    return PipelineExecutionProfile.from_mapping(mapping)
+
+
+def _v8_execution_profile() -> PipelineExecutionProfile:
+    mapping = _execution_profile().to_mapping()
+    mapping["schema_version"] = "pipeline-execution-profile-v8"
+    del mapping["evidence_read_limits"]
     return PipelineExecutionProfile.from_mapping(mapping)
 
 
@@ -268,7 +287,7 @@ def test_0019_sql_guard_closes_every_policy_object(path, mutation) -> None:
     for key in path:
         target = target[key]
     if mutation == "missing":
-        # Keep v8 so the closed-policy CHECK, not the historical-version trigger, denies.
+        # Keep v9 so the closed-policy CHECK, not the historical-version trigger, denies.
         target.pop("stage1_command_policy" if not path else next(iter(target)))
     else:
         target["unregistered"] = True
@@ -282,32 +301,32 @@ def test_current_sql_null_cannot_escape_closed_policy_guard() -> None:
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT runtime.stage1_command_policy_shape_is_valid(NULL)")
         assert cursor.fetchone() == (False,)
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v8 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v9 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, None)
 
 
-@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8])
 def test_current_sql_guard_rejects_new_old_profiles_even_with_valid_old_policy(version) -> None:
     assert DSN is not None
     profile = (
         _historical_execution_profile(f"pipeline-execution-profile-v{version}")
         if version <= 3 else _v4_execution_profile() if version == 4
         else _v5_execution_profile() if version == 5 else _v6_execution_profile() if version == 6
-        else _v7_execution_profile()
+        else _v7_execution_profile() if version == 7 else _v8_execution_profile()
     )
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v8 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v9 execution profile rows are forbidden"):
             _insert_profile_for_guard(cursor, profile.to_mapping())
 
 
-def test_current_sql_guard_accepts_v8_but_freezes_complete_policy_and_hash() -> None:
+def test_current_sql_guard_accepts_v9_but_freezes_complete_policy_and_hash() -> None:
     assert DSN is not None
     original = _execution_profile()
     changed = _execution_profile(stage1_revision=2)
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         run_id = _insert_profile_for_guard(cursor, original.to_mapping())
         cursor.execute(
-            "SELECT runtime.execution_profile_semantic_v8_is_valid(%s::jsonb, 'accepted')",
+            "SELECT runtime.execution_profile_semantic_v9_is_valid(%s::jsonb, 'accepted')",
             (original.canonical_json,),
         )
         assert cursor.fetchone() == (True,)
@@ -327,6 +346,93 @@ def test_current_sql_guard_accepts_v8_but_freezes_complete_policy_and_hash() -> 
             persisted_hash = persisted_hash.decode()
         assert mapping == original.to_mapping()
         assert persisted_hash == original.canonical_hash
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limits", [EvidenceReadLimits(1, 1), EvidenceReadLimits(2**53 - 1, 2**53 - 1)])
+async def test_0022_v9_budget_roundtrips_through_real_store_claim_and_replay(limits) -> None:
+    """Remote-only Store integration, not an evidence reader/model acceptance test."""
+    assert DSN is not None
+    store = PostgresPipelineRunStore(lambda: psycopg.connect(DSN))
+    profile = frozen_execution_profile(evidence_limits=limits)
+    request = PipelineRunRequest("test", source_root="/migration-0022/synthetic")
+    run_id = f"pipeline_run_{uuid4().hex}"
+    key = f"migration-0022-{uuid4().hex}"
+    claim = await store.claim_run(
+        run_id=run_id, idempotency_key=key, request=request,
+        request_hash=request.request_hash, execution_profile=profile,
+    )
+    replay = await store.claim_run(
+        run_id=run_id, idempotency_key=key, request=request,
+        request_hash=request.request_hash, execution_profile=profile,
+    )
+    assert not claim.replayed and replay.replayed
+    assert replay.snapshot == claim.snapshot
+    assert claim.snapshot.execution_profile == profile
+    assert claim.snapshot.execution_profile.to_evidence_read_limits() == limits
+    assert claim.snapshot.execution_profile_hash == profile.canonical_hash
+    assert tuple(command.stage for command in claim.snapshot.commands) == (
+        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio",
+        "stage3_blueprint", "media_preflight",
+    )
+    restarted = PostgresPipelineRunStore(store.connection_factory)
+    assert await restarted.read_run(run_id) == claim.snapshot
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT execution_profile -> 'evidence_read_limits', execution_profile_hash,
+                runtime.execution_profile_semantic_v9_is_valid(execution_profile, state)
+                FROM runtime.pipeline_runs WHERE run_id = %s""",
+            (run_id,),
+        )
+        budget, persisted_hash, valid = cursor.fetchone()
+        assert budget == limits.to_mapping() and valid is True
+        assert (persisted_hash.decode() if isinstance(persisted_hash, bytes) else persisted_hash) == profile.canonical_hash
+
+
+def _assert_evidence_budget_rejected(cursor, mapping) -> None:
+    # Real predicates plus INSERT with a freshly matching whole-profile hash:
+    # a hash mismatch or an old-version guard cannot explain the rejection.
+    cursor.execute(
+        """SELECT runtime.evidence_read_limits_shape_is_valid(%s::jsonb),
+            runtime.execution_profile_semantic_v9_is_valid(%s::jsonb, 'accepted')""",
+        (json.dumps(mapping.get("evidence_read_limits")), json.dumps(mapping)),
+    )
+    assert cursor.fetchone() == (False, False)
+    with pytest.raises(psycopg.errors.CheckViolation, match="pipeline_runs_execution_profile_closed_check"):
+        _insert_profile_for_guard(cursor, mapping)
+
+
+@pytest.mark.parametrize("limits", [
+    None, [], "{}", {}, {"max_blob_bytes": 1}, {"max_total_blob_bytes": 2},
+    {"max_blob_bytes": 1, "max_total_blob_bytes": 2, "default": 1},
+    {"max_blob_bytes": 3, "max_total_blob_bytes": 2},
+])
+def test_0022_sql_budget_requires_closed_object_and_per_blob_within_total(limits) -> None:
+    assert DSN is not None
+    mapping = _execution_profile().to_mapping()
+    mapping["evidence_read_limits"] = limits
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        _assert_evidence_budget_rejected(cursor, mapping)
+
+
+def test_0022_sql_missing_budget_has_no_default() -> None:
+    assert DSN is not None
+    mapping = _execution_profile().to_mapping()
+    del mapping["evidence_read_limits"]
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT runtime.evidence_read_limits_shape_is_valid(NULL)")
+        assert cursor.fetchone() == (False,)
+        _assert_evidence_budget_rejected(cursor, mapping)
+
+
+@pytest.mark.parametrize("field", ["max_blob_bytes", "max_total_blob_bytes"])
+@pytest.mark.parametrize("value", [None, True, False, 1.0, 0, -1, "1", [], {}, 2**53])
+def test_0022_sql_budget_leaves_are_positive_safe_integers(field, value) -> None:
+    assert DSN is not None
+    mapping = _execution_profile().to_mapping()
+    mapping["evidence_read_limits"][field] = value
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        _assert_evidence_budget_rejected(cursor, mapping)
 
 
 @pytest.mark.parametrize("active_state", ["accepted", "running"])
@@ -597,6 +703,126 @@ def test_0021_migration_rejects_active_v7_and_keeps_terminal_history_read_only()
         assert cursor.fetchone() == terminal_history
 
 
+@pytest.mark.parametrize("active_state", ["accepted", "running"])
+def test_0022_refuses_active_v8_then_preserves_exact_terminal_history(active_state) -> None:
+    """Remote-only upgrade; finish old work honestly before installing the new guard."""
+    assert DSN is not None
+    migration_root = Path("packages/autocut-kernel/migrations")
+    migration_sql = (migration_root / "0022_evidence_read_limits_profile.sql").read_text(encoding="utf-8")
+    profile = _v8_execution_profile()
+    stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
+    command_ids = tuple(uuid4() for _ in stages)
+
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+        for migration in sorted(migration_root.glob("*.sql")):
+            if migration.name >= "0022_evidence_read_limits_profile.sql":
+                break
+            cursor.execute(migration.read_text(encoding="utf-8"))
+        with connection.transaction():
+            run_id = _insert_profile_for_guard(cursor, profile.to_mapping())
+            for ordinal, (command_id, stage) in enumerate(zip(command_ids, stages, strict=True)):
+                cursor.execute(
+                    """INSERT INTO runtime.pipeline_commands
+                        (command_id, run_id, ordinal, stage, state, version)
+                    VALUES (%s, %s, %s, %s, 'pending', 0)""",
+                    (command_id, run_id, ordinal, stage),
+                )
+            if active_state == "running":
+                cursor.execute(
+                    """UPDATE runtime.pipeline_runs SET state = 'running', version = version + 1,
+                        updated_at = transaction_timestamp() WHERE run_id = %s""",
+                    (run_id,),
+                )
+
+        def read_history():
+            cursor.execute(
+                """SELECT execution_profile::text, execution_profile_hash, state, version,
+                    (SELECT jsonb_agg(to_jsonb(command) ORDER BY ordinal)::text
+                       FROM runtime.pipeline_commands command WHERE command.run_id = run.run_id)
+                    FROM runtime.pipeline_runs run WHERE run_id = %s""",
+                (run_id,),
+            )
+            return cursor.fetchone()
+
+        def read_guards():
+            cursor.execute(
+                """SELECT pg_get_constraintdef(oid),
+                    pg_get_functiondef('runtime.guard_historical_execution_profile_write()'::regprocedure)
+                    FROM pg_constraint WHERE conrelid = 'runtime.pipeline_runs'::regclass
+                      AND conname = 'pipeline_runs_execution_profile_closed_check'"""
+            )
+            return cursor.fetchone()
+
+        active_history, old_guards = read_history(), read_guards()
+        with pytest.raises(psycopg.errors.RaiseException, match="0022 refuses accepted/running pre-v9 runs"):
+            cursor.execute(migration_sql)
+        connection.rollback()
+        assert read_history() == active_history
+        assert read_guards() == old_guards
+        cursor.execute(
+            """SELECT to_regprocedure('runtime.evidence_read_limits_shape_is_valid(jsonb)'),
+                to_regprocedure('runtime.execution_profile_semantic_v9_is_valid(jsonb,text)')"""
+        )
+        assert cursor.fetchone() == (None, None)
+
+        # Legitimate old-plan closure with a failed Receipt and causally blocked
+        # successors. No trigger disabling, new defaults, or successful full-run claim.
+        with connection.transaction():
+            _force_terminal_command(cursor, str(command_ids[0]), "failed")
+            cursor.execute(
+                """UPDATE runtime.pipeline_commands SET state = 'blocked', version = version + 1,
+                    blocking_command_id = %s, completed_at = transaction_timestamp(),
+                    updated_at = transaction_timestamp() WHERE run_id = %s AND ordinal > 0""",
+                (command_ids[0], run_id),
+            )
+            cursor.execute(
+                """UPDATE runtime.pipeline_runs SET state = 'failed', version = version + 1,
+                    updated_at = transaction_timestamp() WHERE run_id = %s""",
+                (run_id,),
+            )
+        terminal_history = read_history()
+        assert terminal_history[:2] == active_history[:2]
+        assert json.loads(terminal_history[0]) == profile.to_mapping()
+        assert "evidence_read_limits" not in json.loads(terminal_history[0])
+        assert tuple(item["stage"] for item in json.loads(terminal_history[4])) == stages
+
+        cursor.execute(migration_sql)
+        assert read_history() == terminal_history
+        cursor.execute(
+            """SELECT runtime.execution_profile_semantic_v9_is_valid(execution_profile, state)
+                FROM runtime.pipeline_runs WHERE run_id = %s""",
+            (run_id,),
+        )
+        assert cursor.fetchone() == (True,)
+        with pytest.raises(psycopg.errors.RaiseException, match="historical pre-v9 execution profile rows are read-only"):
+            cursor.execute(
+                "UPDATE runtime.pipeline_runs SET execution_profile_hash = execution_profile_hash WHERE run_id = %s",
+                (run_id,),
+            )
+        assert read_history() == terminal_history
+
+    store = PostgresPipelineRunStore(lambda: psycopg.connect(DSN))
+    history = store._read_run_sync(run_id)
+    assert history is not None and history.status == "failed"
+    assert history.execution_profile == profile
+    assert history.execution_profile.canonical_hash == profile.canonical_hash
+    assert tuple(command.stage for command in history.commands) == stages
+    assert store._list_reconstructible_runs_sync() == ()
+    assert store._claim_next_pending_sync(run_id, 0, "forbidden-history-worker") is None
+    with pytest.raises(ResumeNotAllowedError):
+        store._claim_resume_sync(run_id, history.version)
+    for command in history.commands[1:]:
+        with pytest.raises(PipelineRunValidationError, match="profile v9"):
+            PipelineStageContext(run_id, history.request, command, profile)
+    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+        store._claim_run_sync(
+            f"pipeline_run_{uuid4().hex}", f"forbidden-v8-{uuid4().hex}",
+            history.request, history.request_hash, profile,
+        )
+
+
 def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> None:
     assert DSN is not None
     request = PipelineRunRequest("test", source_root="/migration-0013/source")
@@ -749,6 +975,7 @@ async def test_claim_and_outbox_are_atomic_and_reconstruct_after_restart(tmp_pat
         "vlm",
         "stage1_narrative",
         "stage2_portfolio",
+        "stage3_blueprint",
         "media_preflight",
     )
     assert await scheduler.pending_run_ids() == (first.snapshot.run_id,)
@@ -890,6 +1117,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
     del mapping["stage1_command_policy"]
     del mapping["stage2_command_policy"]
     del mapping["stage3_command_policy"]
+    del mapping["evidence_read_limits"]
     v2 = PipelineExecutionProfile.from_mapping(mapping)
 
     with psycopg.connect(DSN, autocommit=True) as connection:
@@ -900,7 +1128,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             try:
                 with pytest.raises(
                     psycopg.errors.RaiseException,
-                    match="new pre-v8 execution profile rows are forbidden",
+                    match="new pre-v9 execution profile rows are forbidden",
                 ):
                     cursor.execute(
                         """
@@ -1026,17 +1254,29 @@ async def test_leased_result_and_receipt_are_one_cas_projection(tmp_path: Path) 
         expected_version=portfolio.version,
         lease_id="worker-lease-4",
     )
-    media = await restarted.claim_next_pending(
+    blueprint = await restarted.claim_next_pending(
         run_id,
         expected_version=0,
         lease_id="worker-lease-5",
+    )
+    assert blueprint is not None and blueprint.stage == "stage3_blueprint"
+    await restarted.record_result(
+        run_id,
+        result=PipelineStageResult(blueprint.command_id, "succeeded", uuid4()),
+        expected_version=blueprint.version,
+        lease_id="worker-lease-5",
+    )
+    media = await restarted.claim_next_pending(
+        run_id,
+        expected_version=0,
+        lease_id="worker-lease-6",
     )
     assert media is not None and media.stage == "media_preflight"
     await restarted.record_result(
         run_id,
         result=PipelineStageResult(media.command_id, "succeeded", uuid4()),
         expected_version=media.version,
-        lease_id="worker-lease-5",
+        lease_id="worker-lease-6",
     )
     completed = await restarted.read_run(run_id)
     assert completed is not None and completed.status == "failed"
@@ -1080,7 +1320,7 @@ async def test_predecessor_denial_atomically_blocks_vlm_and_terminates_run(
     assert snapshot.commands[1].receipt_id is None
     assert snapshot.commands[1].blocking_command_id == source.command_id
     assert tuple(command.stage for command in snapshot.commands[1:]) == (
-        "vlm", "stage1_narrative", "stage2_portfolio", "media_preflight",
+        "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight",
     )
     assert all(
         command.status == "blocked"
@@ -1152,7 +1392,7 @@ async def test_blocked_command_rejects_later_failed_blocker(tmp_path: Path) -> N
         PipelineRunRequest("test", source_root=str(tmp_path / "later")),
         "postgres-blocker-later",
     )
-    source, vlm, _narrative, _media = submitted.snapshot.commands
+    source, vlm = submitted.snapshot.commands[:2]
 
     with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
         with psycopg.connect(DSN) as connection:
@@ -1179,7 +1419,7 @@ async def test_blocked_command_rejects_non_failure_predecessor(tmp_path: Path) -
         PipelineRunRequest("test", source_root=str(tmp_path / "success")),
         "postgres-blocker-success",
     )
-    source, vlm, _narrative, _media = submitted.snapshot.commands
+    source, vlm = submitted.snapshot.commands[:2]
 
     with pytest.raises(psycopg.DatabaseError, match="earlier denied/failed"):
         with psycopg.connect(DSN) as connection:
@@ -1953,6 +2193,15 @@ async def test_real_http_run_status_resume_survive_app_restart(
             },
             {
                 "command_id": status_body["commands"][4]["command_id"],
+                "stage": "stage3_blueprint",
+                "status": "pending",
+                "receipt_id": None,
+                "version": 0,
+                "lease_id": None,
+                "blocking_command_id": None,
+            },
+            {
+                "command_id": status_body["commands"][5]["command_id"],
                 "stage": "media_preflight",
                 "status": "pending",
                 "receipt_id": None,

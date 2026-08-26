@@ -225,9 +225,38 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
         assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
     assert insert.count("uuid4(), run_id") == 6
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
-    assert "->> 'schema_version' = 'pipeline-execution-profile-v8'" in source
+    assert "->> 'schema_version' = 'pipeline-execution-profile-v9'" in source
+    assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source
     assert "profile_run.execution_profile ? 'stage2_command_policy'" in source
     assert "profile_run.execution_profile ? 'stage3_command_policy'" in source
     assert "predecessor.ordinal < candidate.ordinal" in source
     assert "predecessor.state <> 'succeeded'" in source
+
+
+def test_evidence_budget_migration_closes_v9_without_backfilling_history() -> None:
+    """Static SQL contract only; actual migration execution is remote acceptance."""
+    sql = Path("packages/autocut-kernel/migrations/0022_evidence_read_limits_profile.sql").read_text()
+    for text in (
+        "BEGIN;", "COMMIT;",
+        "LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE",
+        "0022 refuses accepted/running pre-v9 runs",
+        "runtime.execution_profile_semantic_v9_is_valid",
+        "runtime.evidence_read_limits_shape_is_valid",
+        "runtime.stage1_policy_closed_object",
+        "profile_value - 'evidence_read_limits'",
+        "runtime.execution_profile_semantic_v8_is_valid(profile_value, run_state)",
+        "run_state IN ('succeeded', 'denied', 'failed')",
+        "historical pre-v9 execution profile rows are read-only",
+        "new pre-v9 execution profile rows are forbidden",
+        "'max_blob_bytes', 'max_total_blob_bytes'",
+        "jsonb_typeof(member) IS DISTINCT FROM 'number'",
+        "^[1-9][0-9]{0,15}$", "9007199254740991",
+        "(value ->> 'max_blob_bytes')::numeric <= (value ->> 'max_total_blob_bytes')::numeric",
+        ") IS TRUE);",
+    ):
+        assert text in sql
+    assert sql.index("!~ '^[1-9][0-9]{0,15}$'") < sql.index("::numeric >")
+    assert "UPDATE runtime.pipeline_runs" not in sql
+    assert "INSERT INTO runtime.pipeline_commands" not in sql
+    assert "double precision" not in sql

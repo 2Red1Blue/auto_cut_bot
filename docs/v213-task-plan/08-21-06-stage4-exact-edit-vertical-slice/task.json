@@ -5,7 +5,7 @@
   "description": "",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "Current slice: committed-reader-wave.md under production-integration-wave.md. Exact five-member reader implemented and tested; next whole-batch validation with independent evidence byte budgets, then Stage3 joins/physical Command. No legacy/config/real local execution.",
+  "scope": "Exact five-member and whole-batch readers with v9 independent cumulative evidence budgets implemented and reviewed. Next editorial-media-join-wave.md, then native local-evidence/piecewise-clock physical compilation. No legacy/config/real local execution.",
   "package": "autocut_kernel",
   "priority": "P0",
   "creator": "liuzx",
@@ -21,13 +21,13 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: production Stage1-3 Commands exist. Exact A/V primitives are reusable, but persisted timed-media decoders/reader, committed v2 clock consumption, durable Stage4 and production A/V Recipe/Render remain open. Fixture-only rendering is not production completion.",
+  "notes": "2026-08-26: Stage1-3 Commands and strict media codecs/child/batch readers exist. Actual Stage3/Catalog join, committed v2 clock consumption, local-evidence physical admission, durable Stage4 and production A/V Recipe/Render remain open. Fixture-only rendering is not production completion.",
   "meta": {
-    "current_wave": "committed-reader-wave.md",
+    "current_wave": "editorial-media-join-wave.md",
     "producer_prerequisite_checkpoint": "fd515321",
     "codec_checkpoint": "4955d1a7",
-    "local_validation": "1920 scoped media/domain/preflight/architecture tests plus 22 exact-reader tests passed; Ruff/types clean; no real DB/provider execution",
-    "next_action": "Whole timed batch reader and v9 explicit cumulative evidence budgets, then actual Stage3/Catalog physical join",
+    "local_validation": "2356 related pure regressions plus 8 batch tests passed; scoped Ruff/types clean; 112 remote/pure test cases collected only; no real DB/provider execution",
+    "next_action": "Read actual Stage3/Catalog and join every alternative to the exact timed-media batch; then candidate-local speech plus committed piecewise-clock physical compilation",
     "remote_acceptance": "not executed locally"
   }
 }

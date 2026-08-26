@@ -7,15 +7,15 @@ from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from tests.pipeline.runtime_profile_fixture import execution_profile, stage3_command_policy
 
 
-def test_v8_roundtrips_the_exact_closed_stage3_policy() -> None:
+def test_v9_roundtrips_the_exact_closed_stage3_policy() -> None:
     profile = execution_profile(stage3_policy=stage3_command_policy())
-    assert profile.schema_version == "pipeline-execution-profile-v8"
+    assert profile.schema_version == "pipeline-execution-profile-v9"
     assert PipelineExecutionProfile.from_mapping(profile.to_mapping()) == profile
     assert profile.build_stage3_command_policy() == stage3_command_policy()
 
 
 @pytest.mark.parametrize("field", ("stage3_command_policy", "stage2_command_policy"))
-def test_v8_requires_all_semantic_policies(field: str) -> None:
+def test_v9_requires_all_semantic_policies(field: str) -> None:
     mapping = execution_profile().to_mapping()
     del mapping[field]
     with pytest.raises(PipelineRunValidationError):
@@ -40,7 +40,7 @@ def test_stage3_policy_rehash_changes_execution_profile_identity() -> None:
         ("retry_policy", "max_attempts", None),
     ),
 )
-def test_v8_rejects_null_or_malformed_nested_stage3_policy_sections(
+def test_v9_rejects_null_or_malformed_nested_stage3_policy_sections(
     section: str, field: str, value: object,
 ) -> None:
     mapping = execution_profile().to_mapping()
@@ -50,7 +50,7 @@ def test_v8_rejects_null_or_malformed_nested_stage3_policy_sections(
 
 
 @pytest.mark.parametrize("section", ("generation", "draft_policy", "context_policy", "feasibility_policy", "retry_policy"))
-def test_v8_rejects_unknown_stage3_policy_nested_fields(section: str) -> None:
+def test_v9_rejects_unknown_stage3_policy_nested_fields(section: str) -> None:
     mapping = execution_profile().to_mapping()
     mapping["stage3_command_policy"][section]["unknown"] = True  # type: ignore[index]
     with pytest.raises(PipelineRunValidationError):
