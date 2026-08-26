@@ -26,10 +26,21 @@ SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-calibration-measurement-v1"
 SHADOW_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset(
     {"SHADOW_CALIBRATION_INVALID", "SHADOW_CALIBRATION_NATIVE_REJECTED"}
 )
+SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME = "MeasureShadowLocalCalibrationCommand@1"
+SHADOW_LOCAL_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-local-calibration-measurement-v1"
+SHADOW_LOCAL_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset(
+    {"SHADOW_LOCAL_CALIBRATION_INVALID_RAW"}
+)
 ShadowMeasurementAttemptState = Literal[
     "prepared", "collecting", "ready", "indeterminate", "committed"
 ]
 ShadowMeasurementMemberState = Literal["pending", "invoking", "staged", "indeterminate"]
+ShadowLocalMeasurementAttemptState = Literal[
+    "prepared", "collecting", "ready", "indeterminate", "committed", "denied"
+]
+ShadowLocalMeasurementMemberState = Literal[
+    "pending", "invoking", "not_started", "staged", "indeterminate", "rejected"
+]
 VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
@@ -1913,3 +1924,544 @@ class ShadowMeasurementTerminalDenialResult:
             or self.attempt.outcome != self.outcome
         ):
             raise StoreValidationError("shadow terminal denial result is not a closed denial")
+
+
+def _strict_media_canonical_json_object(value: str, field_name: str) -> dict[str, object]:
+    """Read a media-domain canonical object without crossing into Store hashing.
+
+    The local corpus values deliberately use the media codec's ``ensure_ascii=True``
+    representation.  Store plans and artifact payloads use their separate
+    ``ensure_ascii=False`` hash domain, so this helper must not call
+    :func:`_strict_canonical_json_object`.
+    """
+
+    def reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, member in pairs:
+            if type(key) is not str or key in result:  # noqa: E721
+                raise ValueError("duplicate or non-text JSON key")
+            result[key] = member
+        return result
+
+    try:
+        parsed = json.loads(
+            value,
+            object_pairs_hook=reject_duplicate_pairs,
+            parse_constant=lambda constant: (_ for _ in ()).throw(
+                ValueError(f"invalid JSON constant {constant}")
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise StoreValidationError(f"{field_name} must contain strict media JSON") from error
+    if type(parsed) is not dict:  # noqa: E721
+        raise StoreValidationError(f"{field_name} must contain a media JSON object")
+    canonical = json.dumps(parsed, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    if value != canonical:
+        raise StoreValidationError(f"{field_name} must be media-canonical JSON")
+    return cast(dict[str, object], parsed)
+
+
+def _media_canonical_hash(value: str, field_name: str) -> tuple[dict[str, object], str]:
+    parsed = _strict_media_canonical_json_object(value, field_name)
+    return parsed, "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _store_canonical_value_bytes(value: object, field_name: str) -> bytes:
+    """Compare plan fragments as JSON, never with Python's bool/int equality."""
+    try:
+        return json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
+        raise StoreValidationError(f"{field_name} must contain finite JSON values") from error
+
+
+def _blob_mapping(value: BlobRef) -> dict[str, object]:
+    return {
+        "object_id": str(value.object_id),
+        "content_hash": value.content_hash,
+        "byte_length": value.byte_length,
+        "media_type": value.media_type,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementMemberPlan:
+    """One immutable local case/request/source binding in a durable plan."""
+
+    member_ordinal: int
+    case_sha256: str
+    request_sha256: str
+    canonical_case_json: str
+    canonical_request_json: str
+    source_job_id: UUID
+    source_blob: BlobRef
+    source_blob_reference_sha256: str
+    binding_sha256: str
+    service_profile_sha256: str
+    max_response_bytes: int
+
+    def __post_init__(self) -> None:
+        if type(self.member_ordinal) is not int or self.member_ordinal < 0:  # noqa: E721
+            raise StoreValidationError("shadow-local member ordinal must be non-negative")
+        _sha256(self.case_sha256, "shadow-local member case_sha256")
+        _sha256(self.request_sha256, "shadow-local member request_sha256")
+        case, case_hash = _media_canonical_hash(
+            self.canonical_case_json, "shadow-local member canonical_case_json"
+        )
+        request, request_hash = _media_canonical_hash(
+            self.canonical_request_json, "shadow-local member canonical_request_json"
+        )
+        if self.case_sha256 != case_hash or self.request_sha256 != request_hash:
+            raise StoreValidationError("shadow-local member media hashes do not match canonical values")
+        if type(self.source_job_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local member source_job_id must be an exact UUID")
+        if type(self.source_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("shadow-local member source_blob must be an exact BlobRef")
+        _sha256(
+            self.source_blob_reference_sha256,
+            "shadow-local member source_blob_reference_sha256",
+        )
+        _sha256(self.binding_sha256, "shadow-local member binding_sha256")
+        _sha256(self.service_profile_sha256, "shadow-local member service_profile_sha256")
+        if type(self.max_response_bytes) is not int or self.max_response_bytes <= 0:  # noqa: E721
+            raise StoreValidationError("shadow-local member max_response_bytes must be positive")
+        # Preserve the parsed values only to force complete strict parsing above.
+        del case, request
+
+    def to_plan_mapping(self) -> dict[str, object]:
+        return {
+            "ordinal": self.member_ordinal,
+            "case_sha256": self.case_sha256,
+            "request_sha256": self.request_sha256,
+            "case": json.loads(self.canonical_case_json),
+            "request": json.loads(self.canonical_request_json),
+            "source_job_id": str(self.source_job_id),
+            "source_blob": _blob_mapping(self.source_blob),
+            "source_blob_reference_sha256": self.source_blob_reference_sha256,
+            "binding_sha256": self.binding_sha256,
+            "service_profile_sha256": self.service_profile_sha256,
+            "max_response_bytes": self.max_response_bytes,
+        }
+
+    def source_binding_mapping(self) -> dict[str, object]:
+        return {
+            "source_job_id": str(self.source_job_id),
+            "source_blob": _blob_mapping(self.source_blob),
+            "source_blob_reference_sha256": self.source_blob_reference_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementPlan:
+    """Closed Store-domain plan for one shadow-local recovery aggregate."""
+
+    claim: CommandClaim
+    canonical_plan_json: str
+    members: tuple[ShadowLocalMeasurementMemberPlan, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.claim) is not CommandClaim:  # noqa: E721
+            raise StoreValidationError("shadow-local plan requires an exact CommandClaim")
+        if (
+            self.claim.command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME
+            or self.claim.job.profile != "shadow"
+            or self.claim.execution_kind != "deterministic"
+        ):
+            raise StoreValidationError("shadow-local plan requires the exact deterministic shadow command")
+        payload = _strict_canonical_json_object(
+            self.canonical_plan_json, "shadow-local canonical_plan_json"
+        )
+        if canonical_payload_hash(self.canonical_plan_json) != self.claim.request_hash:
+            raise StoreValidationError("shadow-local plan does not match claim request_hash")
+        if set(payload) != {
+            "command",
+            "corpus_members",
+            "measurement_protocol",
+            "shadow_local_inputs",
+        }:
+            raise StoreValidationError("shadow-local plan shape is invalid")
+        if (
+            payload.get("command") != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME
+            or payload.get("measurement_protocol") != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_PROTOCOL
+        ):
+            raise StoreValidationError("shadow-local plan command or protocol is invalid")
+        summary = self.claim.request_hash.removeprefix("sha256:")
+        if (
+            self.claim.job.job_key != f"shadow-local:{summary}"
+            or self.claim.idempotency_key != f"shadow-local-measurement:{summary}"
+        ):
+            raise StoreValidationError("shadow-local plan claim identity is invalid")
+        inputs = payload.get("shadow_local_inputs")
+        if type(inputs) is not dict:  # noqa: E721
+            raise StoreValidationError("shadow-local plan inputs must be an object")
+        input_values = cast(dict[str, object], inputs)
+        if set(input_values) != {
+            "limits",
+            "manifest",
+            "max_attempt_count",
+            "service_profile",
+            "source_bindings",
+        }:
+            raise StoreValidationError("shadow-local plan inputs are not closed")
+        source_bindings_value: object = input_values["source_bindings"]
+        max_attempt_count: object = input_values["max_attempt_count"]
+        if (
+            type(input_values["service_profile"]) is not dict
+            or type(input_values["manifest"]) is not dict
+            or type(input_values["limits"]) is not dict
+            or type(source_bindings_value) is not list
+            or type(max_attempt_count) is not int
+            or max_attempt_count <= 0
+        ):
+            raise StoreValidationError("shadow-local plan input value types are invalid")
+        members = tuple(self.members)
+        if (
+            not members
+            or any(type(member) is not ShadowLocalMeasurementMemberPlan for member in members)
+        ):
+            raise StoreValidationError("shadow-local plan requires exact member plans")
+        if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
+            raise StoreValidationError("shadow-local member ordinals must be contiguous")
+        if len({member.case_sha256 for member in members}) != len(members):
+            raise StoreValidationError("shadow-local plan must not duplicate case hashes")
+        corpus_members = payload.get("corpus_members")
+        source_bindings = cast(list[object], source_bindings_value)
+        if (
+            type(corpus_members) is not list
+            or len(cast(list[object], corpus_members)) != len(members)
+            or len(source_bindings) != len(members)
+        ):
+            raise StoreValidationError("shadow-local plan member coverage is invalid")
+        for member, encoded, source in zip(
+            members,
+            cast(list[object], corpus_members),
+            source_bindings,
+            strict=True,
+        ):
+            if (
+                _store_canonical_value_bytes(encoded, "shadow-local encoded member")
+                != _store_canonical_value_bytes(
+                    member.to_plan_mapping(), "shadow-local expected member"
+                )
+                or _store_canonical_value_bytes(source, "shadow-local encoded source binding")
+                != _store_canonical_value_bytes(
+                    member.source_binding_mapping(), "shadow-local expected source binding"
+                )
+            ):
+                raise StoreValidationError("shadow-local plan member drifts from canonical plan")
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementMember:
+    attempt_id: UUID
+    case_sha256: str
+    request_sha256: str
+    member_ordinal: int
+    canonical_case_json: str
+    canonical_request_json: str
+    source_job_id: UUID
+    source_blob: BlobRef
+    source_blob_reference_sha256: str
+    binding_sha256: str
+    service_profile_sha256: str
+    max_response_bytes: int
+    state: ShadowLocalMeasurementMemberState
+    version: int
+    raw_blob: BlobRef | None = None
+    evidence_json: str | None = None
+    busy_proof_blob: BlobRef | None = None
+    busy_proof_json: str | None = None
+    lease_expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.attempt_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local member attempt_id must be an exact UUID")
+        plan = ShadowLocalMeasurementMemberPlan(
+            self.member_ordinal,
+            self.case_sha256,
+            self.request_sha256,
+            self.canonical_case_json,
+            self.canonical_request_json,
+            self.source_job_id,
+            self.source_blob,
+            self.source_blob_reference_sha256,
+            self.binding_sha256,
+            self.service_profile_sha256,
+            self.max_response_bytes,
+        )
+        del plan
+        if self.state not in (
+            "pending",
+            "invoking",
+            "not_started",
+            "staged",
+            "indeterminate",
+            "rejected",
+        ):
+            raise StoreValidationError("shadow-local member state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError("shadow-local member version must be non-negative")
+        if self.state == "staged":
+            if (
+                type(self.raw_blob) is not BlobRef
+                or self.evidence_json is None
+                or self.busy_proof_blob is not None
+                or self.busy_proof_json is not None
+            ):  # noqa: E721
+                raise StoreValidationError("staged shadow-local member requires BlobRef and evidence")
+            _strict_media_canonical_json_object(
+                self.evidence_json, "shadow-local member evidence_json"
+            )
+        elif self.state == "not_started":
+            if (
+                type(self.busy_proof_blob) is not BlobRef
+                or self.busy_proof_json is None
+                or self.raw_blob is not None
+                or self.evidence_json is not None
+            ):  # noqa: E721
+                raise StoreValidationError("not-started shadow-local member requires only a BUSY proof BlobRef")
+            proof = _strict_media_canonical_json_object(
+                self.busy_proof_json, "shadow-local member busy_proof_json"
+            )
+            if set(proof) != {
+                "binding_sha256",
+                "invocation_state",
+                "reason",
+                "request_sha256",
+                "schema_version",
+                "service_profile_sha256",
+            } or (
+                proof.get("schema_version") != "local-speech-window-busy-v1"
+                or proof.get("invocation_state") != "not_started"
+                or proof.get("reason") != "admission_busy"
+                or proof.get("request_sha256") != self.request_sha256
+                or proof.get("binding_sha256") != self.binding_sha256
+                or proof.get("service_profile_sha256") != self.service_profile_sha256
+            ):
+                raise StoreValidationError("shadow-local BUSY proof does not bind the exact member request")
+            if (
+                self.busy_proof_blob.content_hash
+                != "sha256:" + hashlib.sha256(self.busy_proof_json.encode("utf-8")).hexdigest()
+                or self.busy_proof_blob.byte_length != len(self.busy_proof_json.encode("utf-8"))
+            ):
+                raise StoreValidationError("shadow-local BUSY proof BlobRef does not bind exact proof bytes")
+        elif (
+            self.raw_blob is not None
+            or self.evidence_json is not None
+            or self.busy_proof_blob is not None
+            or self.busy_proof_json is not None
+        ):
+            raise StoreValidationError("only staged or not-started members may bind durable response bytes")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementAttempt:
+    attempt_id: UUID
+    command_slot_id: UUID
+    job: Job
+    plan_hash: str
+    canonical_plan_json: str
+    attempt_ordinal: int
+    previous_attempt_id: UUID | None
+    state: ShadowLocalMeasurementAttemptState
+    version: int
+    members: tuple[ShadowLocalMeasurementMember, ...]
+    outcome: CommandOutcome
+    recovery_lease_expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.attempt_id) is not UUID or type(self.command_slot_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt IDs must be exact UUIDs")
+        if type(self.job) is not Job or self.job.profile != "shadow":  # noqa: E721
+            raise StoreValidationError("shadow-local attempt requires an exact shadow Job")
+        _sha256(self.plan_hash, "shadow-local attempt plan_hash")
+        _strict_canonical_json_object(self.canonical_plan_json, "shadow-local attempt plan_json")
+        if type(self.attempt_ordinal) is not int or self.attempt_ordinal < 1:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt ordinal must be positive")
+        if self.previous_attempt_id is not None and type(self.previous_attempt_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local previous_attempt_id must be an exact UUID")
+        if self.state not in (
+            "prepared",
+            "collecting",
+            "ready",
+            "indeterminate",
+            "committed",
+            "denied",
+        ):
+            raise StoreValidationError("shadow-local attempt state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt version must be non-negative")
+        members = tuple(self.members)
+        if not members or any(type(member) is not ShadowLocalMeasurementMember for member in members):  # noqa: E721
+            raise StoreValidationError("shadow-local attempt requires exact members")
+        if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
+            raise StoreValidationError("shadow-local attempt members must be ordered")
+        if any(member.attempt_id != self.attempt_id for member in members):
+            raise StoreValidationError("shadow-local attempt member identity drift")
+        if type(self.outcome) is not CommandOutcome or self.outcome.command_slot_id != self.command_slot_id:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt outcome drift")
+        object.__setattr__(self, "members", members)
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementMemberLease:
+    member: ShadowLocalMeasurementMember
+    attempt_version: int
+    lease_token: str
+
+    def __post_init__(self) -> None:
+        if type(self.member) is not ShadowLocalMeasurementMember or self.member.state != "invoking":  # noqa: E721
+            raise StoreValidationError("shadow-local member lease requires an invoking member")
+        if type(self.attempt_version) is not int or self.attempt_version < 0:  # noqa: E721
+            raise StoreValidationError("shadow-local member lease attempt_version is invalid")
+        _text(self.lease_token, "shadow-local member lease_token")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementRecoveryLease:
+    attempt: ShadowLocalMeasurementAttempt
+    lease_token: str
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ShadowLocalMeasurementAttempt:  # noqa: E721
+            raise StoreValidationError("shadow-local recovery lease requires an exact attempt")
+        _text(self.lease_token, "shadow-local recovery lease_token")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementStagedResponse:
+    """Exact original response bytes and independently replayed local evidence."""
+
+    raw_bytes: bytes
+    content_hash: str
+    media_type: str
+    evidence_json: str
+
+    def __post_init__(self) -> None:
+        if type(self.raw_bytes) is not bytes or not self.raw_bytes:  # noqa: E721
+            raise StoreValidationError("shadow-local staged raw_bytes must be nonempty immutable bytes")
+        _sha256(self.content_hash, "shadow-local staged content_hash")
+        _text(self.media_type, "shadow-local staged media_type")
+        _strict_media_canonical_json_object(self.evidence_json, "shadow-local staged evidence_json")
+        actual = "sha256:" + hashlib.sha256(self.raw_bytes).hexdigest()
+        if actual != self.content_hash:
+            raise StoreValidationError("shadow-local staged raw bytes do not match content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementNotStartedProof:
+    """Bounded canonical BUSY bytes, distinct from a staged measurement response."""
+
+    raw_bytes: bytes
+    content_hash: str
+    media_type: str
+    proof_json: str
+
+    def __post_init__(self) -> None:
+        if type(self.raw_bytes) is not bytes or not self.raw_bytes:  # noqa: E721
+            raise StoreValidationError("shadow-local BUSY raw_bytes must be nonempty immutable bytes")
+        _sha256(self.content_hash, "shadow-local BUSY content_hash")
+        _text(self.media_type, "shadow-local BUSY media_type")
+        proof = _strict_media_canonical_json_object(
+            self.proof_json, "shadow-local BUSY proof_json"
+        )
+        if set(proof) != {
+            "binding_sha256",
+            "invocation_state",
+            "reason",
+            "request_sha256",
+            "schema_version",
+            "service_profile_sha256",
+        } or (
+            proof.get("schema_version") != "local-speech-window-busy-v1"
+            or proof.get("invocation_state") != "not_started"
+            or proof.get("reason") != "admission_busy"
+        ):
+            raise StoreValidationError("shadow-local BUSY proof is not a pre-dispatch refusal")
+        if self.raw_bytes != self.proof_json.encode("utf-8"):
+            raise StoreValidationError("shadow-local BUSY raw bytes must equal canonical proof bytes")
+        if self.content_hash != "sha256:" + hashlib.sha256(self.raw_bytes).hexdigest():
+            raise StoreValidationError("shadow-local BUSY raw bytes do not match content_hash")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementTerminalDenialRequest:
+    attempt_id: UUID
+    command_slot_id: UUID
+    job: Job
+    plan_hash: str
+    member_case_sha256: str
+    expected_attempt_version: int
+    expected_member_version: int
+    member_lease_token: str
+    failure_code: str
+    failure_detail_json: str
+    command_name: str = SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME
+
+    def __post_init__(self) -> None:
+        if type(self.attempt_id) is not UUID or type(self.command_slot_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local terminal denial IDs must be exact UUIDs")
+        if type(self.job) is not Job or self.job.profile != "shadow":  # noqa: E721
+            raise StoreValidationError("shadow-local terminal denial requires an exact shadow Job")
+        _sha256(self.plan_hash, "shadow-local terminal denial plan_hash")
+        _sha256(self.member_case_sha256, "shadow-local terminal denial member case")
+        for field_name in ("expected_attempt_version", "expected_member_version"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:  # noqa: E721
+                raise StoreValidationError(
+                    f"shadow-local terminal denial {field_name} must be a non-negative integer"
+                )
+        _text(self.member_lease_token, "shadow-local terminal denial member_lease_token")
+        if self.command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise StoreValidationError("shadow-local terminal denial command is invalid")
+        if self.failure_code not in SHADOW_LOCAL_CALIBRATION_TERMINAL_DENIAL_CODES:
+            raise StoreValidationError("shadow-local terminal denial failure_code is not allowlisted")
+        _strict_canonical_json_object(
+            self.failure_detail_json, "shadow-local terminal denial failure_detail_json"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementRetryAuthorization:
+    """Explicit authorization for one successor of an unknown local invocation."""
+
+    decision_reference_sha256: str
+    predecessor_plan_hash: str
+    predecessor_attempt_id: UUID
+    predecessor_version: int
+    member_case_sha256: str
+    next_attempt_ordinal: int
+    reason_code: Literal["NATIVE_OUTCOME_UNKNOWN", "REQUEST_NOT_STARTED"]
+
+    def __post_init__(self) -> None:
+        _sha256(self.decision_reference_sha256, "shadow-local retry decision reference")
+        _sha256(self.predecessor_plan_hash, "shadow-local retry predecessor plan hash")
+        if type(self.predecessor_attempt_id) is not UUID:  # noqa: E721
+            raise StoreValidationError("shadow-local retry predecessor_attempt_id must be an exact UUID")
+        if type(self.predecessor_version) is not int or self.predecessor_version < 0:  # noqa: E721
+            raise StoreValidationError("shadow-local retry predecessor_version is invalid")
+        _sha256(self.member_case_sha256, "shadow-local retry member case")
+        if type(self.next_attempt_ordinal) is not int or self.next_attempt_ordinal < 2:  # noqa: E721
+            raise StoreValidationError("shadow-local retry next_attempt_ordinal must be at least two")
+        if self.reason_code not in ("NATIVE_OUTCOME_UNKNOWN", "REQUEST_NOT_STARTED"):
+            raise StoreValidationError("shadow-local retry authorization reason is unsupported")
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowLocalMeasurementTerminalDenialResult:
+    attempt: ShadowLocalMeasurementAttempt
+    outcome: CommandOutcome
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ShadowLocalMeasurementAttempt:  # noqa: E721
+            raise StoreValidationError("shadow-local terminal denial result requires an exact attempt")
+        if type(self.outcome) is not CommandOutcome:  # noqa: E721
+            raise StoreValidationError("shadow-local terminal denial result requires an exact outcome")
+        if (
+            self.attempt.state != "denied"
+            or self.outcome.state != "denied"
+            or self.attempt.outcome != self.outcome
+        ):
+            raise StoreValidationError("shadow-local terminal denial result is not a closed denial")

@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend/database",
-  "currentPhase": "analysis",
-  "nextAction": "Design a sibling command, Store protocol and additive migration without widening complete-source calibration authority.",
+  "currentPhase": "implementation",
+  "nextAction": "Implement the dedicated Postgres journal methods, command and exact reader over the reviewed sibling local recovery contract.",
   "branch": "feat/v213-contract-codegen"
 }
