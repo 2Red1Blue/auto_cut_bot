@@ -18,11 +18,12 @@ from autocut_kernel.store import CommandOutcome
 
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.models import PipelineCommand
-from auto_cut_bot.pipeline.runtime.semantic_predecessors import read_stage1_pipeline_request
-from auto_cut_bot.pipeline.runtime.stage2_portfolio_stage import (
-    Stage2PortfolioPipelineStage,
+from auto_cut_bot.pipeline.runtime.semantic_predecessors import (
+    read_stage1_pipeline_request,
+    read_stage2_pipeline_request,
     stage2_portfolio_kernel_idempotency_key,
 )
+from auto_cut_bot.pipeline.runtime.stage2_portfolio_stage import Stage2PortfolioPipelineStage
 from tests.pipeline.installed_profile_fixture import synthetic_installed_resource
 from tests.pipeline.test_stage1_narrative_stage import (
     RUN_ID,
@@ -130,6 +131,10 @@ async def test_exact_predecessor_and_policy_request_reconstructed_off_event_loop
     assert read_stage1_pipeline_request(store, job=request.job, run_id=ctx.run_id,
                                        execution_profile_hash=ctx.execution_profile_hash,
                                        policy=ctx.execution_profile.build_stage1_command_policy()) == request.stage1_request
+    assert read_stage2_pipeline_request(store, job=request.job, run_id=ctx.run_id,
+                                       execution_profile_hash=ctx.execution_profile_hash,
+                                       stage1_policy=ctx.execution_profile.build_stage1_command_policy(),
+                                       stage2_policy=ctx.execution_profile.build_stage2_command_policy()) == request
 
 
 @pytest.mark.asyncio

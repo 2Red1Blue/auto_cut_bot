@@ -1,19 +1,24 @@
-"""Shared read-only Source/VLM -> frozen Stage 1 request reconstruction.
+"""Shared read-only reconstruction of exact semantic predecessor requests.
 
-Both semantic stages use this owner; rebuilding a request never executes Stage1
+Semantic stages use this owner; rebuilding a request never executes a predecessor
 or grants Admission. Kernel committed readers remain the authority for content.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Protocol
 
+from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
 from autocut_kernel.pipeline.build_narrative_graph_command import NarrativeGraphStore
 from autocut_kernel.pipeline.build_narrative_graph_request import BuildNarrativeGraphRequest
+from autocut_kernel.pipeline.compile_story_portfolio_request import CompileStoryPortfolioRequest
 from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
 from autocut_kernel.store import (
     ArtifactScope,
+    CommandOutcome,
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
     Job,
@@ -106,5 +111,51 @@ def read_stage1_pipeline_request(
         CommittedSemanticInputsRequest(job, source, aggregate),
         stage1_narrative_kernel_idempotency_key(
             run_id=run_id, source_bundle=source_bundle, execution_profile_hash=execution_profile_hash,
+        ),
+    )
+
+
+def stage2_portfolio_kernel_idempotency_key(
+    *, run_id: str, execution_profile_hash: str, stage1_idempotency_key: str,
+) -> str:
+    validate_run_id(run_id)
+    if (type(execution_profile_hash) is not str  # noqa: E721
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", execution_profile_hash) is None
+            or type(stage1_idempotency_key) is not str  # noqa: E721
+            or re.fullmatch(r"stage1-narrative:[0-9a-f]{64}", stage1_idempotency_key) is None):
+        raise PipelineRunValidationError("Stage 2 identity requires exact profile and Stage 1 request keys")
+    digest = canonical_json_hash({"run_id": run_id, "execution_profile_hash": execution_profile_hash,
+                                  "stage1_idempotency_key": stage1_idempotency_key})
+    return "stage2-portfolio:" + digest.removeprefix("sha256:")
+
+
+def read_stage2_pipeline_request(
+    store: Stage1NarrativePipelineStore, *, job: Job, run_id: str,
+    execution_profile_hash: str, stage1_policy: Stage1CommandPolicy, stage2_policy: Stage2CommandPolicy,
+) -> CompileStoryPortfolioRequest | None:
+    if type(stage2_policy) is not Stage2CommandPolicy:  # noqa: E721
+        raise PipelineRunValidationError("semantic predecessor requires an exact Stage 2 policy")
+    predecessor = read_stage1_pipeline_request(
+        store, job=job, run_id=run_id, execution_profile_hash=execution_profile_hash, policy=stage1_policy,
+    )
+    if predecessor is None:
+        return None
+    outcome = store.read_outcome(job, predecessor.idempotency_key)
+    if outcome is None:
+        return None
+    if type(outcome) is not CommandOutcome:  # noqa: E721
+        raise PipelineRunValidationError("Stage 1 predecessor outcome is unsupported")
+    if outcome.state in ("pending", "running"):
+        return None
+    if outcome.state in ("denied", "failed"):
+        raise PipelineRunValidationError("Stage 2 cannot execute after a terminal Stage 1 predecessor")
+    if outcome.state != "succeeded":
+        raise PipelineRunValidationError("Stage 1 predecessor outcome is unsupported")
+    # The constructor requires full succeeded identity; the downstream Kernel
+    # Command independently reads actual committed content before generation.
+    return stage2_policy.build_request(
+        predecessor, outcome, stage2_portfolio_kernel_idempotency_key(
+            run_id=run_id, execution_profile_hash=execution_profile_hash,
+            stage1_idempotency_key=predecessor.idempotency_key,
         ),
     )

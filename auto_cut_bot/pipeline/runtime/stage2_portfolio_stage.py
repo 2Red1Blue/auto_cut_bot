@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 
-from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
 from autocut_kernel.pipeline.compile_story_portfolio_command import (
     CompileStoryPortfolioCommand,
     CompileStoryPortfolioResult,
@@ -17,21 +15,7 @@ from autocut_kernel.store import CommandOutcome, Job
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
-from .semantic_predecessors import Stage1NarrativePipelineStore, read_stage1_pipeline_request
-
-
-def stage2_portfolio_kernel_idempotency_key(
-    *, run_id: str, execution_profile_hash: str, stage1_idempotency_key: str,
-) -> str:
-    validate_run_id(run_id)
-    if (type(execution_profile_hash) is not str  # noqa: E721
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", execution_profile_hash) is None
-            or type(stage1_idempotency_key) is not str  # noqa: E721
-            or re.fullmatch(r"stage1-narrative:[0-9a-f]{64}", stage1_idempotency_key) is None):
-        raise PipelineRunValidationError("Stage 2 identity requires exact profile and Stage 1 request keys")
-    digest = canonical_json_hash({"run_id": run_id, "execution_profile_hash": execution_profile_hash,
-                                  "stage1_idempotency_key": stage1_idempotency_key})
-    return "stage2-portfolio:" + digest.removeprefix("sha256:")
+from .semantic_predecessors import Stage1NarrativePipelineStore, read_stage2_pipeline_request
 
 
 class Stage2PortfolioPipelineStage:
@@ -63,26 +47,10 @@ class Stage2PortfolioPipelineStage:
                     or stage2_policy != installed.local_run.stage2_command_policy
                     or stage2_policy.canonical_hash != installed.local_run.stage2_command_policy_sha256):
                 raise PipelineRunValidationError("persisted semantic policies differ from installed Stage 1/2 policies")
-        predecessor = read_stage1_pipeline_request(
+        return read_stage2_pipeline_request(
             self._store, job=job, run_id=context.run_id,
-            execution_profile_hash=context.execution_profile_hash, policy=stage1_policy,
-        )
-        if predecessor is None:
-            return None
-        outcome = self._store.read_outcome(job, predecessor.idempotency_key)
-        if outcome is None or outcome.state in ("pending", "running"):
-            return None
-        if outcome.state in ("denied", "failed"):
-            raise PipelineRunValidationError("Stage 2 cannot execute after a terminal Stage 1 predecessor")
-        if type(outcome) is not CommandOutcome or outcome.state != "succeeded":  # noqa: E721
-            raise PipelineRunValidationError("Stage 1 predecessor outcome is unsupported")
-        # The request constructor requires full succeeded Job/slot/Receipt/Set;
-        # the Command independently re-reads that result before any generation.
-        return stage2_policy.build_request(
-            predecessor, outcome, stage2_portfolio_kernel_idempotency_key(
-                run_id=context.run_id, execution_profile_hash=context.execution_profile_hash,
-                stage1_idempotency_key=predecessor.idempotency_key,
-            ),
+            execution_profile_hash=context.execution_profile_hash,
+            stage1_policy=stage1_policy, stage2_policy=stage2_policy,
         )
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
@@ -112,4 +80,4 @@ class Stage2PortfolioPipelineStage:
         return PipelineStageResult(context.command.command_id, outcome.state, outcome.receipt_id)
 
 
-__all__ = ("Stage2PortfolioPipelineStage", "stage2_portfolio_kernel_idempotency_key")
+__all__ = ("Stage2PortfolioPipelineStage",)
