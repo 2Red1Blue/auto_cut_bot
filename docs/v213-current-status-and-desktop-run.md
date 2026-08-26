@@ -28,6 +28,8 @@ Authority、Profile 或 CalibrationRecord。
   `127.0.0.1:18765`、与 nanobot gateway 的 `8765` 不冲突。
 - Stage 4 的整数 tick、A/V 端点、边界证据与候选选择的 Kernel 基础已实现并有
   针对性契约测试。
+- Stage 4 的 root/timed/分段时钟证据严格解码已交付 `4955d1a7`，1795 项相关回归
+  通过并完成独立审查。它们还不是数据库整批读取器或生产剪辑准入；后两者正在接入。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact

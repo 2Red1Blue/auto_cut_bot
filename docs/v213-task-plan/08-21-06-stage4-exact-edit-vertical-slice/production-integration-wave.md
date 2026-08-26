@@ -83,3 +83,22 @@ Run scoped pytest, Ruff, types, independent review and save coherent commits
 on feat/v213-contract-codegen. No local DB/migration/model/service/full Pipeline.
 Desktop owns real calibration, PostgreSQL restart/replay and episode acceptance.
 Codecs alone do not complete Task06, grant a Recipe or enable whole-run success.
+
+## Delivered codec checkpoint
+
+4955d1a7 implements root, candidate timed-evidence and presentation-certificate/
+profile-admission codecs using the existing wire/domain types. Final local
+codec/domain/preflight/architecture suite: 1795 passed; Ruff and production
+types clean. Independent read-only root/timed/presentation reviews accepted
+the slice, including the constructor count-check ordering correction above.
+
+Cross-codec tests decode actual in-memory preflight output, read the probe via
+the existing SourceManifest decoder and replay both clock-certificate and
+profile-admission inputs. A fully rehashed changed snap allowance is still
+rejected by probe replay. These tests do not establish real detector execution,
+SQL commitment or a production Stage4 admission.
+
+Next: the exact five-member/whole-batch reader with bounded materialization and
+committed Source/VLM/Registry/calibration joins. Codecs must be consumed there;
+do not reopen codec design or treat arbitrary decoded values as that reader.
+Then implement the Stage3/Catalog physical join and production A/V editing.

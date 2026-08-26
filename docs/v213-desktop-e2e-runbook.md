@@ -219,6 +219,7 @@ uv run auto_cut_bot serve \
 - Doubao Ark streaming VLM 接口；
 - SenseVoiceSmall + FSMN-VAD 的 timed evidence 接口；
 - Stage 4 整数 tick、A/V 边界与 ExactSpan 基础；
+- Stage 4 三类媒体证据严格解码（`4955d1a7`）；整批持久化读取与物理准入尚未接通；
 - Pipeline HTTP 到共享 Kernel 的边界；
 - Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；

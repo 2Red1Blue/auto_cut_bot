@@ -5,7 +5,7 @@
   "description": "",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "Current wave: production-integration-wave.md. First slice owns new root/timed/presentation evidence codecs and tests only; later exact readers, Stage3 joins and physical Command/Recipe require their own frozen file assignment. No legacy/config/real local execution.",
+  "scope": "Current wave: production-integration-wave.md. Codec slice includes strict root/timed/presentation readers and the reviewed CandidateEvidenceWindowPlan validation-order correction. Next exact batch readers/Stage3 joins/physical Command use explicit per-file ownership. No legacy/config/real local execution.",
   "package": "autocut_kernel",
   "priority": "P0",
   "creator": "liuzx",
@@ -22,5 +22,11 @@
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
   "notes": "2026-08-26: production Stage1-3 Commands exist. Exact A/V primitives are reusable, but persisted timed-media decoders/reader, committed v2 clock consumption, durable Stage4 and production A/V Recipe/Render remain open. Fixture-only rendering is not production completion.",
-  "meta": {"current_wave": "production-integration-wave.md", "remote_acceptance": "not executed locally"}
+  "meta": {
+    "current_wave": "production-integration-wave.md",
+    "codec_checkpoint": "4955d1a7",
+    "local_validation": "1795 codec/domain/preflight/architecture tests passed; independent reviews accepted; Ruff/types clean",
+    "next_action": "Exact five-member and whole timed batch reader, then actual Stage3/Catalog physical join",
+    "remote_acceptance": "not executed locally"
+  }
 }

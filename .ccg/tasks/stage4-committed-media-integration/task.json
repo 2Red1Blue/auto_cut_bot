@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "First deliver strict existing-wire root/candidate/presentation evidence codecs, then exact timed batch reader and actual Stage3/Catalog join. No fixture authority or local real execution.",
+  "nextAction": "Strict root/candidate/presentation evidence codecs delivered4955d1a7 with independent review and1795 scoped tests. Implement exact timed five-member/whole-batch reader next, then actual Stage3/Catalog join and production physical Command/Recipe/Render. No fixture authority or local real execution.",
   "branch": "feat/v213-contract-codegen",
   "trellisTask": ".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice",
   "createdAt": "2026-08-26"
