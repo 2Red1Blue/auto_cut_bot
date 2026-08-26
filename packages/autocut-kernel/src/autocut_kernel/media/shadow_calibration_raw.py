@@ -12,6 +12,12 @@ import uuid
 from dataclasses import dataclass
 from typing import cast
 
+from ..contracts.compiler.canonical import (
+    canonical_json_bytes,
+    canonical_json_hash,
+    load_canonical_json_bytes,
+)
+from ..contracts.compiler.errors import CanonicalizationError
 from .calibration import (
     CalibrationAnchor,
     CalibrationAnchorMatch,
@@ -27,6 +33,7 @@ SHADOW_CALIBRATION_RAW_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response
 SHADOW_CALIBRATION_RAW_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RAW_RESPONSE_MEDIA_TYPE = "application/vnd.autocut.funasr-native-response+json"
 SHADOW_CALIBRATION_RAW_EVIDENCE_INVALID = "SHADOW_CALIBRATION_RAW_EVIDENCE_INVALID"
+SHADOW_CALIBRATION_ANCHOR_SET_SCHEMA = "shadow-calibration-anchor-set-v1"
 
 
 class ShadowCalibrationRawEvidenceError(ValueError):
@@ -471,6 +478,8 @@ class ShadowCalibrationInvocation:
             raise _invalid("invocation request mapping hash does not match canonical mapping")
         if self.request_identity_sha256 != self.request_mapping_sha256:
             raise _invalid("invocation request identity does not match canonical mapping")
+        if self.corpus_member_reference_sha256 != self.request_mapping.source.corpus_member_reference_sha256:
+            raise _invalid("invocation corpus reference does not match its source")
 
 
 @dataclass(frozen=True, slots=True)
@@ -585,6 +594,13 @@ class ShadowCalibrationRawContext:
             identifiers = tuple(anchor.anchor_id for anchor in anchors)
             if len(identifiers) != len(set(identifiers)):
                 raise _invalid(f"context {label} anchors duplicate IDs")
+            if any(not self.audio_clock.full_range.contains(anchor.expected_range) for anchor in anchors):
+                raise _invalid(f"context {label} anchors lie outside the source clock range")
+            if any(
+                left.expected_range.end_pts > right.expected_range.start_pts
+                for left, right in zip(anchors, anchors[1:], strict=False)
+            ):
+                raise _invalid(f"context {label} anchors must be ordered and non-overlapping")
 
     @property
     def producer_identities(
@@ -834,13 +850,12 @@ def _measurement(
         raise _invalid(str(error)) from error
 
 
-def decode_shadow_calibration_raw_response(
+def derive_shadow_calibration_raw_response(
     blob: ShadowCalibrationRawBlob,
     invocation: ShadowCalibrationInvocation,
     context: ShadowCalibrationRawContext,
-    claimed_projection: ShadowCalibrationProjection,
 ) -> DecodedShadowCalibrationRawResponse:
-    """Strictly derive and verify one complete calibration result projection."""
+    """Independently derive one complete projection from immutable raw evidence."""
     if type(blob) is not ShadowCalibrationRawBlob:  # noqa: E721
         raise _invalid("blob must be an exact ShadowCalibrationRawBlob")
     if (
@@ -848,8 +863,6 @@ def decode_shadow_calibration_raw_response(
         or type(context) is not ShadowCalibrationRawContext
     ):  # noqa: E721
         raise _invalid("invocation and context must be exact typed values")
-    if type(claimed_projection) is not ShadowCalibrationProjection:  # noqa: E721
-        raise _invalid("claimed projection must be exact")
     response = _strict_json_object(blob.raw)
     required_fields = frozenset(
         {
@@ -961,6 +974,417 @@ def decode_shadow_calibration_raw_response(
         )
     except CalibrationRecordError as error:
         raise _invalid(str(error)) from error
-    if projection != claimed_projection:
-        raise _invalid("claimed projection does not exactly equal the raw-derived projection")
     return DecodedShadowCalibrationRawResponse(projection, word_gap_segments)
+
+
+def decode_shadow_calibration_raw_response(
+    blob: ShadowCalibrationRawBlob,
+    invocation: ShadowCalibrationInvocation,
+    context: ShadowCalibrationRawContext,
+    claimed_projection: ShadowCalibrationProjection,
+) -> DecodedShadowCalibrationRawResponse:
+    """Backward-compatible verification of an untrusted claim against raw derivation."""
+    if type(claimed_projection) is not ShadowCalibrationProjection:  # noqa: E721
+        raise _invalid("claimed projection must be exact")
+    decoded = derive_shadow_calibration_raw_response(blob, invocation, context)
+    if decoded.projection != claimed_projection:
+        raise _invalid("claimed projection does not exactly equal the raw-derived projection")
+    return decoded
+
+
+def _canonical_mapping(mapping: dict[str, object], label: str) -> dict[str, object]:
+    try:
+        canonical_json_bytes(mapping)
+    except CanonicalizationError as error:
+        raise _invalid(f"{label} is not canonical-subset JSON") from error
+    return mapping
+
+
+def _persisted_object(value: object, fields: frozenset[str], label: str) -> dict[str, object]:
+    if type(value) is bytes:  # noqa: E721
+        try:
+            decoded, canonical = load_canonical_json_bytes(value, origin=label)
+        except (CanonicalizationError, ValueError) as error:
+            raise _invalid(f"{label} must be strict UTF-8 canonical-subset JSON") from error
+        if value != canonical:
+            raise _invalid(f"{label} bytes must use exact canonical encoding")
+        value = decoded
+    mapping = _exact_object(value, fields, label)
+    return _canonical_mapping(mapping, label)
+
+
+def _range_mapping(value: TickRange) -> dict[str, int]:
+    return {"in_tick": value.start_pts, "out_tick": value.end_pts}
+
+
+def _time_base_mapping(value: TimeBase) -> dict[str, int]:
+    return {"denominator": value.denominator, "numerator": value.numerator}
+
+
+def _anchor_mapping(anchor: CalibrationAnchor) -> dict[str, object]:
+    return {
+        "anchor_id": anchor.anchor_id,
+        "clock_id": anchor.clock_id,
+        "expected_range": _range_mapping(anchor.expected_range),
+        "producer": anchor.producer.value,
+        "producer_id": anchor.producer_id,
+        "time_base": _time_base_mapping(anchor.time_base),
+    }
+
+
+def _observation_mapping(observation: CalibrationObservation) -> dict[str, object]:
+    return {
+        "clock_id": observation.clock_id,
+        "inference_kind": observation.inference_kind,
+        "observation_id": observation.observation_id,
+        "observed_range": _range_mapping(observation.observed_range),
+        "producer": observation.producer.value,
+        "producer_id": observation.producer_id,
+        "time_base": _time_base_mapping(observation.time_base),
+    }
+
+
+def _match_mapping(match: CalibrationAnchorMatch) -> dict[str, object]:
+    return {
+        "absolute_tick": match.absolute_tick,
+        "anchor": _anchor_mapping(match.anchor),
+        "early_tick": match.early_tick,
+        "late_tick": match.late_tick,
+        "observation": _observation_mapping(match.observation),
+    }
+
+
+def _measurement_mapping(measurement: ProducerCalibrationMeasurement) -> dict[str, object]:
+    return {
+        "absolute_maximum_tick": measurement.absolute_maximum_tick,
+        "accepted_bound_tick": measurement.accepted_bound_tick,
+        "clock_id": measurement.clock_id,
+        "early_maximum_tick": measurement.early_maximum_tick,
+        "inference_kind": measurement.inference_kind,
+        "late_maximum_tick": measurement.late_maximum_tick,
+        "matches": [_match_mapping(match) for match in measurement.matches],
+        "matched_anchor_count": len(measurement.matches),
+        "producer": measurement.producer.value,
+        "producer_id": measurement.producer_id,
+        "time_base": _time_base_mapping(measurement.time_base),
+    }
+
+
+def shadow_calibration_invocation_mapping(
+    invocation: ShadowCalibrationInvocation,
+) -> dict[str, object]:
+    """Encode the exact invocation shape persisted by shadow measurement."""
+    if type(invocation) is not ShadowCalibrationInvocation:  # noqa: E721
+        raise _invalid("invocation encoder requires an exact invocation")
+    return _canonical_mapping(
+        {
+            "corpus_member_reference_sha256": invocation.corpus_member_reference_sha256,
+            "request_identity_sha256": invocation.request_identity_sha256,
+            "request_mapping": invocation.request_mapping.to_mapping(),
+            "request_mapping_sha256": invocation.request_mapping_sha256,
+        },
+        "invocation",
+    )
+
+
+def shadow_calibration_context_mapping(context: ShadowCalibrationRawContext) -> dict[str, object]:
+    """Encode the full persisted source, producer, policy and expected-anchor context."""
+    if type(context) is not ShadowCalibrationRawContext:  # noqa: E721
+        raise _invalid("context encoder requires an exact raw context")
+    return _canonical_mapping(
+        {
+            "asr_anchors": [_anchor_mapping(item) for item in context.asr_anchors],
+            "asr_identity": context.asr_identity.to_mapping(),
+            "audio_clock": context.audio_clock.to_mapping(),
+            "container": context.container.to_mapping(),
+            "native_profile_identity_sha256": context.native_profile_identity_sha256,
+            "policies": {
+                "timed_speech_policy_sha256": context.policies.timed_speech_policy_sha256,
+                "vad_merge_gap_ms": context.policies.vad_merge_gap_ms,
+                "vad_merge_policy_sha256": context.policies.vad_merge_policy_sha256,
+                "word_gap_ms": context.policies.word_gap_ms,
+                "word_gap_policy_sha256": context.policies.word_gap_policy_sha256,
+            },
+            "source": context.source.to_mapping(),
+            "source_byte_limits": context.source_byte_limits.to_mapping(),
+            "transcript_capability": context.transcript_capability.to_mapping(),
+            "vad_anchors": [_anchor_mapping(item) for item in context.vad_anchors],
+            "vad_identity": context.vad_identity.to_mapping(),
+        },
+        "raw context",
+    )
+
+
+def shadow_calibration_projection_mapping(
+    projection: ShadowCalibrationProjection,
+) -> dict[str, object]:
+    """Encode the persisted projection shape; encoding never establishes acceptance."""
+    if type(projection) is not ShadowCalibrationProjection:  # noqa: E721
+        raise _invalid("projection encoder requires an exact projection")
+    return _canonical_mapping(
+        {
+            "asr_observations": [
+                {"observation": _observation_mapping(item.observation), "text": item.text}
+                for item in projection.asr_observations
+            ],
+            "native_request_identity_sha256": projection.native_request_identity_sha256,
+            "reported_native_identity_sha256": projection.reported_native_identity_sha256,
+            "summary": {
+                "asr": _measurement_mapping(projection.summary.asr),
+                "vad": _measurement_mapping(projection.summary.vad),
+            },
+            "vad_observations": [_observation_mapping(item) for item in projection.vad_observations],
+            "word_gap_segments": [
+                {
+                    "observed_range": _range_mapping(item.observed_range),
+                    "segment_id": item.segment_id,
+                    "text": item.text,
+                }
+                for item in projection.word_gap_segments
+            ],
+        },
+        "projection",
+    )
+
+
+def shadow_calibration_anchor_reference_sha256(context: ShadowCalibrationRawContext) -> str:
+    """Hash the ordered anchor-set document, excluding its own reference/hash."""
+    if type(context) is not ShadowCalibrationRawContext:  # noqa: E721
+        raise _invalid("anchor reference requires an exact raw context")
+    return canonical_json_hash(
+        _canonical_mapping(
+            {
+                "schema_version": SHADOW_CALIBRATION_ANCHOR_SET_SCHEMA,
+                "asr_anchors": [_anchor_mapping(item) for item in context.asr_anchors],
+                "vad_anchors": [_anchor_mapping(item) for item in context.vad_anchors],
+            },
+            "anchor set",
+        )
+    )
+
+
+def _decode_persisted_source(value: object) -> ShadowCalibrationSource:
+    mapping = _exact_object(
+        value,
+        frozenset(
+            {
+                "source_id", "source_sha256", "corpus_member_reference_sha256", "blob_id",
+                "blob_sha256", "blob_byte_length", "blob_media_type",
+            }
+        ),
+        "context.source",
+    )
+    return ShadowCalibrationSource(
+        _text(mapping["source_id"], "context.source.source_id"),
+        _sha(mapping["source_sha256"], "context.source.source_sha256"),
+        _sha(mapping["corpus_member_reference_sha256"], "context.source.corpus_member_reference_sha256"),
+        _text(mapping["blob_id"], "context.source.blob_id"),
+        _sha(mapping["blob_sha256"], "context.source.blob_sha256"),
+        _integer(mapping["blob_byte_length"], "context.source.blob_byte_length"),
+        _text(mapping["blob_media_type"], "context.source.blob_media_type"),
+    )
+
+
+def _decode_source_limits(value: object) -> ShadowCalibrationSourceByteLimits:
+    mapping = _exact_object(
+        value,
+        frozenset({"kernel_max_source_bytes", "service_max_request_bytes", "effective_max_source_bytes"}),
+        "source_byte_limits",
+    )
+    return ShadowCalibrationSourceByteLimits(
+        _integer(mapping["kernel_max_source_bytes"], "source_byte_limits.kernel_max_source_bytes"),
+        _integer(mapping["service_max_request_bytes"], "source_byte_limits.service_max_request_bytes"),
+        _integer(mapping["effective_max_source_bytes"], "source_byte_limits.effective_max_source_bytes"),
+    )
+
+
+def _decode_container(value: object) -> ShadowCalibrationContainer:
+    mapping = _exact_object(value, frozenset({"media_type", "safe_suffix"}), "container")
+    return ShadowCalibrationContainer(
+        _text(mapping["media_type"], "container.media_type"),
+        _text(mapping["safe_suffix"], "container.safe_suffix"),
+    )
+
+
+def _decode_capability(value: object) -> ShadowCalibrationTranscriptCapability:
+    mapping = _exact_object(
+        value,
+        frozenset({"profile", "segment", "segment_semantics", "sentence", "word", "word_timing"}),
+        "transcript_capability",
+    )
+    return ShadowCalibrationTranscriptCapability(
+        _text(mapping["profile"], "transcript_capability.profile"),
+        _text(mapping["segment"], "transcript_capability.segment"),
+        _text(mapping["segment_semantics"], "transcript_capability.segment_semantics"),
+        _text(mapping["sentence"], "transcript_capability.sentence"),
+        _text(mapping["word"], "transcript_capability.word"),
+        _text(mapping["word_timing"], "transcript_capability.word_timing"),
+    )
+
+
+def _decode_policies(value: object) -> ShadowCalibrationPolicies:
+    mapping = _exact_object(
+        value,
+        frozenset(
+            {
+                "timed_speech_policy_sha256", "word_gap_policy_sha256", "vad_merge_policy_sha256",
+                "word_gap_ms", "vad_merge_gap_ms",
+            }
+        ),
+        "policies",
+    )
+    return ShadowCalibrationPolicies(
+        _sha(mapping["timed_speech_policy_sha256"], "policies.timed_speech_policy_sha256"),
+        _sha(mapping["word_gap_policy_sha256"], "policies.word_gap_policy_sha256"),
+        _sha(mapping["vad_merge_policy_sha256"], "policies.vad_merge_policy_sha256"),
+        _integer(mapping["word_gap_ms"], "policies.word_gap_ms"),
+        _integer(mapping["vad_merge_gap_ms"], "policies.vad_merge_gap_ms"),
+    )
+
+
+def _decode_anchors(value: object, label: str) -> tuple[CalibrationAnchor, ...]:
+    if type(value) is not list or not value:  # noqa: E721
+        raise _invalid(f"{label} must be a non-empty array")
+    anchors: list[CalibrationAnchor] = []
+    for index, item in enumerate(cast(list[object], value)):
+        mapping = _exact_object(
+            item,
+            frozenset({"anchor_id", "clock_id", "expected_range", "producer", "producer_id", "time_base"}),
+            f"{label}[{index}]",
+        )
+        try:
+            producer = CalibrationProducer(_text(mapping["producer"], f"{label}[{index}].producer"))
+            anchors.append(
+                CalibrationAnchor(
+                    _text(mapping["anchor_id"], f"{label}[{index}].anchor_id"),
+                    producer,
+                    _text(mapping["producer_id"], f"{label}[{index}].producer_id"),
+                    _text(mapping["clock_id"], f"{label}[{index}].clock_id"),
+                    _time_base(mapping["time_base"], f"{label}[{index}].time_base"),
+                    _tick_range(mapping["expected_range"], f"{label}[{index}].expected_range"),
+                )
+            )
+        except (ValueError, CalibrationRecordError) as error:
+            raise _invalid(f"{label}[{index}] is invalid") from error
+    return tuple(anchors)
+
+
+def decode_shadow_calibration_raw_context(value: object) -> ShadowCalibrationRawContext:
+    """Decode a closed persisted context mapping, or its exact canonical JSON bytes."""
+    mapping = _persisted_object(
+        value,
+        frozenset(
+            {
+                "source", "source_byte_limits", "container", "audio_clock", "policies",
+                "native_profile_identity_sha256", "transcript_capability", "asr_identity",
+                "vad_identity", "asr_anchors", "vad_anchors",
+            }
+        ),
+        "persisted raw context",
+    )
+    return ShadowCalibrationRawContext(
+        _decode_persisted_source(mapping["source"]),
+        _decode_source_limits(mapping["source_byte_limits"]),
+        _decode_container(mapping["container"]),
+        _decode_clock(mapping["audio_clock"]),
+        _decode_policies(mapping["policies"]),
+        _sha(mapping["native_profile_identity_sha256"], "context.native_profile_identity_sha256"),
+        _decode_capability(mapping["transcript_capability"]),
+        _decode_identity(mapping["asr_identity"], CalibrationProducer.ASR),
+        _decode_identity(mapping["vad_identity"], CalibrationProducer.VAD),
+        _decode_anchors(mapping["asr_anchors"], "context.asr_anchors"),
+        _decode_anchors(mapping["vad_anchors"], "context.vad_anchors"),
+    )
+
+
+def _decode_persisted_request(
+    value: object, context: ShadowCalibrationRawContext
+) -> ShadowCalibrationRequestMapping:
+    mapping = _exact_object(
+        value,
+        frozenset(
+            {
+                "schema_version", "source", "source_byte_limits", "container", "audio_clock",
+                "requested_range", "expected_producers", "timed_speech_policy_sha256",
+                "word_gap_policy_sha256", "vad_merge_policy_sha256", "native_profile_identity_sha256",
+                "response_limits", "timing_policy", "transcript_capability",
+            }
+        ),
+        "persisted invocation.request_mapping",
+    )
+    if mapping["schema_version"] != SHADOW_CALIBRATION_RAW_REQUEST_SCHEMA:
+        raise _invalid("persisted request schema_version is invalid")
+    if _decode_source(mapping["source"]) != context.source.to_response_mapping():
+        raise _invalid("persisted invocation source does not match raw context")
+    response_limits = _exact_object(mapping["response_limits"], frozenset({"max_response_bytes"}), "response_limits")
+    timing = _exact_object(
+        mapping["timing_policy"],
+        frozenset({"utterance_gap_milliseconds", "vad_merge_gap_milliseconds"}),
+        "timing_policy",
+    )
+    producers = mapping["expected_producers"]
+    if type(producers) is not list or len(cast(list[object], producers)) != 2:  # noqa: E721
+        raise _invalid("persisted request must contain exactly ASR then VAD producers")
+    identities = (
+        _decode_identity(cast(list[object], producers)[0], CalibrationProducer.ASR),
+        _decode_identity(cast(list[object], producers)[1], CalibrationProducer.VAD),
+    )
+    request = ShadowCalibrationRequestMapping(
+        context.source,
+        _decode_source_limits(mapping["source_byte_limits"]),
+        _decode_container(mapping["container"]),
+        _decode_clock(mapping["audio_clock"]),
+        _tick_range(mapping["requested_range"], "request_mapping.requested_range"),
+        _sha(mapping["native_profile_identity_sha256"], "request_mapping.native_profile_identity_sha256"),
+        _integer(response_limits["max_response_bytes"], "response_limits.max_response_bytes"),
+        _decode_capability(mapping["transcript_capability"]),
+        _sha(mapping["timed_speech_policy_sha256"], "request_mapping.timed_speech_policy_sha256"),
+        _sha(mapping["word_gap_policy_sha256"], "request_mapping.word_gap_policy_sha256"),
+        _sha(mapping["vad_merge_policy_sha256"], "request_mapping.vad_merge_policy_sha256"),
+        _integer(timing["utterance_gap_milliseconds"], "timing_policy.utterance_gap_milliseconds"),
+        _integer(timing["vad_merge_gap_milliseconds"], "timing_policy.vad_merge_gap_milliseconds"),
+        identities,
+    )
+    expected = ShadowCalibrationRequestMapping(
+        context.source,
+        context.source_byte_limits,
+        context.container,
+        context.audio_clock,
+        context.audio_clock.full_range,
+        context.native_profile_identity_sha256,
+        request.max_response_bytes,
+        context.transcript_capability,
+        context.policies.timed_speech_policy_sha256,
+        context.policies.word_gap_policy_sha256,
+        context.policies.vad_merge_policy_sha256,
+        context.policies.word_gap_ms,
+        context.policies.vad_merge_gap_ms,
+        context.producer_identities,
+    )
+    if request != expected:
+        raise _invalid("persisted invocation request drifts from raw context")
+    return request
+
+
+def decode_shadow_calibration_invocation(
+    value: object, *, context: ShadowCalibrationRawContext
+) -> ShadowCalibrationInvocation:
+    """Decode persisted invocation using its separately persisted full source context."""
+    if type(context) is not ShadowCalibrationRawContext:  # noqa: E721
+        raise _invalid("invocation decoder requires an exact raw context")
+    mapping = _persisted_object(
+        value,
+        frozenset(
+            {
+                "corpus_member_reference_sha256", "request_identity_sha256",
+                "request_mapping", "request_mapping_sha256",
+            }
+        ),
+        "persisted invocation",
+    )
+    return ShadowCalibrationInvocation(
+        _sha(mapping["corpus_member_reference_sha256"], "invocation.corpus_member_reference_sha256"),
+        _sha(mapping["request_identity_sha256"], "invocation.request_identity_sha256"),
+        _decode_persisted_request(mapping["request_mapping"], context),
+        _sha(mapping["request_mapping_sha256"], "invocation.request_mapping_sha256"),
+    )
