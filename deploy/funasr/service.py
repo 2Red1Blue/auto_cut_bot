@@ -34,6 +34,16 @@ from autocut_kernel.media.local_audio_window import (
     LocalAudioWindowSpec,
     LocalAudioWindowTracker,
 )
+from autocut_kernel.media.local_speech_window import (
+    DecodedLocalPcmReport,
+    LocalSpeechWindowPolicy,
+)
+from autocut_kernel.media.local_speech_window_codec import (
+    decode_local_speech_window_request,
+    decode_local_speech_window_response,
+    encode_local_speech_window_response,
+)
+from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
 from autocut_kernel.media.types import TimeBase
 from funasr import AutoModel
 
@@ -314,7 +324,10 @@ def decoder_identity() -> dict[str, object]:
     if not libraries or any(type(value) is not str or not value for value in versions.values()):
         raise LocalAudioWindowError("decoder dependency identity is unavailable")
     sources: list[dict[str, str]] = []
-    for name in ("local_audio_window.py", "types.py"):
+    for name in (
+        "local_audio_window.py", "local_speech_window.py", "local_speech_window_codec.py",
+        "local_speech_window_projection.py", "types.py",
+    ):
         resource = importlib.resources.files("autocut_kernel").joinpath("media", name)
         with resource.open("rb") as stream:
             raw = stream.read(4 * 1024 * 1024 + 1)
@@ -332,49 +345,6 @@ def decoder_identity() -> dict[str, object]:
 
 def decoder_identity_sha256() -> str:
     return sha(canon(decoder_identity()))
-
-
-@dataclass(frozen=True, slots=True)
-class DecodedLocalPcmReport:
-    """Path-free measured extraction facts; no committed/accepted authority."""
-
-    source_sha256: str
-    spec_sha256: str
-    decoder_identity_sha256: str
-    pcm_sha256: str
-    wav_sha256: str
-    wav_byte_length: int
-    sample_rate: int
-    channels: int
-    sample_count: int
-    decoded_frames: int
-
-    def __post_init__(self) -> None:
-        if any(not is_sha256(value) for value in (
-            self.source_sha256, self.spec_sha256, self.decoder_identity_sha256,
-            self.pcm_sha256, self.wav_sha256,
-        )):
-            raise LocalAudioWindowError("local PCM report hashes are invalid")
-        if any(type(value) is not int or value <= 0 for value in (
-            self.wav_byte_length, self.sample_rate, self.channels,
-            self.sample_count, self.decoded_frames,
-        )):
-            raise LocalAudioWindowError("local PCM report counts must be positive integers")
-
-    def to_mapping(self) -> dict[str, object]:
-        return {
-            "schema_version": "decoded-local-pcm-report-v1",
-            "source_sha256": self.source_sha256, "spec_sha256": self.spec_sha256,
-            "decoder_identity_sha256": self.decoder_identity_sha256,
-            "pcm_sha256": self.pcm_sha256, "wav_sha256": self.wav_sha256,
-            "wav_byte_length": self.wav_byte_length, "sample_rate": self.sample_rate,
-            "channels": self.channels, "sample_count": self.sample_count,
-            "decoded_frames": self.decoded_frames,
-        }
-
-    @property
-    def canonical_hash(self) -> str:
-        return sha(canon(self.to_mapping()))
 
 
 def _bounded_file_hash(stream: BinaryIO, maximum: int) -> tuple[str, int]:
@@ -1529,6 +1499,88 @@ class Service:
         finally:
             await self.release()
 
+    async def window_evidence(self, req: web.Request) -> web.Response:
+        """Raw local measurement only; binding_sha256 is opaque correlation."""
+        if not self.ready:
+            raise web.HTTPServiceUnavailable()
+        if not hmac.compare_digest(req.headers.get("Authorization", "").encode("utf-8"),
+                                   f"Bearer {self.shared_token}".encode("utf-8")):
+            raise web.HTTPUnauthorized(text="unauthorized")
+        if (self.measured_profile is None
+                or self.measured_profile["schema_version"] != NORMAL_PROFILE_SCHEMA):
+            raise web.HTTPConflict(text="normal measured profile is unavailable")
+        try:
+            encoded = req.headers["X-Local-Speech-Window-Manifest"]
+            raw_manifest = base64.b64decode(encoded, validate=True)
+            request = decode_local_speech_window_request(strict_json_loads(raw_manifest))
+            if (base64.b64encode(raw_manifest).decode("ascii") != encoded
+                    or canon(request.to_mapping()) != raw_manifest
+                    or request.canonical_hash != req.headers.get("X-Local-Speech-Window-SHA256")):
+                raise ValueError("noncanonical request identity")
+        except (ValueError, TypeError, KeyError, RecursionError) as error:
+            raise web.HTTPBadRequest(text="invalid local speech window manifest") from error
+        roles = {item["producer_kind"]: item for item in self.identities}
+        if len(self.identities) != 2 or set(roles) != {"asr", "vad"}:
+            raise web.HTTPConflict(text="measured speech producers are unavailable")
+        expected_policy = LocalSpeechWindowPolicy(
+            service_profile_sha256=sha(canon(self.measured_profile)),
+            asr_producer_id=cast(str, roles["asr"]["producer_id"]),
+            asr_generation_policy_sha256=cast(str, roles["asr"]["generation_policy_sha256"]),
+            vad_producer_id=cast(str, roles["vad"]["producer_id"]),
+            vad_generation_policy_sha256=cast(str, roles["vad"]["generation_policy_sha256"]),
+            utterance_gap_milliseconds=cast(int, self.measured_profile["utterance_gap_milliseconds"]),
+            vad_merge_gap_milliseconds=cast(int, self.measured_profile["vad_merge_gap_milliseconds"]),
+        )
+        if request.policy != expected_policy:
+            raise web.HTTPConflict(text="measured local speech policy drift")
+        if request.extraction.decoder_identity_sha256 != await asyncio.to_thread(decoder_identity_sha256):
+            raise web.HTTPConflict(text="local decoder identity drift")
+        if (request.extraction.max_source_bytes > self.max_request
+                or request.max_response_bytes > self.max_response):
+            raise web.HTTPBadRequest(text="local speech request exceeds service bounds")
+        if req.content_length is not None and req.content_length > request.extraction.max_source_bytes:
+            raise web.HTTPRequestEntityTooLarge(
+                max_size=request.extraction.max_source_bytes, actual_size=req.content_length,
+            )
+        await self.admit()
+        try:
+            with tempfile.TemporaryDirectory(prefix="funasr-window-request-") as directory:
+                path = Path(directory) / "source.bin"
+                digest, size = hashlib.sha256(), 0
+                with path.open("xb") as output:
+                    async for chunk in req.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > request.extraction.max_source_bytes:
+                            raise web.HTTPRequestEntityTooLarge(
+                                max_size=request.extraction.max_source_bytes, actual_size=size,
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+                if not size or "sha256:" + digest.hexdigest() != request.extraction.source_sha256:
+                    raise web.HTTPBadRequest(text="source hash")
+                try:
+                    report, asr, vad_output = await self.run_window_inference(path, request.extraction)
+                    raw = encode_local_speech_window_response(request, report, asr, vad_output)
+                    project_local_speech_window(decode_local_speech_window_response(raw, request))
+                except ValueError as error:
+                    raise web.HTTPUnprocessableEntity(text="invalid local speech measurement") from error
+            if len(raw) > request.max_response_bytes:
+                raise web.HTTPInternalServerError(text="response bound")
+            return web.Response(body=raw, content_type="application/json")
+        finally:
+            # Do not leak queue ownership if a second cancellation arrives
+            # while releasing it. There is no native work in this release.
+            release = asyncio.create_task(self.release())
+            cancelled = False
+            while not release.done():
+                try:
+                    await asyncio.shield(release)
+                except asyncio.CancelledError:
+                    cancelled = True
+            release.result()
+            if cancelled:
+                raise asyncio.CancelledError
+
     async def evidence(self, req: web.Request) -> web.Response:
         if not self.ready:
             raise web.HTTPServiceUnavailable()
@@ -1678,6 +1730,7 @@ def create_app(service: Service | None = None) -> web.Application:
             web.get("/health/ready", ready),
             web.post("/v1/timed-speech-evidence", s.evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
+            web.post("/v2/timed-speech-window", s.window_evidence),
         ]
     )
     app.on_startup.append(startup)

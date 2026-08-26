@@ -21,8 +21,8 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "2026-08-26: Native local PCM extraction checkpoint fcc4b7ae independently reviewed; 253 local checks and 4 real desktop AAC/MP4 codec tests passed. Actual HTTP/runtime still performs full-source ASR/VAD; candidate-local-io-followup.md and local-pcm-extraction-wave.md distinguish remaining window wire/Command/root split. No real model/calibration run claimed.",
+  "notes": "2026-08-26: Local speech window DTO/codec/projector, distinct v2 native endpoint and Pipeline client independently reviewed; 332 synthetic/pure checks pass, 4 native codec cases intentionally desktop-only. Claude adds production-client/server integration and next durable-window design. Composed Runtime still uses full-source speech until window Commands/physical-root split/readers are integrated. Earlier fcc4b7ae had 4 real desktop codec passes; no real speech-model/calibration run claimed.",
   "meta": {
-    "next_action": "Close global physical-root versus local-speech contract, real cropped speech protocol, durable per-window execution and exact committed-reader replay before claiming candidate-local ASR"
+    "next_action": "Finish Claude client/server tests and scoped checkpoint; implement global physical-root/local-speech split, durable window Command and exact committed-reader replay, then activate matching desktop calibration and Runtime"
   }
 }
