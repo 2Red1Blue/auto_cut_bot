@@ -26,7 +26,7 @@ from auto_cut_bot.pipeline.vlm import (
     DoubaoArkVlmProvider,
     DoubaoArkVlmProviderConfig,
 )
-from auto_cut_bot.pipeline.vlm.doubao_ark_provider import _ark_client
+from auto_cut_bot.pipeline.vlm.ark_responses_transport import create_ark_client
 
 
 class MemoryFileCache:
@@ -255,6 +255,24 @@ def _payload() -> bytes:
     ).encode()
 
 
+def test_legacy_v1_adapter_policy_is_not_reinterpreted_as_the_nested_sdk_contract() -> None:
+    payload = json.loads(_payload())
+    parameters = payload["request_parameters"]
+    assert isinstance(parameters, dict)
+    parameters["adapter_strategy_version"] = "doubao-ark-files-responses-stream-v1"
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+    dispatch = replace(
+        _dispatch(created_ids=[]),
+        request_payload=raw,
+        request_payload_sha256="sha256:" + hashlib.sha256(raw).hexdigest(),
+    )
+    result = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=FakeClientFactory(_completed_stream())
+    ).dispatch(dispatch)
+    assert isinstance(result, ProviderFailed)
+    assert result.failure_code == "INVALID_PROVIDER_REQUEST"
+
+
 def _dispatch(*, created_ids: list[str] | None = None) -> ProviderDispatchRequest:
     video = b"real-proxy-video"
     payload = _payload()
@@ -299,7 +317,7 @@ def _config(**overrides: object) -> DoubaoArkVlmProviderConfig:
 
 
 def test_default_ark_sdk_factory_constructs_official_client_without_network() -> None:
-    client = _ark_client(
+    client = create_ark_client(
         api_key="not-a-real-secret",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
         timeout=1.0,
@@ -337,9 +355,11 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
     assert call["text"] == {
         "format": {
             "type": "json_schema",
-            "name": "vlm_semantic_pack_v3",
-            "strict": True,
-            "schema": {"type": "object"},
+            "json_schema": {
+                "name": "vlm_semantic_pack_v3",
+                "strict": True,
+                "schema": {"type": "object"},
+            },
         }
     }
     assert call["input"][0]["content"][0] == {
@@ -388,6 +408,10 @@ def test_doubao_ark_rejects_partial_output_from_incomplete_stream() -> None:
     response = _response("response-incomplete", '{"partial":true}', "incomplete")
     factory = FakeClientFactory(
         [
+            SimpleNamespace(
+                type="response.created",
+                response=_response("response-incomplete", "", "in_progress"),
+            ),
             SimpleNamespace(type="response.output_text.delta", delta='{"partial":true}'),
             SimpleNamespace(type="response.incomplete", response=response),
         ]

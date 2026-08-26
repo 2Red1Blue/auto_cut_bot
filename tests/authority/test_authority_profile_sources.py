@@ -85,7 +85,7 @@ def _narrative_mapping() -> dict[str, object]:
         "profile_state": "stage1_narrative_v1",
         "provider": {
             "provider_id": "doubao-ark-responses-stream",
-            "adapter_strategy_version": "doubao-ark-files-responses-stream-v1",
+            "adapter_strategy_version": "doubao-ark-files-responses-stream-v2",
             "transport": "ark_responses_streaming",
         },
         "model": {"model_id": "doubao-seed-2-1-pro-260628"},
@@ -615,6 +615,7 @@ def test_locator_path_runtime_selector_and_dsn_material_are_forbidden(
         (("model", "model_id"), "qwen-max"),
         (("provider", "provider_id"), "another-provider"),
         (("provider", "adapter_strategy_version"), "another-adapter"),
+        (("provider", "adapter_strategy_version"), "doubao-ark-files-responses-stream-v1"),
     ],
 )
 def test_doubao_identity_matrix_is_fixed(

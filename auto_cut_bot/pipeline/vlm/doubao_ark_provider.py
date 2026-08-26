@@ -10,30 +10,35 @@ never retries an outcome whose remote state is unknown.
 from __future__ import annotations
 
 import hashlib
-import importlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol, cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from autocut_kernel.vlm import (
     GENERATION_PROVIDER_LEASE_SECONDS,
-    ProviderCompleted,
     ProviderDispatchRequest,
     ProviderFailed,
     ProviderFailureDisposition,
-    ProviderIndeterminate,
-    ProviderPending,
     ProviderReconcileQuery,
-    ProviderRequestIdCallback,
     ProviderResult,
 )
 
 from .ark_file_cache import ArkFileCachePort, ArkFileCacheRecord
+from .ark_responses_transport import (
+    ArkResponsesTransport,
+    ArkResponsesTransportConfig,
+    ClientFactory,
+    ark_error_status,
+    ark_trace_id,
+    close_ark_resource,
+    map_ark_client_error,
+    provider_failure,
+)
 
 DOUBAO_ARK_PROVIDER_ID = "doubao-ark-responses-stream"
-DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v1"
+DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v2"
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
 _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
 _EXPECTED_PAYLOAD_FIELDS = frozenset(
@@ -98,10 +103,7 @@ class DoubaoArkVlmProviderConfig:
             < self.upload_timeout_seconds + (2 * self.timeout_seconds)
         ):
             raise ValueError("Ark file_cache_lease_seconds must cover Files API recovery")
-        if (
-            self.upload_timeout_seconds + self.timeout_seconds
-            >= GENERATION_PROVIDER_LEASE_SECONDS
-        ):
+        if self.upload_timeout_seconds + self.timeout_seconds >= GENERATION_PROVIDER_LEASE_SECONDS:
             raise ValueError(
                 "Ark upload and response timeouts must fit inside the generation lease"
             )
@@ -131,17 +133,6 @@ class DoubaoArkVlmProviderConfig:
         return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-class ClientFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        timeout: float,
-        max_retries: int,
-    ) -> object: ...
-
-
 class DoubaoArkVlmProvider:
     """Official Ark SDK adapter using Files API plus Responses SSE streaming."""
 
@@ -158,17 +149,22 @@ class DoubaoArkVlmProvider:
             raise TypeError("config must be a DoubaoArkVlmProviderConfig")
         self._config = config
         self._file_cache = file_cache
-        self._client_factory = client_factory or _ark_client
+        self._transport = ArkResponsesTransport(
+            ArkResponsesTransportConfig(
+                config.api_key, config.base_url, config.timeout_seconds, config.max_stream_bytes
+            ),
+            client_factory=client_factory,
+        )
 
     def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
         if type(request) is not ProviderDispatchRequest:  # noqa: E721
             raise TypeError("request must be an exact ProviderDispatchRequest")
         if request.provider_id != self.provider_id:
-            return _failure("PROVIDER_ID_MISMATCH")
+            return provider_failure("PROVIDER_ID_MISMATCH")
         if request.on_provider_request_id is None:
-            return _failure("PROVIDER_REQUEST_ID_CALLBACK_REQUIRED")
+            return provider_failure("PROVIDER_REQUEST_ID_CALLBACK_REQUIRED")
         if len(request.proxy_content) > self._config.max_video_bytes:
-            return _failure(
+            return provider_failure(
                 "PROVIDER_MEDIA_LIMIT_EXCEEDED",
                 byte_length=len(request.proxy_content),
                 limit=self._config.max_video_bytes,
@@ -181,128 +177,64 @@ class DoubaoArkVlmProvider:
             if payload["proxy_blob"] != request.proxy_blob_ref.to_mapping():
                 raise ValueError("request proxy_blob does not match dispatch identity")
         except ValueError:
-            return _failure("INVALID_PROVIDER_REQUEST")
+            return provider_failure("INVALID_PROVIDER_REQUEST")
         try:
-            client = cast(
-                Any,
-                self._client_factory(
-                    api_key=self._config.api_key,
-                    base_url=self._config.base_url,
-                    timeout=self._config.timeout_seconds,
-                    max_retries=0,
-                ),
-            )
+            client = self._transport.create_client()
         except Exception as error:
-            return _map_client_error(error)
+            return map_ark_client_error(error)
         file_result = self._get_file_id(
             client=client,
             request=request,
             video_fps=cast(float, parameters["video_fps"]),
         )
         if not isinstance(file_result, str):
+            close_ark_resource(client)
             return file_result
-        try:
-            stream = client.responses.create(
-                model=request.model_id,
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_video", "file_id": file_result},
-                            {
-                                "type": "input_text",
-                                "text": (
-                                    "只依据随附视频和下述清单约束判断；禁止臆造，禁止输出物理剪辑点。"
-                                    "只输出严格 JSON。\n" + cast(str, payload["prompt"])
-                                ),
-                            },
-                        ],
-                    }
-                ],
-                text={
-                    "format": {
-                        "type": "json_schema",
+        body: dict[str, object] = dict(
+            model=request.model_id,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_video", "file_id": file_result},
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "只依据随附视频和下述清单约束判断；禁止臆造，禁止输出物理剪辑点。"
+                                "只输出严格 JSON。\n" + cast(str, payload["prompt"])
+                            ),
+                        },
+                    ],
+                }
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "json_schema": {
                         "name": "vlm_semantic_pack_v3",
                         "strict": True,
                         "schema": payload["response_schema"],
-                    }
-                },
-                max_output_tokens=parameters["max_output_tokens"],
-                temperature=parameters["temperature"],
-                stream=True,
-                store=True,
-            )
-            return _consume_stream(
-                stream,
-                expected_model=request.model_id,
-                max_stream_bytes=self._config.max_stream_bytes,
-                on_provider_request_id=request.on_provider_request_id,
-            )
-        except Exception as error:
-            return _map_response_create_error(error)
+                    },
+                }
+            },
+            max_output_tokens=parameters["max_output_tokens"],
+            temperature=parameters["temperature"],
+            stream=True,
+            store=True,
+        )
+        return self._transport.dispatch(
+            body,
+            expected_model=request.model_id,
+            on_provider_request_id=request.on_provider_request_id,
+            client=client,
+        )
 
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:
         if type(query) is not ProviderReconcileQuery:  # noqa: E721
             raise TypeError("query must be an exact ProviderReconcileQuery")
         if query.provider_id != self.provider_id:
-            return _failure("PROVIDER_ID_MISMATCH")
-        if query.provider_request_id is None:
-            return ProviderIndeterminate("PROVIDER_REQUEST_ID_UNKNOWN")
-        try:
-            client = cast(
-                Any,
-                self._client_factory(
-                    api_key=self._config.api_key,
-                    base_url=self._config.base_url,
-                    timeout=self._config.timeout_seconds,
-                    max_retries=0,
-                ),
-            )
-            response = client.responses.retrieve(query.provider_request_id)
-            status = str(getattr(response, "status", "")).lower()
-            response_id = _response_id(response)
-            response_model = _response_model(response)
-            if response_id != query.provider_request_id or response_model != query.model_id:
-                return _failure(
-                    "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
-                    provider_request_id=query.provider_request_id,
-                )
-            assert response_id is not None
-            if status == "completed":
-                text = _authoritative_response_text(response)
-                if text is None:
-                    return _failure(
-                        "PROVIDER_RESPONSE_OUTPUT_INVALID",
-                        provider_request_id=response_id,
-                    )
-                if len(text.encode("utf-8")) > self._config.max_stream_bytes:
-                    return _failure(
-                        "PROVIDER_STREAM_LIMIT_EXCEEDED",
-                        provider_request_id=response_id,
-                    )
-                return ProviderCompleted(text.encode("utf-8"), response_id)
-            if status in {"queued", "in_progress", "processing"}:
-                return ProviderPending(response_id)
-            if status == "failed":
-                return _failure(
-                    "PROVIDER_RESPONSE_FAILED",
-                    provider_request_id=response_id,
-                    disposition=_response_failure_disposition(response),
-                )
-            if status == "incomplete":
-                return _failure(
-                    "PROVIDER_RESPONSE_INCOMPLETE",
-                    provider_request_id=response_id,
-                    disposition=ProviderFailureDisposition.REPAIRABLE,
-                )
-            if status == "cancelled":
-                return _failure(
-                    "PROVIDER_RESPONSE_CANCELLED",
-                    provider_request_id=response_id,
-                )
-            return ProviderIndeterminate("PROVIDER_RESPONSE_STATUS_UNKNOWN", response_id)
-        except Exception as error:
-            return _map_reconcile_error(error, response_id=query.provider_request_id)
+            return provider_failure("PROVIDER_ID_MISMATCH")
+        return self._transport.reconcile(query)
 
     def _get_file_id(
         self,
@@ -320,9 +252,7 @@ class DoubaoArkVlmProvider:
             media_type=request.proxy_blob_ref.media_type,
             preprocess_policy_hash=policy_hash,
             lease_seconds=self._config.file_cache_lease_seconds,
-            unknown_outcome_quarantine_seconds=(
-                self._config.unknown_upload_quarantine_seconds
-            ),
+            unknown_outcome_quarantine_seconds=(self._config.unknown_upload_quarantine_seconds),
         )
         if record.state == "available":
             if record.expires_at is None or record.expires_at <= datetime.now(timezone.utc):
@@ -331,7 +261,7 @@ class DoubaoArkVlmProvider:
                     expected_version=record.version,
                     provider_status="local_ttl_expired",
                 )
-                return _failure("PROVIDER_MEDIA_EXPIRED")
+                return provider_failure("PROVIDER_MEDIA_EXPIRED")
             try:
                 info = client.files.retrieve(cast(str, record.provider_file_id))
             except Exception as error:
@@ -345,7 +275,9 @@ class DoubaoArkVlmProvider:
                         expected_version=record.version,
                         provider_status="provider_not_found",
                     )
-                    return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status="not_found")
+                    return provider_failure(
+                        "PROVIDER_MEDIA_NOT_AVAILABLE", provider_status="not_found"
+                    )
                 return mapped
             status = str(getattr(info, "status", "")).lower()
             if status in _READY_FILE_STATUSES:
@@ -355,32 +287,32 @@ class DoubaoArkVlmProvider:
                 expected_version=record.version,
                 provider_status=status or "provider_status_unknown",
             )
-            return _failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status=status)
+            return provider_failure("PROVIDER_MEDIA_NOT_AVAILABLE", provider_status=status)
         if record.state == "processing":
             if not lease_acquired:
-                return _failure(
+                return provider_failure(
                     "PROVIDER_MEDIA_UPLOAD_IN_PROGRESS",
                     disposition=ProviderFailureDisposition.REPAIRABLE,
                 )
             if record.provider_file_id is None:
-                return _failure("PROVIDER_MEDIA_CACHE_INVALID")
+                return provider_failure("PROVIDER_MEDIA_CACHE_INVALID")
             return self._finish_processing_file(
                 client=client,
                 record=record,
                 file_id=record.provider_file_id,
             )
         if record.state == "indeterminate":
-            return _failure(
+            return provider_failure(
                 "PROVIDER_MEDIA_UPLOAD_OUTCOME_UNKNOWN",
                 disposition=ProviderFailureDisposition.REPAIRABLE,
             )
         if not lease_acquired:
             if record.state == "reserved":
-                return _failure(
+                return provider_failure(
                     "PROVIDER_MEDIA_UPLOAD_IN_PROGRESS",
                     disposition=ProviderFailureDisposition.REPAIRABLE,
                 )
-            return _failure(
+            return provider_failure(
                 "PROVIDER_MEDIA_TERMINAL",
                 state=record.state,
                 failure_code=record.failure_code,
@@ -420,9 +352,7 @@ class DoubaoArkVlmProvider:
                     expected_lease_token=record.lease_token,
                     provider_status="upload_outcome_unknown",
                     audit_expires_at=datetime.now(timezone.utc)
-                    + timedelta(
-                        seconds=self._config.unknown_upload_quarantine_seconds
-                    ),
+                    + timedelta(seconds=self._config.unknown_upload_quarantine_seconds),
                 )
             return mapped
         return self._finish_processing_file(
@@ -460,14 +390,16 @@ class DoubaoArkVlmProvider:
                         provider_status=status,
                         failure_code="PROVIDER_MEDIA_PROCESSING_FAILED",
                     )
-                    return _failure("PROVIDER_MEDIA_PROCESSING_FAILED", provider_status=status)
+                    return provider_failure(
+                        "PROVIDER_MEDIA_PROCESSING_FAILED", provider_status=status
+                    )
                 self._file_cache.release_processing(
                     record.media_object_id,
                     expected_version=record.version,
                     expected_lease_token=record.lease_token,
                     provider_status=status or "provider_status_unknown",
                 )
-                return _failure(
+                return provider_failure(
                     "PROVIDER_MEDIA_STATUS_UNKNOWN",
                     disposition=ProviderFailureDisposition.REPAIRABLE,
                 )
@@ -500,23 +432,10 @@ class DoubaoArkVlmProvider:
                 expected_lease_token=record.lease_token,
                 provider_status="processing_outcome_unknown",
             )
-            return _failure(
+            return provider_failure(
                 "PROVIDER_MEDIA_PROCESSING_UNKNOWN",
                 disposition=ProviderFailureDisposition.RETRYABLE,
             )
-
-
-def _ark_client(*, api_key: str, base_url: str, timeout: float, max_retries: int) -> object:
-    ark_constructor = getattr(importlib.import_module("volcenginesdkarkruntime"), "Ark")
-    return cast(
-        object,
-        ark_constructor(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=timeout,
-            max_retries=max_retries,
-        ),
-    )
 
 
 def _request_payload(raw: bytes) -> dict[str, object]:
@@ -588,135 +507,6 @@ def _preprocess_policy_hash(video_fps: float) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-def _consume_stream(
-    stream: object,
-    *,
-    expected_model: str,
-    max_stream_bytes: int,
-    on_provider_request_id: ProviderRequestIdCallback,
-) -> ProviderResult:
-    request_id: str | None = None
-    # Delta bytes are bounded as transient stream telemetry.  The terminal
-    # authoritative body is checked independently below: Ark may repeat the
-    # same text in ``output_text.done`` and ``response.completed``, so adding
-    # all three representations would make dispatch stricter than reconcile.
-    telemetry_bytes = 0
-    try:
-        for event in cast(Any, stream):
-            event_type = str(getattr(event, "type", ""))
-            response = getattr(event, "response", None)
-            if event_type == "response.output_text.delta":
-                telemetry = getattr(event, "delta", "")
-                if isinstance(telemetry, str):
-                    telemetry_bytes += len(telemetry.encode("utf-8"))
-                    if telemetry_bytes > max_stream_bytes:
-                        return _failure(
-                            "PROVIDER_STREAM_LIMIT_EXCEEDED",
-                            provider_request_id=request_id,
-                            disposition=ProviderFailureDisposition.REPAIRABLE,
-                            limit=max_stream_bytes,
-                        )
-            elif event_type == "response.created":
-                created_id = _response_id(response)
-                created_model = _response_model(response)
-                if (
-                    created_id is None
-                    or created_model != expected_model
-                    or (request_id is not None and request_id != created_id)
-                ):
-                    return _failure(
-                        "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
-                        provider_request_id=request_id,
-                    )
-                if request_id is None:
-                    request_id = created_id
-                    try:
-                        on_provider_request_id(created_id)
-                    except Exception:
-                        return ProviderIndeterminate(
-                            "PROVIDER_REQUEST_ID_PERSIST_FAILED",
-                            request_id,
-                        )
-            elif event_type == "response.completed":
-                completed_id = _response_id(response)
-                completed_model = _response_model(response)
-                if (
-                    request_id is None
-                    or completed_id != request_id
-                    or completed_model != expected_model
-                    or str(getattr(response, "status", "")).lower() != "completed"
-                ):
-                    return _failure(
-                        "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
-                        provider_request_id=request_id,
-                    )
-                final_text = _authoritative_response_text(response)
-                if final_text is None:
-                    return _failure(
-                        "PROVIDER_RESPONSE_OUTPUT_INVALID",
-                        provider_request_id=request_id,
-                        disposition=ProviderFailureDisposition.REPAIRABLE,
-                    )
-                if len(final_text.encode("utf-8")) > max_stream_bytes:
-                    return _failure(
-                        "PROVIDER_STREAM_LIMIT_EXCEEDED",
-                        provider_request_id=request_id,
-                        disposition=ProviderFailureDisposition.REPAIRABLE,
-                        limit=max_stream_bytes,
-                    )
-                return ProviderCompleted(final_text.encode("utf-8"), request_id)
-            elif event_type == "response.incomplete":
-                return _failure(
-                    "PROVIDER_RESPONSE_INCOMPLETE",
-                    provider_request_id=request_id,
-                    disposition=ProviderFailureDisposition.REPAIRABLE,
-                )
-            elif event_type == "response.failed":
-                return _failure(
-                    "PROVIDER_RESPONSE_FAILED",
-                    provider_request_id=request_id,
-                    disposition=_response_failure_disposition(response),
-                )
-            elif event_type == "error":
-                return ProviderIndeterminate("PROVIDER_STREAM_ERROR_EVENT", request_id)
-    except Exception:
-        return ProviderIndeterminate("PROVIDER_STREAM_INTERRUPTED", request_id)
-    return ProviderIndeterminate("PROVIDER_STREAM_TERMINAL_EVENT_MISSING", request_id)
-
-
-def _response_id(response: object) -> str | None:
-    value = getattr(response, "id", None)
-    return value if isinstance(value, str) and value else None
-
-
-def _response_model(response: object) -> str | None:
-    value = getattr(response, "model", None)
-    return value if isinstance(value, str) and value else None
-
-
-def _authoritative_response_text(response: object) -> str | None:
-    output = getattr(response, "output", None)
-    if not isinstance(output, (list, tuple)):
-        return None
-    output_items = cast(list[object] | tuple[object, ...], output)
-    messages: list[object] = [
-        item for item in output_items if getattr(item, "type", None) == "message"
-    ]
-    if len(messages) != 1:
-        return None
-    content = getattr(messages[0], "content", None)
-    if not isinstance(content, (list, tuple)):
-        return None
-    content_items = cast(list[object] | tuple[object, ...], content)
-    if len(content_items) != 1:
-        return None
-    item = content_items[0]
-    value = getattr(item, "text", None)
-    if getattr(item, "type", None) != "output_text" or not isinstance(value, str) or not value:
-        return None
-    return value
-
-
 def _ark_origin(base_url: str) -> str:
     split = urlsplit(base_url)
     host = cast(str, split.hostname).lower()
@@ -732,138 +522,26 @@ def _required_text(value: object, field_name: str) -> str:
     return value
 
 
-def _failure(
-    code: str,
-    *,
-    provider_request_id: str | None = None,
-    disposition: ProviderFailureDisposition = ProviderFailureDisposition.NONRETRYABLE,
-    **details: object,
-) -> ProviderFailed:
-    return ProviderFailed(
-        code,
-        json.dumps(
-            {
-                "disposition": disposition.value,
-                "retryable": disposition is ProviderFailureDisposition.RETRYABLE,
-                **details,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ),
-        provider_request_id,
-        disposition,
-    )
-
-
-def _error_status(error: Exception) -> int | None:
-    status = getattr(error, "status_code", None)
-    return status if isinstance(status, int) and not isinstance(status, bool) else None
-
-
-def _trace_id(error: Exception) -> str | None:
-    value = getattr(error, "request_id", None)
-    # Ark SDK exceptions expose an HTTP trace/request id.  It is not the
-    # Responses API response.id and must never be persisted as reconcile identity.
-    return value if isinstance(value, str) and value else None
-
-
-def _map_client_error(error: Exception) -> ProviderResult:
-    status_code = _error_status(error)
-    return _failure(
-        (
-            f"PROVIDER_CLIENT_HTTP_{status_code}"
-            if status_code is not None
-            else "PROVIDER_CLIENT_INITIALIZATION_FAILED"
-        ),
-        http_status=status_code,
-        provider_trace_id=_trace_id(error),
-    )
-
-
-def _map_response_create_error(error: Exception) -> ProviderResult:
-    status_code = _error_status(error)
-    if status_code in {429, 500, 502, 503, 504}:
-        return _failure(
-            f"PROVIDER_HTTP_{status_code}",
-            disposition=ProviderFailureDisposition.RETRYABLE,
-            http_status=status_code,
-            provider_trace_id=_trace_id(error),
-        )
-    if status_code in {400, 401, 403, 404, 409, 422}:
-        return _failure(
-            f"PROVIDER_HTTP_{status_code}",
-            http_status=status_code,
-            provider_trace_id=_trace_id(error),
-        )
-    reason = (
-        f"PROVIDER_CREATE_HTTP_{status_code}"
-        if status_code is not None
-        else "PROVIDER_TRANSPORT_UNKNOWN"
-    )
-    return ProviderIndeterminate(reason)
-
-
-def _map_reconcile_error(error: Exception, *, response_id: str) -> ProviderResult:
-    status_code = _error_status(error)
-    if status_code in {400, 401, 403, 404, 409, 422}:
-        return _failure(
-            f"PROVIDER_RECONCILE_HTTP_{status_code}",
-            provider_request_id=response_id,
-            http_status=status_code,
-            provider_trace_id=_trace_id(error),
-        )
-    reason = (
-        f"PROVIDER_RECONCILE_HTTP_{status_code}"
-        if status_code is not None
-        else "PROVIDER_RECONCILE_TRANSPORT_UNKNOWN"
-    )
-    return ProviderIndeterminate(reason, response_id)
-
-
-def _response_failure_disposition(response: object) -> ProviderFailureDisposition:
-    """Retry only terminal response failures carrying explicit transient evidence."""
-
-    error = getattr(response, "error", None)
-    status = getattr(error, "status_code", None)
-    if isinstance(status, int) and not isinstance(status, bool) and status in {
-        429,
-        500,
-        502,
-        503,
-        504,
-    }:
-        return ProviderFailureDisposition.RETRYABLE
-    code = getattr(error, "code", None)
-    if isinstance(code, str) and code.lower() in {
-        "rate_limit_exceeded",
-        "server_error",
-        "service_unavailable",
-        "timeout",
-    }:
-        return ProviderFailureDisposition.RETRYABLE
-    return ProviderFailureDisposition.NONRETRYABLE
-
-
 def _map_file_error(error: Exception) -> ProviderResult:
-    status_code = _error_status(error)
+    status_code = ark_error_status(error)
     if status_code in {400, 401, 403, 404, 409, 422}:
-        return _failure(
+        return provider_failure(
             f"PROVIDER_HTTP_{status_code}",
             http_status=status_code,
-            provider_trace_id=_trace_id(error),
+            provider_trace_id=ark_trace_id(error),
         )
     if status_code in {429, 500, 502, 503, 504}:
-        return _failure(
+        return provider_failure(
             f"PROVIDER_FILE_HTTP_{status_code}",
             disposition=ProviderFailureDisposition.RETRYABLE,
             http_status=status_code,
-            provider_trace_id=_trace_id(error),
+            provider_trace_id=ark_trace_id(error),
         )
-    return _failure(
+    return provider_failure(
         "PROVIDER_FILE_OUTCOME_UNKNOWN",
         disposition=ProviderFailureDisposition.REPAIRABLE,
         http_status=status_code,
-        provider_trace_id=_trace_id(error),
+        provider_trace_id=ark_trace_id(error),
     )
 
 

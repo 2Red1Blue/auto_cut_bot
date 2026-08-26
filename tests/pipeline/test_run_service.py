@@ -356,7 +356,7 @@ def test_execution_profile_rejects_open_or_unclosed_embedded_json() -> None:
         replace(
             profile,
             request_parameters_json=(
-                '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v1",'
+                '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v2",'
                 '"max_output_tokens":4096,"temperature":0,"unknown":1,"video_fps":1}'
             ),
         )

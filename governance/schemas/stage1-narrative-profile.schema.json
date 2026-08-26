@@ -47,7 +47,7 @@
       "required": ["provider_id", "adapter_strategy_version", "transport"],
       "properties": {
         "provider_id": {"const": "doubao-ark-responses-stream"},
-        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v1"},
+        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v2"},
         "transport": {"const": "ark_responses_streaming"}
       }
     },
