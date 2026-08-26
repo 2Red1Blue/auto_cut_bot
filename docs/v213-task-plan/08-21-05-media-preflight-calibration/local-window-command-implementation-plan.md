@@ -266,14 +266,19 @@ the new window envelope into the old full-source decoder.
 
 ## 8. Parallel implementation and acceptance
 
-Batch A (Claude, underway): only new physical-root value/codec and pure tests.
-Root owns this plan and all task metadata. Existing wire/service stay frozen.
+Implemented/reviewed checkpoints: six-set physical root/codec (f0a7b5c4),
+certificate support (f2c59f35), claim-owned physical prelude/producer/readback
+(49179042), physical-root mapping (f0dc57b3), native audio facts (3ff0d690), and
+the pure mapped local-audio request factory. These are not complete Runtime
+activation or real detector/model/DB acceptance.
 
-Batch B after shared bindings freeze: Kernel owner implements child command,
-mapped assessment and exact readers; Producer owner implements physical-only
-port plus thin local adapter in disjoint files. Runtime wiring follows those
-APIs. Shadow-local calibration is a separate producer/validator slice and
-cannot be silently folded into ordinary window Commands.
+Claude quota is exhausted; existing native workers now implement in disjoint
+files and cross-review frozen results. Root owns integration, task metadata
+and scoped commits. The next batch closes request-bound pre-dispatch BUSY
+evidence, exact terminal Receipt reads and local speech child persistence,
+then mapped assessment/parent-owned admissions and exact episode readers.
+Runtime wiring follows those APIs. Shadow-local calibration is a separate
+producer/validator slice and cannot be folded into ordinary window Commands.
 
 Required checks:
 

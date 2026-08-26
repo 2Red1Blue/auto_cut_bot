@@ -1,0 +1,12 @@
+{
+  "id": "mapped-local-audio-window",
+  "title": "Derive exact local audio extraction from candidate video windows",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Pure mapped-window factory independently accepted; wire it into the later exact durable child resolver, not directly into Runtime.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}
