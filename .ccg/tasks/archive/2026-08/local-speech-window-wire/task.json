@@ -1,0 +1,12 @@
+{
+  "id": "local-speech-window-wire",
+  "title": "Connect genuine local speech windows through the shared codec and HTTP adapter",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Wire checkpoint complete: 338 passed / 4 desktop-only skips and independent ALLOW including Claude client/server tests. Continue task05 physical-root/Command/readers/calibration/Runtime; no full local Pipeline completion claimed.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}
