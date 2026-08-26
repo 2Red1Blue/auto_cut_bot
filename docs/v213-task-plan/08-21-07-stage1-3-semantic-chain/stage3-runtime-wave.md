@@ -89,5 +89,19 @@ framework, legacy bridge or parallel semantic authority.
 - Pure tests, scoped lint/types and wheel boundaries. Collect database tests
   only here; migration/restart/Ark/real episode acceptance stays remote.
 
-This file freezes the next implementation slice; it does not claim HTTP Stage3
-is implemented or remotely verified.
+## Delivered local scope
+
+Resource source/codec was delivered in ca4fd26b; HTTP profile v8, migration0021,
+six-stage scheduling, shared-Command adapter and composition in 09a899da.
+Final scoped Runtime regression: 314 passed; architecture/packaging: 18 passed.
+Ruff and production types are clean. Independent adapter/composition and
+core/SQL reviews accepted the slice. PostgreSQL: 71 cases collected only.
+
+Closed findings include missing v8 guards, nested SQL null/fractional budgets,
+historical test policies retaining the new field, and equal synthetic provider
+budgets that could conceal cross-wiring. The three generation providers now
+have independently asserted budgets in composition tests.
+
+This proves local implementation, not successful PostgreSQL migration, actual
+Doubao generation or an end-to-end episode. Whole-run success remains disabled;
+Stage4/Recipe/Render/local QC and Agent conformance remain separate work.

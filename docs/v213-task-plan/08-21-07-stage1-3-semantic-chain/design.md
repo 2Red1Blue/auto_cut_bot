@@ -1,5 +1,11 @@
 # Design
 
+Current Stage3 HTTP delivery is recorded in
+[Stage3 Runtime wave](stage3-runtime-wave.md): local-run source v4 and execution
+profile v8 freeze all three semantic policies, and the six-stage scheduler uses
+the same audited Blueprint Command. Earlier v6/v7 waves below are history, not
+the current profile for new runs.
+
 Stage3 production decisions are in [Stage3 production wave](stage3-production-wave.md):
 full frozen-target batch, 3N+1 atomic output, current VLM v3 enums, explicit
 byte budgets and exact committed Stage2 input reads. These corrections take

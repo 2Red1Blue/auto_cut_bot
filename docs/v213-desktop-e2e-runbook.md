@@ -170,7 +170,7 @@ done
 ```
 
 这段迁移命令只用于全新空库。已有数据库在正式 migration runner 落地前不要重复执行。
-`0020` 要求 pre-v7 的 accepted/running 任务先被明确处理；不会自动修改旧任务的策略、
+最新 `0021` 要求 pre-v8 的 accepted/running 任务先被明确处理；不会自动修改旧任务的策略、
 补阶段或把它们判成功。`AUTOCUT_TEST_POSTGRES_DSN` 仅用于可丢弃的验收库：对应 pytest
 会重建 schema，**绝不能指向这里保存真实运行数据的 `autocut` 库**。
 
@@ -200,15 +200,16 @@ uv run auto_cut_bot serve \
 [`composition.py`](../auto_cut_bot/pipeline/runtime/composition.py)。缺项、策略不匹配或
 未安装有效资源必须先解决，不能通过复制测试 fixture 激活。
 
-本次 Stage 2 接线使用 execution profile v7，冻结完整 Stage 1/2 模型、提示词、预算和
-故事选择策略。narrative/shadow source 保持 v2；local-run source 升为 v3，新增必填的
-`stage2_command_policy` 与其 hash。旧 source 不自动补字段，不能用测试 fixture 激活。
+当前 Stage 3 接线使用 execution profile v8，冻结完整 Stage 1/2/3 模型、提示词、预算和
+故事/蓝图策略。narrative/shadow source 保持 v2；local-run source 为 v4，必填
+`stage2_command_policy`、`stage3_command_policy` 与各自 hash。
+旧 source 不自动补字段，不能用测试 fixture 激活。
 
 已有有效校准不必重跑：保留原 narrative/shadow 文件和 accepted CalibrationRecord。
 如果台式机已 bootstrap 旧 local-run 版本，新配置必须使用新的 `profile_version`，并
 同步其中 timed-speech entry 的版本，再 bootstrap 新 key；不能覆盖旧版本的 anchor。
 这只是新增运行策略的版本，不能修改测量结果或伪造校准。
-详细边界见 [Stage 2 运行接线](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage2-runtime-wave.md)。
+详细边界见 [Stage 3 运行接线](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-runtime-wave.md)。
 
 ## 7. 当前真实进度
 
@@ -223,22 +224,24 @@ uv run auto_cut_bot serve \
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；
 - Stage 3 的前驱读取、草案解析、证据上下文、蓝图编译、三成员组装、完整事件/素材组合
   校验、完整生成请求、独立批次准入和持久化 Command；完整 3N+1 提交/重放接口已交付，
-  最新纯语义回归 2601 项通过，实际 PostgreSQL/模型验收未执行；HTTP v8 接线正在推进；
-- HTTP 新任务的 `source_prep → vlm → stage1_narrative → stage2_portfolio → media_preflight` 调度；
+  最新纯语义回归 2601 项通过，实际 PostgreSQL/模型验收未执行；HTTP v8 接线已提交 `09a899da`，
+  Runtime 回归 314 项、架构检查 18 项通过并完成独立审查；
+- HTTP 新任务的 `source_prep → vlm → stage1_narrative → stage2_portfolio → stage3_blueprint → media_preflight` 调度；
 - 本地测试和 Podman 部署文件。
 
 尚未闭合：
 
 1. Authority bootstrap 与真实运行 Profile；
-2. Stage 1–3 的真实模型/数据库验收，以及 Stage 3 HTTP 接线；
+2. Stage 1–3 的真实模型/数据库验收；
 3. Stage 4 到 Recipe 的真实整集组合；
 4. FFmpeg Render 与本地 Publication QC；
 5. 一个真实剧集的 HTTP 端到端运行；
 6. Agent Runtime 的共享 Kernel conformance。
 
 所以现在可以启动基础设施、配置好的服务和测试，但还不能用一条 HTTP 请求跑完整部剧。
-即使当前五个阶段全部成功，整个 run 也不会冒充完整成片成功。下一项代码工作是 Stage
-3；台式机并行准备真实校准/Profile 和单集验真。外部发布保持关闭。
+即使当前六个阶段全部成功，整个 run 也不会冒充完整成片成功。下一项代码工作是
+Stage 4 的已提交媒体读取、蓝图/候选连接、生产 A/V Recipe 与 Render/QC；不能复用
+fixture Recipe 作为生产成片。台式机并行准备真实校准/Profile 和单集验真。外部发布保持关闭。
 
 ## 8. 常用停止与更新命令
 

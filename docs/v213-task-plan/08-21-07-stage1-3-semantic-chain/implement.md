@@ -31,8 +31,11 @@ combination feasibility (5718d7fc/b5b1a125) and full generation policy/request
 Independent Admission (181aceef), shared audit (c4829b3a) and audited atomic3N+1
 Command/replay (05f3dd5e) are now delivered and independently reviewed. See
 [Stage3 Runtime wave](stage3-runtime-wave.md) for current HTTP resource/profile/
-adapter ownership. Runtime integration and actual remote acceptance remain open;
-pure positive witnesses alone still do not grant execution permission.
+adapter ownership. Runtime integration is delivered in 09a899da (local-run-v4
+source ca4fd26b), with 314 Runtime and 18 architecture checks passing and
+independent scope reviews. Actual remote acceptance remains open; pure positive
+witnesses alone still do not grant execution permission. Continue Task06's
+committed-media integration before claiming Stage4/Recipe/Render completion.
 
 1. 冻结 Keep/Replace/Delete 边界；禁止继续激活现有
    `production_stage1/2/3.py` 的关闭路径。
