@@ -43,6 +43,10 @@ Authority、Profile 或 CalibrationRecord。
 - 整批接线、v9 预算和真实 producer 身份修复已提交 `bfcbe141`。分段时钟的物理
   消费层也已实现并独立审查：保留负起点、非整数换算和不同音视频尾长，拒绝跨 gap
   及向外取整造成的假覆盖；52 项相关纯测试通过。它尚未接进完整 ExactSpan/Recipe。
+- Stage3 蓝图到整批媒体证据的只读连接已实现：同一 Source/Job/Catalog/raw VLM
+  身份逐项校验，保留所有备选组与候选顺序。6 项集成回归及独立审查通过；模型回复、
+  detector 与 Store I/O 仍是测试替身，不代表真实模型验收。下一波接候选局部语音保护
+  与分段时钟精确编译，详见 [候选物理编译](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/candidate-physical-compiler-wave.md)。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
