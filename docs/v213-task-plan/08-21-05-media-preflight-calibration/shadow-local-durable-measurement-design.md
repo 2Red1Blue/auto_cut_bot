@@ -185,3 +185,18 @@ request with the locked request and replays the bytes. Valid bytes stage; only a
 failed independent replay is an invalid-raw denial. Transport uncertainty and
 commit uncertainty never become a denial. A request-bound BUSY proof persists
 as `not_started`, and an explicit successor authorization is still required.
+
+## 8. Finalizer and reader split
+
+A Store-owned pure artifact compiler will create the fixed manifest/results
+pair from a complete plan, all staged members and actual raw bytes. It has no
+database access or activation authority. The dedicated PostgreSQL finalizer
+will lock the exact journal, validate the complete predecessor chain and all
+claims/budgets, read/replay raw bytes, then update `ready -> committed` and use
+the internal success writer in one transaction. Generic success is forbidden.
+
+The exact reader takes explicit Job, slot, Receipt, ArtifactSet and expected
+request identities. It first validates the committed journal and all metadata
+budgets, then loads raw bytes under the measurement Job and reconstructs the
+pure result/report. A former indeterminate attempt may never borrow a later
+same-slot success. Returned data remains an unaccepted measurement only.

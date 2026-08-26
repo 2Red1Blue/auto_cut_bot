@@ -6,6 +6,6 @@
   "risk": "high",
   "domain": "backend/database",
   "currentPhase": "implementation",
-  "nextAction": "Implement the dedicated Postgres journal methods, command and exact reader over the reviewed sibling local recovery contract.",
+  "nextAction": "Implement the pure finalizer and exact committed reader, then run PostgreSQL CAS/recovery acceptance on the desktop database.",
   "branch": "feat/v213-contract-codegen"
 }

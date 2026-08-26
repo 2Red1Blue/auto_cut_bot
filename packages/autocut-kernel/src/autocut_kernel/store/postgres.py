@@ -120,6 +120,17 @@ from .models import (
     PersistedVlmSemanticPack,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
+    ShadowLocalMeasurementAttempt,
+    ShadowLocalMeasurementAttemptState,
+    ShadowLocalMeasurementMember,
+    ShadowLocalMeasurementMemberLease,
+    ShadowLocalMeasurementMemberPlan,
+    ShadowLocalMeasurementMemberState,
+    ShadowLocalMeasurementNotStartedProof,
+    ShadowLocalMeasurementPlan,
+    ShadowLocalMeasurementRecoveryLease,
+    ShadowLocalMeasurementRetryAuthorization,
+    ShadowLocalMeasurementStagedResponse,
     ShadowMeasurementAttempt,
     ShadowMeasurementAttemptState,
     ShadowMeasurementMember,
@@ -488,6 +499,23 @@ def _canonical_db_json(value: str) -> str:
     return json.dumps(
         _strict_json_object(value, "PostgreSQL JSON"),
         ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _canonical_media_db_json(value: str) -> str:
+    """Restore JSONB text to the media-domain canonical representation.
+
+    PostgreSQL JSONB intentionally erases escaping choices.  Local cases,
+    requests, projected evidence, and BUSY proofs are media-domain values, so
+    their frozen representation uses ASCII escapes rather than Store payload
+    canonicalization's Unicode-preserving form.
+    """
+
+    return json.dumps(
+        _strict_json_object(value, "PostgreSQL media JSON"),
+        ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
     )
@@ -1542,6 +1570,545 @@ class PostgresRuntimeStore:
             successor = self._read_shadow_attempt_by_id(cursor, attempt_id)
             if successor is None:
                 raise RuntimeStoreError("shadow successor vanished after reservation")
+            return successor
+
+        return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # shadow-local calibration measurement recovery owner
+    # ------------------------------------------------------------------
+
+    def claim_or_read_shadow_local_measurement_attempt(
+        self, plan: ShadowLocalMeasurementPlan
+    ) -> ShadowLocalMeasurementAttempt:
+        """Reserve or reread the closed local-only measurement journal."""
+
+        claim = plan.claim
+        self._require_shadow_local_plan_claim(claim, plan)
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            job_id = self._ensure_job(cursor, claim.job)
+            job_state = self._locked_job_state(cursor, job_id)
+            cursor.execute(
+                """
+                SELECT command_slot_id, command_name, request_hash, execution_kind
+                  FROM runtime.command_slots
+                 WHERE job_id = %s AND idempotency_key = %s FOR UPDATE
+                """,
+                (job_id, claim.idempotency_key),
+            )
+            existing_slot = cursor.fetchone()
+            if existing_slot is not None:
+                slot_id, command_name, request_hash, execution_kind = existing_slot
+                if (
+                    _text(command_name) != claim.command_name
+                    or _text(request_hash) != claim.request_hash
+                    or _text(execution_kind) != claim.execution_kind
+                ):
+                    raise IdempotencyConflictError(
+                        "idempotency key was already claimed by a different command"
+                    )
+                existing = self._read_shadow_local_attempt_by_slot(cursor, UUID(str(slot_id)))
+                if existing is None:
+                    raise CommandStateError("shadow-local command slot is missing its immutable journal")
+                return existing
+            if job_state not in ("pending", "running"):
+                raise CommandStateError("job is already terminal; new commands are closed")
+            for member in plan.members:
+                self._verify_shadow_local_source_owner(cursor, member)
+            slot_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.command_slots
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash,
+                     execution_kind, state)
+                VALUES (%s, %s, %s, %s, %s, %s, 'running')
+                """,
+                (
+                    slot_id, job_id, claim.idempotency_key, claim.command_name,
+                    claim.request_hash, claim.execution_kind,
+                ),
+            )
+            if job_state == "pending":
+                cursor.execute("UPDATE runtime.jobs SET state = 'running' WHERE job_id = %s", (job_id,))
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.shadow_local_calibration_measurement_attempts
+                    (attempt_id, command_slot_id, job_id, plan_hash, attempt_ordinal,
+                     state, version, plan_json)
+                VALUES (%s, %s, %s, %s, 1, 'prepared', 0, %s::jsonb)
+                """,
+                (attempt_id, slot_id, job_id, plan.claim.request_hash, plan.canonical_plan_json),
+            )
+            for member in plan.members:
+                self._insert_shadow_local_member(cursor, attempt_id, member, state="pending")
+            created = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if created is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after reservation")
+            return created
+
+        return self._transaction(operation)
+
+    def read_shadow_local_measurement_attempt(
+        self, attempt_id: UUID
+    ) -> ShadowLocalMeasurementAttempt:
+        """Read one exact durable local attempt without changing its lease state."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            attempt = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if attempt is None:
+                raise StoreValidationError("shadow-local attempt_id is unknown")
+            return attempt
+
+        return self._transaction(operation)
+
+    def acquire_shadow_local_measurement_member_lease(
+        self, attempt_id: UUID, case_sha256: str, *, expected_version: int
+    ) -> ShadowLocalMeasurementMemberLease | None:
+        """CAS-record an invocation lease before any local service dispatch."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_sha256(case_sha256, "shadow-local case")
+        self._validate_nonnegative_version(expected_version, "shadow-local member expected_version")
+        token = str(uuid4())
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementMemberLease | None:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            if attempt.outcome.state != "running" or attempt.state not in ("prepared", "collecting"):
+                return None
+            cursor.execute(
+                """
+                SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts
+                 WHERE command_slot_id = %s AND attempt_ordinal > %s FOR KEY SHARE
+                """,
+                (attempt.command_slot_id, attempt.attempt_ordinal),
+            )
+            if cursor.fetchone() is not None:
+                return None
+            member = self._locked_shadow_local_member(cursor, attempt_id, case_sha256)
+            if member is None or member.state != "pending" or member.version != expected_version:
+                return None
+            cursor.execute(
+                """
+                SELECT member_ordinal, state
+                  FROM runtime.shadow_local_calibration_measurement_members
+                 WHERE attempt_id = %s AND member_ordinal < %s
+                 ORDER BY member_ordinal FOR UPDATE
+                """,
+                (attempt_id, member.member_ordinal),
+            )
+            while (prefix := cursor.fetchone()) is not None:
+                if _text(prefix[1]) != "staged":
+                    return None
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=SHADOW_MEASUREMENT_LEASE_SECONDS)
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_members
+                   SET state = 'invoking', lease_token = %s, lease_expires_at = %s,
+                       version = version + 1
+                 WHERE attempt_id = %s AND case_sha256 = %s
+                   AND state = 'pending' AND version = %s
+                """,
+                (token, expires_at, attempt_id, case_sha256, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            self._transition_shadow_local_attempt(cursor, attempt, "collecting")
+            current = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after member lease")
+            leased = next(item for item in current.members if item.case_sha256 == case_sha256)
+            return ShadowLocalMeasurementMemberLease(leased, current.version, token)
+
+        return self._transaction(operation)
+
+    def materialize_shadow_local_measurement_source(
+        self,
+        attempt_id: UUID,
+        case_sha256: str,
+        *,
+        limits: MaterializationLimits,
+    ) -> VerifiedMaterializedBlob:
+        """Materialize only the exact source bound to a pending local member.
+
+        The command calls this before its durable invocation lease.  The locked
+        pending row closes the source owner without claiming that any provider
+        dispatch has begun.
+        """
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_sha256(case_sha256, "shadow-local case")
+        if type(limits) is not MaterializationLimits:  # noqa: E721
+            raise StoreValidationError("shadow-local source materialization requires exact limits")
+
+        def operation(cursor: DbCursor) -> tuple[Job, BlobRef]:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            if attempt.outcome.state != "running":
+                raise CommandStateError("shadow-local source materialization requires a running command")
+            member = self._locked_shadow_local_member(cursor, attempt_id, case_sha256)
+            if member is None or member.state != "pending":
+                raise CommandStateError("shadow-local source materialization requires a pending member")
+            return self._verify_shadow_local_source_owner_from_member(cursor, member)
+
+        source_job, source_blob = self._transaction(operation)
+        return self.materialize_immutable_blob(source_job, source_blob, limits)
+
+    def stage_shadow_local_measurement_member_response(
+        self,
+        attempt_id: UUID,
+        case_sha256: str,
+        *,
+        expected_version: int,
+        lease_token: str,
+        staged: ShadowLocalMeasurementStagedResponse,
+    ) -> ShadowLocalMeasurementAttempt:
+        """Atomically attach raw local bytes and independently replayed evidence."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_sha256(case_sha256, "shadow-local case")
+        self._validate_nonnegative_version(expected_version, "shadow-local member expected_version")
+        if type(staged) is not ShadowLocalMeasurementStagedResponse:  # noqa: E721
+            raise StoreValidationError("shadow-local stage requires an exact staged response")
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            member = self._locked_shadow_local_member(cursor, attempt_id, case_sha256)
+            if member is None:
+                raise StoreValidationError("shadow-local stage member is unknown")
+            if member.state == "staged":
+                if (
+                    member.raw_blob is None
+                    or member.raw_blob.content_hash != staged.content_hash
+                    or member.raw_blob.byte_length != len(staged.raw_bytes)
+                    or member.raw_blob.media_type != staged.media_type
+                    or member.evidence_json != staged.evidence_json
+                ):
+                    raise IdempotencyConflictError("shadow-local staged member cannot be substituted")
+                return attempt
+            if member.state != "invoking" or member.version != expected_version:
+                raise CommandStateError("shadow-local stage member is stale or not invoking")
+            self._require_shadow_local_member_lease(cursor, member, lease_token, "stage")
+            reference = self._put_shadow_local_blob(
+                cursor, attempt.job, staged.raw_bytes, staged.content_hash, staged.media_type
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_members
+                   SET state = 'staged', lease_token = NULL, lease_expires_at = NULL,
+                       raw_blob_object_id = %s, raw_content_hash = %s, raw_byte_length = %s,
+                       raw_media_type = %s, evidence_json = %s::jsonb, version = version + 1
+                 WHERE attempt_id = %s AND case_sha256 = %s
+                   AND state = 'invoking' AND version = %s AND lease_token = %s
+                   AND lease_expires_at > transaction_timestamp()
+                """,
+                (
+                    reference.object_id, reference.content_hash, reference.byte_length, reference.media_type,
+                    staged.evidence_json, attempt_id, case_sha256, expected_version, lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow-local stage lease was lost")
+            cursor.execute(
+                "SELECT count(*) FROM runtime.shadow_local_calibration_measurement_members "
+                "WHERE attempt_id = %s AND state = 'staged'",
+                (attempt_id,),
+            )
+            all_staged = int(_text(cursor.fetchone()[0])) == len(attempt.members)  # type: ignore[index]
+            self._transition_shadow_local_attempt(cursor, attempt, "ready" if all_staged else "collecting")
+            current = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after staging")
+            return current
+
+        return self._transaction(operation)
+
+    def stage_shadow_local_measurement_not_started(
+        self,
+        attempt_id: UUID,
+        case_sha256: str,
+        *,
+        expected_version: int,
+        lease_token: str,
+        proof: ShadowLocalMeasurementNotStartedProof,
+    ) -> ShadowLocalMeasurementAttempt:
+        """Durably prove BUSY-before-dispatch without inventing an unknown result."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_sha256(case_sha256, "shadow-local case")
+        self._validate_nonnegative_version(expected_version, "shadow-local member expected_version")
+        if type(proof) is not ShadowLocalMeasurementNotStartedProof:  # noqa: E721
+            raise StoreValidationError("shadow-local BUSY stage requires an exact proof")
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            member = self._locked_shadow_local_member(cursor, attempt_id, case_sha256)
+            if member is None:
+                raise StoreValidationError("shadow-local BUSY member is unknown")
+            if member.state == "not_started":
+                if (
+                    member.busy_proof_blob is None
+                    or member.busy_proof_blob.content_hash != proof.content_hash
+                    or member.busy_proof_blob.byte_length != len(proof.raw_bytes)
+                    or member.busy_proof_blob.media_type != proof.media_type
+                    or member.busy_proof_json != proof.proof_json
+                ):
+                    raise IdempotencyConflictError("shadow-local BUSY proof cannot be substituted")
+                return attempt
+            if member.state != "invoking" or member.version != expected_version:
+                raise CommandStateError("shadow-local BUSY member is stale or not invoking")
+            self._require_shadow_local_member_lease(cursor, member, lease_token, "stage BUSY proof")
+            payload = _strict_json_object(proof.proof_json, "shadow-local BUSY proof")
+            if (
+                payload.get("request_sha256") != member.request_sha256
+                or payload.get("binding_sha256") != member.binding_sha256
+                or payload.get("service_profile_sha256") != member.service_profile_sha256
+            ):
+                raise StoreValidationError("shadow-local BUSY proof does not bind the leased member")
+            reference = self._put_shadow_local_blob(
+                cursor, attempt.job, proof.raw_bytes, proof.content_hash, proof.media_type
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_members
+                   SET state = 'not_started', lease_token = NULL, lease_expires_at = NULL,
+                       busy_proof_blob_object_id = %s, busy_proof_content_hash = %s,
+                       busy_proof_byte_length = %s, busy_proof_media_type = %s,
+                       busy_proof_json = %s::jsonb, version = version + 1
+                 WHERE attempt_id = %s AND case_sha256 = %s
+                   AND state = 'invoking' AND version = %s AND lease_token = %s
+                   AND lease_expires_at > transaction_timestamp()
+                """,
+                (
+                    reference.object_id, reference.content_hash, reference.byte_length, reference.media_type,
+                    proof.proof_json, attempt_id, case_sha256, expected_version, lease_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow-local BUSY proof lease was lost")
+            # BUSY is a definitive pre-dispatch proof, not a native unknown.
+            # The attempt becomes recoverable only so an explicitly authorized
+            # REQUEST_NOT_STARTED successor can resume this exact member.
+            self._transition_shadow_local_attempt(cursor, attempt, "indeterminate")
+            current = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after BUSY proof")
+            return current
+
+        return self._transaction(operation)
+
+    def acquire_shadow_local_measurement_recovery_lease(
+        self, attempt_id: UUID, *, expected_version: int
+    ) -> ShadowLocalMeasurementRecoveryLease | None:
+        """CAS-acquire recovery for an active local collection attempt."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_nonnegative_version(expected_version, "shadow-local recovery expected_version")
+        token = str(uuid4())
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementRecoveryLease | None:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            if (
+                attempt.version != expected_version
+                or attempt.outcome.state != "running"
+                or attempt.state != "collecting"
+            ):
+                return None
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=SHADOW_MEASUREMENT_LEASE_SECONDS)
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_attempts
+                   SET recovery_lease_token = %s, recovery_lease_expires_at = %s, version = version + 1
+                 WHERE attempt_id = %s AND version = %s AND state = 'collecting'
+                   AND (recovery_lease_expires_at IS NULL
+                        OR recovery_lease_expires_at <= transaction_timestamp())
+                """,
+                (token, expires_at, attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            current = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after recovery lease")
+            return ShadowLocalMeasurementRecoveryLease(current, token)
+
+        return self._transaction(operation)
+
+    def mark_shadow_local_measurement_member_indeterminate(
+        self,
+        attempt_id: UUID,
+        case_sha256: str,
+        *,
+        expected_version: int,
+        recovery_lease_token: str,
+    ) -> ShadowLocalMeasurementAttempt:
+        """Record one expired invocation as unknown; never silently re-dispatch it."""
+
+        self._validate_uuid(attempt_id, "shadow-local attempt_id")
+        self._validate_sha256(case_sha256, "shadow-local case")
+        self._validate_nonnegative_version(expected_version, "shadow-local member expected_version")
+        if type(recovery_lease_token) is not str or not recovery_lease_token.strip():  # noqa: E721
+            raise StoreValidationError("shadow-local recovery lease_token is required")
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            attempt = self._locked_shadow_local_attempt(cursor, attempt_id)
+            self._require_shadow_local_recovery_lease(cursor, attempt, recovery_lease_token, "mark indeterminate")
+            member = self._locked_shadow_local_member(cursor, attempt_id, case_sha256)
+            if member is None or member.state != "invoking" or member.version != expected_version:
+                raise CommandStateError("shadow-local indeterminate member is stale or not invoking")
+            if member.lease_expires_at is None or member.lease_expires_at > datetime.now(timezone.utc):
+                raise CommandStateError("shadow-local member invocation lease has not expired")
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_members
+                   SET state = 'indeterminate', lease_token = NULL, lease_expires_at = NULL,
+                       version = version + 1
+                 WHERE attempt_id = %s AND case_sha256 = %s
+                   AND state = 'invoking' AND version = %s
+                   AND lease_expires_at <= transaction_timestamp()
+                """,
+                (attempt_id, case_sha256, expected_version),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow-local indeterminate member CAS was lost")
+            cursor.execute(
+                """
+                UPDATE runtime.shadow_local_calibration_measurement_attempts
+                   SET state = 'indeterminate', version = version + 1
+                 WHERE attempt_id = %s AND version = %s AND state = 'collecting'
+                   AND recovery_lease_token = %s
+                   AND recovery_lease_expires_at > transaction_timestamp()
+                """,
+                (attempt_id, attempt.version, recovery_lease_token),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("shadow-local indeterminate recovery lease was lost")
+            current = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if current is None:
+                raise RuntimeStoreError("shadow-local attempt vanished after indeterminate transition")
+            return current
+
+        return self._transaction(operation)
+
+    def reserve_shadow_local_measurement_successor(
+        self,
+        previous_attempt_id: UUID,
+        authorization: ShadowLocalMeasurementRetryAuthorization,
+    ) -> ShadowLocalMeasurementAttempt:
+        """Reserve the one authorized same-slot successor of an unknown local invocation."""
+
+        self._validate_uuid(previous_attempt_id, "shadow-local previous_attempt_id")
+        if type(authorization) is not ShadowLocalMeasurementRetryAuthorization:  # noqa: E721
+            raise StoreValidationError("shadow-local successor requires exact retry authorization")
+
+        def operation(cursor: DbCursor) -> ShadowLocalMeasurementAttempt:
+            previous = self._locked_shadow_local_attempt(cursor, previous_attempt_id)
+            if previous.state != "indeterminate" or previous.outcome.state != "running":
+                raise CommandStateError("only a running indeterminate shadow-local attempt may have a successor")
+            if (
+                authorization.predecessor_attempt_id != previous.attempt_id
+                or authorization.predecessor_plan_hash != previous.plan_hash
+                or authorization.predecessor_version != previous.version
+                or authorization.next_attempt_ordinal != previous.attempt_ordinal + 1
+            ):
+                raise StoreValidationError("shadow-local retry authorization does not bind the predecessor")
+            if authorization.next_attempt_ordinal > self._shadow_local_max_attempt_count(
+                previous.canonical_plan_json
+            ):
+                raise CommandStateError("shadow-local retry exceeds the frozen max_attempt_count")
+            if previous.recovery_lease_expires_at is not None and previous.recovery_lease_expires_at > datetime.now(timezone.utc):
+                raise CommandStateError("shadow-local successor is blocked by an active recovery lease")
+            authorized = next(
+                (member for member in previous.members if member.case_sha256 == authorization.member_case_sha256),
+                None,
+            )
+            if authorized is None or (
+                authorization.reason_code == "NATIVE_OUTCOME_UNKNOWN" and authorized.state != "indeterminate"
+            ) or (
+                authorization.reason_code == "REQUEST_NOT_STARTED" and authorized.state != "not_started"
+            ):
+                raise StoreValidationError("shadow-local retry authorization target is not recoverable")
+            if any(member.state not in ("staged", "pending", "indeterminate", "not_started") for member in previous.members):
+                raise CommandStateError("shadow-local successor requires no concurrent invocation")
+            cursor.execute(
+                """
+                SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts
+                 WHERE job_id = %s AND plan_hash = %s AND attempt_ordinal = %s FOR UPDATE
+                """,
+                (previous.outcome.job_id, previous.plan_hash, authorization.next_attempt_ordinal),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                existing_id = UUID(str(existing[0]))
+                cursor.execute(
+                    """
+                    SELECT command_slot_id, job_id, plan_hash, attempt_ordinal, previous_attempt_id,
+                           retry_decision_reference_sha256, retry_member_case_sha256,
+                           retry_predecessor_version, retry_reason_code
+                      FROM runtime.shadow_local_calibration_measurement_attempts
+                     WHERE attempt_id = %s FOR KEY SHARE
+                    """,
+                    (existing_id,),
+                )
+                replay = cursor.fetchone()
+                if replay is None:
+                    raise RuntimeStoreError("shadow-local successor vanished during replay validation")
+                (
+                    replay_slot, replay_job, replay_plan, replay_ordinal, replay_previous,
+                    replay_decision, replay_case, replay_version, replay_reason,
+                ) = replay
+                if (
+                    UUID(str(replay_slot)) != previous.command_slot_id
+                    or UUID(str(replay_job)) != previous.outcome.job_id
+                    or _text(replay_plan) != previous.plan_hash
+                    or int(_text(replay_ordinal)) != authorization.next_attempt_ordinal
+                    or UUID(str(replay_previous)) != previous.attempt_id
+                    or _text(replay_decision) != authorization.decision_reference_sha256
+                    or _text(replay_case) != authorization.member_case_sha256
+                    or int(_text(replay_version)) != authorization.predecessor_version
+                    or _text(replay_reason) != authorization.reason_code
+                ):
+                    raise IdempotencyConflictError(
+                        "shadow-local successor ordinal was reserved by a different authorization"
+                    )
+                found = self._read_shadow_local_attempt_by_id(cursor, existing_id)
+                if found is None:
+                    raise RuntimeStoreError("shadow-local successor vanished after replay read")
+                return found
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.shadow_local_calibration_measurement_attempts
+                    (attempt_id, command_slot_id, job_id, plan_hash, attempt_ordinal, previous_attempt_id,
+                     state, version, plan_json, retry_decision_reference_sha256,
+                     retry_member_case_sha256, retry_predecessor_version, retry_reason_code)
+                VALUES (%s, %s, %s, %s, %s, %s, 'prepared', 0, %s::jsonb, %s, %s, %s, %s)
+                """,
+                (
+                    attempt_id, previous.command_slot_id, previous.outcome.job_id, previous.plan_hash,
+                    authorization.next_attempt_ordinal, previous.attempt_id, previous.canonical_plan_json,
+                    authorization.decision_reference_sha256, authorization.member_case_sha256,
+                    authorization.predecessor_version, authorization.reason_code,
+                ),
+            )
+            for member in previous.members:
+                self._insert_shadow_local_member(
+                    cursor,
+                    attempt_id,
+                    ShadowLocalMeasurementMemberPlan(
+                        member.member_ordinal, member.case_sha256, member.request_sha256,
+                        member.canonical_case_json, member.canonical_request_json, member.source_job_id,
+                        member.source_blob, member.source_blob_reference_sha256, member.binding_sha256,
+                        member.service_profile_sha256, member.max_response_bytes,
+                    ),
+                    state="staged" if member.state == "staged" else "pending",
+                    staged=member if member.state == "staged" else None,
+                )
+            successor = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+            if successor is None:
+                raise RuntimeStoreError("shadow-local successor vanished after reservation")
             return successor
 
         return self._transaction(operation)
@@ -6249,6 +6816,415 @@ class PostgresRuntimeStore:
     def _validate_nonnegative_version(value: int, field_name: str) -> None:
         if type(value) is not int or value < 0:  # noqa: E721
             raise StoreValidationError(f"{field_name} must be a non-negative integer")
+
+    @staticmethod
+    def _require_shadow_local_plan_claim(
+        claim: CommandClaim, plan: ShadowLocalMeasurementPlan
+    ) -> None:
+        if type(claim) is not CommandClaim or type(plan) is not ShadowLocalMeasurementPlan:  # noqa: E721
+            raise StoreValidationError("shadow-local owner requires exact claim and plan")
+        if claim != plan.claim:
+            raise StoreValidationError("shadow-local claim does not equal its immutable plan claim")
+        if claim.command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise StoreValidationError("shadow-local owner requires its reserved command")
+        if claim.execution_kind != "deterministic":
+            raise StoreValidationError("shadow-local measurement requires deterministic execution kind")
+
+    def _read_shadow_local_attempt_by_slot(
+        self, cursor: DbCursor, command_slot_id: UUID
+    ) -> ShadowLocalMeasurementAttempt | None:
+        cursor.execute(
+            """
+            SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts
+             WHERE command_slot_id = %s
+             ORDER BY attempt_ordinal DESC
+             LIMIT 1
+            """,
+            (command_slot_id,),
+        )
+        row = cursor.fetchone()
+        return None if row is None else self._read_shadow_local_attempt_by_id(cursor, UUID(str(row[0])))
+
+    def _read_shadow_local_attempt_by_id(
+        self, cursor: DbCursor, attempt_id: UUID
+    ) -> ShadowLocalMeasurementAttempt | None:
+        cursor.execute(
+            """
+            SELECT attempt.command_slot_id, job.job_key, job.profile, attempt.plan_hash,
+                   attempt.plan_json::text, attempt.attempt_ordinal, attempt.previous_attempt_id,
+                   attempt.state, attempt.version, attempt.recovery_lease_expires_at
+              FROM runtime.shadow_local_calibration_measurement_attempts AS attempt
+              JOIN runtime.jobs AS job ON job.job_id = attempt.job_id
+             WHERE attempt.attempt_id = %s
+            """,
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        (
+            slot_id, job_key, profile, plan_hash, plan_json, ordinal, previous_id,
+            state, version, recovery_expires,
+        ) = row
+        command_slot_id = UUID(str(slot_id))
+        job_id = self._slot_job_id(cursor, command_slot_id)
+        outcome = self._read_outcome_by_slot(cursor, command_slot_id, job_id)
+        cursor.execute(
+            """
+            SELECT case_sha256, request_sha256, member_ordinal, case_json::text, request_json::text,
+                   source_job_id, source_blob_object_id, source_blob_content_hash,
+                   source_blob_byte_length, source_blob_media_type, source_blob_reference_sha256,
+                   binding_sha256, service_profile_sha256, max_response_bytes, state, version,
+                   raw_blob_object_id, raw_content_hash, raw_byte_length, raw_media_type,
+                   evidence_json::text, busy_proof_blob_object_id, busy_proof_content_hash,
+                   busy_proof_byte_length, busy_proof_media_type, busy_proof_json::text,
+                   lease_expires_at
+              FROM runtime.shadow_local_calibration_measurement_members
+             WHERE attempt_id = %s ORDER BY member_ordinal
+            """,
+            (attempt_id,),
+        )
+        members: list[ShadowLocalMeasurementMember] = []
+        while (member_row := cursor.fetchone()) is not None:
+            (
+                case_hash, request_hash, member_ordinal, case_json, request_json, source_job_id,
+                source_blob_id, source_hash, source_length, source_media_type, source_reference_hash,
+                binding_hash, service_profile_hash, max_response_bytes, member_state, member_version,
+                raw_id, raw_hash, raw_length, raw_type, evidence_json, busy_id, busy_hash,
+                busy_length, busy_type, busy_json, lease_expires,
+            ) = member_row
+            source_blob = BlobRef(
+                UUID(str(source_blob_id)), _text(source_hash), int(_text(source_length)), _text(source_media_type)
+            )
+            raw_blob = (
+                None if raw_id is None else BlobRef(
+                    UUID(str(raw_id)), _text(raw_hash), int(_text(raw_length)), _text(raw_type)
+                )
+            )
+            busy_blob = (
+                None if busy_id is None else BlobRef(
+                    UUID(str(busy_id)), _text(busy_hash), int(_text(busy_length)), _text(busy_type)
+                )
+            )
+            members.append(
+                ShadowLocalMeasurementMember(
+                    attempt_id, _text(case_hash), _text(request_hash), int(_text(member_ordinal)),
+                    _canonical_media_db_json(_text(case_json)), _canonical_media_db_json(_text(request_json)),
+                    UUID(str(source_job_id)), source_blob, _text(source_reference_hash), _text(binding_hash),
+                    _text(service_profile_hash), int(_text(max_response_bytes)),
+                    cast(ShadowLocalMeasurementMemberState, _text(member_state)), int(_text(member_version)),
+                    raw_blob, None if evidence_json is None else _canonical_media_db_json(_text(evidence_json)),
+                    busy_blob, None if busy_json is None else _canonical_media_db_json(_text(busy_json)),
+                    cast(datetime | None, lease_expires),
+                )
+            )
+        return ShadowLocalMeasurementAttempt(
+            attempt_id, command_slot_id, Job(_text(job_key), cast(JobProfile, _text(profile))),
+            _text(plan_hash), _canonical_db_json(_text(plan_json)), int(_text(ordinal)),
+            None if previous_id is None else UUID(str(previous_id)),
+            cast(ShadowLocalMeasurementAttemptState, _text(state)), int(_text(version)), tuple(members),
+            outcome, cast(datetime | None, recovery_expires),
+        )
+
+    def _locked_shadow_local_attempt(
+        self, cursor: DbCursor, attempt_id: UUID
+    ) -> ShadowLocalMeasurementAttempt:
+        cursor.execute(
+            "SELECT command_slot_id FROM runtime.shadow_local_calibration_measurement_attempts WHERE attempt_id = %s",
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("shadow-local attempt_id is unknown")
+        slot_id = UUID(str(row[0]))
+        self._locked_job_then_slot(cursor, slot_id)
+        self._require_slot_execution_kind(cursor, slot_id, "deterministic")
+        cursor.execute(
+            "SELECT attempt_id FROM runtime.shadow_local_calibration_measurement_attempts "
+            "WHERE attempt_id = %s FOR UPDATE",
+            (attempt_id,),
+        )
+        if cursor.fetchone() is None:
+            raise RuntimeStoreError("shadow-local attempt vanished while locking")
+        attempt = self._read_shadow_local_attempt_by_id(cursor, attempt_id)
+        if attempt is None:
+            raise RuntimeStoreError("shadow-local attempt vanished while reading")
+        return attempt
+
+    @staticmethod
+    def _locked_shadow_local_member(
+        cursor: DbCursor, attempt_id: UUID, case_sha256: str
+    ) -> ShadowLocalMeasurementMember | None:
+        cursor.execute(
+            """
+            SELECT case_sha256, request_sha256, member_ordinal, case_json::text, request_json::text,
+                   source_job_id, source_blob_object_id, source_blob_content_hash,
+                   source_blob_byte_length, source_blob_media_type, source_blob_reference_sha256,
+                   binding_sha256, service_profile_sha256, max_response_bytes, state, version,
+                   raw_blob_object_id, raw_content_hash, raw_byte_length, raw_media_type,
+                   evidence_json::text, busy_proof_blob_object_id, busy_proof_content_hash,
+                   busy_proof_byte_length, busy_proof_media_type, busy_proof_json::text,
+                   lease_expires_at
+              FROM runtime.shadow_local_calibration_measurement_members
+             WHERE attempt_id = %s AND case_sha256 = %s FOR UPDATE
+            """,
+            (attempt_id, case_sha256),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        (
+            case_hash, request_hash, member_ordinal, case_json, request_json, source_job_id,
+            source_blob_id, source_hash, source_length, source_media_type, source_reference_hash,
+            binding_hash, service_profile_hash, max_response_bytes, state, version,
+            raw_id, raw_hash, raw_length, raw_type, evidence_json, busy_id, busy_hash,
+            busy_length, busy_type, busy_json, lease_expires,
+        ) = row
+        source_blob = BlobRef(
+            UUID(str(source_blob_id)), _text(source_hash), int(_text(source_length)), _text(source_media_type)
+        )
+        raw_blob = None if raw_id is None else BlobRef(
+            UUID(str(raw_id)), _text(raw_hash), int(_text(raw_length)), _text(raw_type)
+        )
+        busy_blob = None if busy_id is None else BlobRef(
+            UUID(str(busy_id)), _text(busy_hash), int(_text(busy_length)), _text(busy_type)
+        )
+        return ShadowLocalMeasurementMember(
+            attempt_id, _text(case_hash), _text(request_hash), int(_text(member_ordinal)),
+            _canonical_media_db_json(_text(case_json)), _canonical_media_db_json(_text(request_json)), UUID(str(source_job_id)),
+            source_blob, _text(source_reference_hash), _text(binding_hash), _text(service_profile_hash),
+            int(_text(max_response_bytes)), cast(ShadowLocalMeasurementMemberState, _text(state)),
+            int(_text(version)), raw_blob,
+            None if evidence_json is None else _canonical_media_db_json(_text(evidence_json)), busy_blob,
+            None if busy_json is None else _canonical_media_db_json(_text(busy_json)), cast(datetime | None, lease_expires),
+        )
+
+    def _verify_shadow_local_source_owner(
+        self, cursor: DbCursor, member: ShadowLocalMeasurementMemberPlan
+    ) -> Job:
+        if type(member) is not ShadowLocalMeasurementMemberPlan:  # noqa: E721
+            raise StoreValidationError("shadow-local source verification requires exact member plan")
+        return self._verify_shadow_local_source_owner_values(
+            cursor, member.source_job_id, member.source_blob
+        )
+
+    def _verify_shadow_local_source_owner_from_member(
+        self, cursor: DbCursor, member: ShadowLocalMeasurementMember
+    ) -> tuple[Job, BlobRef]:
+        if type(member) is not ShadowLocalMeasurementMember:  # noqa: E721
+            raise StoreValidationError("shadow-local source verification requires exact stored member")
+        job = self._verify_shadow_local_source_owner_values(cursor, member.source_job_id, member.source_blob)
+        return job, member.source_blob
+
+    @staticmethod
+    def _shadow_local_max_attempt_count(canonical_plan_json: str) -> int:
+        """Read the bounded retry budget from the exact Store-canonical plan."""
+
+        plan = _strict_json_object(canonical_plan_json, "shadow-local attempt plan")
+        inputs = plan.get("shadow_local_inputs")
+        if type(inputs) is not dict:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt plan inputs are invalid")
+        max_attempt_count = cast(dict[str, object], inputs).get("max_attempt_count")
+        if type(max_attempt_count) is not int or max_attempt_count <= 0:  # noqa: E721
+            raise StoreValidationError("shadow-local attempt plan max_attempt_count is invalid")
+        return max_attempt_count
+
+    @staticmethod
+    def _verify_shadow_local_source_owner_values(
+        cursor: DbCursor, source_job_id: UUID, source_blob: BlobRef
+    ) -> Job:
+        cursor.execute(
+            """
+            SELECT source.job_key, source.profile, source.state,
+                   object.object_id, object.content_hash, object.byte_length, object.media_type
+              FROM runtime.jobs AS source
+              JOIN storage.blob_claims AS claim ON claim.job_id = source.job_id
+              JOIN storage.blob_objects AS object ON object.object_id = claim.object_id
+             WHERE source.job_id = %s AND object.object_id = %s
+             FOR KEY SHARE
+            """,
+            (source_job_id, source_blob.object_id),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("shadow-local source BlobRef is not owned by its source Job")
+        job_key, profile, state, object_id, content_hash, byte_length, media_type = row
+        if _text(state) != "succeeded":
+            raise CommandStateError("shadow-local source Job must already be succeeded")
+        durable = BlobRef(
+            UUID(str(object_id)), _text(content_hash), int(_text(byte_length)), _text(media_type)
+        )
+        if durable != source_blob:
+            raise StoreValidationError("shadow-local source BlobRef metadata drifted from its source owner")
+        return Job(_text(job_key), cast(JobProfile, _text(profile)))
+
+    @staticmethod
+    def _insert_shadow_local_member(
+        cursor: DbCursor,
+        attempt_id: UUID,
+        member: ShadowLocalMeasurementMemberPlan,
+        *,
+        state: Literal["pending", "staged"],
+        staged: ShadowLocalMeasurementMember | None = None,
+    ) -> None:
+        if state == "staged":
+            if staged is None or staged.raw_blob is None or staged.evidence_json is None:
+                raise RuntimeStoreError("shadow-local staged successor lost durable evidence")
+            cursor.execute(
+                """
+                INSERT INTO runtime.shadow_local_calibration_measurement_members
+                    (attempt_id, case_sha256, request_sha256, member_ordinal, case_json, request_json,
+                     source_job_id, source_blob_object_id, source_blob_content_hash,
+                     source_blob_byte_length, source_blob_media_type, source_blob_reference_sha256,
+                     binding_sha256, service_profile_sha256, max_response_bytes, state, version,
+                     raw_blob_object_id, raw_content_hash, raw_byte_length, raw_media_type, evidence_json)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, 'staged', 0, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    attempt_id, member.case_sha256, member.request_sha256, member.member_ordinal,
+                    member.canonical_case_json, member.canonical_request_json, member.source_job_id,
+                    member.source_blob.object_id, member.source_blob.content_hash,
+                    member.source_blob.byte_length, member.source_blob.media_type,
+                    member.source_blob_reference_sha256, member.binding_sha256,
+                    member.service_profile_sha256, member.max_response_bytes, staged.raw_blob.object_id,
+                    staged.raw_blob.content_hash, staged.raw_blob.byte_length, staged.raw_blob.media_type,
+                    staged.evidence_json,
+                ),
+            )
+            return
+        cursor.execute(
+            """
+            INSERT INTO runtime.shadow_local_calibration_measurement_members
+                (attempt_id, case_sha256, request_sha256, member_ordinal, case_json, request_json,
+                 source_job_id, source_blob_object_id, source_blob_content_hash,
+                 source_blob_byte_length, source_blob_media_type, source_blob_reference_sha256,
+                 binding_sha256, service_profile_sha256, max_response_bytes, state, version)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, 'pending', 0)
+            """,
+            (
+                attempt_id, member.case_sha256, member.request_sha256, member.member_ordinal,
+                member.canonical_case_json, member.canonical_request_json, member.source_job_id,
+                member.source_blob.object_id, member.source_blob.content_hash,
+                member.source_blob.byte_length, member.source_blob.media_type,
+                member.source_blob_reference_sha256, member.binding_sha256,
+                member.service_profile_sha256, member.max_response_bytes,
+            ),
+        )
+
+    @staticmethod
+    def _require_shadow_local_member_lease(
+        cursor: DbCursor,
+        member: ShadowLocalMeasurementMember,
+        lease_token: str,
+        operation: str,
+    ) -> None:
+        if member.lease_expires_at is None or member.lease_expires_at <= datetime.now(timezone.utc):
+            raise CommandStateError(f"shadow-local member lease expired before {operation}")
+        if type(lease_token) is not str or not lease_token.strip():  # noqa: E721
+            raise StoreValidationError(f"shadow-local member lease_token is required to {operation}")
+        cursor.execute(
+            """
+            SELECT lease_token FROM runtime.shadow_local_calibration_measurement_members
+             WHERE attempt_id = %s AND case_sha256 = %s FOR KEY SHARE
+            """,
+            (member.attempt_id, member.case_sha256),
+        )
+        row = cursor.fetchone()
+        if row is None or row[0] is None or _text(row[0]) != lease_token:
+            raise CommandStateError(f"shadow-local member lease was lost before {operation}")
+
+    @staticmethod
+    def _require_shadow_local_recovery_lease(
+        cursor: DbCursor,
+        attempt: ShadowLocalMeasurementAttempt,
+        lease_token: str,
+        operation: str,
+    ) -> None:
+        if (
+            attempt.recovery_lease_expires_at is None
+            or attempt.recovery_lease_expires_at <= datetime.now(timezone.utc)
+        ):
+            raise CommandStateError(f"shadow-local recovery lease expired before {operation}")
+        if type(lease_token) is not str or not lease_token.strip():  # noqa: E721
+            raise StoreValidationError(f"shadow-local recovery lease_token is required to {operation}")
+        cursor.execute(
+            "SELECT recovery_lease_token FROM runtime.shadow_local_calibration_measurement_attempts "
+            "WHERE attempt_id = %s FOR KEY SHARE",
+            (attempt.attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or row[0] is None or _text(row[0]) != lease_token:
+            raise CommandStateError(f"shadow-local recovery lease was lost before {operation}")
+
+    @staticmethod
+    def _transition_shadow_local_attempt(
+        cursor: DbCursor, attempt: ShadowLocalMeasurementAttempt, state: str
+    ) -> None:
+        cursor.execute(
+            """
+            UPDATE runtime.shadow_local_calibration_measurement_attempts
+               SET state = %s, version = version + 1
+             WHERE attempt_id = %s AND version = %s
+            """,
+            (state, attempt.attempt_id, attempt.version),
+        )
+        if cursor.rowcount != 1:
+            raise CommandStateError("shadow-local attempt CAS was lost")
+
+    def _put_shadow_local_blob(
+        self,
+        cursor: DbCursor,
+        job: Job,
+        raw_bytes: bytes,
+        content_hash: str,
+        media_type: str,
+    ) -> BlobRef:
+        job_id = self._ensure_job(cursor, job)
+        object_id = uuid4()
+        cursor.execute(
+            """
+            INSERT INTO storage.blob_objects
+                (object_id, content_hash, byte_length, media_type, content_bytes)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (content_hash) DO NOTHING
+            RETURNING object_id, content_hash, byte_length, media_type
+            """,
+            (object_id, content_hash, len(raw_bytes), media_type, raw_bytes),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            cursor.execute(
+                """
+                SELECT object_id, content_hash, byte_length, media_type, content_bytes
+                  FROM storage.blob_objects WHERE content_hash = %s FOR UPDATE
+                """,
+                (content_hash,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise RuntimeStoreError("shadow-local blob vanished after deduplication conflict")
+            value = row[4]
+            if not isinstance(value, (bytes, bytearray, memoryview)):
+                raise BlobIntegrityError("shadow-local durable blob returned invalid bytes")
+            durable_bytes = value.tobytes() if isinstance(value, memoryview) else bytes(value)
+            if (
+                _text(row[1]) != content_hash
+                or int(_text(row[2])) != len(raw_bytes)
+                or _text(row[3]) != media_type
+                or durable_bytes != raw_bytes
+            ):
+                raise BlobIntegrityError("shadow-local staged bytes do not exactly match durable BlobRef")
+        reference = BlobRef(UUID(str(row[0])), _text(row[1]), int(_text(row[2])), _text(row[3]))
+        cursor.execute(
+            """
+            INSERT INTO storage.blob_claims (blob_claim_id, object_id, job_id)
+            VALUES (%s, %s, %s) ON CONFLICT (job_id, object_id) DO NOTHING
+            """,
+            (uuid4(), reference.object_id, job_id),
+        )
+        return reference
 
     @staticmethod
     def _require_shadow_plan_claim(claim: CommandClaim, plan: ShadowMeasurementPlan) -> None:
