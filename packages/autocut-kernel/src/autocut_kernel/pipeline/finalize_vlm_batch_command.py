@@ -234,6 +234,7 @@ class FinalizeVlmBatchCommand:
                 request.idempotency_key,
                 VLM_BATCH_FINALIZER_COMMAND_NAME,
                 verified_request_hash,
+                execution_kind="deterministic",
             )
         )
         if outcome.state in ("succeeded", "denied", "failed"):

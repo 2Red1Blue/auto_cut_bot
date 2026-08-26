@@ -682,6 +682,7 @@ def test_postgres_measurement_to_independent_validation_and_replay() -> None:
         f"shadow-calibration:{fixture.measured.job.job_key}",
         "MeasureShadowCalibrationCommand@2.1.3",
         fixture.measured.request_hash,
+        execution_kind="deterministic",
     )
     plan = ShadowMeasurementPlan(claim, canonical_json_bytes(payload).decode(), plan_members)
     store = PostgresRuntimeStore(lambda: psycopg.connect(dsn))

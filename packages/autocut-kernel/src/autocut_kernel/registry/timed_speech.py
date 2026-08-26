@@ -279,6 +279,7 @@ class BootstrapTimedSpeechProfileRegistryCommand:
                 request.idempotency_key,
                 BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
                 request.request_hash,
+                execution_kind="deterministic",
             )
         )
         if not claimed.is_fresh_claim:

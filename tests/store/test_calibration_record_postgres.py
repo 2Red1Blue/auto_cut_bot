@@ -584,7 +584,7 @@ def test_reader_rejects_store_readable_forged_predecessor(
     with psycopg.connect(VERIFY_POSTGRES_DSN) as connection, connection.cursor() as cursor:
         cursor.execute("INSERT INTO runtime.jobs(job_id,job_key,profile,state) VALUES (%s,%s,%s,'running')", (job_id,job.job_key,job.profile))
         cursor.execute(
-            "INSERT INTO runtime.command_slots(command_slot_id,job_id,idempotency_key,command_name,request_hash,state) VALUES (%s,%s,'forged',%s,%s,'running')",
+            "INSERT INTO runtime.command_slots(execution_kind, command_slot_id,job_id,idempotency_key,command_name,request_hash,state) VALUES ('deterministic', %s,%s,'forged',%s,%s,'running')",
             (slot_id,job_id,"OtherCommand" if drift == "command" else "MeasureShadowCalibrationCommand@2.1.3",request_hash),
         )
         cursor.execute("INSERT INTO runtime.artifact_sets(artifact_set_id,command_slot_id,job_id,set_hash,member_count) VALUES (%s,%s,%s,%s,2)", (set_id,slot_id,job_id,_artifact_success(slot_id,artifacts).set_hash))

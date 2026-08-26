@@ -5,7 +5,7 @@
   "description": "Compile committed Doubao VLM observations into real Stage 1-3 business artifacts without fixture resolvers; timed speech evidence remains Stage 4-only.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "packages/autocut-kernel/src/autocut_kernel/{semantic_chain/production_*.py,pipeline/{build_narrative_graph_command.py,compile_story_portfolio_command.py,build_editorial_blueprint_command.py},store/{models.py,postgres.py}},auto_cut_bot/pipeline/{semantic/**,runtime/{stage1_narrative_stage.py,stage2_portfolio_stage.py,stage3_blueprint_stage.py,models.py,composition.py,postgres.py}},new semantic/store/runtime tests; media/root_evidence.py and media/timed_evidence.py belong to Stage 4",
+  "scope": "packages/autocut-kernel/src/autocut_kernel/{semantic_chain/*.py,pipeline/*command.py,store/{models.py,postgres.py,__init__.py},registry/timed_speech.py},packages/autocut-kernel/migrations/0018_command_execution_kind.sql,auto_cut_bot/pipeline/{source_prep/command.py,semantic/**,runtime/{stage1_narrative_stage.py,stage2_portfolio_stage.py,stage3_blueprint_stage.py,models.py,composition.py,postgres.py}},related semantic/store/runtime tests and task records; current wave ownership is in stage1-production-wave.md; media/root_evidence.py and media/timed_evidence.py belong to Stage4",
   "package": "autocut_kernel,auto_cut_bot",
   "priority": "P1",
   "creator": "liuzx",
@@ -21,6 +21,6 @@
   "children": [],
   "parent": "08-21-v213-authority-implementation",
   "relatedFiles": [],
-  "notes": "",
+  "notes": "2026-08-26: execution-kind Store migration and strict Stage1 draft decoding implemented and independently reviewed; combined regression 413 passed/6 skipped plus 15 architecture tests passed. Draft commit 05a0cd2f; see review-stage1-preparation.md. Actual Stage1 compiler/Command not yet delivered. Real DB/model/complete Pipeline acceptance stays on remote desktop.",
   "meta": {}
 }

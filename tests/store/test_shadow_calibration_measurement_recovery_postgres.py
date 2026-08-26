@@ -81,6 +81,7 @@ def _plan() -> ShadowMeasurementPlan:
         f"shadow-calibration:{plan_hash.removeprefix('sha256:')}",
         SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
         plan_hash,
+        execution_kind="deterministic",
     )
     return ShadowMeasurementPlan(claim, plan_json, tuple(member_plans))
 
@@ -361,10 +362,10 @@ def test_wrong_job_command_plan_and_generic_bypass_are_denied() -> None:
     store = _store()
     with pytest.raises(CommandStateError, match="explicit shadow owner"):
         store.claim_command(plan.claim)
-    wrong_claim = CommandClaim(plan.claim.job, plan.claim.idempotency_key, "another-command", plan.claim.request_hash)
+    wrong_claim = CommandClaim(plan.claim.job, plan.claim.idempotency_key, "another-command", plan.claim.request_hash, execution_kind="deterministic")
     with pytest.raises(StoreValidationError):
         store.claim_or_read_shadow_measurement_attempt(wrong_claim, plan)
-    wrong_job = CommandClaim(Job(plan.claim.job.job_key, "test"), plan.claim.idempotency_key, plan.claim.command_name, plan.claim.request_hash)
+    wrong_job = CommandClaim(Job(plan.claim.job.job_key, "test"), plan.claim.idempotency_key, plan.claim.command_name, plan.claim.request_hash, execution_kind="deterministic")
     with pytest.raises(StoreValidationError):
         ShadowMeasurementPlan(wrong_job, plan.canonical_plan_json, plan.members)
     with pytest.raises(StoreValidationError):

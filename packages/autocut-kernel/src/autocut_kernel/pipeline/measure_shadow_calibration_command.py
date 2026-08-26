@@ -349,6 +349,7 @@ class MeasureShadowCalibrationCommand:
             request.idempotency_key,
             MEASURE_SHADOW_CALIBRATION_COMMAND,
             request.request_hash,
+            execution_kind="deterministic",
         )
         return ShadowMeasurementPlan(
             claim,

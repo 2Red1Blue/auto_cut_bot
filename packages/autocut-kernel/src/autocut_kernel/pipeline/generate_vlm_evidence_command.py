@@ -407,6 +407,7 @@ class GenerateVlmEvidenceCommand:
                 request.idempotency_key,
                 _COMMAND_NAME,
                 request.request_hash,
+                execution_kind="generation",
             )
         )
         if outcome.state in ("denied", "failed"):

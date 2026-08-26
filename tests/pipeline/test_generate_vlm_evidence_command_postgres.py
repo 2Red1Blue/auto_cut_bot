@@ -122,6 +122,7 @@ def migrated_database() -> None:
                 "0006_ark_provider_recovery.sql",
                 "0009_vlm_bounded_retry.sql",
                 "0011_generation_retry_schedule.sql",
+                "0018_command_execution_kind.sql",
             ):
                 cursor.execute((MIGRATIONS / name).read_text())
 
@@ -776,6 +777,7 @@ def test_generic_rejection_api_cannot_terminalize_generation_command() -> None:
             "vlm-generic-rejection",
             "GenerateVlmEvidenceCommand",
             "sha256:" + "1" * 64,
+            execution_kind="generation",
         )
     )
 

@@ -42,6 +42,7 @@ GenerationAttemptState = Literal[
     "committed",
     "failed",
 ]
+CommandExecutionKind = Literal["deterministic", "generation"]
 GenerationFailureDisposition = Literal["retryable", "nonretryable", "repairable"]
 
 _LEGACY_GENERATION_RETRY_POLICY_HASH = (
@@ -938,7 +939,11 @@ class CalibrationValidationBinding:
     @property
     def claim(self) -> CommandClaim:
         return CommandClaim(
-            self.job, self.attempt_idempotency_key, CALIBRATION_VALIDATOR_COMMAND, self.request_hash
+            self.job,
+            self.attempt_idempotency_key,
+            CALIBRATION_VALIDATOR_COMMAND,
+            self.request_hash,
+            execution_kind="deterministic",
         )
 
 
@@ -1395,11 +1400,17 @@ class CommandClaim:
     idempotency_key: str
     command_name: str
     request_hash: str
+    execution_kind: CommandExecutionKind = field(kw_only=True)
 
     def __post_init__(self) -> None:
         _text(self.idempotency_key, "idempotency_key")
         _text(self.command_name, "command_name")
         _sha256(self.request_hash, "request_hash")
+        if type(self.execution_kind) is not str or self.execution_kind not in (  # noqa: E721
+            "deterministic",
+            "generation",
+        ):
+            raise StoreValidationError("execution_kind must be deterministic or generation")
 
 
 @dataclass(frozen=True, slots=True)

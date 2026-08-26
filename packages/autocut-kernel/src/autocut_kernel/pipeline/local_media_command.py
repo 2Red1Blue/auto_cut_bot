@@ -97,6 +97,7 @@ class LocalMediaCommand:
                 idempotency_key=request.idempotency_key,
                 command_name=_COMMAND_NAME,
                 request_hash=request.request_hash,
+                execution_kind="deterministic",
             )
         )
         if not claimed.is_fresh_claim:

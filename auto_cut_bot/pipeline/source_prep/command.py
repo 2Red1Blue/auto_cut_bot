@@ -447,6 +447,7 @@ class PrepareWholeSeriesSourcesCommand:
                     request.idempotency_key,
                     _COMMAND_NAME,
                     request_hash,
+                    execution_kind="deterministic",
                 )
             )
             if claimed.state not in ("pending", "running"):

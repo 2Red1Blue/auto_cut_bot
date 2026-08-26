@@ -35,7 +35,7 @@ def digest(value: str) -> str:
 
 def test_command_claim_requires_canonical_digest_and_identity() -> None:
     with pytest.raises(StoreValidationError, match="request_hash"):
-        CommandClaim(Job("fixture-job", "test"), "run-1", "preflight", "not-a-hash")
+        CommandClaim(Job("fixture-job", "test"), "run-1", "preflight", "not-a-hash", execution_kind="deterministic")
 
 
 def test_command_outcome_defaults_to_a_replay_claim() -> None:
@@ -311,7 +311,7 @@ def test_first_head_unique_violation_maps_to_stale_head_error() -> None:
     store = _store_with_unique_violation("runtime_artifacts_scope_revision_key")
 
     with pytest.raises(StaleHeadError, match="logical artifact head"):
-        store.claim_command(CommandClaim(Job("unique-head", "test"), "cmd", "x", digest("x")))
+        store.claim_command(CommandClaim(Job("unique-head", "test"), "cmd", "x", digest("x"), execution_kind="deterministic"))
 
 
 @pytest.mark.parametrize(
@@ -322,7 +322,7 @@ def test_other_unique_violations_map_to_persistence_conflict_error(constraint_na
     store = _store_with_unique_violation(constraint_name)
 
     with pytest.raises(PersistenceConflictError, match="uniqueness constraint"):
-        store.claim_command(CommandClaim(Job("unique-other", "test"), "cmd", "x", digest("x")))
+        store.claim_command(CommandClaim(Job("unique-other", "test"), "cmd", "x", digest("x"), execution_kind="deterministic"))
 
 
 def test_programming_database_errors_are_mapped_to_runtime_store_error() -> None:
@@ -351,7 +351,7 @@ def test_programming_database_errors_are_mapped_to_runtime_store_error() -> None
 
     store = PostgresRuntimeStore(Connection)
     with pytest.raises(RuntimeStoreError, match="database operation failed"):
-        store.claim_command(CommandClaim(Job("programming-error", "test"), "cmd", "x", digest("x")))
+        store.claim_command(CommandClaim(Job("programming-error", "test"), "cmd", "x", digest("x"), execution_kind="deterministic"))
 
 
 def test_store_decodes_bytes_text_values_from_database_rows() -> None:
@@ -385,15 +385,17 @@ def test_store_decodes_bytes_text_values_from_database_rows() -> None:
                     None,
                     (job_id, b"test"),
                     (b"running",),
-                    (slot_id, b"preflight", request_hash.encode()),
+                    (slot_id, b"preflight", request_hash.encode(), b"deterministic"),
                     (b"running", None, None, None, None),
                     (job_id,),
                     (b"running",),
                     (job_id, b"running", b"preflight", request_hash.encode()),
+                    (b"deterministic",),
                     (b"1",),
                     (job_id,),
                     (b"running",),
                     (job_id, b"succeeded", b"preflight", request_hash.encode()),
+                    (b"deterministic",),
                     (b"succeeded", receipt_id, artifact_set_id, None, None),
                     (set_hash.encode(),),
                 )
@@ -426,7 +428,7 @@ def test_store_decodes_bytes_text_values_from_database_rows() -> None:
 
     connection = Connection()
     store = PostgresRuntimeStore(lambda: connection)
-    claim = CommandClaim(Job("bytes-job", "test"), "claim", "preflight", request_hash)
+    claim = CommandClaim(Job("bytes-job", "test"), "claim", "preflight", request_hash, execution_kind="deterministic")
 
     assert store.claim_command(claim).state == "running"
     success = CommandSuccess(slot_id, set_hash, (member,))

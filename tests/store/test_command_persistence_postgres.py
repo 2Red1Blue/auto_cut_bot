@@ -153,6 +153,7 @@ def migrated_database() -> None:
                 "0006_ark_provider_recovery.sql",
                 "0009_vlm_bounded_retry.sql",
                 "0011_generation_retry_schedule.sql",
+                "0018_command_execution_kind.sql",
             ):
                 cursor.execute((Path("packages/autocut-kernel/migrations") / name).read_text())
 
@@ -166,7 +167,7 @@ def test_claim_success_and_replay_are_one_durable_command() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("postgres-fixture-job", "test")
-    claim = CommandClaim(job, "preflight-1", "media_preflight", _digest("request"))
+    claim = CommandClaim(job, "preflight-1", "media_preflight", _digest("request"), execution_kind="deterministic")
     running = store.claim_command(claim)
     assert running.state == "running"
     assert running.is_fresh_claim is True
@@ -186,7 +187,7 @@ def test_claim_success_and_replay_are_one_durable_command() -> None:
 def test_running_claim_replay_is_not_a_fresh_owner() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
-    claim = CommandClaim(Job("running-replay-job", "test"), "preflight", "media_preflight", _digest("request"))
+    claim = CommandClaim(Job("running-replay-job", "test"), "preflight", "media_preflight", _digest("request"), execution_kind="deterministic")
 
     fresh = store.claim_command(claim)
     replay = store.claim_command(claim)
@@ -202,7 +203,7 @@ def test_denial_persists_a_terminal_receipt_without_an_artifact_set() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("postgres-denial-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "preflight-2", "media_preflight", _digest("request-2"))
+        CommandClaim(job, "preflight-2", "media_preflight", _digest("request-2"), execution_kind="deterministic")
     )
     denied = store.commit_command_rejection(
         CommandRejection(
@@ -226,7 +227,7 @@ def test_read_recipe_returns_only_the_exact_succeeded_recipe_identity() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("recipe-read-job", "test")
-    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request")))
+    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request"), execution_kind="deterministic"))
     member = _make_recipe_member(job.job_key)
     store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,)))
     reference = RecipeReference(member.scope, member.logical_id, member.revision, member.content_hash)
@@ -253,7 +254,7 @@ def test_read_recipe_rejects_a_persisted_content_hash_lie() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("recipe-tamper-job", "test")
-    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request")))
+    running = store.claim_command(CommandClaim(job, "recipe", "local_media", _digest("request"), execution_kind="deterministic"))
     member = ArtifactMember(
         artifact_type="recipe",
         logical_id="recipe",
@@ -274,7 +275,7 @@ def test_read_recipe_keeps_a_prior_revision_reproducible_after_head_advance() ->
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("recipe-prior-revision-job", "test")
-    running = store.claim_command(CommandClaim(job, "recipe-1", "local_media", _digest("request-1")))
+    running = store.claim_command(CommandClaim(job, "recipe-1", "local_media", _digest("request-1"), execution_kind="deterministic"))
     first = _make_recipe_member(job.job_key, revision=1)
     store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((first,)), (first,)))
     second = _make_recipe_member(job.job_key, revision=2)
@@ -286,8 +287,8 @@ def test_read_recipe_keeps_a_prior_revision_reproducible_after_head_advance() ->
             cursor.execute(
                 """
                 INSERT INTO runtime.command_slots
-                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
-                VALUES (gen_random_uuid(), %s, 'recipe-2', 'local_media', %s, 'succeeded', transaction_timestamp())
+                    (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
+                VALUES ('deterministic', gen_random_uuid(), %s, 'recipe-2', 'local_media', %s, 'succeeded', transaction_timestamp())
                 RETURNING command_slot_id
                 """,
                 (job_id, _digest("request-2")),
@@ -361,7 +362,7 @@ def test_read_media_evidence_returns_only_the_exact_succeeded_identity() -> None
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("evidence-read-job", "test")
-    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request")))
+    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request"), execution_kind="deterministic"))
     member = _make_media_evidence_member(job.job_key)
     succeeded = store.commit_command_success(
         CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,))
@@ -397,7 +398,7 @@ def test_read_media_evidence_rejects_a_persisted_content_hash_lie() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("evidence-tamper-job", "test")
-    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request")))
+    running = store.claim_command(CommandClaim(job, "evidence", "local_media", _digest("request"), execution_kind="deterministic"))
     member = ArtifactMember(
         artifact_type="media_evidence",
         logical_id="media_evidence",
@@ -422,7 +423,7 @@ def test_read_succeeded_media_outputs_returns_the_pair_with_shared_provenance() 
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("media-output-reader-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"), execution_kind="deterministic")
     )
     evidence = _make_media_evidence_member(job.job_key)
     recipe = _make_recipe_member(job.job_key)
@@ -451,7 +452,7 @@ def test_read_succeeded_media_outputs_rejects_an_incomplete_artifact_set() -> No
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("incomplete-media-output-reader-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"), execution_kind="deterministic")
     )
     evidence = _make_media_evidence_member(job.job_key)
     store.commit_command_success(
@@ -467,7 +468,7 @@ def test_read_succeeded_media_outputs_requires_canonical_logical_member_ids() ->
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("noncanonical-media-output-reader-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "local-media", "local_media_command", _digest("request"))
+        CommandClaim(job, "local-media", "local_media_command", _digest("request"), execution_kind="deterministic")
     )
     evidence = _make_media_evidence_member(job.job_key)
     noncanonical_recipe = ArtifactMember(
@@ -507,7 +508,7 @@ def test_concurrent_same_intent_claim_is_replay_safe() -> None:
     store_b = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
 
     job = Job("concurrent-same-job", "test")
-    claim = CommandClaim(job, "same-key", "preflight", _digest("req"))
+    claim = CommandClaim(job, "same-key", "preflight", _digest("req"), execution_kind="deterministic")
 
     gate = threading.Barrier(2)
     outcomes: list[object] = []
@@ -545,14 +546,14 @@ def test_different_intent_claim_is_rejected() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("different-intent-job", "test")
 
-    running = store.claim_command(CommandClaim(job, "key-1", "cmd-a", _digest("req-a")))
+    running = store.claim_command(CommandClaim(job, "key-1", "cmd-a", _digest("req-a"), execution_kind="deterministic"))
     assert running.state == "running"
 
     with pytest.raises(IdempotencyConflictError, match="already claimed by a different command"):
-        store.claim_command(CommandClaim(job, "key-1", "cmd-b", _digest("req-a")))
+        store.claim_command(CommandClaim(job, "key-1", "cmd-b", _digest("req-a"), execution_kind="deterministic"))
 
     with pytest.raises(IdempotencyConflictError, match="already claimed by a different command"):
-        store.claim_command(CommandClaim(job, "key-1", "cmd-a", _digest("req-b")))
+        store.claim_command(CommandClaim(job, "key-1", "cmd-a", _digest("req-b"), execution_kind="deterministic"))
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +570,9 @@ def test_concurrent_job_creation_is_race_free() -> None:
     store_b = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
 
     job = Job("race-job", "test")
-    claim = CommandClaim(job, "cmd-1", "preflight", _digest("req"))
+    claim = CommandClaim(job, "cmd-1", "preflight", _digest("req"), execution_kind="deterministic")
 
-    claim_b = CommandClaim(job, "cmd-2", "preflight", _digest("req-2"))
+    claim_b = CommandClaim(job, "cmd-2", "preflight", _digest("req-2"), execution_kind="deterministic")
     gate = threading.Barrier(2)
     outcomes: list[object] = []
 
@@ -607,7 +608,7 @@ def test_failed_receipt_is_terminal_and_replayable() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("failed-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "fail-cmd", "preflight", _digest("req"))
+        CommandClaim(job, "fail-cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
     failed = store.commit_command_rejection(
         CommandRejection(
@@ -651,8 +652,8 @@ def test_cross_job_artifact_is_rejected_by_database() -> None:
 
             # Create a command slot under job_a
             cur.execute(
-                "INSERT INTO runtime.command_slots (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
-                " VALUES (gen_random_uuid(), %s, 'ck', 'preflight', %s, 'running') RETURNING command_slot_id",
+                "INSERT INTO runtime.command_slots (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
+                " VALUES ('deterministic', gen_random_uuid(), %s, 'ck', 'preflight', %s, 'running') RETURNING command_slot_id",
                 (job_a, _digest("req")),
             )
             slot_id = cur.fetchone()[0]
@@ -706,7 +707,7 @@ def test_committed_receipt_is_immutable() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("immutable-receipt-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "cmd", "preflight", _digest("req"))
+        CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
     store.commit_command_rejection(
         CommandRejection(running.command_slot_id, "DENY", '{"r":"x"}')
@@ -730,7 +731,7 @@ def test_committed_artifact_set_is_immutable() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("immutable-set-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "cmd", "preflight", _digest("req"))
+        CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
     member = _make_member(job.job_key)
     set_hash = _make_set_hash((member,))
@@ -756,7 +757,7 @@ def test_committed_artifact_is_immutable() -> None:
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("immutable-artifact-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "cmd", "preflight", _digest("req"))
+        CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
     member = _make_member(job.job_key)
     set_hash = _make_set_hash((member,))
@@ -781,7 +782,7 @@ def test_committed_member_rows_are_immutable_for_update_and_delete() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("immutable-member-job", "test")
-    running = store.claim_command(CommandClaim(job, "cmd", "preflight", _digest("req")))
+    running = store.claim_command(CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic"))
     member = _make_member(job.job_key)
     store.commit_command_success(CommandSuccess(running.command_slot_id, _make_set_hash((member,)), (member,)))
 
@@ -816,8 +817,8 @@ def test_incomplete_artifact_set_is_rejected() -> None:
             )
             job_id = cur.fetchone()[0]
             cur.execute(
-                "INSERT INTO runtime.command_slots (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
-                " VALUES (gen_random_uuid(), %s, 'ik', 'preflight', %s, 'running') RETURNING command_slot_id",
+                "INSERT INTO runtime.command_slots (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
+                " VALUES ('deterministic', gen_random_uuid(), %s, 'ik', 'preflight', %s, 'running') RETURNING command_slot_id",
                 (job_id, _digest("req")),
             )
             slot_id = cur.fetchone()[0]
@@ -851,15 +852,15 @@ def test_wrong_receipt_set_link_is_rejected() -> None:
             )
             job_id = cur.fetchone()[0]
             cur.execute(
-                "INSERT INTO runtime.command_slots (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
-                " VALUES (gen_random_uuid(), %s, 'a', 'preflight', %s, 'running') RETURNING command_slot_id",
+                "INSERT INTO runtime.command_slots (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
+                " VALUES ('deterministic', gen_random_uuid(), %s, 'a', 'preflight', %s, 'running') RETURNING command_slot_id",
                 (job_id, _digest("req-a")),
             )
             slot_a = cur.fetchone()[0]
             # Slot B
             cur.execute(
-                "INSERT INTO runtime.command_slots (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
-                " VALUES (gen_random_uuid(), %s, 'b', 'preflight', %s, 'running') RETURNING command_slot_id",
+                "INSERT INTO runtime.command_slots (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
+                " VALUES ('deterministic', gen_random_uuid(), %s, 'b', 'preflight', %s, 'running') RETURNING command_slot_id",
                 (job_id, _digest("req-b")),
             )
             slot_b = cur.fetchone()[0]
@@ -921,13 +922,13 @@ def test_same_set_hash_under_different_jobs_is_allowed() -> None:
 
     # Job 1
     job1 = Job("same-hash-job-1", "test")
-    r1 = store.claim_command(CommandClaim(job1, "cmd1", "preflight", _digest("r1")))
+    r1 = store.claim_command(CommandClaim(job1, "cmd1", "preflight", _digest("r1"), execution_kind="deterministic"))
     store.commit_command_success(CommandSuccess(r1.command_slot_id, set_hash, (member,)))
 
     # Job 2 — same set_hash, different job
     job2 = Job("same-hash-job-2", "test")
     member2 = _make_member("shared-scope")
-    r2 = store.claim_command(CommandClaim(job2, "cmd2", "preflight", _digest("r2")))
+    r2 = store.claim_command(CommandClaim(job2, "cmd2", "preflight", _digest("r2"), execution_kind="deterministic"))
     store.commit_command_success(CommandSuccess(r2.command_slot_id, set_hash, (member2,)))
 
     # Both jobs succeeded with the same set_hash
@@ -955,8 +956,8 @@ def test_same_set_hash_under_same_job_is_rejected() -> None:
             for key in ("one", "two"):
                 cur.execute(
                     "INSERT INTO runtime.command_slots"
-                    " (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
-                    " VALUES (gen_random_uuid(), %s, %s, 'preflight', %s, 'running')"
+                    " (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)"
+                    " VALUES ('deterministic', gen_random_uuid(), %s, %s, 'preflight', %s, 'running')"
                     " RETURNING command_slot_id",
                     (job_id, key, _digest(key)),
                 )
@@ -989,19 +990,19 @@ def test_multi_command_job_stays_running_until_explicit_finalizer() -> None:
 
     job = Job("explicit-finalizer-job", "test")
 
-    r1 = store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1")))
-    r2 = store.claim_command(CommandClaim(job, "cmd2", "preflight", _digest("r2")))
+    r1 = store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1"), execution_kind="deterministic"))
+    r2 = store.claim_command(CommandClaim(job, "cmd2", "preflight", _digest("r2"), execution_kind="deterministic"))
     member = _make_member(job.job_key)
     set_hash = _make_set_hash((member,))
     first = store.commit_command_success(CommandSuccess(r1.command_slot_id, set_hash, (member,)))
     store.commit_command_rejection(CommandRejection(r2.command_slot_id, "DENY", '{"r":"x"}'))
 
-    assert store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1"))) == first
-    fresh = store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+    assert store.claim_command(CommandClaim(job, "cmd1", "preflight", _digest("r1"), execution_kind="deterministic")) == first
+    fresh = store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh"), execution_kind="deterministic"))
     store.commit_command_rejection(CommandRejection(fresh.command_slot_id, "DONE", "{}"))
 
     finalizer = store.claim_command(
-        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"), execution_kind="deterministic")
     )
     run_outcome = _make_member(
         job.job_key,
@@ -1021,7 +1022,7 @@ def test_multi_command_job_stays_running_until_explicit_finalizer() -> None:
         CommandSuccess(finalizer.command_slot_id, _make_set_hash((run_outcome,)), (run_outcome,))
     ) == terminal
     with pytest.raises(CommandStateError, match="job is already terminal"):
-        store.claim_command(CommandClaim(job, "post-final", "preflight", _digest("closed")))
+        store.claim_command(CommandClaim(job, "post-final", "preflight", _digest("closed"), execution_kind="deterministic"))
 
     with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
@@ -1053,8 +1054,8 @@ def test_command_slot_receipt_lifecycle_is_enforced_at_commit(
             job_id = cur.fetchone()[0]
             cur.execute(
                 "INSERT INTO runtime.command_slots"
-                " (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)"
-                " VALUES (gen_random_uuid(), %s, 'key', 'preflight', %s, %s,"
+                " (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)"
+                " VALUES ('deterministic', gen_random_uuid(), %s, 'key', 'preflight', %s, %s,"
                 " CASE WHEN %s IN ('denied', 'failed', 'succeeded') THEN transaction_timestamp() END)"
                 " RETURNING command_slot_id",
                 (job_id, _digest("receipt-lifecycle"), slot_state, slot_state),
@@ -1076,9 +1077,9 @@ def test_run_finalizer_is_blocked_by_another_running_slot() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("blocked-finalizer-job", "test")
-    running = store.claim_command(CommandClaim(job, "work", "preflight", _digest("work")))
+    running = store.claim_command(CommandClaim(job, "work", "preflight", _digest("work"), execution_kind="deterministic"))
     finalizer = store.claim_command(
-        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"), execution_kind="deterministic")
     )
 
     rejection = CommandRejection(finalizer.command_slot_id, "RUN_FAILED", "{}", "failed")
@@ -1088,7 +1089,7 @@ def test_run_finalizer_is_blocked_by_another_running_slot() -> None:
     store.commit_command_rejection(CommandRejection(running.command_slot_id, "WORK_DONE", "{}"))
     assert store.finalize_run_rejection(rejection).state == "failed"
     with pytest.raises(CommandStateError, match="job is already terminal"):
-        store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh")))
+        store.claim_command(CommandClaim(job, "fresh", "preflight", _digest("fresh"), execution_kind="deterministic"))
 
 
 def test_success_and_failure_run_finalization_race_has_one_terminal_winner() -> None:
@@ -1096,7 +1097,7 @@ def test_success_and_failure_run_finalization_race_has_one_terminal_winner() -> 
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("finalizer-outcome-race", "test")
     finalizer = store.claim_command(
-        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"), execution_kind="deterministic")
     )
     member = _make_member(
         job.job_key,
@@ -1140,7 +1141,7 @@ def test_finalizer_holding_job_lock_serializes_with_a_fresh_claim() -> None:
     setup_store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("finalizer-fresh-claim-race", "test")
     finalizer = setup_store.claim_command(
-        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"))
+        CommandClaim(job, "finalize", "FinalizeRunOutcome", _digest("finalize"), execution_kind="deterministic")
     )
     member = _make_member(
         job.job_key,
@@ -1200,7 +1201,7 @@ def test_finalizer_holding_job_lock_serializes_with_a_fresh_claim() -> None:
         try:
             results.append(
                 setup_store.claim_command(
-                    CommandClaim(job, "fresh", "preflight", _digest("fresh"))
+                    CommandClaim(job, "fresh", "preflight", _digest("fresh"), execution_kind="deterministic")
                 )
             )
         except Exception as error:  # pragma: no cover - asserted below
@@ -1226,8 +1227,8 @@ def test_revision_race_returns_one_success_and_one_stale_head() -> None:
     store_a = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     store_b = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     job = Job("revision-race-job", "test")
-    first = store_a.claim_command(CommandClaim(job, "one", "preflight", _digest("one")))
-    second = store_b.claim_command(CommandClaim(job, "two", "preflight", _digest("two")))
+    first = store_a.claim_command(CommandClaim(job, "one", "preflight", _digest("one"), execution_kind="deterministic"))
+    second = store_b.claim_command(CommandClaim(job, "two", "preflight", _digest("two"), execution_kind="deterministic"))
     member_a = _make_member(job.job_key, content="one")
     member_b = _make_member(job.job_key, content="two")
     gate = threading.Barrier(2)
@@ -1265,7 +1266,7 @@ def test_recommit_with_different_outcome_is_rejected() -> None:
 
     job = Job("outcome-mismatch-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "cmd", "preflight", _digest("req"))
+        CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
 
     # First, succeed
@@ -1290,7 +1291,7 @@ def test_recommit_success_with_different_set_is_rejected() -> None:
 
     job = Job("set-mismatch-job", "test")
     running = store.claim_command(
-        CommandClaim(job, "cmd", "preflight", _digest("req"))
+        CommandClaim(job, "cmd", "preflight", _digest("req"), execution_kind="deterministic")
     )
 
     member = _make_member(job.job_key)
@@ -1481,7 +1482,7 @@ def test_same_generation_request_reserves_once_even_concurrently() -> None:
     job = Job("generation-reservation-race", "test")
     request_hash = _digest("generation-request")
     slot = store.claim_command(
-        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash, execution_kind="generation")
     )
     payload = b'{"request":"reservation-race"}'
     payload_ref = store.put_immutable_blob(
@@ -1525,7 +1526,7 @@ def test_generation_reservation_binds_exact_provider_and_request_payload() -> No
     job = Job("generation-request-binding", "test")
     request_hash = _digest("generation-request-binding")
     slot = store.claim_command(
-        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash, execution_kind="generation")
     )
     payload = b'{"request":"bound"}'
     payload_ref = store.put_immutable_blob(
@@ -1569,6 +1570,7 @@ def test_generation_reservation_binds_exact_provider_and_request_payload() -> No
                 "generation",
                 "GenerateVlmEvidenceCommand",
                 foreign_hash,
+                execution_kind="generation",
             )
         )
         store.reserve_generation_attempt(
@@ -1586,7 +1588,7 @@ def test_indeterminate_attempt_cannot_blind_retry_and_exact_reconciliation_can_c
     job = Job("generation-reconcile", "test")
     request_hash = _digest("generation-request")
     slot = store.claim_command(
-        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+        CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash, execution_kind="generation")
     )
     payload = b'{"request":"reconcile"}'
     payload_ref = store.put_immutable_blob(
@@ -1684,7 +1686,7 @@ def test_provider_request_identity_is_unique_across_generation_attempts() -> Non
         job = Job(f"provider-request-unique-{suffix}", "test")
         request_hash = _digest(f"request-{suffix}")
         slot = store.claim_command(
-            CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash)
+            CommandClaim(job, "generation", "GenerateVlmEvidenceCommand", request_hash, execution_kind="generation")
         )
         payload = f'{{"request":"{suffix}"}}'.encode()
         payload_ref = store.put_immutable_blob(

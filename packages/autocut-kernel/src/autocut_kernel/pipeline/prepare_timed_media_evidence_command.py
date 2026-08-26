@@ -543,6 +543,7 @@ class FinalizeTimedMediaEvidenceBatchCommand:
                 request.idempotency_key,
                 "FinalizeTimedMediaEvidenceBatch@2.1.3",
                 request.request_hash,
+                execution_kind="deterministic",
             )
         )
         if not claimed.is_fresh_claim:
@@ -605,6 +606,7 @@ class PrepareTimedMediaEvidenceCommand:
                         "request": resolved_request.canonical_payload(),
                     }
                 ),
+                execution_kind="deterministic",
             )
         )
         if not claimed.is_fresh_claim:

@@ -1,3 +1,6 @@
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/04-stage-01-to-03-semantic-implementation.md","reason":"semantic conformance review"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/implementation-conformance-gates.md","reason":"acceptance gate"}
-{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/pipeline/vlm_semantic_adapter.py","reason":"current real Doubao observation handoff"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-07-stage1-3-semantic-chain/stage1-production-wave.md","reason":"current parallel ownership, execution-kind and untrusted draft scope"}
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-production-spec/v2-stage-01-knowledge-chain-v2.md","reason":"Stage1 semantic-only, coverage, evidence and production output requirements"}
+{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/04-stage-01-to-03-semantic-implementation.md","reason":"shared generation, Store input and compiler ownership"}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/store/models.py","reason":"closed CommandClaim and exact committed semantic input identity"}
+{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/pipeline/generate_vlm_evidence_command.py","reason":"existing durable generation lifecycle and replay regression"}
+{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/guides/cross-layer-thinking-guide.md","reason":"owner-first cross-layer migration rather than consumer bypasses"}

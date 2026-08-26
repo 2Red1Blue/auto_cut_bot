@@ -1114,6 +1114,23 @@ class PostgresRuntimeStore:
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         """Claim a non-reserved command through the generic command boundary."""
 
+        if (
+            claim.command_name == "GenerateVlmEvidenceCommand"
+            and claim.execution_kind != "generation"
+        ):
+            raise CommandStateError(
+                "GenerateVlmEvidenceCommand requires a generation execution kind"
+            )
+        if (
+            claim.command_name
+            in (
+                CALIBRATION_VALIDATOR_COMMAND,
+                BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
+                "FinalizeRunOutcome",
+            )
+            and claim.execution_kind != "deterministic"
+        ):
+            raise CommandStateError("protected command requires a deterministic execution kind")
         if claim.command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
             raise CommandStateError(
                 "MeasureShadowCalibrationCommand@2.1.3 requires the explicit shadow owner API"
@@ -1138,6 +1155,8 @@ class PostgresRuntimeStore:
             raise CommandStateError(
                 "VLM batch owner API requires the reserved vlm-batch identity"
             )
+        if claim.execution_kind != "deterministic":
+            raise CommandStateError("VLM batch owner API requires a deterministic execution kind")
         return self._claim_command(claim)
 
     def _claim_command(self, claim: CommandClaim) -> CommandOutcome:
@@ -1157,7 +1176,7 @@ class PostgresRuntimeStore:
             job_state = self._locked_job_state(cursor, job_id)
             cursor.execute(
                 """
-                SELECT command_slot_id, command_name, request_hash
+                SELECT command_slot_id, command_name, request_hash, execution_kind
                   FROM runtime.command_slots
                  WHERE job_id = %s AND idempotency_key = %s
                    FOR UPDATE
@@ -1166,8 +1185,12 @@ class PostgresRuntimeStore:
             )
             existing = cursor.fetchone()
             if existing is not None:
-                slot_id_existing, command_name, request_hash = existing
-                if _text(command_name) != claim.command_name or _text(request_hash) != claim.request_hash:
+                slot_id_existing, command_name, request_hash, execution_kind = existing
+                if (
+                    _text(command_name) != claim.command_name
+                    or _text(request_hash) != claim.request_hash
+                    or _text(execution_kind) != claim.execution_kind
+                ):
                     raise IdempotencyConflictError(
                         "idempotency key was already claimed by a different command"
                     )
@@ -1179,10 +1202,18 @@ class PostgresRuntimeStore:
             cursor.execute(
                 """
                 INSERT INTO runtime.command_slots
-                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
-                VALUES (%s, %s, %s, %s, %s, 'running')
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash,
+                     execution_kind, state)
+                VALUES (%s, %s, %s, %s, %s, %s, 'running')
                 """,
-                (slot_id, job_id, claim.idempotency_key, claim.command_name, claim.request_hash),
+                (
+                    slot_id,
+                    job_id,
+                    claim.idempotency_key,
+                    claim.command_name,
+                    claim.request_hash,
+                    claim.execution_kind,
+                ),
             )
             if job_state == "pending":
                 cursor.execute(
@@ -1217,6 +1248,7 @@ class PostgresRuntimeStore:
             job_id, slot_state, command_name, request_hash = self._locked_job_then_slot(
                 cursor, outcome.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, outcome.command_slot_id, "deterministic")
             if (
                 command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME
                 or request_hash != plan.claim.request_hash
@@ -1494,8 +1526,9 @@ class PostgresRuntimeStore:
             cursor.execute(
                 """
                 INSERT INTO runtime.command_slots
-                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
-                VALUES (%s, %s, %s, %s, %s, 'running')
+                    (command_slot_id, job_id, idempotency_key, command_name, request_hash,
+                     execution_kind, state)
+                VALUES (%s, %s, %s, %s, %s, 'deterministic', 'running')
                 """,
                 (slot_id, previous.outcome.job_id, successor_key, SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME, previous.plan_hash),
             )
@@ -1590,6 +1623,7 @@ class PostgresRuntimeStore:
             job_id, slot_state, command_name, request_hash = self._locked_job_then_slot(
                 cursor, attempt.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, attempt.command_slot_id, "deterministic")
             if (
                 attempt.command_slot_id != request.command_slot_id
                 or attempt.job != request.job
@@ -1695,10 +1729,6 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "ValidateCalibrationRecord success requires the protected validator writer"
                 )
-            if state != "running":
-                return self._replay_or_raise(
-                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
-                )
             if command_name == "FinalizeRunOutcome":
                 raise CommandStateError("FinalizeRunOutcome requires the explicit run finalizer API")
             if command_name == "GenerateVlmEvidenceCommand":
@@ -1712,6 +1742,11 @@ class PostgresRuntimeStore:
             if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
                 raise CommandStateError(
                     "MeasureShadowCalibrationCommand@2.1.3 success requires the shadow owner API"
+                )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
                 )
             return self._write_success(cursor, success, job_id)
 
@@ -1741,6 +1776,7 @@ class PostgresRuntimeStore:
             job_id, state, command_name, request_hash = self._locked_job_then_slot(
                 cursor, success.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             cursor.execute(
                 "SELECT job.job_key, job.profile, slot.idempotency_key FROM runtime.jobs AS job "
                 "JOIN runtime.command_slots AS slot ON slot.job_id = job.job_id "
@@ -1849,6 +1885,7 @@ class PostgresRuntimeStore:
             job_id, state, command_name, request_hash = self._locked_job_then_slot(
                 cursor, success.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if command_name != BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND:
                 raise CommandStateError("only the authority bootstrap command may commit a profile")
             cursor.execute("SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s", (job_id,))
@@ -1942,6 +1979,7 @@ class PostgresRuntimeStore:
             job_id, state, command_name, request_hash = self._locked_job_then_slot(
                 cursor, success.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if command_name != VLM_BATCH_FINALIZER_COMMAND_NAME:
                 raise CommandStateError(
                     "only FinalizeVlmBatchCommand may commit a VLM SemanticPackSet"
@@ -1986,10 +2024,6 @@ class PostgresRuntimeStore:
             job_id, state, command_name, _ = self._locked_job_then_slot(
                 cursor, rejection.command_slot_id
             )
-            if state != "running":
-                return self._replay_or_raise(
-                    cursor, rejection.command_slot_id, job_id, rejection.outcome, None
-                )
             if command_name == "FinalizeRunOutcome":
                 raise CommandStateError("FinalizeRunOutcome requires the explicit run finalizer API")
             if command_name == "GenerateVlmEvidenceCommand":
@@ -2003,6 +2037,11 @@ class PostgresRuntimeStore:
             if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
                 raise CommandStateError(
                     "MeasureShadowCalibrationCommand@2.1.3 cannot use generic rejection"
+                )
+            self._require_slot_execution_kind(cursor, rejection.command_slot_id, "deterministic")
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor, rejection.command_slot_id, job_id, rejection.outcome, None
                 )
             return self._write_rejection(cursor, rejection, job_id)
 
@@ -2024,6 +2063,7 @@ class PostgresRuntimeStore:
             job_id, state, command_name, _ = self._locked_job_then_slot(
                 cursor, success.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if command_name != "FinalizeRunOutcome":
                 raise CommandStateError("only FinalizeRunOutcome may terminalize a Job")
             if state != "running":
@@ -2047,6 +2087,7 @@ class PostgresRuntimeStore:
             job_id, state, command_name, _ = self._locked_job_then_slot(
                 cursor, rejection.command_slot_id
             )
+            self._require_slot_execution_kind(cursor, rejection.command_slot_id, "deterministic")
             if command_name != "FinalizeRunOutcome":
                 raise CommandStateError("only FinalizeRunOutcome may terminalize a Job")
             if state != "running":
@@ -2411,13 +2452,10 @@ class PostgresRuntimeStore:
             )
 
         def operation(cursor: DbCursor) -> GenerationAttempt:
-            job_id, state, command_name, slot_request_hash = self._locked_job_then_slot(
+            job_id, state, _command_name, slot_request_hash = self._locked_job_then_slot(
                 cursor, command_slot_id
             )
-            if command_name != "GenerateVlmEvidenceCommand":
-                raise CommandStateError(
-                    "generation attempts require a GenerateVlmEvidenceCommand slot"
-                )
+            self._require_slot_execution_kind(cursor, command_slot_id, "generation")
             if state != "running":
                 raise GenerationAttemptStateError("generation command slot is already terminal")
             if slot_request_hash != request_hash:
@@ -2516,13 +2554,13 @@ class PostgresRuntimeStore:
                 "generation.provider_idempotency_key must be non-empty"
             )
         def operation(cursor: DbCursor) -> GenerationAttempt:
-            previous, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+            previous, job_id, slot_state, _command_name = self._locked_attempt_aggregate(
                 cursor, previous_attempt_id
             )
             self._require_attempt_transition(
                 previous, expected_version, ("failed",), "reserve retry"
             )
-            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+            if slot_state != "running":
                 raise GenerationAttemptStateError("generation retry slot is not running")
             if previous.failure_disposition != "retryable":
                 raise GenerationAttemptStateError(
@@ -2628,11 +2666,11 @@ class PostgresRuntimeStore:
         )
 
         def operation(cursor: DbCursor) -> GenerationAttempt | None:
-            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(cursor, attempt_id)
+            attempt, _, slot_state, _command_name = self._locked_attempt_aggregate(cursor, attempt_id)
             self._require_attempt_transition(
                 attempt, expected_version, ("reserved",), "dispatch"
             )
-            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+            if slot_state != "running":
                 raise GenerationAttemptStateError("generation slot cannot be dispatched")
             cursor.execute(
                 "SELECT transaction_timestamp() >= %s",
@@ -2676,7 +2714,7 @@ class PostgresRuntimeStore:
         )
 
         def operation(cursor: DbCursor) -> GenerationAttempt | None:
-            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(
+            attempt, _, slot_state, _command_name = self._locked_attempt_aggregate(
                 cursor, attempt_id
             )
             self._require_attempt_transition(
@@ -2685,7 +2723,7 @@ class PostgresRuntimeStore:
                 ("dispatched", "indeterminate"),
                 "acquire reconcile lease",
             )
-            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+            if slot_state != "running":
                 raise GenerationAttemptStateError("generation slot cannot be reconciled")
             if attempt.dispatch_lease_is_active():
                 return None
@@ -2743,7 +2781,7 @@ class PostgresRuntimeStore:
             raise StoreValidationError("provider_request_id must be non-empty")
 
         def operation(cursor: DbCursor) -> GenerationAttempt:
-            attempt, _, slot_state, command_name = self._locked_attempt_aggregate(
+            attempt, _, slot_state, _command_name = self._locked_attempt_aggregate(
                 cursor, attempt_id
             )
             if attempt.provider_request_id is not None:
@@ -2761,7 +2799,7 @@ class PostgresRuntimeStore:
             self._require_attempt_lease(
                 attempt, dispatch_lease_token, "bind provider request id"
             )
-            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+            if slot_state != "running":
                 raise GenerationAttemptStateError(
                     "generation slot cannot bind a provider request identity"
                 )
@@ -2964,7 +3002,7 @@ class PostgresRuntimeStore:
         """Atomically bind a reconciled response to its command set, receipt, and attempt."""
 
         def operation(cursor: DbCursor) -> GenerationAttempt:
-            attempt, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+            attempt, job_id, slot_state, _command_name = self._locked_attempt_aggregate(
                 cursor, attempt_id
             )
             if attempt.command_slot_id != success.command_slot_id:
@@ -2985,7 +3023,7 @@ class PostgresRuntimeStore:
             self._require_attempt_transition(
                 attempt, expected_version, ("responded", "reconciled"), "commit"
             )
-            if slot_state != "running" or command_name != "GenerateVlmEvidenceCommand":
+            if slot_state != "running":
                 raise GenerationAttemptStateError("generation command cannot be committed")
             outcome = self._write_success(cursor, success, job_id)
             cursor.execute(
@@ -3022,7 +3060,7 @@ class PostgresRuntimeStore:
         """Commit one final generation Receipt and its complete durable Attempt chain."""
 
         def operation(cursor: DbCursor) -> CommandOutcome:
-            attempt, job_id, slot_state, command_name = self._locked_attempt_aggregate(
+            attempt, job_id, slot_state, _command_name = self._locked_attempt_aggregate(
                 cursor, attempt_id
             )
             if attempt.command_slot_id != rejection.command_slot_id:
@@ -3038,8 +3076,6 @@ class PostgresRuntimeStore:
             self._require_attempt_transition(
                 attempt, expected_version, ("failed",), "commit rejection"
             )
-            if command_name != "GenerateVlmEvidenceCommand":
-                raise GenerationAttemptStateError("generation rejection requires generation slot")
             if (
                 attempt.failure_disposition == "retryable"
                 and attempt.attempt_ordinal < attempt.max_attempts
@@ -5714,12 +5750,31 @@ class PostgresRuntimeStore:
         expected_job_id = UUID(str(identity[0]))
         slot_id = UUID(str(identity[1]))
         job_id, slot_state, command_name, _ = self._locked_job_then_slot(cursor, slot_id)
+        self._require_slot_execution_kind(cursor, slot_id, "generation")
         if job_id != expected_job_id:
             raise RuntimeStoreError("generation attempt changed jobs while being locked")
         attempt = self._read_generation_attempt_by_id(cursor, attempt_id, for_update=True)
         if attempt.job_id != job_id or attempt.command_slot_id != slot_id:
             raise RuntimeStoreError("generation attempt identity changed while being locked")
         return attempt, job_id, slot_state, command_name
+
+    @staticmethod
+    def _require_slot_execution_kind(
+        cursor: DbCursor,
+        slot_id: UUID,
+        expected_kind: str,
+    ) -> None:
+        cursor.execute(
+            "SELECT execution_kind FROM runtime.command_slots WHERE command_slot_id = %s",
+            (slot_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeStoreError("command slot vanished while validating execution kind")
+        if _text(row[0]) != expected_kind:
+            raise CommandStateError(
+                f"command slot execution kind must be {expected_kind} for this operation"
+            )
 
     def _read_generation_attempt_by_id(
         self, cursor: DbCursor, attempt_id: UUID, *, for_update: bool
@@ -5934,6 +5989,8 @@ class PostgresRuntimeStore:
             raise StoreValidationError("shadow owner requires exact claim and plan")
         if claim != plan.claim:
             raise StoreValidationError("shadow owner claim does not equal its immutable plan claim")
+        if claim.execution_kind != "deterministic":
+            raise StoreValidationError("shadow measurement requires deterministic execution kind")
 
     def _read_shadow_attempt_by_slot(
         self, cursor: DbCursor, command_slot_id: UUID
@@ -6015,7 +6072,9 @@ class PostgresRuntimeStore:
         row = cursor.fetchone()
         if row is None:
             raise StoreValidationError("shadow attempt_id is unknown")
-        self._locked_job_then_slot(cursor, UUID(str(row[0])))
+        slot_id = UUID(str(row[0]))
+        self._locked_job_then_slot(cursor, slot_id)
+        self._require_slot_execution_kind(cursor, slot_id, "deterministic")
         cursor.execute(
             "SELECT attempt_id FROM runtime.shadow_calibration_measurement_attempts WHERE attempt_id = %s FOR UPDATE",
             (attempt_id,),

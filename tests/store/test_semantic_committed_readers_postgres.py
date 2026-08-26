@@ -130,6 +130,7 @@ def migrated_database() -> None:
                 "0006_ark_provider_recovery.sql",
                 "0009_vlm_bounded_retry.sql",
                 "0011_generation_retry_schedule.sql",
+                "0018_command_execution_kind.sql",
             ):
                 cursor.execute((MIGRATIONS / name).read_text())
 
@@ -526,6 +527,7 @@ def _seed_committed_inputs(
             f"source-{source_revision}",
             "PrepareWholeSeriesSourcesCommand",
             _digest_bytes(f"source-{source_revision}".encode()),
+            execution_kind="deterministic",
         )
     )
     source_outcome = store.commit_command_success(
@@ -733,6 +735,7 @@ def _seed_two_window_inputs(
             "source-series",
             "PrepareWholeSeriesSourcesCommand",
             _digest_bytes(b"source-series"),
+            execution_kind="deterministic",
         )
     )
     source_outcome = store.commit_command_success(
@@ -997,6 +1000,7 @@ def test_generic_command_apis_cannot_claim_or_complete_the_vlm_batch_owner() -> 
         VLM_BATCH_IDEMPOTENCY_PREFIX + "reserved-owner",
         VLM_BATCH_FINALIZER_COMMAND_NAME,
         request_hash,
+        execution_kind="deterministic",
     )
 
     with pytest.raises(CommandStateError, match="explicit VLM batch owner"):
@@ -1009,6 +1013,7 @@ def test_generic_command_apis_cannot_claim_or_complete_the_vlm_batch_owner() -> 
                 claim.idempotency_key,
                 "ForgedOtherCommand",
                 request_hash,
+                execution_kind="deterministic",
             )
         )
 
@@ -1020,6 +1025,7 @@ def test_generic_command_apis_cannot_claim_or_complete_the_vlm_batch_owner() -> 
                 "non-canonical-batch-key",
                 VLM_BATCH_FINALIZER_COMMAND_NAME,
                 request_hash,
+                execution_kind="deterministic",
             )
         )
     payload_json = "{}"
@@ -1527,7 +1533,7 @@ def test_exact_reader_keeps_prior_source_revision_after_head_advance() -> None:
         second_payload,
     )
     second_slot = store.claim_command(
-        CommandClaim(job, "source-2", "PrepareWholeSeriesSourcesCommand", _digest_bytes(b"source-2"))
+        CommandClaim(job, "source-2", "PrepareWholeSeriesSourcesCommand", _digest_bytes(b"source-2"), execution_kind="deterministic")
     )
     store.commit_command_success(
         CommandSuccess(second_slot.command_slot_id, _set_hash((second,)), (second,))

@@ -128,8 +128,8 @@ def _insert_validator_result(
     cursor.execute(
         """
         INSERT INTO runtime.command_slots
-            (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
-        VALUES (%s, %s, 'validator-request', %s, %s, 'running', NULL)
+            (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
+        VALUES ('deterministic', %s, %s, 'validator-request', %s, %s, 'running', NULL)
         """,
         (slot_id, job_id, COMMAND, _hash("accepted-request")),
     )
@@ -218,8 +218,8 @@ def _insert_terminal_rejection(
     cursor.execute(
         """
         INSERT INTO runtime.command_slots
-            (command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
-        VALUES (%s, %s, 'validator-rejection', %s, %s, 'running', NULL)
+            (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state, completed_at)
+        VALUES ('deterministic', %s, %s, 'validator-rejection', %s, %s, 'running', NULL)
         """,
         (slot_id, job_id, COMMAND, _hash(f"rejection-request:{profile_version}")),
     )
@@ -348,8 +348,8 @@ def test_successful_validator_job_cannot_close_with_an_open_slot(migrated_databa
             cursor.execute(
                 """
                 INSERT INTO runtime.command_slots
-                    (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
-                VALUES (%s, %s, 'open', 'ordinary-command', %s, 'running')
+                    (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
+                VALUES ('deterministic', %s, %s, 'open', 'ordinary-command', %s, 'running')
                 """,
                 (uuid4(), job_id, _hash("open-slot")),
             )
@@ -366,8 +366,8 @@ def test_protected_scope_rejects_generic_store_shaped_writer(migrated_database: 
             )
             cursor.execute(
                 """
-                INSERT INTO runtime.command_slots (command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
-                VALUES (%s, %s, 'generic', 'CommitCommandSuccess@2.1.3', %s, 'running')
+                INSERT INTO runtime.command_slots (execution_kind, command_slot_id, job_id, idempotency_key, command_name, request_hash, state)
+                VALUES ('deterministic', %s, %s, 'generic', 'CommitCommandSuccess@2.1.3', %s, 'running')
                 """,
                 (slot_id, job_id, _hash("q")),
             )
