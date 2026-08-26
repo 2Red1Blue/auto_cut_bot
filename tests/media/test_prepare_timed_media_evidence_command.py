@@ -91,8 +91,9 @@ from autocut_kernel.vlm import (
     WindowManifestSet,
     WindowProxyBlobRef,
 )
-from test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
-from test_timed_evidence import _bindings, _manifest_and_candidate
+
+from tests.media.test_root_evidence import HASH_A, HASH_B, HASH_C, SOURCE_HASH, _bundle
+from tests.media.test_timed_evidence import _bindings, _manifest_and_candidate
 
 AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
     "sha256:" + "a" * 64,

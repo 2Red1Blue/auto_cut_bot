@@ -47,3 +47,11 @@
     separately from synthetic model output; retain independent Kernel decode.
     Authority source/anchor resolution and native calibration remain separate
     incomplete integration work, not implied by an adapter unit-test pass.
+17. Project the revalidated shadow profile into the exact existing native
+    service configuration; verify its native-identity hash without replacing
+    it. Resolve ordered corpus members from exact committed identity-source
+    manifests, their audio clocks and independently supplied hash-bound
+    anchors, then construct the measurement request and source-owner bindings.
+    Test source/proxy substitution, wrong clock/anchor/profile, incomplete
+    corpus, and no provider/materialization during resolution. Keep real
+    annotation availability separate from synthetic implementation fixtures.

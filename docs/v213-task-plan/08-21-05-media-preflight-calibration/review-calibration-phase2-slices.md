@@ -149,3 +149,22 @@ No Kernel schema, migration, external publication path or user
 configuration was changed in this slice. The controlled committed-source/
 independent-anchor resolver, actual native calibration and deployment/runtime
 integration remain pending.
+
+## Locked service profile and committed calibration inputs — ALLOW
+
+The pure service projector revalidates the existing shadow grammar and native
+identity before producing the existing FunASR service configuration bytes.
+The input resolver reads exact committed source handles, verifies original
+identity bytes against the frozen corpus, derives only committed audio clocks,
+and binds separately supplied ASR/VAD anchors to their frozen hashes. It performs
+no materialization, inference, writes, authority publication or acceptance.
+
+Independent reviewer: `calibration_migration`, separate read-only reviews of
+both slices, ALLOW with no concrete defect. The 53 new focused cases passed.
+Combined regression: **284 passed, 1 skipped** (the opt-in PostgreSQL media
+case was not enabled in this run). Ruff, source basedpyright and diff checks
+passed. Package-qualified test fixture imports changed no test assertions.
+
+Service projector commit: `20de2095`. Real annotation assets, native calibration
+and verified deployment loading remain outstanding; fixture tests do not
+provide calibration truth.

@@ -46,7 +46,8 @@ from autocut_kernel.vlm import (
     WindowProxyBlobRef,
     derive_vlm_global_id,
 )
-from test_root_evidence import (
+
+from tests.media.test_root_evidence import (
     HASH_A,
     HASH_B,
     HASH_C,

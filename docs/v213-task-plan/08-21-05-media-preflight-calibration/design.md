@@ -251,3 +251,40 @@ accepted CalibrationRecord.
 This slice includes transport/adapter/service-envelope tests with synthetic
 native output. It does not establish real model calibration, authority lock
 publication, runtime activation or end-to-end production readiness.
+
+## Shadow deployment input assembly
+
+The pure service-profile projector derives only the existing FunASR shadow
+profile fields from a strictly revalidated shadow profile and its exact
+narrative dependency. It verifies the externally expected contract hash and
+recomputes the native-identity preimage using the media/service JSON encoding.
+It rejects drift instead of substituting a new identity; it neither loads
+models nor writes configuration or grants Git/Registry authority.
+
+The source resolver accepts deployment-selected corpus entries containing an
+original source Job, exact succeeded source ArtifactSet/reference and separate
+ASR/VAD anchor tuples. The frozen shadow corpus and calibration capability
+authorize this selection; an ordinary semantic-analysis purpose alone does not
+authorize calibration. SourcePrep remains the existing read-only predecessor,
+not a new calibration-specific source schema.
+
+For each ordered locked member, the resolver uses the Store's exact succeeded
+whole-series reader and strict V2 source decoder. It selects by locked source
+identity, requires the claimed blob hash/size to equal the original probed
+source (identity-byte source only), and checks its complete BlobRef hash.
+Audio clock/origin/duration come exclusively from committed audio sample
+evidence and presentation facts, never the video clock or caller values.
+Independent anchors must match the locked anchor hash, source clock, producer
+roles and complete range before any provider call. Neither ASR output nor the
+measurement response is an input to this resolver.
+
+The resolved object carries the Kernel measurement request, original-owner
+source bindings and exact predecessor provenance for deployment diagnostics.
+It does not emit an accepted Artifact or imply verified Git/Registry loading.
+Kernel measurement/recovery and independent validation retain ownership of
+durable outcomes; the resolver does not invoke HTTP or alter retry rules.
+
+No real independently annotated ASR/VAD golden anchors were found during this
+slice's inventory. Synthetic test anchors validate code only and must never
+become a production profile/calibration record. Real source publication and
+native execution still require independently established anchor data.
