@@ -33,6 +33,7 @@ from autocut_kernel.media import (
     TickRange,
     TimeBase,
 )
+from autocut_kernel.media.audio_stream_facts import AudioStreamFacts, SelectedAudioStreamMetadata
 from autocut_kernel.media.ffprobe_port import (
     FFprobeError,
     FFprobeOutputError,
@@ -325,6 +326,7 @@ class SourceMediaProbe:
         repr=False,
         compare=False,
     )
+    audio_stream_facts: AudioStreamFacts | None = None
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.frame_detector_sha256, "frame_detector_sha256")
@@ -407,6 +409,20 @@ class SourceMediaProbe:
             raise SourceMediaEvidenceError(
                 "unbound presentation timeline facts cannot enter a source manifest"
             )
+        if self.audio_stream_facts is not None:
+            if type(self.audio_stream_facts) is not AudioStreamFacts:
+                raise SourceMediaEvidenceError("audio_stream_facts must be exact typed facts")
+            if self.presentation_timeline_probe is None:
+                raise SourceMediaEvidenceError("audio stream facts require a bound presentation probe")
+            self.audio_stream_facts.assert_matches(
+                self.presentation_timeline_probe, self.audio_sample_boundaries
+            )
+            if (
+                self.audio_stream_facts.source_id != self.source.source_id
+                or self.audio_stream_facts.source_sha256 != self.source.content_sha256
+            ):
+                raise SourceMediaEvidenceError("audio stream facts do not match the source")
+            result["audio_stream_facts"] = self.audio_stream_facts.to_mapping()
         return result
 
     @property
@@ -483,6 +499,7 @@ class FFprobeSourceMediaPort:
                 "decoded video frame boundaries do not close over the declared video stream"
             )
         audio, audio_frames = self._audio_boundaries_with_frames(path, source, audio_records[0])
+        selected_audio_metadata = _selected_audio_metadata(audio_records[0])
         after_executable_sha256, after_version_evidence_sha256 = self._tool_identity()
         if (
             before_executable_sha256 != after_executable_sha256
@@ -542,6 +559,21 @@ class FFprobeSourceMediaPort:
             _presentation_timeline_draft=draft,
             presentation_video_frame_boundaries=video_frames,
             presentation_audio_frame_boundaries=audio_frames,
+            audio_stream_facts=AudioStreamFacts(
+                source.source_id,
+                source.content_sha256,
+                selected_audio_metadata.stream_index,
+                audio.context.clock_id,
+                audio.context.time_base,
+                audio.context.origin_tick,
+                audio.context.end_tick,
+                selected_audio_metadata.sample_rate,
+                selected_audio_metadata.channels,
+                audio.canonical_hash,
+                selected_audio_metadata,
+                selected_audio_metadata.canonical_hash,
+                canonical_sha256(draft.execution.to_mapping()),
+            ),
         )
 
     def _tool_identity(self) -> tuple[str, str]:
@@ -727,6 +759,30 @@ class FFprobeSourceMediaPort:
         if not isinstance(value, dict):
             raise SourceMediaEvidenceError("ffprobe media evidence must be a JSON object")
         return cast(dict[str, Any], value)
+
+
+def _selected_audio_metadata(stream: dict[str, Any]) -> SelectedAudioStreamMetadata:
+    rate = stream.get("sample_rate")
+    channels = stream.get("channels")
+    if (
+        stream.get("codec_type") != "audio"
+        or type(rate) is not str  # noqa: E721
+        or re.fullmatch(r"[1-9][0-9]*", rate) is None
+        or type(channels) is not int  # noqa: E721
+        or channels <= 0
+    ):
+        raise SourceMediaEvidenceError("selected audio requires native sample_rate and channels")
+    try:
+        sample_rate = int(rate)
+    except ValueError as error:
+        raise SourceMediaEvidenceError("native audio sample_rate is invalid") from error
+    return SelectedAudioStreamMetadata(
+        _integer(stream.get("index"), "audio.index"),
+        _time_base(stream.get("time_base"), "audio.time_base"),
+        _integer(stream.get("start_pts"), "audio.start_pts"),
+        sample_rate,
+        channels,
+    )
 
 
 def _objects(value: object, field_name: str) -> list[dict[str, Any]]:

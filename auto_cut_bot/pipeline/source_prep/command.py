@@ -694,6 +694,7 @@ def _decode_prepared_sources(
                     DecodedFrame(start, end)
                     for start, end in episode.media_probe.presentation_audio_frame_boundaries
                 ),
+                audio_stream_facts=episode.media_probe.audio_stream_facts,
             ),
             proxy_blob,
             episode.manifest,

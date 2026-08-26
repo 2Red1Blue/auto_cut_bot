@@ -22,6 +22,7 @@ from ..media import (
     TickRange,
     TimeBase,
 )
+from ..media.audio_stream_facts import AudioStreamFacts, decode_audio_stream_facts
 from ..media.ffprobe_port import ProbeResult
 from ..media.stage4_predecessor import (
     PresentationProbeExecution,
@@ -239,10 +240,24 @@ class DecodedMediaProbe:
     presentation_timeline_probe: PresentationTimelineProbe | None = None
     presentation_video_frame_boundaries: tuple[tuple[int, int], ...] = ()
     presentation_audio_frame_boundaries: tuple[tuple[int, int], ...] = ()
+    audio_stream_facts: AudioStreamFacts | None = None
 
     def __post_init__(self) -> None:
         sha256_prefixed(self.frame_detector_sha256, "frame_detector_sha256")
         sha256_prefixed(self.audio_detector_sha256, "audio_detector_sha256")
+        if self.audio_stream_facts is not None:
+            if type(self.audio_stream_facts) is not AudioStreamFacts:
+                raise ValueError("audio_stream_facts must be exact typed facts")
+            if self.presentation_timeline_probe is None:
+                raise ValueError("audio stream facts require presentation probe evidence")
+            self.audio_stream_facts.assert_matches(
+                self.presentation_timeline_probe, self.audio_sample_boundaries
+            )
+            if (
+                self.audio_stream_facts.source_id != self.source.source_id
+                or self.audio_stream_facts.source_sha256 != self.source.content_sha256
+            ):
+                raise ValueError("audio stream facts do not match the episode source")
 
     def to_mapping(self) -> dict[str, object]:
         stream = self.video_probe.video_stream
@@ -279,6 +294,8 @@ class DecodedMediaProbe:
             result["decoded_audio_frame_boundaries"] = _frame_boundaries_mapping(
                 self.presentation_audio_frame_boundaries
             )
+        if self.audio_stream_facts is not None:
+            result["audio_stream_facts"] = self.audio_stream_facts.to_mapping()
         return result
 
 
@@ -533,6 +550,7 @@ def _decode_probe(
         value,
         {
             "audio_sample_boundaries",
+            "audio_stream_facts",
             "decoded_audio_frame_boundaries",
             "decoded_video_frame_pts",
             "decoded_video_frame_boundaries",
@@ -543,6 +561,7 @@ def _decode_probe(
         },
         "media_probe",
         optional={
+            "audio_stream_facts",
             "presentation_timeline_probe",
             "decoded_video_frame_boundaries",
             "decoded_audio_frame_boundaries",
@@ -660,6 +679,10 @@ def _decode_probe(
         )
         if has_presentation_facts
         else (),
+        audio_stream_facts=(
+            decode_audio_stream_facts(raw["audio_stream_facts"])
+            if "audio_stream_facts" in raw else None
+        ),
     )
     if result.to_mapping() != raw:
         raise ValueError("media probe is not canonical")

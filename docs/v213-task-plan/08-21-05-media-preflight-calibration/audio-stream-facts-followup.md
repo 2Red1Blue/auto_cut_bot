@@ -1,7 +1,10 @@
 # Native audio layout required before local-window activation
 
-This is the next implementation seam, not a claim of completed persistence.
-The physical-prelude Command batch keeps its frozen three-member shape.
+Implementation checkpoint: optional typed audio facts, native producer
+normalization and exact Source Command reconstruction are implemented and
+independently reviewed. Pure/synthetic checks pass; real desktop native/DB
+execution and local speech dispatch are not claimed. The physical prelude
+keeps its frozen three-member shape.
 
 ## 1. Verified gap and version decision
 
@@ -68,10 +71,9 @@ After exact Source/VLM and physical-prelude readback:
 5. Build LocalAudioWindowSpec from the measured sample rate/channels and exact
    original audio range/index. Bind decoder and resource limits separately.
 
-The existing presentation mapper still accepts only the old eight-set root;
-the local-window slice must extend its exact type check to the six-set physical
-root while retaining certificate replay and all membership/coverage rules.
-Certificate derivation itself already supports both roots in f2c59f35.
+The presentation mapper accepts exactly the old eight-set root and the six-set
+physical root after f0dc57b3, retaining certificate replay and all membership/
+coverage rules. Certificate derivation supports both roots since f2c59f35.
 
 ## 4. Implementation and acceptance
 

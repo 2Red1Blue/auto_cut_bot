@@ -1,12 +1,12 @@
 {
   "id": "native-audio-stream-facts",
   "title": "Persist measured native audio layout for candidate-local speech",
-  "status": "in_progress",
+  "status": "completed",
   "complexity": "L",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "Existing native agent implements accepted optional audio facts design; root reviews and integrates after physical prelude.",
+  "currentPhase": "completed",
+  "nextAction": "Native facts and Source readback accepted after independent review; consume through the separately reviewed mapped-window factory and later durable speech child.",
   "createdAt": "2026-08-26",
   "branch": "feat/v213-contract-codegen"
 }

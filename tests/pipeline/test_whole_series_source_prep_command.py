@@ -12,7 +12,14 @@ from uuid import UUID, uuid4
 
 import pytest
 from autocut_kernel.media import MediaKind, PTSIndex, TimeBase
-from autocut_kernel.media.types import canonical_sha256
+from autocut_kernel.media.audio_stream_facts import decode_audio_stream_facts
+from autocut_kernel.media.ffprobe_port import FFprobePort, ProbeResult
+from autocut_kernel.media.types import (
+    MediaValidationError,
+    ToolEvidence,
+    VideoStreamEvidence,
+    canonical_sha256,
+)
 from autocut_kernel.pipeline import GenerateVlmEvidenceRequest
 from autocut_kernel.store import (
     ArtifactScope,
@@ -32,6 +39,7 @@ from autocut_kernel.vlm import (
     GENERATION_RETRY_STRATEGY_VERSION,
     GenerationRetryPolicy,
     VlmParsePolicy,
+    WindowFrameSample,
 )
 
 from auto_cut_bot.pipeline.source_prep import (
@@ -959,16 +967,16 @@ def test_terminal_replay_rejects_rehashed_audio_bound_to_foreign_source(
             for point in audio.points
         ),
     )
-    tampered_probe = replace(
-        episode.media_probe,
-        audio_sample_boundaries=tampered_audio,
+    # Mutate wire directly: the new writer also closes audio facts, so an
+    # inconsistent typed producer projection must no longer serialize.
+    tampered_payload = first.prepared.to_mapping()
+    tampered_payload["episodes"][0]["media_probe"]["audio_sample_boundaries"] = (
+        tampered_audio.to_mapping()
     )
-    tampered_episode = replace(episode, media_probe=tampered_probe)
-    tampered_prepared = replace(first.prepared, episodes=(tampered_episode,))
     _install_recomputed_manifest_payload(
         store,
         first.outcome.artifact_set_id,
-        tampered_prepared.to_mapping(),
+        tampered_payload,
     )
 
     with pytest.raises(SourceManifestDecodeError):
@@ -1113,3 +1121,199 @@ def test_command_classifies_denied_and_failed_without_path_details(
     assert result.outcome.state == state
     assert result.outcome.failure_code == code
     assert str(root) not in (result.outcome.failure_detail_json or "")
+
+
+class SyntheticVideoPort(FFprobePort):
+    """Only native I/O is synthetic; the Source command and codecs are real."""
+
+    def __init__(self):
+        super().__init__(executable="synthetic-never-executed")
+
+    def probe(self, source_path):
+        del source_path
+        return ProbeResult(
+            VideoStreamEvidence(0, "h264", 96, 64, TimeBase(1, 1000)),
+            PTSIndex((-10, 0, 10)), ToolEvidence("ffprobe", "synthetic-v1", "sha256:" + "a" * 64),
+        )
+
+
+class SyntheticLayoutProbe(FFprobeSourceMediaPort):
+    def __init__(self, **audio_changes):
+        super().__init__(executable="synthetic-never-executed", video_port=SyntheticVideoPort())
+        self.audio_metadata = {
+            "codec_type": "audio", "codec_name": "aac", "index": 1,
+            "time_base": "1/1000", "start_pts": -10, "sample_rate": "48000", "channels": 2,
+            **audio_changes,
+        }
+        self.calls = 0
+
+    def _tool_identity(self):
+        return "sha256:" + "a" * 64, "sha256:" + "b" * 64
+
+    def _json(self, command):
+        self.calls += 1
+        if "-show_streams" in command:
+            return {"streams": [
+                {"codec_type": "video", "codec_name": "h264", "index": 0,
+                 "time_base": "1/1000", "start_pts": -10},
+                self.audio_metadata,
+            ]}
+        audio = command[command.index("-select_streams") + 1] == "a:0"
+        return {"frames": [
+            {"media_type": "audio" if audio else "video", "stream_index": 1 if audio else 0,
+             "best_effort_timestamp": start, "duration": 10}
+            for start in (-10, 0, 10)
+        ]}
+
+
+class SyntheticSampleBuilder(IdentitySourceWindowBuilder):
+    def __init__(self, probe):
+        super().__init__(probe_port=probe, ffmpeg_executable="synthetic-never-executed", sample_count=2)
+
+    def _frame_sample(self, source_path, frame_index, expected_pts):
+        del source_path, frame_index
+        return WindowFrameSample(expected_pts, expected_pts, "sha256:" + "c" * 64)
+
+
+def _synthetic_layout_command(tmp_path, **audio_changes):
+    root = tmp_path / "synthetic-source"
+    root.mkdir()
+    (root / "episode.mp4").write_bytes(b"synthetic bytes, not an encoded media file")
+    store = Store()
+    job = Job("native-layout-synthetic", "test")
+    request = PrepareWholeSeriesSourcesRequest(
+        job, "prepare", ArtifactScope("pipeline", "job", job.job_key), 1,
+        _source_root(root.resolve()),
+    )
+    probe = SyntheticLayoutProbe(**audio_changes)
+    command = PrepareWholeSeriesSourcesCommand(store, builder=SyntheticSampleBuilder(probe))
+    return store, probe, request, command
+
+
+def test_synthetic_native_audio_layout_survives_exact_command_replay(tmp_path):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    first = command.execute(request)
+    assert first.outcome.state == "succeeded"
+    first_calls = probe.calls
+    replay = command.resume(request)
+    assert replay.prepared == first.prepared and probe.calls == first_calls
+    facts = replay.prepared.episodes[0].media_probe.audio_stream_facts
+    assert facts is not None
+    assert facts.sample_rate == 48000 and facts.channels == 2
+    assert facts.time_base == TimeBase(1, 1000) and facts.origin_tick == -10
+    assert len(store.successes) == 1
+
+
+def test_synthetic_old_absent_audio_leaf_keeps_original_payload_and_hash(tmp_path):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    result = command.execute(request)
+    set_id = result.outcome.artifact_set_id
+    payload = json.loads(store.manifests[set_id].payload_json)
+    del payload["episodes"][0]["media_probe"]["audio_stream_facts"]
+    _install_recomputed_manifest_payload(store, set_id, payload)
+    persisted = store.manifests[set_id]
+    calls = probe.calls
+    replay = command.resume(request)
+    assert replay.prepared.episodes[0].media_probe.audio_stream_facts is None
+    assert replay.prepared.to_mapping() == payload
+    assert canonical_sha256(replay.prepared.to_mapping()) == persisted.reference.content_hash
+    assert probe.calls == calls
+    assert "audio_stream_facts" not in replay.artifacts[0].payload_json
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sample_rate", None), ("sample_rate", True), ("sample_rate", 48000),
+    ("sample_rate", 48000.0), ("sample_rate", "0"), ("sample_rate", "-1"),
+    ("sample_rate", "048000"), ("sample_rate", " 48000"), ("sample_rate", "48e3"),
+    ("channels", None), ("channels", True), ("channels", 2.0),
+    ("channels", "2"), ("channels", 0), ("channels", -1),
+])
+def test_synthetic_native_layout_is_required_no_guesses(tmp_path, field, value):
+    store, _, request, command = _synthetic_layout_command(tmp_path, **{field: value})
+    result = command.execute(request)
+    assert result.outcome.state == "denied"
+    assert not store.successes and not store.blobs
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source_id", "foreign"), ("source_sha256", "sha256:" + "d" * 64),
+    ("probe_execution_sha256", "sha256:" + "d" * 64),
+    ("audio_sample_boundary_set_sha256", "sha256:" + "d" * 64),
+    ("clock_id", "audio-stream-2"), ("end_tick", 21),
+    ("selected_audio_metadata_sha256", "sha256:" + "d" * 64),
+])
+def test_synthetic_replay_rejects_rehashed_audio_fact_substitution(tmp_path, field, value):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    result = command.execute(request)
+    set_id = result.outcome.artifact_set_id
+    payload = json.loads(store.manifests[set_id].payload_json)
+    payload["episodes"][0]["media_probe"]["audio_stream_facts"][field] = value
+    _install_recomputed_manifest_payload(store, set_id, payload)
+    calls = probe.calls
+    with pytest.raises(SourceManifestDecodeError):
+        command.resume(request)
+    assert probe.calls == calls and len(store.successes) == 1
+
+
+def test_synthetic_explicit_null_audio_leaf_is_not_historical_absence(tmp_path):
+    store, _, request, command = _synthetic_layout_command(tmp_path)
+    result = command.execute(request)
+    set_id = result.outcome.artifact_set_id
+    payload = json.loads(store.manifests[set_id].payload_json)
+    payload["episodes"][0]["media_probe"]["audio_stream_facts"] = None
+    _install_recomputed_manifest_payload(store, set_id, payload)
+    with pytest.raises(SourceManifestDecodeError):
+        command.resume(request)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("stream_index", 2), ("time_base", {"numerator": 1, "denominator": 2000}),
+    ("origin_tick", -20),
+])
+def test_synthetic_coherent_rehashed_metadata_still_requires_exact_probe(tmp_path, field, value):
+    store, _, request, command = _synthetic_layout_command(tmp_path)
+    result = command.execute(request)
+    set_id = result.outcome.artifact_set_id
+    payload = json.loads(store.manifests[set_id].payload_json)
+    facts = payload["episodes"][0]["media_probe"]["audio_stream_facts"]
+    facts[field] = value
+    metadata_field = "declared_start_tick" if field == "origin_tick" else field
+    facts["selected_audio_metadata"][metadata_field] = value
+    if field == "stream_index":
+        facts["clock_id"] = "audio-stream-2"
+    facts["selected_audio_metadata_sha256"] = canonical_sha256(facts["selected_audio_metadata"])
+    # Internally coherent leaf, so rejection must come from the outer probe join.
+    decoded_facts = decode_audio_stream_facts(facts)
+    assert decoded_facts.to_mapping() == facts
+    original_probe = result.prepared.episodes[0].media_probe
+    with pytest.raises(MediaValidationError, match="exact probe"):
+        decoded_facts.assert_matches(
+            original_probe.presentation_timeline_probe, original_probe.audio_sample_boundaries,
+        )
+    _install_recomputed_manifest_payload(store, set_id, payload)
+    with pytest.raises(SourceManifestDecodeError):
+        command.resume(request)
+
+
+@pytest.mark.parametrize("field,value", [("sample_rate", "44100"), ("channels", 1)])
+def test_synthetic_native_layout_changes_only_its_new_hash_not_old_presentation(tmp_path, field, value):
+    store, _, request, command = _synthetic_layout_command(tmp_path)
+    first = command.execute(request).prepared.episodes[0].media_probe
+    changed_probe = SyntheticLayoutProbe(**{field: value}).probe(
+        request.source_root.root / "episode.mp4", first.source,
+    )
+    old_facts, new_facts = first.audio_stream_facts, changed_probe.audio_stream_facts
+    assert old_facts.selected_audio_metadata_sha256 != new_facts.selected_audio_metadata_sha256
+    assert old_facts.canonical_hash != new_facts.canonical_hash
+    assert old_facts.probe_execution_sha256 == new_facts.probe_execution_sha256
+    assert first.audio_sample_boundaries == changed_probe.audio_sample_boundaries
+    assert len(store.successes) == 1
+
+
+@pytest.mark.parametrize("field", ["sample_rate", "channels"])
+def test_synthetic_missing_native_layout_fields_deny_before_blob_write(tmp_path, field):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    del probe.audio_metadata[field]
+    result = command.execute(request)
+    assert result.outcome.state == "denied"
+    assert not store.blobs and not store.successes
