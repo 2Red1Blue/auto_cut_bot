@@ -21,6 +21,7 @@ from autocut_kernel.media.local_speech_window import (
     LocalSpeechWindowPolicy,
     LocalSpeechWindowRequest,
 )
+from autocut_kernel.media.local_speech_window_busy import decode_local_speech_window_busy_proof
 from autocut_kernel.media.local_speech_window_codec import decode_local_speech_window_response
 from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
 from autocut_kernel.media.types import TickRange, TimeBase
@@ -255,7 +256,75 @@ async def test_resource_and_queue_admission_precede_spooling(case, monkeypatch, 
     monkeypatch.setattr(case.ns["tempfile"], "TemporaryDirectory", forbid_spool)
     response = await case.client.post(ROUTE, headers=_headers(case.request), data=SOURCE)
     assert response.status == 503 and not case.calls
+    proof = decode_local_speech_window_busy_proof(await response.read(), case.request)
+    assert proof.request_sha256 == case.request.canonical_hash
+    assert proof.binding_sha256 == case.request.binding_sha256
+    assert proof.service_profile_sha256 == case.request.policy.service_profile_sha256
+    if not busy:
+        assert response.headers["Retry-After"] == "1"
     assert case.service.admitted == (case.service.queue_capacity if busy else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+async def test_busy_proof_that_cannot_fit_returns_bounded_unproven_503(case, monkeypatch, busy):
+    if busy:
+        case.service.admitted = case.service.queue_capacity
+    else:
+        case.service.resource_reader = lambda: case.ns["ResourceSnapshot"](0, 0, 0)
+    request = replace(case.request, max_response_bytes=1)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("busy admission must not materialize source")
+
+    monkeypatch.setattr(case.ns["tempfile"], "TemporaryDirectory", forbidden)
+    response = await case.client.post(ROUTE, headers=_headers(request), data=SOURCE)
+    assert response.status == 503 and await response.read() == b""
+    if not busy:
+        assert response.headers["Retry-After"] == "1"
+    assert not case.calls
+    assert case.service.admitted == (case.service.queue_capacity if busy else 0)
+
+
+@pytest.mark.asyncio
+async def test_post_dispatch_service_unavailable_never_claims_not_started(case):
+    original = case.service.run_window_inference
+
+    async def fail_after_dispatch(path, spec):
+        await original(path, spec)
+        raise case.ns["web"].HTTPServiceUnavailable(text="post-dispatch failure")
+
+    case.service.run_window_inference = fail_after_dispatch
+    response = await case.client.post(ROUTE, headers=_headers(case.request), data=SOURCE)
+    raw = await response.read()
+    assert response.status == 503 and raw == b"post-dispatch failure"
+    with pytest.raises(ValueError):
+        decode_local_speech_window_busy_proof(raw, case.request)
+    assert len(case.calls) == 1 and not case.calls[0].exists()
+    assert case.service.admitted == 0 and not case.service.lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_admission_is_not_a_busy_report(case):
+    started = asyncio.Event()
+
+    async def admission():
+        started.set()
+        await asyncio.Event().wait()
+
+    class Content:
+        async def iter_chunked(self, _size):
+            raise AssertionError("cancelled admission must not read source")
+            yield b""  # pragma: no cover
+
+    case.service.admit = admission
+    req = SimpleNamespace(headers=_headers(case.request), content=Content(), content_length=len(SOURCE))
+    task = asyncio.create_task(case.service.window_evidence(req))
+    await asyncio.wait_for(started.wait(), 1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not case.calls and case.service.admitted == 0
 
 
 @pytest.mark.asyncio

@@ -8,8 +8,12 @@ import json
 from dataclasses import replace
 
 import pytest
+from autocut_kernel.media.local_speech_window_busy import LocalSpeechWindowBusyProof
 
-from auto_cut_bot.pipeline.media_preflight.funasr_window_http import FunASRHttpLocalSpeechWindowPort
+from auto_cut_bot.pipeline.media_preflight.funasr_window_http import (
+    FunASRHttpLocalSpeechWindowPort,
+    LocalSpeechWindowBusyError,
+)
 from auto_cut_bot.pipeline.media_preflight.models import (
     LocalMediaEvidenceError,
     LocalMediaPolicyError,
@@ -66,7 +70,8 @@ def test_received_failure_never_retries(tmp_path, status):
         port.produce(source, request)
     assert len(transport.calls) == 1
     if status == 503:
-        assert error.value.code == "TIMED_SPEECH_BUSY"
+        assert error.value.code == "TIMED_SPEECH_RESULT_UNKNOWN"
+        assert not isinstance(error.value, LocalSpeechWindowBusyError)
 
 
 def test_unknown_transport_is_preserved_without_retry(tmp_path):
@@ -113,3 +118,85 @@ def test_endpoint_is_exact_loopback_only(endpoint):
     with pytest.raises(LocalMediaPolicyError):
         FunASRHttpLocalSpeechWindowPort(endpoint_url=endpoint, shared_token="secret",
             timeout_seconds=5, max_response_bytes=100_000)
+
+
+def test_only_exact_request_bound_busy_retains_original_proof_bytes_without_retry(tmp_path):
+    source, request, _, transport, port = _case(tmp_path, status=503)
+    proof = LocalSpeechWindowBusyProof(
+        request.canonical_hash, request.binding_sha256, request.policy.service_profile_sha256,
+    )
+    transport.raw = proof.to_bytes()
+    with pytest.raises(LocalSpeechWindowBusyError) as error:
+        port.produce(source, request)
+    assert error.value.code == "TIMED_SPEECH_BUSY"
+    assert error.value.proof == proof and error.value.raw_response is transport.raw
+    with pytest.raises(AttributeError):
+        error.value.raw_response = b"foreign"
+    with pytest.raises(AttributeError):
+        error.value.proof = replace(proof, binding_sha256="sha256:" + "f" * 64)
+    assert "secret" not in str(error.value)
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize("mutation", [
+    "request_sha256", "binding_sha256", "service_profile_sha256", "duplicate", "extra",
+    "missing", "state", "reason", "schema", "whitespace", "oversize", "type", "secret_body",
+])
+def test_unproven_503_is_unknown_and_body_never_leaks(tmp_path, mutation):
+    source, request, _, transport, port = _case(tmp_path, status=503)
+    proof = LocalSpeechWindowBusyProof(
+        request.canonical_hash, request.binding_sha256, request.policy.service_profile_sha256,
+    )
+    body = proof.to_mapping()
+    if mutation.endswith("sha256"):
+        body[mutation] = "sha256:" + "f" * 64
+    elif mutation == "extra":
+        body["retry"] = True
+    elif mutation == "missing":
+        del body["reason"]
+    elif mutation == "state":
+        body["invocation_state"] = "started"
+    elif mutation == "reason":
+        body["reason"] = "inference_failed"
+    elif mutation == "schema":
+        body["schema_version"] = "foreign"
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+    if mutation == "duplicate":
+        raw = raw[:-1] + b',"reason":"admission_busy"}'
+    elif mutation == "whitespace":
+        raw += b"\n"
+    elif mutation == "oversize":
+        raw += b" " * request.max_response_bytes
+    elif mutation == "type":
+        raw = bytearray(raw)
+    elif mutation == "secret_body":
+        raw = b"secret internal path /private/native"
+    transport.raw = raw
+    with pytest.raises(LocalMediaToolError) as error:
+        port.produce(source, request)
+    assert error.value.code == "TIMED_SPEECH_RESULT_UNKNOWN"
+    assert not isinstance(error.value, LocalSpeechWindowBusyError)
+    assert not hasattr(error.value, "raw_response")
+    assert "secret" not in str(error.value) and "/private" not in str(error.value)
+    assert len(transport.calls) == 1
+
+
+def test_busy_error_cannot_carry_mismatched_or_mutable_raw_bytes():
+    request, _ = request_and_report()
+    proof = LocalSpeechWindowBusyProof(
+        request.canonical_hash, request.binding_sha256, request.policy.service_profile_sha256,
+    )
+    for raw in (proof.to_bytes() + b" ", bytearray(proof.to_bytes())):
+        with pytest.raises(LocalMediaPolicyError):
+            LocalSpeechWindowBusyError(proof, raw)
+
+
+@pytest.mark.parametrize("code", ["LOCAL_MEDIA_TOOL_FAILED", "TIMED_SPEECH_BUSY"])
+def test_transport_error_without_raw_proof_cannot_be_busy(tmp_path, code):
+    error = LocalMediaToolError("secret transport failure", code=code)
+    source, request, _, transport, port = _case(tmp_path, raw=error)
+    with pytest.raises(LocalMediaToolError) as received:
+        port.produce(source, request)
+    assert received.value.code == "TIMED_SPEECH_RESULT_UNKNOWN"
+    assert "secret" not in str(received.value)
+    assert len(transport.calls) == 1

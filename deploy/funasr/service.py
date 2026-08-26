@@ -38,6 +38,7 @@ from autocut_kernel.media.local_speech_window import (
     DecodedLocalPcmReport,
     LocalSpeechWindowPolicy,
 )
+from autocut_kernel.media.local_speech_window_busy import LocalSpeechWindowBusyProof
 from autocut_kernel.media.local_speech_window_codec import (
     decode_local_speech_window_request,
     decode_local_speech_window_response,
@@ -1542,7 +1543,23 @@ class Service:
             raise web.HTTPRequestEntityTooLarge(
                 max_size=request.extraction.max_source_bytes, actual_size=req.content_length,
             )
-        await self.admit()
+        try:
+            await self.admit()
+        except web.HTTPServiceUnavailable as error:
+            # Only admission refusal proves that no upload/native work began.
+            # Later inference errors must never become a not_started report.
+            proof = LocalSpeechWindowBusyProof(
+                request.canonical_hash, request.binding_sha256,
+                request.policy.service_profile_sha256,
+            )
+            raw_proof = proof.to_bytes()
+            retry_after = error.headers.get("Retry-After")
+            headers = {} if retry_after is None else {"Retry-After": retry_after}
+            if len(raw_proof) > min(self.max_response, request.max_response_bytes):
+                return web.Response(status=503, body=b"", headers=headers)
+            return web.Response(
+                status=503, body=raw_proof, content_type="application/json", headers=headers,
+            )
         try:
             with tempfile.TemporaryDirectory(prefix="funasr-window-request-") as directory:
                 path = Path(directory) / "source.bin"

@@ -1,0 +1,12 @@
+{
+  "id": "local-window-busy-proof",
+  "title": "Distinguish pre-dispatch local speech BUSY from unknown HTTP failures",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "Wire proof independently reviewed and 195 synthetic/HTTP tests passed; exact terminal receipt persistence and bounded successor admission remain later work.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}

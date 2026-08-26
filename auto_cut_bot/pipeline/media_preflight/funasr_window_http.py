@@ -11,6 +11,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from autocut_kernel.media.local_speech_window import LocalSpeechWindowRequest
+from autocut_kernel.media.local_speech_window_busy import (
+    LocalSpeechWindowBusyProof,
+    decode_local_speech_window_busy_proof,
+)
 from autocut_kernel.media.local_speech_window_codec import decode_local_speech_window_response
 from autocut_kernel.media.local_speech_window_projection import (
     LocalSpeechWindowEvidence,
@@ -30,6 +34,28 @@ from .models import (
 class ReceivedLocalSpeechWindow:
     evidence: LocalSpeechWindowEvidence
     raw_response: bytes
+
+
+class LocalSpeechWindowBusyError(LocalMediaToolError):
+    """Verified wire correlation only; no retry or durable receipt is created."""
+
+    code = "TIMED_SPEECH_BUSY"
+
+    def __init__(self, proof: LocalSpeechWindowBusyProof, raw_response: bytes) -> None:
+        if (type(proof) is not LocalSpeechWindowBusyProof or type(raw_response) is not bytes
+                or proof.to_bytes() != raw_response):
+            raise LocalMediaPolicyError("busy evidence must retain exact canonical proof bytes")
+        super().__init__("window admission refused before inference started")
+        self._proof = proof
+        self._raw_response = raw_response
+
+    @property
+    def proof(self) -> LocalSpeechWindowBusyProof:
+        return self._proof
+
+    @property
+    def raw_response(self) -> bytes:
+        return self._raw_response
 
 
 def validate_local_speech_window_endpoint(value: str) -> str:
@@ -79,22 +105,40 @@ class FunASRHttpLocalSpeechWindowPort:
         if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= request.extraction.max_source_bytes:
             raise LocalMediaSourceError("window source must be a bounded nonempty regular file")
         manifest = json.dumps(request.to_mapping(), sort_keys=True, separators=(",", ":")).encode()
-        status, raw = self._transport.post(
-            self.endpoint_url,
-            headers={
-                "Content-Type": "application/octet-stream", "Authorization": f"Bearer {self._token}",
-                "X-Local-Speech-Window-Manifest": base64.b64encode(manifest).decode("ascii"),
-                "X-Local-Speech-Window-SHA256": request.canonical_hash,
-            },
-            body_path=source_path, timeout_seconds=self._timeout,
-            max_response_bytes=request.max_response_bytes,
-        )
+        try:
+            status, raw = self._transport.post(
+                self.endpoint_url,
+                headers={
+                    "Content-Type": "application/octet-stream", "Authorization": f"Bearer {self._token}",
+                    "X-Local-Speech-Window-Manifest": base64.b64encode(manifest).decode("ascii"),
+                    "X-Local-Speech-Window-SHA256": request.canonical_hash,
+                },
+                body_path=source_path, timeout_seconds=self._timeout,
+                max_response_bytes=request.max_response_bytes,
+            )
+        except LocalMediaToolError as error:
+            if error.code == "TIMED_SPEECH_RESULT_UNKNOWN":
+                raise
+            # A bounded read can abort before exposing HTTP status/body. Without
+            # a complete proof it cannot establish that dispatch never happened.
+            raise LocalMediaToolError(
+                "window result is unknown after incomplete transport response",
+                code="TIMED_SPEECH_RESULT_UNKNOWN",
+            ) from None
+        if type(status) is int and status == 503:
+            try:
+                proof = decode_local_speech_window_busy_proof(raw, request)
+            except (TypeError, ValueError):
+                raise LocalMediaToolError(
+                    "window 503 has no verified pre-dispatch evidence",
+                    code="TIMED_SPEECH_RESULT_UNKNOWN",
+                ) from None
+            raise LocalSpeechWindowBusyError(proof, raw)
         if type(raw) is not bytes or len(raw) > request.max_response_bytes:
             raise LocalMediaToolError("window response exceeded byte bound")
         if type(status) is not int or status != 200:
-            code = "TIMED_SPEECH_BUSY" if type(status) is int and status == 503 else LocalMediaToolError.code
             digest = hashlib.sha256(raw).hexdigest()
-            raise LocalMediaToolError(f"window HTTP failure {status} (sha256:{digest})", code=code)
+            raise LocalMediaToolError(f"window HTTP failure {status} (sha256:{digest})")
         try:
             decoded = decode_local_speech_window_response(raw, request)
             evidence = project_local_speech_window(decoded)

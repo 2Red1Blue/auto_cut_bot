@@ -16,9 +16,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from autocut_kernel.media.local_speech_window_busy import decode_local_speech_window_busy_proof
 from autocut_kernel.media.local_speech_window_codec import decode_local_speech_window_response
 
-from auto_cut_bot.pipeline.media_preflight.funasr_window_http import FunASRHttpLocalSpeechWindowPort
+from auto_cut_bot.pipeline.media_preflight.funasr_window_http import (
+    FunASRHttpLocalSpeechWindowPort,
+    LocalSpeechWindowBusyError,
+)
 from auto_cut_bot.pipeline.media_preflight.models import LocalMediaToolError
 from tests.pipeline.test_funasr_window_endpoint import ROUTE, SOURCE, _sha
 from tests.pipeline.test_funasr_window_endpoint import case as window_case  # noqa: F401
@@ -206,7 +210,52 @@ async def test_busy_queue_returns_busy_code_without_model_call(
 ):
     window_case.service.admitted = window_case.service.queue_capacity
     window_case.service.resource_reader = lambda: window_case.ns["ResourceSnapshot"](10**12, 0, 0)
-    with pytest.raises(LocalMediaToolError) as error:
+    with pytest.raises(LocalSpeechWindowBusyError) as error:
         await asyncio.to_thread(_port(window_case).produce, _source(tmp_path), window_case.request)
     assert error.value.code == "TIMED_SPEECH_BUSY"
+    assert decode_local_speech_window_busy_proof(error.value.raw_response, window_case.request) == error.value.proof
     assert not window_case.calls and window_case.service.admitted == window_case.service.queue_capacity
+
+
+@pytest.mark.asyncio
+async def test_resource_busy_roundtrips_exact_pre_dispatch_proof(
+    tmp_path, window_case,  # noqa: F811 - imported pytest fixture
+):
+    window_case.service.resource_reader = lambda: window_case.ns["ResourceSnapshot"](0, 0, 0)
+    with pytest.raises(LocalSpeechWindowBusyError) as error:
+        await asyncio.to_thread(_port(window_case).produce, _source(tmp_path), window_case.request)
+    error.value.proof.assert_matches(window_case.request)
+    assert error.value.raw_response == error.value.proof.to_bytes()
+    assert not window_case.calls and window_case.service.admitted == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["not_ready", "proof_cannot_fit", "post_dispatch", "post_dispatch_oversize"])
+async def test_unproven_service_503_never_authorizes_client_retry(
+    tmp_path, window_case, mode,  # noqa: F811 - imported pytest fixture
+):
+    request = window_case.request
+    if mode == "not_ready":
+        window_case.service.ready = False
+    elif mode == "proof_cannot_fit":
+        request = replace(request, max_response_bytes=1)
+        window_case.service.admitted = window_case.service.queue_capacity
+    else:
+        original = window_case.service.run_window_inference
+
+        async def fail_after_dispatch(path, spec):
+            await original(path, spec)
+            text = "secret" * request.max_response_bytes if mode.endswith("oversize") else "post-dispatch failure"
+            raise window_case.ns["web"].HTTPServiceUnavailable(text=text)
+
+        window_case.service.run_window_inference = fail_after_dispatch
+    with pytest.raises(LocalMediaToolError) as error:
+        await asyncio.to_thread(_port(window_case).produce, _source(tmp_path), request)
+    assert error.value.code == "TIMED_SPEECH_RESULT_UNKNOWN"
+    assert not isinstance(error.value, LocalSpeechWindowBusyError)
+    assert "secret" not in str(error.value)
+    if mode.startswith("post_dispatch"):
+        assert len(window_case.calls) == 1 and not window_case.calls[0].exists()
+        assert window_case.service.admitted == 0
+    else:
+        assert not window_case.calls
