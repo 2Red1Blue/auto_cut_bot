@@ -34,12 +34,13 @@ from ..store.models import ArtifactScope, CommittedArtifactMemberReference
 
 if TYPE_CHECKING:
     from ..semantic_chain.stage1_command_policy import Stage1CommandPolicy
+    from ..semantic_chain.story_design_command_policy import Stage2CommandPolicy
 
 AUTHORITY_PROFILE_SOURCE_INVALID = "AUTHORITY_PROFILE_SOURCE_INVALID"
 CONTRACT_VERSION = "2.1.3"
 STAGE1_NARRATIVE_SCHEMA_VERSION = "autocut-stage1-narrative-profile-v2"
 SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-shadow-calibration-profile-v2"
-LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v2"
+LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v3"
 
 _ZERO_HASH = "sha256:" + "0" * 64
 _PROFILE_VERSION = re.compile(r"^[1-9][0-9]*$")
@@ -514,6 +515,11 @@ class LocalRunProfileSource:
     capabilities: AuthorityProfileCapabilities
     calibration: LocalRunCalibration
     timed_speech_registry_entry: TimedSpeechProfileRegistryEntry
+    stage2_command_policy: Stage2CommandPolicy
+
+    @property
+    def stage2_command_policy_sha256(self) -> str:
+        return self.stage2_command_policy.canonical_hash
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -531,6 +537,8 @@ class LocalRunProfileSource:
             "capabilities": self.capabilities.to_mapping(),
             "calibration": self.calibration.to_mapping(),
             "timed_speech_registry_entry": self.timed_speech_registry_entry.to_mapping(),
+            "stage2_command_policy": self.stage2_command_policy.to_mapping(),
+            "stage2_command_policy_sha256": self.stage2_command_policy_sha256,
         }
 
 
@@ -1135,6 +1143,8 @@ def decode_local_run_profile_source(
     expected_profile_contract_sha256: str,
 ) -> LocalRunProfileSource:
     """Decode unresolved local-run grammar and close predecessor projections."""
+    from ..semantic_chain.story_design_command_policy import Stage2CommandPolicy
+
     if type(narrative) is not Stage1NarrativeProfileSource or type(shadow) is not ShadowCalibrationProfileSource:  # noqa: E721
         raise _invalid("local-run dependencies must be exact decoded sources")
     value, source_sha256, semantic_sha256 = _source_object(raw, "local-run source")
@@ -1146,6 +1156,7 @@ def decode_local_run_profile_source(
                 "profile_state", "profile_contract_sha256", "predecessor_shadow_profile",
                 "stage1_narrative_profile", "native_timed_speech", "source_clock_policy",
                 "timing_policies", "capabilities", "calibration", "timed_speech_registry_entry",
+                "stage2_command_policy", "stage2_command_policy_sha256",
             }
         ),
         "local-run source",
@@ -1168,6 +1179,20 @@ def decode_local_run_profile_source(
     if claimed_contract != expected_contract:
         raise _invalid("local-run source profile contract does not match locked input")
     version = _profile_version(mapping["profile_version"], "local-run source.profile_version")
+    try:
+        stage2_policy = Stage2CommandPolicy.from_mapping(mapping["stage2_command_policy"])
+    except (ValueError, TypeError) as error:
+        raise _invalid("local-run source Stage 2 command policy is invalid") from error
+    _const(
+        stage2_policy.generation.model_id,
+        "doubao-seed-2-1-pro-260628",
+        "local-run source Stage 2 command policy model",
+    )
+    if (
+        canonical_json_hash(mapping["stage2_command_policy"]) != stage2_policy.canonical_hash
+        or mapping["stage2_command_policy_sha256"] != stage2_policy.canonical_hash
+    ):
+        raise _invalid("local-run source Stage 2 command policy hash does not close")
     predecessor = _decode_shadow_reference(
         mapping["predecessor_shadow_profile"], "local-run source.predecessor_shadow_profile"
     )
@@ -1239,6 +1264,7 @@ def decode_local_run_profile_source(
         ),
         calibration,
         entry,
+        stage2_policy,
     )
 
 

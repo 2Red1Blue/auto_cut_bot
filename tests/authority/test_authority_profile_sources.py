@@ -25,6 +25,7 @@ from autocut_kernel.registry.authority_profiles import (
     decode_shadow_calibration_profile_source as _decode_shadow_calibration_profile_source,
 )
 from autocut_kernel.registry.timed_speech_contract import timed_speech_registry_contract_sha256
+from autocut_kernel.semantic_chain.candidate_catalog import CandidateCatalogPolicy
 from autocut_kernel.semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
 from autocut_kernel.semantic_chain.stage1_command_policy import (
@@ -32,6 +33,16 @@ from autocut_kernel.semantic_chain.stage1_command_policy import (
     Stage1GenerationPolicy,
 )
 from autocut_kernel.semantic_chain.stage1_draft import Stage1DraftPolicy
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
+from autocut_kernel.semantic_chain.story_design_draft import StoryDesignDraftPolicy
+from autocut_kernel.semantic_chain.story_design_models import (
+    EditingProfileReference,
+    IntegerRange,
+    JobPolicy,
+    PhysicalRequirement,
+    SourceConstraints,
+    StoryDesignPolicy,
+)
 from autocut_kernel.vlm.retry_policy import GenerationRetryPolicy
 from jsonschema import Draft202012Validator
 
@@ -144,6 +155,37 @@ def _narrative_mapping() -> dict[str, object]:
             "external_publication": False,
         },
     }
+
+
+def synthetic_stage2_command_policy() -> Stage2CommandPolicy:
+    """Explicit synthetic prompt and budgets, never a production default."""
+    story = StoryDesignPolicy(
+        "synthetic-story", "1", ("drama",), (EditingProfileReference("synthetic-edit", "1"),),
+        ("reveal",), (PhysicalRequirement("visual_validity", "endpoint_and_stable_region"),),
+        "first_feasible_lexicographic_v1",
+    )
+    return Stage2CommandPolicy(
+        artifact_revision=1,
+        generation=Stage1GenerationPolicy(
+            "doubao-ark-text-responses-stream", "doubao-seed-2-1-pro-260628",
+            "synthetic-stage2-draft-v1", "Synthetic test prompt: propose complete stories, not physical endpoints.",
+            "doubao-ark-text-responses-stream-v1", 4096, "0",
+        ),
+        max_prompt_bytes=2_097_152,
+        draft_policy=StoryDesignDraftPolicy(
+            max_response_bytes=1_048_576, max_json_depth=32, max_proposals=16,
+            max_material_requirements_per_proposal=32, max_total_material_requirements=128,
+            max_references_per_field=128, max_total_references=2048, max_genre_tags=16,
+            max_text_characters=4096, max_total_text_characters=100_000,
+        ),
+        candidate_policy=CandidateCatalogPolicy("candidate-catalog-v1", "0.8", ()),
+        job_policy=JobPolicy(
+            "synthetic-job", "1", story.canonical_hash, IntegerRange(1, 16), 1, 10_000,
+            IntegerRange(1, 120), "forbid", SourceConstraints((), (), "render_source"), "all_or_nothing",
+        ),
+        story_policy=story,
+        retry_policy=GenerationRetryPolicy("generation-retry-v1", 3, (2, 8)),
+    )
 
 
 def _narrative_reference(narrative: dict[str, object]) -> dict[str, object]:
@@ -297,6 +339,7 @@ def _member_ref(
 
 
 def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dict[str, object]:
+    stage2_policy = synthetic_stage2_command_policy()
     native = copy.deepcopy(shadow["native_timed_speech"])
     assert isinstance(native, dict)
     producers = native["producers"]
@@ -343,11 +386,13 @@ def _run_mapping(narrative: dict[str, object], shadow: dict[str, object]) -> dic
         }
 
     return {
-        "schema_version": "autocut-local-run-profile-v2",
+        "schema_version": "autocut-local-run-profile-v3",
         "contract_version": "2.1.3",
         "profile_id": "local_run",
         "profile_version": "1",
         "profile_state": "local_run_v1",
+        "stage2_command_policy": stage2_policy.to_mapping(),
+        "stage2_command_policy_sha256": stage2_policy.canonical_hash,
         "profile_contract_sha256": _profile_contract_hash("local-run-profile.schema.json"),
         "predecessor_shadow_profile": {
             "profile_id": "shadow_calibration",

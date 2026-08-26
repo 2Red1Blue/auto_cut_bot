@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "schema://governance/local-run-profile/2.0.0",
+  "$id": "schema://governance/local-run-profile/3.0.0",
   "title": "LocalRunProfile",
   "type": "object",
   "additionalProperties": false,
@@ -18,10 +18,12 @@
     "timing_policies",
     "capabilities",
     "calibration",
-    "timed_speech_registry_entry"
+    "timed_speech_registry_entry",
+    "stage2_command_policy",
+    "stage2_command_policy_sha256"
   ],
   "properties": {
-    "schema_version": {"const": "autocut-local-run-profile-v2"},
+    "schema_version": {"const": "autocut-local-run-profile-v3"},
     "contract_version": {"const": "2.1.3"},
     "profile_id": {"const": "local_run"},
     "profile_version": {"$ref": "#/$defs/profile_version"},
@@ -34,9 +36,160 @@
     "timing_policies": {"$ref": "#/$defs/timing_policies"},
     "capabilities": {"$ref": "#/$defs/capabilities"},
     "calibration": {"$ref": "#/$defs/calibration"},
-    "timed_speech_registry_entry": {"$ref": "#/$defs/timed_speech_registry_entry"}
+    "timed_speech_registry_entry": {"$ref": "#/$defs/timed_speech_registry_entry"},
+    "stage2_command_policy": {"$ref": "#/$defs/stage2_command_policy"},
+    "stage2_command_policy_sha256": {"$ref": "#/$defs/sha256"}
   },
   "$defs": {
+    "stage2_command_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifact_revision", "generation", "max_prompt_bytes", "draft_policy", "candidate_policy", "job_policy", "story_policy", "retry_policy"],
+      "properties": {
+        "artifact_revision": {"$ref": "#/$defs/safe_positive_integer"},
+        "generation": {"$ref": "#/$defs/stage2_generation"},
+        "max_prompt_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "draft_policy": {"$ref": "#/$defs/stage2_draft_policy"},
+        "candidate_policy": {"$ref": "#/$defs/stage2_candidate_policy"},
+        "job_policy": {"$ref": "#/$defs/stage2_job_policy"},
+        "story_policy": {"$ref": "#/$defs/stage2_story_policy"},
+        "retry_policy": {"$ref": "#/$defs/stage2_retry_policy"}
+      }
+    },
+    "stage2_text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "stage2_generation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider_id", "model_id", "prompt_version", "prompt_template", "adapter_strategy_version", "max_output_tokens", "temperature"],
+      "properties": {
+        "provider_id": {"const": "doubao-ark-text-responses-stream"},
+        "model_id": {"const": "doubao-seed-2-1-pro-260628"},
+        "prompt_version": {"$ref": "#/$defs/stage2_text"},
+        "prompt_template": {"$ref": "#/$defs/stage2_text"},
+        "adapter_strategy_version": {"const": "doubao-ark-text-responses-stream-v1"},
+        "max_output_tokens": {"type": "integer", "minimum": 1, "maximum": 32768},
+        "temperature": {"type": "string", "maxLength": 32, "pattern": "^(?:[012]|[01]\\.[0-9]*[1-9])$"}
+      }
+    },
+    "stage2_draft_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["max_response_bytes", "max_json_depth", "max_proposals", "max_material_requirements_per_proposal", "max_total_material_requirements", "max_references_per_field", "max_total_references", "max_genre_tags", "max_text_characters", "max_total_text_characters"],
+      "properties": {
+        "max_response_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "max_json_depth": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_proposals": {"type": "integer", "minimum": 1, "maximum": 256},
+        "max_material_requirements_per_proposal": {"type": "integer", "minimum": 1, "maximum": 128},
+        "max_total_material_requirements": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "max_references_per_field": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "max_total_references": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "max_genre_tags": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_text_characters": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "max_total_text_characters": {"type": "integer", "minimum": 1, "maximum": 2097152}
+      }
+    },
+    "stage2_candidate_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["strategy_version", "minimum_confidence", "required_measurement_kinds"],
+      "properties": {
+        "strategy_version": {"const": "candidate-catalog-v1"},
+        "minimum_confidence": {"type": "string", "maxLength": 80, "pattern": "^(?:0|1|0\\.[0-9]*[1-9])$"},
+        "required_measurement_kinds": {
+          "type": "array", "uniqueItems": true, "maxItems": 6,
+          "items": {"enum": ["hook_strength", "reveal_strength", "emotional_payoff_strength", "dialogue_salience", "action_salience", "visual_salience"]}
+        }
+      }
+    },
+    "stage2_integer_range": {
+      "type": "object", "additionalProperties": false, "required": ["min", "max"],
+      "properties": {"min": {"$ref": "#/$defs/safe_positive_integer"}, "max": {"$ref": "#/$defs/safe_positive_integer"}}
+    },
+    "stage2_source_ref": {
+      "type": "object", "additionalProperties": false, "required": ["member_ref", "object_type", "object_id"],
+      "properties": {
+        "object_type": {"const": "source"}, "object_id": {"$ref": "#/$defs/stage2_text"},
+        "member_ref": {
+          "type": "object", "additionalProperties": false,
+          "required": ["artifact_type", "logical_id", "revision", "scope", "content_hash"],
+          "properties": {
+            "artifact_type": {"const": "whole_series_source_manifest"},
+            "logical_id": {"$ref": "#/$defs/stage2_text"},
+            "revision": {"$ref": "#/$defs/safe_positive_integer"},
+            "content_hash": {"$ref": "#/$defs/sha256"},
+            "scope": {
+              "type": "object", "additionalProperties": false, "required": ["namespace", "kind", "key"],
+              "properties": {
+                "namespace": {"$ref": "#/$defs/stage2_text"},
+                "kind": {"$ref": "#/$defs/stage2_text"},
+                "key": {"$ref": "#/$defs/stage2_text"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "stage2_source_constraints": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowed_source_refs", "forbidden_source_refs", "authorization_purpose"],
+      "properties": {
+        "allowed_source_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_source_ref"}},
+        "forbidden_source_refs": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_source_ref"}},
+        "authorization_purpose": {"const": "render_source"}
+      }
+    },
+    "stage2_job_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_id", "policy_version", "story_design_policy_sha256", "proposal_count", "selected_story_count", "max_search_states", "target_duration_seconds", "source_reuse_policy", "source_constraints", "completion_policy"],
+      "properties": {
+        "policy_id": {"$ref": "#/$defs/stage2_text"}, "policy_version": {"$ref": "#/$defs/stage2_text"},
+        "story_design_policy_sha256": {"$ref": "#/$defs/sha256"},
+        "proposal_count": {"$ref": "#/$defs/stage2_integer_range"},
+        "selected_story_count": {"$ref": "#/$defs/safe_positive_integer"},
+        "max_search_states": {"$ref": "#/$defs/safe_positive_integer"},
+        "target_duration_seconds": {"$ref": "#/$defs/stage2_integer_range"},
+        "source_reuse_policy": {"enum": ["allow", "forbid"]},
+        "source_constraints": {"$ref": "#/$defs/stage2_source_constraints"},
+        "completion_policy": {"const": "all_or_nothing"}
+      }
+    },
+    "stage2_editing_profile": {
+      "type": "object", "additionalProperties": false, "required": ["profile_id", "profile_version"],
+      "properties": {"profile_id": {"$ref": "#/$defs/stage2_text"}, "profile_version": {"$ref": "#/$defs/stage2_text"}}
+    },
+    "stage2_physical_requirement": {
+      "type": "object", "additionalProperties": false, "required": ["requirement_kind", "mode"],
+      "properties": {
+        "requirement_kind": {"enum": ["dialogue_integrity", "subtitle_clearance", "visual_validity"]},
+        "mode": {"enum": ["complete", "protect_detected_cues", "endpoint_and_stable_region"]}
+      },
+      "oneOf": [
+        {"properties": {"requirement_kind": {"const": "dialogue_integrity"}, "mode": {"const": "complete"}}},
+        {"properties": {"requirement_kind": {"const": "subtitle_clearance"}, "mode": {"const": "protect_detected_cues"}}},
+        {"properties": {"requirement_kind": {"const": "visual_validity"}, "mode": {"const": "endpoint_and_stable_region"}}}
+      ]
+    },
+    "stage2_story_policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["policy_id", "policy_version", "allowed_genre_tags", "editing_profiles", "teaser_strategies", "required_physical_requirements", "selection_strategy"],
+      "properties": {
+        "policy_id": {"$ref": "#/$defs/stage2_text"}, "policy_version": {"$ref": "#/$defs/stage2_text"},
+        "allowed_genre_tags": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_text"}},
+        "editing_profiles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_editing_profile"}},
+        "teaser_strategies": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_text"}},
+        "required_physical_requirements": {"type": "array", "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/stage2_physical_requirement"}},
+        "selection_strategy": {"const": "first_feasible_lexicographic_v1"}
+      }
+    },
+    "stage2_retry_policy": {
+      "type": "object", "additionalProperties": false, "required": ["strategy_version", "max_attempts", "backoff_seconds"],
+      "properties": {
+        "strategy_version": {"const": "generation-retry-v1"},
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 3},
+        "backoff_seconds": {"type": "array", "maxItems": 2, "items": {"$ref": "#/$defs/safe_non_negative_integer"}}
+      },
+      "oneOf": [
+        {"properties": {"max_attempts": {"const": 1}, "backoff_seconds": {"maxItems": 0}}},
+        {"properties": {"max_attempts": {"const": 2}, "backoff_seconds": {"minItems": 1, "maxItems": 1}}},
+        {"properties": {"max_attempts": {"const": 3}, "backoff_seconds": {"minItems": 2, "maxItems": 2}}}
+      ]
+    },
     "safe_positive_integer": {
       "type": "integer",
       "minimum": 1,

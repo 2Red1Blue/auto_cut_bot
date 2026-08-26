@@ -64,7 +64,7 @@ def test_no_v1_source_fallback(kind):
     narrative, shadow, local_run = _profiles()
     narrative_source, shadow_source = _decoded_dependencies(narrative, shadow)
     source = {"narrative": narrative, "shadow": shadow, "local_run": local_run}[kind]
-    source["schema_version"] = source["schema_version"].replace("-v2", "-v1")
+    source["schema_version"] = source["schema_version"].rsplit("-v", 1)[0] + "-v1"
     with pytest.raises(AuthorityProfileSourceError):
         if kind == "narrative":
             decode_stage1_narrative_profile_source(_raw(source))

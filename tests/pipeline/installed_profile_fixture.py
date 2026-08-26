@@ -8,6 +8,7 @@ from dataclasses import replace
 
 from autocut_kernel.registry.installed_local_run import LocalRunResource
 from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
 
@@ -29,8 +30,9 @@ def synthetic_installed_resource(
     policy: DoubaoVlmRequestPolicy | None = None,
     retry_policy: GenerationRetryPolicy | None = None,
     command_policy: Stage1CommandPolicy | None = None,
+    stage2_command_policy: Stage2CommandPolicy | None = None,
 ) -> LocalRunResource:
-    """Grammar-only content with explicitly synthetic Stage 1 prompt/limits."""
+    """Grammar-only content with explicitly synthetic Stage 1/2 prompt/limits."""
     policy = policy or DoubaoVlmRequestPolicy(model_id="doubao-seed-2-1-pro-260628")
     retry_policy = retry_policy or GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (2, 8))
     narrative = _narrative_mapping()
@@ -52,6 +54,9 @@ def synthetic_installed_resource(
     for producer in native["producers"]:
         producer["detector_sha256"] = detector_policy.timed_speech_detector_sha256(producer["producer_kind"])
     local_run = _run_mapping(narrative, shadow)
+    if stage2_command_policy is not None:
+        local_run["stage2_command_policy"] = stage2_command_policy.to_mapping()
+        local_run["stage2_command_policy_sha256"] = stage2_command_policy.canonical_hash
     wire = _resource_mapping()
     for chain in wire["current"], wire["predecessor"]:
         chain["narrative_raw_base64"] = base64.b64encode(_raw(narrative)).decode("ascii")
