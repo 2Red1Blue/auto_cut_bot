@@ -84,6 +84,7 @@ from .errors import (
 )
 from .models import (
     SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
+    SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     VLM_BATCH_FINALIZER_COMMAND_NAME,
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,
     VLM_BATCH_IDEMPOTENCY_PREFIX,
@@ -1109,6 +1110,14 @@ class PostgresRuntimeStore:
             raise CommandStateError(
                 "MeasureShadowCalibrationCommand@2.1.3 requires the explicit shadow owner API"
             )
+        if claim.command_name == SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+            raise CommandStateError(
+                "MeasureShadowLocalCalibrationCommand@1 requires the explicit local shadow owner API"
+            )
+        if claim.idempotency_key.startswith("shadow-local-measurement:"):
+            raise CommandStateError(
+                "shadow-local-measurement idempotency keys require the explicit local shadow owner API"
+            )
         if (
             claim.command_name == VLM_BATCH_FINALIZER_COMMAND_NAME
             or claim.idempotency_key.startswith(VLM_BATCH_IDEMPOTENCY_PREFIX)
@@ -1717,6 +1726,10 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "MeasureShadowCalibrationCommand@2.1.3 success requires the shadow owner API"
                 )
+            if command_name == SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+                raise CommandStateError(
+                    "MeasureShadowLocalCalibrationCommand@1 success requires the local shadow owner API"
+                )
             self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if state != "running":
                 return self._replay_or_raise(
@@ -2011,6 +2024,10 @@ class PostgresRuntimeStore:
             if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
                 raise CommandStateError(
                     "MeasureShadowCalibrationCommand@2.1.3 cannot use generic rejection"
+                )
+            if command_name == SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
+                raise CommandStateError(
+                    "MeasureShadowLocalCalibrationCommand@1 cannot use generic rejection"
                 )
             self._require_slot_execution_kind(cursor, rejection.command_slot_id, "deterministic")
             if state != "running":

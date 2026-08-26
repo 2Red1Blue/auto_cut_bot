@@ -162,3 +162,26 @@ and producer-supplied projections.
 5. Run PostgreSQL CAS/restart tests on the desktop database before classifying
    this as real local measurement; Mac fake tests alone do not satisfy that
    acceptance.
+
+## 7. Implementation freeze: command and exact reader
+
+The command request compiles the existing pre-calibration service profile,
+ordered pure manifest, exact original source owner/BlobRef binding and explicit
+limits into the reviewed Store plan. Store canonical payload hashing owns the
+request/Artifact identity; embedded media case/request/results retain their
+media-domain identity. `ShadowLocalMeasurementResults` contains no BlobRef, so
+the reader must join the exact committed local journal to obtain the ordered raw
+BlobRefs; reading two JSON artifacts alone is insufficient proof of ownership.
+
+Generic `claim_command`, generic success and generic rejection must reserve the
+local command exactly as they reserve the old full-source command. The dedicated
+finalizer writes only the two local artifacts; it cannot call calibration-record,
+Registry, installed-profile or publish APIs. The reader first closes every
+job/slot/receipt/set/journal/member/blob/budget identity, then reads raw bytes
+under the measurement owner and independently replays the pure results/report.
+
+An `InvalidResponseError` is only a byte carrier: the command compares its
+request with the locked request and replays the bytes. Valid bytes stage; only a
+failed independent replay is an invalid-raw denial. Transport uncertainty and
+commit uncertainty never become a denial. A request-bound BUSY proof persists
+as `not_started`, and an explicit successor authorization is still required.
