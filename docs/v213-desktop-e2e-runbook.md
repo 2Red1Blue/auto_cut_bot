@@ -211,6 +211,11 @@ uv run auto_cut_bot serve \
 这只是新增运行策略的版本，不能修改测量结果或伪造校准。
 详细边界见 [Stage 3 运行接线](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-runtime-wave.md)。
 
+Media Preflight 从 `fd515321` 起要求完整的已提交 Source/VLM 引用，并在根证据中
+保存完整校准绑定。若曾用旧代码启动 run，请保留旧记录并创建新 run 验证；不要给
+旧产物手填引用、校准值或强行覆盖已有 Command 的请求哈希。这不要求删除数据库
+或重跑仍然有效的校准。
+
 ## 7. 当前真实进度
 
 已经具备：
@@ -220,6 +225,8 @@ uv run auto_cut_bot serve \
 - SenseVoiceSmall + FSMN-VAD 的 timed evidence 接口；
 - Stage 4 整数 tick、A/V 边界与 ExactSpan 基础；
 - Stage 4 三类媒体证据严格解码（`4955d1a7`）；整批持久化读取与物理准入尚未接通；
+- Media Preflight 的已提交 Source/VLM 绑定与空候选完整校准检查（`fd515321`）；
+- 单集五成员媒体证据的精确持久化读取与重算；尚未接入整批 finalizer/生产 Stage 4；
 - Pipeline HTTP 到共享 Kernel 的边界；
 - Stage 1 真实生成 Command、八成员原子提交、独立校验与重放；
 - Stage 2 真实生成 Command、五成员原子提交、19 项独立检查与重放；

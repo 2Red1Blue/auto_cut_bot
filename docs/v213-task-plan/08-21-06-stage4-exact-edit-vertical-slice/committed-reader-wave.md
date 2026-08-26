@@ -64,6 +64,34 @@ Then the Stage3/Catalog join consumes this exact batch, followed by committed
 piecewise-clock compilation, physical Admission, production A/V Recipe and
 Render/local QC. This child-reader wave is not full Task06 completion.
 
+## Following batch slice: memory and module ownership
+
+Move batch DTOs/Command into a dedicated
+pipeline/finalize_timed_media_evidence_batch_command.py owner, with its exact
+batch reader. Dependencies stay batch -> committed_timed_media -> prepare;
+update real facade imports and leave no compatibility alias in prepare.
+Children carry actual typed Prepare requests and exact succeeded outcomes.
+Persist slot/request/Receipt/Set and all five references, and compare episode
+coverage to the actual SourceManifest rather than the supplied child count.
+
+Do not derive JSON limits from Source upload or staging limits: the non-secret
+FunASR deployment template permits 2 GiB requests. Multiplying that allowance
+by candidate count is not a safe evidence-memory policy. The next Runtime wire
+must explicitly add evidence_read_limits with max_blob_bytes and
+max_total_blob_bytes; candidate count comes from the frozen VLM parse policy.
+This requires execution-profile v9 and a closed migration, not defaults for
+old v8 rows. Current execution remains v8 until that implementation lands.
+
+The batch total is cumulative across every episode, not reset for each child.
+Validate all lightweight committed metadata and sum Blob lengths before any
+materialization; then validate one child at a time and retain only compact exact
+references/hashes. Release heavy root/plans/candidates rather than retaining
+45 full episode DTOs. Stage4 later rereads the selected episode by exact identity.
+No episode is omitted from batch validation, including zero-candidate episodes.
+Serialized-byte ceilings do not promise an equal RSS ceiling: decoding and replay
+may temporarily hold several representations. Add multi-episode cumulative-limit,
+zero-blob-read-on-overflow and sequential-release regression tests.
+
 ## Acceptance checks
 
 - Forged/missing/cross-job Source or VLM rejected before producer work.

@@ -30,6 +30,12 @@ Authority、Profile 或 CalibrationRecord。
   针对性契约测试。
 - Stage 4 的 root/timed/分段时钟证据严格解码已交付 `4955d1a7`，1795 项相关回归
   通过并完成独立审查。它们还不是数据库整批读取器或生产剪辑准入；后两者正在接入。
+- Media Preflight 的真实 Source/VLM 引用绑定、空候选完整校准检查与持久化已修复
+  并提交 `fd515321`；相关联合回归 1953 项通过，4 项远端数据库用例未在本机执行。
+  缺少新必填引用或校准绑定的旧产物不能自动补全后复用。
+- 单集五成员持久化媒体读取器已实现：重新核对已提交 Source/VLM、真实安装的校准
+  绑定、候选计划、独立准入与分段时钟证明；有界读取并核验 Blob，逐次释放文件租约。
+  这是共享 Kernel 读取能力，尚未接入整批 finalizer 或 Stage 4 生产 Command。
 - Pipeline HTTP 的共享 Kernel 边界已经建立；Agent Runtime 的历史 MVP 不在当前
   候选分支，必须重新引入受限 adapter 并完成双 Runtime conformance。
 - Stage 1 的真实八成员 Command、独立 Admission、有限重试/结果不明时对账、exact
@@ -139,7 +145,7 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧正在接 Stage 4：先补已提交媒体证据的严格读取，再接真实 Blueprint/Catalog 和
+代码侧正在接 Stage 4：单集严格读取之后，补整批完整性与累计读取预算，再接真实 Blueprint/Catalog 和
 分段时钟证明；现有 fixture Recipe/视频-only Render 不能直接当作生产 A/V 成片链。
 详见 [Stage 4 当前实施波次](./v213-task-plan/08-21-06-stage4-exact-edit-vertical-slice/production-integration-wave.md)。
 台式机侧准备真实模型、校准、narrative/shadow v2、local-run v4 及 reviewed Stage 1/2/3 策略，运行单集并

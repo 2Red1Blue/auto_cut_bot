@@ -321,8 +321,8 @@ def _reject_number(_value: str) -> object:
     raise MediaValidationError("evidence JSON forbids floats and nonfinite numbers")
 
 
-def decode_root_media_evidence_bundle_json(raw: bytes, *, max_bytes: int) -> RootMediaEvidenceBundle:
-    """Decode bounded strict UTF-8 JSON; formatting does not confer authority."""
+def decode_media_evidence_json(raw: bytes, *, max_bytes: int) -> object:
+    """Read bounded media JSON without imposing compiler/JCS integer ceilings."""
     if type(raw) is not bytes or not raw:  # noqa: E721
         raise MediaValidationError("evidence JSON must be nonempty bytes")
     if _integer(max_bytes) <= 0 or len(raw) > max_bytes:
@@ -334,4 +334,9 @@ def decode_root_media_evidence_bundle_json(raw: bytes, *, max_bytes: int) -> Roo
         raise
     except (ValueError, RecursionError) as error:
         raise MediaValidationError("evidence must be finite-depth strict UTF-8 JSON") from error
-    return decode_root_media_evidence_bundle(value)
+    return value
+
+
+def decode_root_media_evidence_bundle_json(raw: bytes, *, max_bytes: int) -> RootMediaEvidenceBundle:
+    """Decode bounded strict UTF-8 JSON; formatting does not confer authority."""
+    return decode_root_media_evidence_bundle(decode_media_evidence_json(raw, max_bytes=max_bytes))
