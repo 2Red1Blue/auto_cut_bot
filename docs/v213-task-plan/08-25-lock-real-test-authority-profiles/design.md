@@ -215,3 +215,45 @@ The authority-source A commit also requires an explicit tracked authorization
 for this authority child; the user approval that started this task is recorded
 as that approval's provenance, but a generic task must never self-authorize at
 runtime. The B and C commits remain inventory-only and generated-lock-only.
+
+## Build integration slice: locked Registry and shadow context
+
+Freeze implementation ownership to `tools/authority/locked_registry.py`,
+`tools/authority/shadow_context.py`, `tests/authority/test_locked_registry.py`,
+and `tests/authority/test_shadow_context.py`, plus this task's planning record.
+This is inside the existing authority-child grant. Do not modify real source
+profiles, inventory/lock, runtime, ordinary CLI or package installation in
+this slice.
+
+The build entry reads an explicit C Git blob (not a checkout lock), derives A
+and B from it, replays the existing A/B/C verifier and verifies every locked
+blob. The selected Registry tree must consist only of lock-covered
+`registry_source` files. Copy those exact regular Git blobs to a private
+temporary directory, preserve their fixed eight-pack relative paths, call the
+existing source loader/compiler, require ready, and reject missing or unused
+files. Do not accept a caller-created RegistrySet or source mapping.
+
+Shadow context construction reuses that verified compilation and resolves
+narrative/shadow raw profile bytes only from exact `registry_source` entries.
+The expected shadow contract hash comes from the locked raw
+`governance/schemas/shadow-calibration-profile.schema.json` `schema_source`
+entry, matching the existing profile grammar tests; it is never a repeated
+caller-provided hash. Reuse the existing grammar decoder. Native service-identity
+recomputation remains owned by the existing service projector at calibration
+input resolution, before any I/O; do not duplicate it or import the app into
+tools/Kernel. Report source/lock/registry provenance separately from calibration
+acceptance. This shadow context may feed calibration only, never bootstrap or
+HTTP composition.
+
+Current published lock has neither target schema nor registry/profile entries.
+Positive tests must use explicitly synthetic A/B/C repositories; no successful
+fixture becomes a deployed authority profile. Dirty checkout bytes are never
+read or accepted; an explicit immutable historical commit remains usable despite
+unrelated checkout/config changes.
+
+Local-run requires two distinct provenance chains: its predecessor reference
+must equal a separately verified shadow source, shadow Registry snapshot and
+shadow lock bundle. The existing grammar only validates the latter two hashes'
+syntax, so current C cannot certify old C. Installed-resource publication and
+local-run/accepted-anchor loading are subsequent work, not implied by this
+shadow-only build slice.

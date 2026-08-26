@@ -92,3 +92,19 @@ Collect lock/Git-chain hashes, CalibrationRecord identity/non-zero bounds,
 verification-DB receipts and real-run ArtifactSet/highlighter evidence. Before
 lock commit discard only unaccepted source work; after deployment stop the
 worker and restore a prior verified snapshot without deleting authority data.
+
+## Current build-code slice (before real profile publication)
+
+1. Implement the exact Git C→B/A locked Registry loader in
+   `tools/authority/locked_registry.py`, with complete source coverage,
+   regular-blob checks, private materialization and the existing ready compiler.
+2. Add shadow-only profile context construction in
+   `tools/authority/shadow_context.py`; bind schema/profile raw bytes to the
+   same verified lock and derive Registry identity, never accept repeated hashes.
+3. Test real synthetic Git A/B/C chains and the existing ready Registry fixture:
+   wrong chain/class/path/hash, missing/extra files, symlink blobs, incomplete
+   compiler input, dirty checkout isolation, profile substitution and no
+   bootstrap/publication side effects. Independently review and commit.
+4. Continue with a separately verified predecessor chain for local-run, then
+   installed-resource/anchor loading and runtime injection. No real source,
+   lock, native calibration or HTTP activation is performed by steps 1–3.

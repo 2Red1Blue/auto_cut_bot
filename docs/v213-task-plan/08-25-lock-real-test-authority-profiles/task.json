@@ -5,7 +5,7 @@
   "description": "Freeze the user-approved Doubao Seed 2.1 Pro, SenseVoiceSmall and FSMN test/shadow profiles as protected Git authority sources; rebuild the authority lock, bootstrap them in the disposable real PostgreSQL test environment, and inject only the verified snapshot into HTTP composition.",
   "status": "in_progress",
   "dev_type": null,
-  "scope": null,
+  "scope": "tools/authority/locked_registry.py,tools/authority/shadow_context.py,tests/authority/test_locked_registry.py,tests/authority/test_shadow_context.py",
   "package": "auto_cut_bot",
   "priority": "P0",
   "creator": "liuzx",

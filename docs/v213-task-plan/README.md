@@ -48,6 +48,12 @@ committed-source/独立标注输入装配现已完成：精确核对来源引用
 尚须完成真实独立标注/模型校准、权威源/lock 部署、打包配置加载、
 运行时接线和真实 HTTP 单集运行。当前 typed 参数注入不等于部署权威加载已完成。
 
+Git 锁定 Registry 编译与 shadow 配置加载已实现：只读取明确提交的 Git 字节，
+核对 A/B/C、完整文件覆盖和 schema/profile 来源，不读取工作区配置。
+相关合并回归 **296 passed、零 skipped**，两模块均通过独立只读审查。
+详见 [来源加载审查](08-25-lock-real-test-authority-profiles/review-locked-source-context.md)。
+这仍不代表真实校准或正式运行配置已加载；local-run 前驱及 accepted anchor 接线待完成。
+
 当前优先级是继续开发与真实运行闭环；台式机迁移暂缓。测试产物、typed Profile 或
 旧 admission 文件不能代替上述未完成项，也不能据此启用外部发布。
 
