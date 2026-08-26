@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 import stat
-from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -16,9 +15,10 @@ from autocut_kernel.media.local_speech_window_busy import (
     decode_local_speech_window_busy_proof,
 )
 from autocut_kernel.media.local_speech_window_codec import decode_local_speech_window_response
-from autocut_kernel.media.local_speech_window_projection import (
-    LocalSpeechWindowEvidence,
-    project_local_speech_window,
+from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
+from autocut_kernel.pipeline.local_speech_window_port import (
+    LocalSpeechWindowPreDispatchBusyError,
+    ReceivedLocalSpeechWindow,
 )
 
 from .http_transport import FileHttpTransport, HttpxFileTransport
@@ -30,32 +30,16 @@ from .models import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class ReceivedLocalSpeechWindow:
-    evidence: LocalSpeechWindowEvidence
-    raw_response: bytes
-
-
-class LocalSpeechWindowBusyError(LocalMediaToolError):
+class LocalSpeechWindowBusyError(LocalMediaToolError, LocalSpeechWindowPreDispatchBusyError):
     """Verified wire correlation only; no retry or durable receipt is created."""
 
     code = "TIMED_SPEECH_BUSY"
 
     def __init__(self, proof: LocalSpeechWindowBusyProof, raw_response: bytes) -> None:
-        if (type(proof) is not LocalSpeechWindowBusyProof or type(raw_response) is not bytes
-                or proof.to_bytes() != raw_response):
-            raise LocalMediaPolicyError("busy evidence must retain exact canonical proof bytes")
-        super().__init__("window admission refused before inference started")
-        self._proof = proof
-        self._raw_response = raw_response
-
-    @property
-    def proof(self) -> LocalSpeechWindowBusyProof:
-        return self._proof
-
-    @property
-    def raw_response(self) -> bytes:
-        return self._raw_response
+        try:
+            LocalSpeechWindowPreDispatchBusyError.__init__(self, proof, raw_response)
+        except ValueError as error:
+            raise LocalMediaPolicyError(str(error)) from error
 
 
 def validate_local_speech_window_endpoint(value: str) -> str:

@@ -1,0 +1,12 @@
+{
+  "id": "local-speech-command-foundation",
+  "title": "Implement mapped local speech lifecycle and independently measured local calibration foundations",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "Native agents implement disjoint local lifecycle, mapped assessment and shadow-local measurement slices; root integrates and reviews before activation.",
+  "createdAt": "2026-08-26",
+  "branch": "feat/v213-contract-codegen"
+}
