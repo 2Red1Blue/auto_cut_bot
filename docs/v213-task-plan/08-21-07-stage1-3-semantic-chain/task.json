@@ -23,10 +23,10 @@
   "relatedFiles": [],
   "notes": "2026-08-26: Stage1 exact eight-member reader/durable generation Command and seventeen-rule independent admission delivered (1580e127, 0ac205f0); Ark typed request/terminal identity fixed (a732da32). Runtime activation wave af2c9041 implements source wire v2, complete Stage1 policy in execution profile v6, migration0019 and source_prep→vlm→stage1_narrative→media_preflight registration. Independent source/Runtime/adapter reviews ALLOW; final selected cross-layer regression 2322 passed, media pure cases 2 passed; 63 remote DB/media cases collected only. Ruff and production type checks clean. Isolated-wheel failure was fixed by moving policy values out of pipeline facade into semantic_chain. No full Pipeline success claim; Stage2/3 and remote DB/model/whole-run acceptance remain open.",
   "meta": {
-    "stage2_checkpoints": ["33cd9413", "a1c66f22", "ab139b82", "0b63addb", "7cedb80e", "261488d5", "53cda7bc"],
-    "stage2_current_wave": "stage2-production-wave.md",
-    "stage2_local_scope": "Candidate/source projection, material support, exact selection, four-business-member compiler, five-member structural decoding and seventeen business checks independently reviewed ALLOW. Final pure semantic/architecture regression: 1995 passed; Ruff and production types clean. Two durable input checks belong to the pending Command.",
-    "stage2_next": "Implement audited proposal generation request/Command, exact committed five-member reader and Runtime wiring; then Stage3 Blueprint.",
+    "stage2_checkpoints": ["33cd9413", "a1c66f22", "ab139b82", "0b63addb", "7cedb80e", "261488d5", "53cda7bc", "ff5fef1b", "a8dcdf53", "9e924be9"],
+    "stage2_current_wave": "stage2-command-wave.md",
+    "stage2_local_scope": "Audited request and shared text lifecycle, all nineteen checks, five-member atomic commit and exact replay implemented; independent final reviews ALLOW. 2085 semantic/architecture and 104 Runtime/adapter pure tests passed; Ruff and production types clean. HTTP Stage2 not yet registered.",
+    "stage2_next": "Implement explicit installed Stage2 policy and frozen Runtime profile, thin predecessor adapter and scheduling/migration; then Stage3 Blueprint.",
     "remote_acceptance": "Not executed on this workstation; database, real model and full Pipeline acceptance remain open."
   }
 }

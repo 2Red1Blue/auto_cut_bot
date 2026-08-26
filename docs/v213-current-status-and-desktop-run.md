@@ -35,9 +35,10 @@ Authority、Profile 或 CalibrationRecord。
   media_preflight` 调度；Stage 2–3 尚未接通，四阶段通过不代表完整 run 成功。
 - execution profile v6 冻结完整 Stage 1 提示词与策略；三份 profile source 使用 v2
   wire schema。旧 source 不能直接使用，需要按实际策略重新生成资源；不得安装测试 fixture。
-- Stage 2 正在接入：已实现候选投影、素材支持、确定性故事组合、目标冻结、五成员
-  数据解码及 17 项独立业务校验。持久化生成 Command、另外 2 项真实输入校验和 HTTP
-  Runtime 尚未接通；这些纯编译代码不能作为“故事生成已可远程运行”的依据。
+- Stage 2 已实现候选投影、素材支持、确定性故事组合、目标冻结，以及持久化生成
+  Command、19 项独立校验、五成员原子提交与精确重放。Stage 1/2 共用流式生成、
+  有限重试、超时对账和因果 Receipt 流程。HTTP Runtime 的 Stage 2 Profile/调度接线
+  尚未完成；当前不能声称“故事生成已可通过 HTTP 远程运行”。
 
 上述描述表示“已实现并经过单元/契约测试”，不表示“已经成功跑完一部真实剧”。
 
@@ -130,7 +131,7 @@ PostgreSQL 的迁移、真实 shadow calibration/Profile 打包与“单集 HTTP
 
 ## 当前最短下一步
 
-代码侧下一步是 Stage 2 提案生成请求、持久化 Command/重放读取和 Runtime 接线，
+代码侧下一步是 Stage 2 Runtime 的 Profile、调度和已提交前驱接线，
 随后 Stage 3 Blueprint；不再把已完成的 Stage 1 Command 当作待设计任务。
 台式机侧准备真实模型、校准、source v2 与 reviewed Stage 1 提示词/预算，运行单集并
 检查真实 Receipt/ArtifactSet；数据库重启/并发与真实模型输出没有在本机验证。

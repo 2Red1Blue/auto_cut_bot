@@ -7,9 +7,10 @@ v6 execution profile and four-stage runtime registration are implemented.
 Local regression/review is recorded per wave; real DB/model acceptance is still
 remote-only. Task 07 remains in progress, not complete.
 
-Next: [Stage 2 production wave](stage2-production-wave.md), implementing real
-candidate/Portfolio and Stage 3 Blueprint Commands, then
-shared Runtime consumers and real one-episode acceptance. Earlier
+Stage 2 pure compilation is delivered in [Stage 2 production wave](stage2-production-wave.md);
+the [durable Command wave](stage2-command-wave.md) adds frozen generation requests,
+audited five-member commit and exact replay. Next: Stage 2 shared Runtime
+profile/registration, Stage 3 Blueprint and real one-episode acceptance. Earlier
 [diagnostics/Ledger](stage1-diagnostics-ledger-wave.md),
 [production preparation](stage1-production-wave.md) and
 [model binding](stage1-model-binding.md) are historical implementation evidence,

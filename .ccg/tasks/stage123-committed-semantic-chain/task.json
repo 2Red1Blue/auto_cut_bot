@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "Stage1 Runtime delivered in af2c9041. Stage2 pure candidate/material/portfolio chain, closed five-member decoder and seventeen business checks committed through 53cda7bc, independent review ALLOW, 1995 semantic/architecture tests passed. Next implement bounded proposal generation request, durable Command with the remaining two actual input checks and exact committed output reader, then Stage3 and shared Runtime. Remote DB/model/whole-Pipeline acceptance remains open.",
+  "nextAction": "Stage2 request/shared lifecycle/durable Command and exact reader delivered in ff5fef1b/a8dcdf53/9e924be9, independently reviewed ALLOW. 2085 semantic/architecture and 104 Runtime/adapter pure tests passed. Next integrate Stage2 installed policy/frozen Runtime profile, adapter and scheduler; then Stage3 Blueprint and downstream full chain. Remote DB/model/whole-Pipeline acceptance remains open.",
   "createdAt": "2026-08-25T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

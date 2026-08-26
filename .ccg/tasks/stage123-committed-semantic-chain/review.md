@@ -1,4 +1,23 @@
-# Latest review: Stage 2 pure business chain (2026-08-26)
+# Latest review: Stage 2 durable Command (2026-08-26)
+
+Scope ALLOW after independent request, lifecycle and exact reader reviews.
+Commits: ff5fef1b (request), a8dcdf53 (shared lifecycle), 9e924be9 (Command/reader).
+Stage2 now adds the two actual input checks to seventeen business checks,
+atomically commits five members and replays stored identities. No provider
+execution or replacement compilation on successful replay.
+
+Closed findings: actual Store retry parsing requires top-level retry policy/hash;
+all earlier attempts' existing raw Blobs must be checked on replay; semantic
+denial details preserve original canonical UTF-16/number constraints. The private
+provider inspection in a composition test now follows the lifecycle owner.
+Rehashed raw/request/Admission and a later feasible self-asserted pass are rejected.
+
+Evidence: 2085 semantic/architecture tests plus 104 Runtime/adapter tests passed;
+Ruff/production types/diff checks clean. No DB/provider/full Pipeline execution.
+Stage2 HTTP/profile registration, Stage3 and downstream/remote acceptance remain
+open. Task07/this CCG task stay in progress, not archived.
+
+## Earlier review: Stage 2 pure business chain (2026-08-26)
 
 Task 07 remains in progress. Runtime registration, durable Stage 2 generation
 Command/exact output reader, Stage 3 and remote execution are not completed.

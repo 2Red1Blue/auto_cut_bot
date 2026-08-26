@@ -5,6 +5,11 @@ Current Stage 2 decisions and implementation ownership are frozen in
 acyclic member IDs, conservative coarse duration and exact joint assignment
 correct the older enrichment/scoring examples; physical safety remains Stage 4.
 
+The audited request/Command and exact reader are detailed in
+[Stage 2 durable Command wave](stage2-command-wave.md). Text-generation retry,
+lease, reconcile and causal Receipt handling have one shared owner used by both
+Stage 1 and Stage 2; business compilation and Admission stay stage-specific.
+
 ## 实现策略：选择性重写，不继续补丁
 
 当前 Stage 1–3 prototype 没有真实 Runtime consumer，Stage 2/3 的 production
