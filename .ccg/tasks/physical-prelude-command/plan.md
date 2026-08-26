@@ -1,5 +1,11 @@
 # Physical prelude: implementation and ownership
 
+Scheduling update: user exhausted Claude Code quota and explicitly requested
+native subagents. Both Claude processes were stopped (exit 130) without deleting
+their incomplete drafts. `calibration_contract` now owns Kernel worker B;
+`calibration_migration` owns producer worker A. No further Claude calls.
+The file/interface boundaries below remain unchanged. Drafts are not acceptance.
+
 Target: execute real physical detectors after a fresh generic Command claim,
 commit exactly physical root / presentation probe / clock certificate, and
 independently reread them without detector or ASR calls. This makes the next
@@ -76,6 +82,16 @@ Refuse oversize metadata before parse; refuse declared root length before I/O;
 verify actual length/hash after bounded read. Test real resolver with synthetic
 Store records rather than monkeypatching ownership validation away.
 
+Reader limits are `PhysicalMediaReadLimits(max_evidence_bytes,
+max_metadata_bytes, materialization: MaterializationLimits)`, all explicit.
+Use the smaller frozen request/deployment byte cap and check total metadata
+before any evidence read. Reader materialization must accommodate the evidence
+cap independently of the source-file cap; evidence JSON can exceed source size.
+Policy calibration entries close all six provenance identities, including
+calibration-policy hashes absent from CalibrationBinding, and exact positive
+tick bounds derived with integer outward rounding. Kernel validates this shared
+calibration subgrammar, not Pipeline's full detector threshold grammar.
+
 Tests: success/replay/concurrent nonfresh; lease cleanup; oversize pre-I/O;
 invalid root/probe/policy/calibration/source; rehashed foreign/tampered members;
 ambiguous commit observed committed vs still-running without re-invocation;
@@ -126,6 +142,8 @@ Root also narrows the existing resolver's parameter annotation to the public
 `CommittedMediaInputsStore` Protocol (only Source/VLM reads) in
 `prepare_timed_media_evidence_command.py`. This changes no execution behavior;
 the physical Store must not implement a fake speech-registry API to type-check.
+Root owns `tests/pipeline/test_physical_preflight_compatibility.py`, a golden
+synthetic whole-source hash captured before the port refactor at f2c59f35.
 
 ## Validation and remaining scope
 
@@ -133,3 +151,10 @@ Scoped pytest, Ruff, BasedPyright; old preflight/root/certificate regression and
 import firewall; independent read-only review then scoped commit/push. No new
 framework or governance gate. Task05 stays in progress: local speech Commands,
 mapped candidate admission, calibration bootstrap and Runtime activation remain.
+
+Read-only next-seam analysis also found committed source audio facts currently
+lack `sample_rate` and `channels`; audio stream index/clock/range are present.
+The next window-input slice must persist source/probe-bound native layout
+before deriving LocalAudioWindowSpec. Do not infer sample rate from time base,
+default channels, or count this physical-prelude checkpoint as a closed local
+audio request. No silent DTO expansion is authorized during this parallel batch.

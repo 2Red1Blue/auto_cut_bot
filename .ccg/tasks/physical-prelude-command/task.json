@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "Parallel Kernel Command/reader and physical-only adapter implementation; root owns shared map support and integration review.",
+  "nextAction": "User stopped Claude due to quota; existing calibration_contract and calibration_migration agents take over incomplete Kernel and producer drafts. Root owns integration and independent review.",
   "createdAt": "2026-08-26",
   "branch": "feat/v213-contract-codegen"
 }
