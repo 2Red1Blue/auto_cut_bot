@@ -79,7 +79,8 @@ def _decimal(value: object, label: str) -> str:
     return raw
 
 
-def _decimal_from_value(value: object, label: str) -> str:
+def candidate_confidence_text(value: object, label: str) -> str:
+    """Bound and canonically render a VLM confidence without exponent expansion."""
     if (type(value) is not Decimal or not value.is_finite()  # noqa: E721
             or not 0 <= value <= 1 or len(value.as_tuple().digits) > 80
             or value.adjusted() < -78):
@@ -214,7 +215,7 @@ class CandidateSupport:
             raise CandidateCatalogError("candidate support must be an exact VLM support")
         return cls(
             value.proxy_interval, value.source_interval, value.supporting_frame_ids,
-            _decimal_from_value(value.confidence, "candidate support confidence"), value.core_owner_window_manifest_sha256, duration,
+            candidate_confidence_text(value.confidence, "candidate support confidence"), value.core_owner_window_manifest_sha256, duration,
         )
 
     def to_mapping(self) -> dict[str, object]:
