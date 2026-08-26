@@ -52,6 +52,12 @@ atomic five-member commit, independent evaluation or finite audited generation.
 8. **Physical handoff:** only closed dialogue/visual/subtitle requirements and
    their canonical hash pass forward. No fulfilled/pass or physical endpoint
    in Stage 2. Stage 4 independently checks actual evidence and source grants.
+9. **Required fact closure:** first strategy requires Proposal.required_fact_refs
+   to equal the exact union of its required obligations' required_fact_ids.
+   An independent extra required Fact needs an explicit Stage 1 obligation;
+   Stage 2 may not discard it, invent that obligation, or assume an alternative
+   pool's union proves the actual selected assignment covers it. Both missing
+   and extra required facts reject the complete draft before selection.
 
 ## 3. Minimal owned models and algorithm
 
@@ -66,6 +72,21 @@ atomic five-member commit, independent evaluation or finite audited generation.
   concrete validation or selection decision; speculative optimization is absent.
 - Each material requirement has candidate/source alternatives, each satisfying
   all its semantic, authorization, taint and duration conditions together.
+- Direct fact declarations come only from anchor/supporting/payoff Events;
+  context-only Event facts and score-measurement refs are not material support.
+  Each required Fact's uncertainty-expanded support must be contained in the
+  candidate's guaranteed inner coarse range on the same exact window/clock.
+  Both containment and minimum duration reuse the same timing owner. Scan all
+  timeline segments intersecting each possible endpoint domain, including both
+  sides at joins; a low-error neighbouring segment must not hide higher error.
+  This does not prove speech, subtitle or physical cutting safety.
+- Retain complete supported alternatives and taint exclusions plus counted
+  exclusion diagnostics, not a repeated full candidate table per requirement.
+  Every candidate is still inspected; no top-k/sampling or pool-union proof.
+- One semantic input-binding function owns exact eight-member Stage 1 identity,
+  its input binding, the pending Catalog identity and the three selection policy
+  hashes. Provider/model/prompt/retry/decoder limits belong to the full Command
+  request identity; changing them cannot reuse an old Command invocation.
 - Iterate fixed-length proposal-index combinations in lexicographic order. For
   each, backtrack in requirement order and canonical alternative order to find
   a joint assignment. Under `source_reuse=forbid`, a Source can serve several

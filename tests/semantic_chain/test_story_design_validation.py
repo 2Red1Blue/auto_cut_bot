@@ -39,8 +39,9 @@ def case():
     policy = StoryDesignPolicy("test", "v1", ("drama",), (profile,), ("none",), physical, "first_feasible_lexicographic_v1")
     job = JobPolicy("test", "v1", policy.canonical_hash, IntegerRange(1, 3), 1, 1000, IntegerRange(10, 40), "forbid", constraints, "all_or_nothing")
     obligation = next(ref for ref in refs if ref.object_type == "obligation")
+    required_fact_ids = next(node.attributes.required_fact_ids for node in graph.nodes if node.node_id == obligation.object_id)
     proposal = ProposalDraft("p0", "title", "claim", tuple(ref for ref in refs if ref.object_type == "story_thread"),
-                             (obligation,), tuple(ref for ref in refs if ref.object_type == "fact"), (), ("drama",), profile,
+                             (obligation,), tuple(ref for ref in refs if ref.object_id in required_fact_ids), (), ("drama",), profile,
                              IntegerRange(15, 30), "none", "hook", (MaterialRequirement("r", obligation, 1, physical, constraints),))
     draft = ProposalDraftSet("sha256:" + "a" * 64, (proposal,))
     return draft, dict(graph=graph, graph_object_refs=refs, source_refs=(source,), job_policy=job, story_policy=policy)
@@ -66,6 +67,19 @@ def test_graph_hash_is_computed_once_not_once_per_reference(case, monkeypatch):
     monkeypatch.setattr(type(graph), "canonical_hash", property(digest))
     validate_story_proposals(draft, **kwargs)
     assert calls == [graph]
+
+
+@pytest.mark.parametrize("extra", [False, True])
+def test_required_facts_cannot_be_missing_or_outside_material_obligations(case, extra):
+    draft, kwargs = case
+    proposal = draft.proposals[0]
+    facts = ()
+    if extra:
+        unrequired = next(ref for ref in kwargs["graph_object_refs"] if ref.object_type == "fact" and ref not in proposal.required_fact_refs)
+        facts = (*proposal.required_fact_refs, unrequired)
+    with pytest.raises(StoryProposalValidationError) as error:
+        validate_story_proposals(replace(draft, proposals=(replace(proposal, required_fact_refs=facts),)), **kwargs)
+    assert error.value.rule_id == "SD-MAT-001"
 
 
 @pytest.mark.parametrize(("mutation", "rule"), [

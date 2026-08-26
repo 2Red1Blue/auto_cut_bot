@@ -8,7 +8,7 @@ ProposalSet; malformed/foreign proposals must not be filtered out here.
 from __future__ import annotations
 
 from .member_refs import SemanticObjectRef
-from .narrative_models import NarrativeGraph
+from .narrative_models import NarrativeGraph, ObligationAttributes
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import JobPolicy, SourceConstraints, StoryDesignPolicy
 
@@ -55,6 +55,10 @@ def validate_story_proposals(
     if not job_policy.proposal_count.minimum <= count <= job_policy.proposal_count.maximum or count < job_policy.selected_story_count:
         raise StoryProposalValidationError("SD-PROP-001", "original proposal count cannot satisfy the frozen count policy")
     graph_refs, sources = set(graph_object_refs), set(source_refs)
+    obligations = {
+        node.node_id: node.attributes for node in graph.nodes
+        if type(node.attributes) is ObligationAttributes
+    }
 
     def constraints(value: SourceConstraints, index: int | None) -> None:
         if not set((*value.allowed_source_refs, *value.forbidden_source_refs)) <= sources:
@@ -76,6 +80,14 @@ def validate_story_proposals(
             raise StoryProposalValidationError("SD-MAT-001", "proposal must retain required material obligations", index)
         if {item.obligation_ref for item in proposal.material_requirements} != set(proposal.required_obligation_refs):
             raise StoryProposalValidationError("SD-MAT-001", "a required obligation has no declared material requirement", index)
+        obligation_facts = {
+            fact_id for ref in proposal.required_obligation_refs
+            for fact_id in obligations[ref.object_id].required_fact_ids
+        }
+        if {ref.object_id for ref in proposal.required_fact_refs} != obligation_facts:
+            raise StoryProposalValidationError(
+                "SD-MAT-001", "required facts must exactly cover the declared material obligations", index,
+            )
         for requirement in proposal.material_requirements:
             constraints(requirement.source_constraints, index)
             if not set(story_policy.required_physical_requirements) <= set(requirement.physical_requirements):
