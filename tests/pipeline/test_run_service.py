@@ -85,11 +85,21 @@ class FakeRunStore:
             raise PipelineRunNotFoundError(run_id)
         if snapshot.version != expected_version:
             raise StaleRunVersionError(run_id)
-        if snapshot.status not in ("accepted", "running") or not any(
+        if snapshot.status in ("accepted", "running") and any(
             command.status == "pending" for command in snapshot.commands
         ):
+            resumed = replace(snapshot, version=snapshot.version + 1)
+        elif snapshot.status == "awaiting_calibration":
+            waiting = tuple(
+                replace(command, status="pending", version=command.version + 1)
+                if command.status == "awaiting_calibration" else command
+                for command in snapshot.commands
+            )
+            if not any(command.status == "pending" for command in waiting):
+                raise ResumeNotAllowedError(run_id)
+            resumed = replace(snapshot, status="accepted", commands=waiting, version=snapshot.version + 1)
+        else:
             raise ResumeNotAllowedError(run_id)
-        resumed = replace(snapshot, version=snapshot.version + 1)
         self.by_run_id[run_id] = resumed
         return resumed
 
@@ -550,6 +560,32 @@ async def test_resume_rejects_terminal_run_without_creating_a_job() -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_resume_wakes_only_awaiting_calibration_via_one_cas() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    service = DurablePipelineRunService(
+        store, scheduler, FakeAuthorizer(), execution_profile=execution_profile()
+    )
+    submitted = await service.submit(request(), "request-1")
+    run_id = submitted.snapshot.run_id
+    commands = tuple(
+        replace(command, status="awaiting_calibration")
+        if command.stage == "media_preflight"
+        else replace(command, status="succeeded", receipt_id=uuid4())
+        for command in submitted.snapshot.commands
+    )
+    store.by_run_id[run_id] = replace(
+        submitted.snapshot, status="awaiting_calibration", commands=commands, version=4
+    )
+
+    resumed = await service.resume(run_id, expected_version=4)
+
+    assert resumed.status == "accepted" and resumed.version == 5
+    assert next(command for command in resumed.commands if command.stage == "media_preflight").status == "pending"
+    assert scheduler.enqueued == [run_id, run_id]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_resume_uses_caller_version_as_cas() -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
@@ -816,6 +852,11 @@ class FakeReconcileStage:
         return PipelineStageResult(context.command.command_id, "succeeded", self.receipt_id)
 
 
+class FakeCalibrationWaitReconcileStage:
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        return PipelineStageResult(context.command.command_id, "awaiting_calibration")
+
+
 @pytest.mark.asyncio
 async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> None:
     command_store = FakeCommandClaimStore(
@@ -832,6 +873,22 @@ async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> N
     assert result == PipelineStageResult("command-1", "succeeded", stage.receipt_id)
     assert stage.commands == [PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)]
     assert command_store.command.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_indeterminate_command_can_reconcile_to_receiptless_calibration_wait() -> None:
+    command_store = FakeCommandClaimStore(
+        PipelineCommand("command-1", "media_preflight", "indeterminate", None, 2)
+    )
+    reconciler = PipelineStageReconciler.from_ports(
+        command_store,
+        ("media_preflight", FakeCalibrationWaitReconcileStage()),
+    )
+
+    result = await reconciler.reconcile(_snapshot(command_store.command))
+
+    assert result == PipelineStageResult("command-1", "awaiting_calibration")
+    assert command_store.command.status == "awaiting_calibration"
 
 
 @pytest.mark.asyncio

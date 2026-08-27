@@ -25,6 +25,7 @@ from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
     InstalledRuntimeCapabilityResolver,
     load_installed_local_run_resolver,
+    runtime_calibration_policy_for_installed_resource,
 )
 from autocut_kernel.registry.timed_speech import (
     TIMED_SPEECH_PROFILE_REGISTRY_ARTIFACT_TYPE,
@@ -146,6 +147,19 @@ def test_runtime_capability_resolution_is_separate_from_legacy_startup_anchor(in
         )
     )
     assert resolver.resolve(FakeRuntimeCapabilityStore(PersistedRuntimeCalibrationCapability(identity, anchor)), identity).anchor == anchor
+
+
+def test_installed_resource_derives_closed_runtime_capability_policy(installed_fixture) -> None:
+    resource, _ = installed_fixture
+    policy = runtime_calibration_policy_for_installed_resource(resource)
+
+    assert policy.profile_source_sha256 == resource.shadow.source_sha256
+    assert policy.registry_snapshot_sha256 == resource.predecessor_registry_sha256
+    assert tuple(item.to_mapping() for item in policy.capabilities) == (
+        {"runtime_capability_id": "mac_cpu", "device_class": "cpu"},
+        {"runtime_capability_id": "pc_cuda", "device_class": "cuda"},
+    )
+    assert policy == runtime_calibration_policy_for_installed_resource(resource)
 
 
 def test_valid_altered_guard_with_same_key_and_consistent_member_hash_is_rejected(installed_fixture):

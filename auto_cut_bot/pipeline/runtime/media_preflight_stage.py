@@ -27,7 +27,12 @@ from autocut_kernel.pipeline.prepare_timed_media_evidence_command import (
 from autocut_kernel.registry import (
     StoreAnchoredTimedSpeechProfileResolver,
 )
-from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
+from autocut_kernel.registry.calibration_binding import CalibrationBindingError
+from autocut_kernel.registry.installed_runtime import (
+    InstalledLocalRunProfileResolver,
+    InstalledRuntimeCapabilityResolver,
+    InstalledRuntimeCapabilityStore,
+)
 from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
@@ -35,8 +40,11 @@ from autocut_kernel.store import (
     CommittedSemanticInputs,
     CommittedSemanticInputsRequest,
     Job,
+    MediaEvidenceUnavailableError,
     PersistedVlmSemanticPack,
+    RuntimeCalibrationIdentityMismatchError,
     SemanticInputUnavailableError,
+    StoreValidationError,
 )
 from autocut_kernel.store.models import (
     MaterializationLimits,
@@ -50,6 +58,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightPort,
     LocalMediaPreflightRequest,
     LocalMediaToolError,
+    RuntimeMeasurementIdentityPort,
 )
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import (
@@ -99,7 +108,7 @@ def media_evidence_read_limits(profile: PipelineExecutionProfile) -> TimedMediaR
 
 
 class MediaPreflightPipelineStore(
-    SourcePrepStore, TimedMediaReadStore, Protocol,
+    SourcePrepStore, TimedMediaReadStore, InstalledRuntimeCapabilityStore, Protocol,
 ):
     def read_committed_vlm_semantic_pack_set_reference(
         self,
@@ -221,6 +230,8 @@ class MediaPreflightPipelineStage:
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
         authority_profile_resolver: InstalledLocalRunProfileResolver,
+        runtime_capability_resolver: InstalledRuntimeCapabilityResolver | None = None,
+        runtime_measurement_port: RuntimeMeasurementIdentityPort | None = None,
     ) -> None:
         self._store = store
         self._port = port
@@ -229,6 +240,16 @@ class MediaPreflightPipelineStage:
                 "media-preflight requires the installed accepted-profile resolver"
             )
         self._authority_profile_resolver = authority_profile_resolver
+        if (runtime_capability_resolver is None) != (runtime_measurement_port is None):
+            raise PipelineRunValidationError(
+                "media-preflight runtime capability resolver and measurement port must be paired"
+            )
+        if runtime_capability_resolver is not None and type(runtime_capability_resolver) is not InstalledRuntimeCapabilityResolver:  # noqa: E721
+            raise PipelineRunValidationError(
+                "media-preflight requires an exact installed runtime capability resolver"
+            )
+        self._runtime_capability_resolver = runtime_capability_resolver
+        self._runtime_measurement_port = runtime_measurement_port
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -380,6 +401,9 @@ class MediaPreflightPipelineStage:
         prepared = await asyncio.to_thread(self._requests, context, policy)
         if prepared is None:
             return PipelineStageResult(context.command.command_id, "indeterminate")
+        runtime_outcome = await self._runtime_capability_outcome(context)
+        if runtime_outcome is not None:
+            return runtime_outcome
         result = await self._execute_batch(context, *prepared, policy)
         return self._project(context, result.outcome)
 
@@ -388,9 +412,51 @@ class MediaPreflightPipelineStage:
         prepared = await asyncio.to_thread(self._requests, context, policy)
         if prepared is None:
             return None
+        runtime_outcome = await self._runtime_capability_outcome(context)
+        if runtime_outcome is not None:
+            return runtime_outcome
         result = await self._execute_batch(context, *prepared, policy)
         projected = self._project(context, result.outcome)
         return None if projected.outcome == "indeterminate" else projected
+
+    async def _runtime_capability_outcome(
+        self, context: PipelineStageContext,
+    ) -> PipelineStageResult | None:
+        """Bind fresh local measurement before any detector/materialization claim.
+
+        The v2 capability is intentionally an extra admission condition while
+        the existing timed-speech profile Registry is still the request-level
+        contract.  Missing accepted capability is actionable waiting, whereas
+        a changed or malformed identity requires recalibration rather than an
+        automatic fallback to the older anchor.
+        """
+        resolver = self._runtime_capability_resolver
+        port = self._runtime_measurement_port
+        if resolver is None or port is None:
+            raise PipelineRunValidationError(
+                "media-preflight dynamic runtime capability admission is not installed"
+            )
+        try:
+            identity = await asyncio.to_thread(port.read_identity)
+            await asyncio.to_thread(resolver.resolve, self._store, identity)
+        except MediaEvidenceUnavailableError:
+            return PipelineStageResult(context.command.command_id, "awaiting_calibration")
+        except (
+            CalibrationBindingError,
+            RuntimeCalibrationIdentityMismatchError,
+            StoreValidationError,
+        ):
+            return PipelineStageResult(context.command.command_id, "recompute_needed")
+        except LocalMediaToolError as error:
+            if error.code in (
+                "RUNTIME_IDENTITY_INVALID",
+                "RUNTIME_IDENTITY_RECOMPUTE_NEEDED",
+            ):
+                return PipelineStageResult(context.command.command_id, "recompute_needed")
+            # A transient unavailable local service is not evidence that the
+            # accepted calibration is gone; leave the command recoverable.
+            return PipelineStageResult(context.command.command_id, "indeterminate")
+        return None
 
     async def _execute_batch(
         self,

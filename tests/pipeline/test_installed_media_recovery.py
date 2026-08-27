@@ -5,13 +5,23 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
+from autocut_kernel.registry.installed_runtime import (
+    InstalledLocalRunProfileResolver,
+    InstalledRuntimeCapabilityResolver,
+    runtime_calibration_policy_for_installed_resource,
+)
 from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
-from autocut_kernel.store import CommandOutcome
+from autocut_kernel.store import (
+    CommandOutcome,
+    MediaEvidenceUnavailableError,
+    RuntimeCalibrationIdentityMismatchError,
+)
+from autocut_kernel.store.errors import StoreValidationError
 
 from auto_cut_bot.pipeline.media_preflight.installed_policy import InstalledMediaPolicyError
 from auto_cut_bot.pipeline.runtime import media_preflight_stage
 from auto_cut_bot.pipeline.runtime.media_preflight_stage import MediaPreflightPipelineStage
+from tests.media.test_calibration_record_persistence import _runtime_measurement
 from tests.pipeline.installed_profile_fixture import (
     synthetic_installed_resource,
     synthetic_media_policy,
@@ -119,3 +129,37 @@ async def test_media_batch_delegates_same_snapshot_only_after_installed_resolve(
     stage = MediaPreflightPipelineStage(store, object(), resolver)
     assert await stage._execute_batch(context, object(), (request,), policy) is expected_result
     assert events == ["full-installed-resolve", "kernel-command", "kernel-execute"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    [
+        (MediaEvidenceUnavailableError("missing"), "awaiting_calibration"),
+        (RuntimeCalibrationIdentityMismatchError("changed"), "recompute_needed"),
+        (StoreValidationError("identity drift"), "recompute_needed"),
+    ],
+)
+async def test_runtime_capability_gate_projects_wait_or_recompute_before_native(
+    monkeypatch, failure, expected,
+):
+    context, resource, _ = _matching_context()
+    resolver = InstalledRuntimeCapabilityResolver(
+        runtime_calibration_policy_for_installed_resource(resource)
+    )
+
+    class IdentityPort:
+        def read_identity(self):
+            return _runtime_measurement()
+
+    def fail_resolve(self, store, identity):
+        assert self is resolver
+        assert identity == _runtime_measurement()
+        raise failure
+
+    monkeypatch.setattr(InstalledRuntimeCapabilityResolver, "resolve", fail_resolve)
+    stage = MediaPreflightPipelineStage(
+        object(), object(), InstalledLocalRunProfileResolver(resource), resolver, IdentityPort()
+    )
+    result = await stage._runtime_capability_outcome(context)
+    assert result is not None and result.outcome == expected and result.receipt_id is None

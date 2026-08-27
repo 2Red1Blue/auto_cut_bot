@@ -15,9 +15,13 @@
 5. [done] Add an append-only cross-Job whole-episode composition command. It can select
    old successful episode evidence and new recomputed episode evidence only by
    exact closure; the existing same-Job batch command remains unchanged.
-6. [next] Wire only the new command paths into Media Preflight. Do not re-run VLM or
-   physical evidence when the target requirement proves those historical inputs
-   are reusable.
-7. Run focused unit/PostgreSQL/integration regressions and an independent
+6. [done] Wire dynamic runtime capability resolution into Media Preflight. It
+   reads the authenticated self-measured local FunASR timing identity and does
+   a fresh exact Store lookup before detector/materialization work. Missing
+   capability projects to `awaiting_calibration`; a changed or malformed
+   binding projects to `recompute_needed`; service unavailability remains
+   recoverable `indeterminate`. Do not re-run VLM or physical evidence when
+   the target requirement proves historical inputs are reusable.
+7. [next] Run focused unit/PostgreSQL/integration regressions and an independent
    adversarial review. Then commit, push, and update the PC checkout before
    attempting the real PC calibration/run.

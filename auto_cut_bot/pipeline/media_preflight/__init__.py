@@ -18,6 +18,10 @@ from .models import (
 )
 from .port import LocalMediaPreflightPort
 from .process import BoundedSubprocessRunner, CommandOutput, CommandRunner
+from .runtime_measurement_http import (
+    FunASRRuntimeMeasurementIdentityHttpPort,
+    RuntimeMeasurementIdentityPort,
+)
 from .speech_port import (
     TimedSpeechEvidence,
     TimedSpeechEvidencePort,
@@ -38,7 +42,9 @@ __all__ = [
     "LocalMediaPreflightPolicy",
     "LocalMediaPreflightPort",
     "FunASRHttpTimedSpeechEvidencePort",
+    "FunASRRuntimeMeasurementIdentityHttpPort",
     "TimedSpeechEvidence",
+    "RuntimeMeasurementIdentityPort",
     "TimedSpeechEvidencePort",
     "TimedSpeechEvidenceRequest",
     "TimedSpeechExpectedProducer",

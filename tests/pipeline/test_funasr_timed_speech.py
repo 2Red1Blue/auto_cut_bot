@@ -247,6 +247,37 @@ def _service_profile(
     return profile
 
 
+def test_configured_runtime_timing_projection_is_closed_and_cpu_scoped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    monkeypatch.setitem(
+        ns["normal_runtime_timing_compatibility"].__globals__,
+        "cuda_decoder_identity_sha256",
+        lambda: H,
+    )
+    projection = ns["normal_runtime_timing_compatibility"](profile, profile["producers"])
+    identity = ns["decode_runtime_measurement_identity"](
+        ns["canon"](
+            {
+                "schema_version": "runtime-measurement-identity-v1",
+                "runtime_capability_id": "mac_cpu",
+                "timing_compatibility": projection,
+            }
+        )
+    )
+    assert identity.runtime_capability_id == "mac_cpu"
+    assert identity.timing_compatibility.device.device_class == "cpu"
+
+
 def _shadow_calibration_profile(
     ns: dict[str, object], asr_path: Path, vad_path: Path
 ) -> dict[str, object]:
@@ -1236,10 +1267,62 @@ async def test_shadow_mode_self_measures_identity_without_a_profile(
         assert measured["timing_compatibility_sha256"] == service.measured_profile[
             "timing_compatibility"
         ]["timing_compatibility_sha256"]
+        runtime_identity = await client.get(
+            "/v1/runtime-measurement-identity", headers={"Authorization": "Bearer secret"}
+        )
+        assert runtime_identity.status == 200
+        runtime_payload = await runtime_identity.json()
+        assert runtime_payload["schema_version"] == (
+            "funasr-runtime-measurement-identity-response-v1"
+        )
+        assert runtime_payload["runtime_measurement_identity"]["runtime_capability_id"] == "pc_cuda"
+        assert runtime_payload["runtime_measurement_identity"]["timing_compatibility"] == (
+            service.measured_profile["timing_compatibility"]
+        )
         assert (await client.get("/v1/shadow-calibration/identity")).status == 401
+        assert (await client.get("/v1/runtime-measurement-identity")).status == 401
         assert (
             await client.post("/v1/timed-speech-evidence", headers={"Authorization": "Bearer secret"})
         ).status == 409
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_configured_normal_service_exposes_a_fresh_runtime_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _AutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _service_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    from tests.media.test_calibration_record_persistence import _runtime_measurement
+
+    compatibility = _runtime_measurement(capability_id="mac_cpu").timing_compatibility.to_mapping()
+    monkeypatch.setitem(
+        ns["runtime_measurement_identity"].__globals__,
+        "normal_runtime_timing_compatibility",
+        lambda _measured, _producers: compatibility,
+    )
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        response = await client.get(
+            "/v1/runtime-measurement-identity", headers={"Authorization": "Bearer secret"}
+        )
+        assert response.status == 200
+        assert (await response.json())["runtime_measurement_identity"] == {
+            "schema_version": "runtime-measurement-identity-v1",
+            "runtime_capability_id": "mac_cpu",
+            "timing_compatibility": compatibility,
+        }
     finally:
         await client.close()
 

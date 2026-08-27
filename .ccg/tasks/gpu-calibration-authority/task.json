@@ -6,6 +6,6 @@
   "risk": "high",
   "domain": "backend/deployment/authority",
   "currentPhase": "review",
-  "nextAction": "Apply migrations 0024/0025 on the PC disposable PostgreSQL database, then wire dynamic capability resolution into Media Preflight before enabling normal timed-speech evidence.",
+  "nextAction": "Apply migrations 0024–0027 on the PC disposable PostgreSQL database, then run the newly wired Media Preflight capability gate against the real FunASR measurement endpoint before enabling normal timed-speech evidence.",
   "branch": "feat/v213-contract-codegen"
 }

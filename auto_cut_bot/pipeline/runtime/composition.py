@@ -15,7 +15,9 @@ from typing import Protocol, cast
 import psycopg
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
+    InstalledRuntimeCapabilityResolver,
     load_installed_local_run_resolver,
+    runtime_calibration_policy_for_installed_resource,
 )
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
 from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
@@ -28,6 +30,7 @@ from autocut_kernel.vlm import (
 )
 
 from auto_cut_bot.pipeline.media_preflight import (
+    FunASRRuntimeMeasurementIdentityHttpPort,
     LocalMediaPreflightPolicy,
     LocalMediaPreflightPort,
 )
@@ -416,6 +419,15 @@ def compose_pipeline_runtime_from_environment(
             authority_profile_resolver.resource.local_run.native_timed_speech.max_request_bytes
         ):
             raise ValueError("timed speech request limit differs from installed service")
+        runtime_identity_port = FunASRRuntimeMeasurementIdentityHttpPort(
+            timed_speech_endpoint_url=media_policy.timed_speech_endpoint_url,
+            shared_token=os.environ.get("FUNASR_SHARED_TOKEN", ""),
+        )
+        runtime_capability_resolver = InstalledRuntimeCapabilityResolver(
+            runtime_calibration_policy_for_installed_resource(
+                authority_profile_resolver.resource
+            )
+        )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
@@ -485,6 +497,8 @@ def compose_pipeline_runtime_from_environment(
         kernel_store,
         LocalMediaPreflightPort(),
         authority_profile_resolver,
+        runtime_capability_resolver,
+        runtime_identity_port,
     )
     narrative_stage = Stage1NarrativePipelineStage(
         kernel_store, draft_provider, installed_profile=authority_profile_resolver.resource,

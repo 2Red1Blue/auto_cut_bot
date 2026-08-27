@@ -251,7 +251,7 @@ class PipelineStageReconciler:
             or result.outcome == "indeterminate"
         ):
             raise PipelineRunValidationError(
-                "reconcile result must be a terminal Receipt for the exact command"
+                "reconcile result must be an exact durable outcome for the command"
             )
         await self._command_store.record_reconciled_result(
             snapshot.run_id,

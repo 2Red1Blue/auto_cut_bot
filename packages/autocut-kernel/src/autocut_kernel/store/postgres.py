@@ -78,6 +78,7 @@ from .errors import (
     PersistenceConflictError,
     RecipeIntegrityError,
     RecipeUnavailableError,
+    RuntimeCalibrationIdentityMismatchError,
     RuntimeStoreError,
     SemanticInputIntegrityError,
     SemanticInputUnavailableError,
@@ -2636,6 +2637,19 @@ class PostgresRuntimeStore:
             while (row := cursor.fetchone()) is not None:
                 rows.append(row)
             if len(rows) != 1:
+                cursor.execute(
+                    """
+                    SELECT 1
+                      FROM runtime.runtime_calibration_capabilities
+                     WHERE runtime_capability_id = %s
+                     LIMIT 1
+                    """,
+                    (measurement_identity.runtime_capability_id,),
+                )
+                if cursor.fetchone() is not None:
+                    raise RuntimeCalibrationIdentityMismatchError(
+                        "accepted runtime capability differs from the current timing identity or authority lineage"
+                    )
                 raise MediaEvidenceUnavailableError("exact v2 runtime calibration capability is unavailable")
             row = rows[0]
             scope_key = _text(row[0])

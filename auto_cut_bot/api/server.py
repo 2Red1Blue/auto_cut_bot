@@ -683,7 +683,7 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
 
 
 async def handle_pipeline_resume(request: web.Request) -> web.Response:
-    """CAS-resume a pending or indeterminate command on the same run."""
+    """CAS-resume work or explicitly recheck a run awaiting calibration."""
     service = _pipeline_run_service(request)
     if service is None:
         return _error_json(503, "Pipeline run service is not configured", "server_error")

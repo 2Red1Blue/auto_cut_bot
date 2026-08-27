@@ -45,6 +45,11 @@ from autocut_kernel.media.local_speech_window_codec import (
     encode_local_speech_window_response,
 )
 from autocut_kernel.media.local_speech_window_projection import project_local_speech_window
+from autocut_kernel.media.runtime_measurement_identity import (
+    RuntimeMeasurementIdentity,
+    RuntimeMeasurementIdentityError,
+    decode_runtime_measurement_identity,
+)
 from autocut_kernel.media.shadow_local_service_profile import (
     SHADOW_LOCAL_SERVICE_PROFILE_SCHEMA,
     build_shadow_local_service_profile,
@@ -71,6 +76,7 @@ CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA = "funasr-cuda-shadow-calibration-profile
 SHADOW_BOOTSTRAP_MODE = "shadow"
 CONFIGURED_MODE = "configured"
 CUDA_SHADOW_TIMING_ENGINE_VERSION = "funasr-cuda-timing-v1"
+NORMAL_RUNTIME_TIMING_ENGINE_VERSION = "funasr-runtime-timing-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
 _InferenceResult = TypeVar("_InferenceResult")
@@ -637,6 +643,105 @@ def cuda_decoder_identity_sha256() -> str:
 def cuda_resampling_identity_sha256() -> str:
     """The raw shadow endpoint delegates decoding/resampling to the fixed native provider."""
     return sha(canon({"schema_version": "funasr-native-resampling-v1", "mode": "native"}))
+
+
+def normal_runtime_device_identity(device: object) -> dict[str, str]:
+    """Measure the timing-relevant device identity for configured runtime mode."""
+    if device == "cuda":
+        return cuda_device_identity()
+    if device == "cpu":
+        return {"device_class": "cpu"}
+    raise RuntimeError("configured runtime device is unsupported for timing identity")
+
+
+def normal_runtime_timing_compatibility(
+    measured: dict[str, object], producers: list[dict[str, object]],
+) -> dict[str, object]:
+    """Derive a live compatibility identity without turning it into config.
+
+    The configured profile still checks the deployment's ordinary service and
+    model identity.  This additional projection intentionally excludes the
+    audit-only service source hash so harmless application edits do not demand
+    a new calibration, while every input that can move timestamps remains in
+    the compatibility hash.
+    """
+    device = normal_runtime_device_identity(measured["device"])
+    decoder = cuda_decoder_identity_sha256()
+    merge = sha(
+        canon(
+            {
+                "schema_version": "funasr-runtime-vad-merge-policy-v1",
+                "vad_merge_gap_milliseconds": measured["vad_merge_gap_milliseconds"],
+            }
+        )
+    )
+    projected: list[dict[str, object]] = []
+    for producer in producers:
+        inference = sha(
+            canon(
+                {
+                    "schema_version": "funasr-runtime-inference-identity-v1",
+                    "producer_kind": producer["producer_kind"],
+                    "producer_id": producer["producer_id"],
+                    "producer_version": producer["producer_version"],
+                    "model_id": producer["model_id"],
+                    "model_revision": producer["model_revision"],
+                    "model_sha256": producer["model_sha256"],
+                    "inference_kind": producer["inference_kind"],
+                    "funasr_version": measured["funasr_version"],
+                    "torch_version": measured["torch_version"],
+                    "device": device,
+                    "timed_speech_policy_sha256": measured["timed_speech_policy_sha256"],
+                    "vad_merge_policy_sha256": merge,
+                }
+            )
+        )
+        projected.append(
+            {
+                "producer_kind": producer["producer_kind"],
+                "producer_id": producer["producer_id"],
+                "producer_version": producer["producer_version"],
+                "model_id": producer["model_id"],
+                "model_revision": producer["model_revision"],
+                "model_sha256": producer["model_sha256"],
+                "inference_identity_sha256": inference,
+            }
+        )
+    native = sha(
+        canon(
+            {
+                "schema_version": "funasr-runtime-native-protocol-v1",
+                "provider_id": measured["provider_id"],
+                "provider_version": measured["provider_version"],
+                "max_request_bytes": measured["max_request_bytes"],
+                "word_timing_capability": measured["word_timing_capability"],
+                "decoder_identity_sha256": decoder,
+                "producers": projected,
+            }
+        )
+    )
+    return build_timing_compatibility_profile(
+        {
+            "schema_version": "timing-compatibility-profile-v1",
+            "timing_engine_compatibility_version": NORMAL_RUNTIME_TIMING_ENGINE_VERSION,
+            "build_audit_sha256": measured["service_sha256"],
+            "runtime": {
+                "funasr_version": measured["funasr_version"],
+                "torch_version": measured["torch_version"],
+                "device": device,
+            },
+            "decode": {
+                "decoder_identity_sha256": decoder,
+                "resampling_identity_sha256": cuda_resampling_identity_sha256(),
+                "native_protocol_identity_sha256": native,
+            },
+            "policies": {
+                "word_timestamp_policy_sha256": measured["timed_speech_policy_sha256"],
+                "vad_merge_policy_sha256": merge,
+            },
+            "producers": projected,
+        }
+    ).to_mapping()
 
 
 def cuda_inference_identity(identity: dict[str, object], profile: dict[str, object]) -> str:
@@ -2211,6 +2316,56 @@ async def shadow_identity(request: web.Request) -> web.Response:
     return web.Response(body=canon(payload), content_type="application/json")
 
 
+async def runtime_measurement_identity(request: web.Request) -> web.Response:
+    """Expose the complete self-measured timing identity for normal admission.
+
+    This is deliberately distinct from the shadow-profile endpoint: callers
+    receive no profile selector or accepted calibration, only the immutable
+    live identity which the Pipeline must independently match in PostgreSQL.
+    """
+    service = request.app[SERVICE_KEY]
+    supplied = request.headers.get("Authorization", "")
+    if not hmac.compare_digest(supplied, f"Bearer {service.shared_token}"):
+        raise web.HTTPUnauthorized(text="unauthorized")
+    measured = service.measured_profile
+    if not service.ready or type(measured) is not dict:  # noqa: E721
+        raise web.HTTPConflict(text="self-measured runtime identity is unavailable")
+    compatibility = measured.get("timing_compatibility")
+    if type(compatibility) is not dict:  # noqa: E721
+        try:
+            compatibility = await asyncio.to_thread(
+                normal_runtime_timing_compatibility, measured, service.identities
+            )
+        except (RuntimeError, ValueError, TypeError):
+            raise web.HTTPConflict(text="runtime timing compatibility identity is unavailable") from None
+    try:
+        device = compatibility["runtime"]["device"]
+        device_class = device["device_class"]
+        capability_id = "pc_cuda" if device_class == "cuda" else "mac_cpu"
+        identity = decode_runtime_measurement_identity(
+            canon(
+                {
+                    "schema_version": "runtime-measurement-identity-v1",
+                    "runtime_capability_id": capability_id,
+                    "timing_compatibility": compatibility,
+                }
+            )
+        )
+    except (KeyError, TypeError, ValueError, RuntimeMeasurementIdentityError):
+        raise web.HTTPConflict(text="runtime timing compatibility identity is invalid") from None
+    if type(identity) is not RuntimeMeasurementIdentity:  # pragma: no cover - decoder invariant
+        raise web.HTTPConflict(text="runtime timing compatibility identity is invalid")
+    return web.Response(
+        body=canon(
+            {
+                "schema_version": "funasr-runtime-measurement-identity-response-v1",
+                "runtime_measurement_identity": identity.to_mapping(),
+            }
+        ),
+        content_type="application/json",
+    )
+
+
 def create_app(service: Service | None = None) -> web.Application:
     s = service or Service()
     app = web.Application(client_max_size=s.max_request)
@@ -2220,6 +2375,7 @@ def create_app(service: Service | None = None) -> web.Application:
             web.get("/health/live", live),
             web.get("/health/ready", ready),
             web.get("/v1/shadow-calibration/identity", shadow_identity),
+            web.get("/v1/runtime-measurement-identity", runtime_measurement_identity),
             web.post("/v1/timed-speech-evidence", s.evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
             web.post("/v2/timed-speech-window", s.window_evidence),

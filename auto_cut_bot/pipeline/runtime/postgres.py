@@ -316,22 +316,42 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             state, version = _text(row[0]), int(_text(row[1]))
             if version != expected_version:
                 raise StaleRunVersionError(run_id)
-            if state not in ("accepted", "running"):
+            if state not in ("accepted", "running", "awaiting_calibration"):
                 raise ResumeNotAllowedError(run_id)
+            command_states = (
+                ("pending", "indeterminate")
+                if state in ("accepted", "running")
+                else ("awaiting_calibration",)
+            )
             cursor.execute(
                 """
                 SELECT 1 FROM runtime.pipeline_commands
-                 WHERE run_id = %s AND state IN ('pending', 'indeterminate')
+                 WHERE run_id = %s AND stage = 'media_preflight' AND state = ANY(%s)
                  LIMIT 1 FOR UPDATE
                 """,
-                (run_id,),
+                (run_id, list(command_states)),
             )
             if cursor.fetchone() is None:
                 raise ResumeNotAllowedError(run_id)
+            if state == "awaiting_calibration":
+                cursor.execute(
+                    """
+                    UPDATE runtime.pipeline_commands
+                       SET state = 'pending', version = version + 1,
+                           updated_at = transaction_timestamp()
+                     WHERE run_id = %s AND state = 'awaiting_calibration'
+                       AND stage = 'media_preflight'
+                 RETURNING command_id
+                    """,
+                    (run_id,),
+                )
+                if cursor.fetchone() is None or cursor.fetchone() is not None:
+                    raise ResumeNotAllowedError(run_id)
             cursor.execute(
                 """
                 UPDATE runtime.pipeline_runs
-                   SET version = version + 1, updated_at = transaction_timestamp()
+                   SET state = CASE WHEN state = 'awaiting_calibration' THEN 'accepted' ELSE state END,
+                       version = version + 1, updated_at = transaction_timestamp()
                  WHERE run_id = %s AND version = %s
                 """,
                 (run_id, expected_version),
@@ -789,8 +809,12 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         result: PipelineStageResult,
         expected_version: int,
     ) -> None:
-        if result.outcome == "indeterminate" or result.receipt_id is None:
-            raise PipelineRunValidationError("reconciled result must contain a terminal Receipt")
+        if result.outcome == "indeterminate":
+            raise PipelineRunValidationError("reconciled result cannot remain indeterminate")
+        if result.outcome in ("succeeded", "denied", "failed") and result.receipt_id is None:
+            raise PipelineRunValidationError("terminal reconciled result must contain a Receipt")
+        if result.outcome in ("awaiting_calibration", "recompute_needed") and result.receipt_id is not None:
+            raise PipelineRunValidationError("calibration reconciliation result cannot contain a Receipt")
 
         def operation(cursor: DbCursor) -> None:
             cursor.execute(
@@ -810,23 +834,27 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 raise StaleRunVersionError(run_id)
             if _text(row[2]) not in ("accepted", "running"):
                 raise ResumeNotAllowedError(run_id)
-            cursor.execute(
-                """
-                INSERT INTO runtime.pipeline_run_receipts
-                    (receipt_id, command_id, outcome)
-                VALUES (%s, %s, %s)
-                """,
-                (result.receipt_id, result.command_id, result.outcome),
-            )
+            if result.receipt_id is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.pipeline_run_receipts
+                        (receipt_id, command_id, outcome)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (result.receipt_id, result.command_id, result.outcome),
+                )
             cursor.execute(
                 """
                 UPDATE runtime.pipeline_commands
                    SET state = %s, version = version + 1,
-                       completed_at = transaction_timestamp(),
+                       completed_at = CASE
+                           WHEN %s IN ('awaiting_calibration', 'recompute_needed') THEN NULL
+                           ELSE transaction_timestamp()
+                       END,
                        updated_at = transaction_timestamp()
                  WHERE command_id = %s AND state = 'indeterminate' AND version = %s
                 """,
-                (result.outcome, result.command_id, expected_version),
+                (result.outcome, result.outcome, result.command_id, expected_version),
             )
             if result.outcome in ("denied", "failed"):
                 cursor.execute(

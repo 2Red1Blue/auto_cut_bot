@@ -65,6 +65,10 @@ class MediaEvidenceUnavailableError(RuntimeStoreError):
     """The exact persisted MediaEvidence identity is not available to this Job."""
 
 
+class RuntimeCalibrationIdentityMismatchError(RuntimeStoreError):
+    """A capability exists for the environment, but not this live timing identity."""
+
+
 class MediaEvidenceIntegrityError(RuntimeStoreError):
     """A MediaEvidence row does not satisfy its immutable provenance contract."""
 
