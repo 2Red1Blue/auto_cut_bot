@@ -6,6 +6,7 @@ from dataclasses import replace
 from uuid import UUID
 
 import pytest
+from autocut_kernel.media import CalibrationBinding
 from autocut_kernel.media.calibration_record import (
     CALIBRATION_VALIDATION_CHECKS,
     CALIBRATION_VALIDATOR_COMMAND,
@@ -36,6 +37,7 @@ from autocut_kernel.registry.authority_profiles import (
 )
 from autocut_kernel.registry.runtime_timed_speech import (
     RuntimeTimedMediaAuthoritySelector,
+    RuntimeTimedSpeechCapabilityAdmission,
     RuntimeTimedSpeechProjectionError,
 )
 from autocut_kernel.store.models import (
@@ -45,6 +47,8 @@ from autocut_kernel.store.models import (
     PersistedCommittedArtifactMember,
     PersistedRuntimeCalibrationCapability,
 )
+
+from tests.media.test_root_evidence import _bundle
 
 
 def _sha(number: int) -> str:
@@ -273,6 +277,69 @@ def test_projects_closed_pc_cuda_runtime_timed_speech_authority() -> None:
             },
         ],
     }
+
+
+def test_runtime_capability_admission_closes_root_evidence_to_cuda_projection() -> None:
+    measurement = _runtime_measurement()
+    selected = _selector(measurement).select(_capability(measurement), measurement)
+    root = _bundle()
+    asr, vad = root.transcript.context, root.speech_activity.context
+    producers = (
+        replace(
+            selected.producers[0],
+            producer_id=asr.producer_id,
+            producer_version="1",
+            generation_policy_sha256=asr.generation_policy_sha256,
+        ),
+        replace(
+            selected.producers[1],
+            producer_id=vad.producer_id,
+            producer_version="1",
+            generation_policy_sha256=vad.generation_policy_sha256,
+        ),
+    )
+    projection = replace(
+        selected,
+        source_clock_id=asr.clock_id,
+        source_time_base=asr.time_base,
+        producers=producers,
+        asr_calibration_record_sha256=_sha(200),
+        vad_calibration_record_sha256=_sha(201),
+        asr_timing_error_bound_tick=50,
+        vad_timing_error_bound_tick=60,
+    )
+    bindings = (
+        CalibrationBinding(
+            producers[0].generation_policy_sha256,
+            producers[0].detector_sha256,
+            projection.asr_calibration_record_sha256,
+            producers[0].producer_id,
+            producers[0].producer_version,
+            projection.source_time_base,
+            projection.asr_timing_error_bound_tick,
+            True,
+        ),
+        CalibrationBinding(
+            producers[1].generation_policy_sha256,
+            producers[1].detector_sha256,
+            projection.vad_calibration_record_sha256,
+            producers[1].producer_id,
+            producers[1].producer_version,
+            projection.source_time_base,
+            projection.vad_timing_error_bound_tick,
+            True,
+        ),
+    )
+    admission = RuntimeTimedSpeechCapabilityAdmission(projection, root, bindings)
+
+    assert admission.to_mapping()["runtime_timed_speech_projection_sha256"] == projection.canonical_hash
+    assert admission.to_mapping()["root_evidence_sha256"] == root.canonical_hash
+    with pytest.raises(RuntimeTimedSpeechProjectionError, match="binding"):
+        RuntimeTimedSpeechCapabilityAdmission(
+            projection,
+            root,
+            (replace(bindings[0], timing_error_bound_tick=49), bindings[1]),
+        )
 
 
 def test_rejects_cpu_cuda_cross_binding() -> None:

@@ -14,6 +14,13 @@ from .authority_profiles import (
     decode_authority_profile_source_grammar,
     decode_stage1_narrative_profile_source,
 )
+from .runtime_timed_speech import (
+    RuntimeTimedMediaAuthoritySelector,
+    RuntimeTimedSpeechCapabilityAdmission,
+    RuntimeTimedSpeechProjection,
+    RuntimeTimedSpeechProjectionError,
+    project_runtime_timed_speech,
+)
 from .timed_speech import (
     AUTHORITY_BOOTSTRAP_CAPABILITY,
     AUTHORITY_BOOTSTRAP_PRINCIPAL,
@@ -40,6 +47,10 @@ __all__ = [
     "BootstrapTimedSpeechProfileRegistryRequest",
     "BootstrappedTimedSpeechProfile",
     "LocalRunProfileSource",
+    "RuntimeTimedMediaAuthoritySelector",
+    "RuntimeTimedSpeechCapabilityAdmission",
+    "RuntimeTimedSpeechProjection",
+    "RuntimeTimedSpeechProjectionError",
     "ShadowCalibrationProfileSource",
     "Stage1NarrativeProfileSource",
     "StoreAnchoredTimedSpeechProfileResolver",
@@ -48,4 +59,5 @@ __all__ = [
     "VerifiedTimedSpeechAuthorityContext",
     "decode_authority_profile_source_grammar",
     "decode_stage1_narrative_profile_source",
+    "project_runtime_timed_speech",
 ]

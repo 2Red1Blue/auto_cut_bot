@@ -16,10 +16,16 @@ from ..media.calibration_record import (
     runtime_calibration_profile_key,
     verify_calibration_record_artifact_set,
 )
+from ..media.root_evidence import (
+    AudioSourceOutcome,
+    EvidenceCompleteness,
+    RootMediaEvidenceBundle,
+)
 from ..media.runtime_measurement_identity import (
     PC_CUDA_RUNTIME_CAPABILITY_ID,
     RuntimeMeasurementIdentity,
 )
+from ..media.timed_evidence import CalibrationBinding
 from ..media.types import TimeBase, canonical_sha256, sha256_prefixed
 from ..store.models import PersistedRuntimeCalibrationCapability
 from .authority_profiles import (
@@ -208,6 +214,110 @@ class RuntimeTimedSpeechProjection:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeTimedSpeechCapabilityAdmission:
+    """Independent evidence-side proof for one accepted PC-CUDA capability.
+
+    This is deliberately separate from the historical CPU
+    ``TimedSpeechProfileAdmission``.  It proves that the persisted root evidence
+    was produced with the exact ASR/VAD children and time bounds carried by one
+    resolved :class:`RuntimeTimedSpeechProjection`; it has no Registry or
+    ``local_run`` dependency.
+    """
+
+    projection: RuntimeTimedSpeechProjection
+    root_bundle: RootMediaEvidenceBundle
+    calibration_bindings: tuple[CalibrationBinding, CalibrationBinding]
+
+    def __post_init__(self) -> None:
+        if type(self.projection) is not RuntimeTimedSpeechProjection:  # noqa: E721
+            raise _fail("runtime admission requires an exact PC CUDA projection")
+        if type(self.root_bundle) is not RootMediaEvidenceBundle:  # noqa: E721
+            raise _fail("runtime admission requires an exact root evidence bundle")
+        bindings = self.calibration_bindings
+        if (
+            type(bindings) is not tuple  # noqa: E721
+            or len(bindings) != 2
+            or any(type(item) is not CalibrationBinding for item in bindings)
+        ):
+            raise _fail("runtime admission requires an exact ASR/VAD binding pair")
+        root = self.root_bundle
+        if root.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
+            raise _fail("runtime admission requires source audio")
+        if (
+            root.source_id != root.transcript.context.source_id
+            or root.source_sha256 != root.transcript.context.source_sha256
+            or root.transcript.context.clock_id != self.projection.source_clock_id
+            or root.transcript.context.time_base != self.projection.source_time_base
+            or root.speech_activity.context.source_id != root.source_id
+            or root.speech_activity.context.source_sha256 != root.source_sha256
+            or root.speech_activity.context.clock_id != self.projection.source_clock_id
+            or root.speech_activity.context.time_base != self.projection.source_time_base
+        ):
+            raise _fail("runtime admission evidence does not bind the selected source clock")
+        if root.transcript.completeness.word is not EvidenceCompleteness.COMPLETE:
+            raise _fail("runtime admission requires complete word timestamps")
+        if root.speech_activity.coverage.outcome.value != "complete":
+            raise _fail("runtime admission requires complete VAD coverage")
+        expected = (
+            (
+                root.transcript.context,
+                self.projection.producers[0],
+                self.projection.asr_calibration_record_sha256,
+                self.projection.asr_timing_error_bound_tick,
+            ),
+            (
+                root.speech_activity.context,
+                self.projection.producers[1],
+                self.projection.vad_calibration_record_sha256,
+                self.projection.vad_timing_error_bound_tick,
+            ),
+        )
+        for binding, (context, producer, record_sha256, bound_tick) in zip(
+            bindings, expected, strict=True
+        ):
+            if (
+                binding.producer_id != producer.producer_id
+                or binding.producer_version != producer.producer_version
+                or binding.policy_sha256 != producer.generation_policy_sha256
+                or binding.detector_sha256 != producer.detector_sha256
+                or binding.calibration_record_sha256 != record_sha256
+                or binding.time_base != self.projection.source_time_base
+                or binding.timing_error_bound_tick != bound_tick
+                or context.producer_id != producer.producer_id
+                or context.generation_policy_sha256 != producer.generation_policy_sha256
+            ):
+                raise _fail("runtime admission binding differs from accepted PC CUDA authority")
+
+    def to_mapping(self) -> dict[str, object]:
+        root = self.root_bundle
+        return {
+            "schema_version": "runtime-timed-speech-capability-admission-v1",
+            "runtime_timed_speech_projection": self.projection.to_mapping(),
+            "runtime_timed_speech_projection_sha256": self.projection.canonical_hash,
+            "runtime_timed_speech_projection_compatibility_sha256": (
+                self.projection.compatibility_hash
+            ),
+            "root_evidence_sha256": root.canonical_hash,
+            "transcript_evidence_sha256": root.transcript.canonical_hash,
+            "speech_activity_evidence_sha256": root.speech_activity.canonical_hash,
+            "source_id": root.source_id,
+            "source_sha256": root.source_sha256,
+            "source_audio_clock_id": root.transcript.context.clock_id,
+            "source_audio_time_base": {
+                "numerator": root.transcript.context.time_base.numerator,
+                "denominator": root.transcript.context.time_base.denominator,
+            },
+            "word_timestamps_complete": True,
+            "vad_coverage_complete": True,
+            "calibration_bindings": [item.to_mapping() for item in self.calibration_bindings],
+        }
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_sha256(self.to_mapping())
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeTimedMediaAuthoritySelector:
     """Select the one PC CUDA authority allowed by a fixed static policy."""
 
@@ -378,6 +488,7 @@ def project_runtime_timed_speech(
 
 __all__ = [
     "RuntimeTimedMediaAuthoritySelector",
+    "RuntimeTimedSpeechCapabilityAdmission",
     "RuntimeTimedSpeechProjection",
     "RuntimeTimedSpeechProjectionError",
     "project_runtime_timed_speech",
