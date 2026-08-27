@@ -31,6 +31,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
+    PIPELINE_VLM_STOP_AFTER_PROBE_ENV,
     ConfiguredSourceCatalog,
     PipelineRuntimeConfigurationError,
     compose_pipeline_highlight_read_service_from_environment,
@@ -252,6 +253,33 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime.execution_profile.build_stage3_command_policy() == (
         fake_installed_loader.resource.local_run.stage3_command_policy
     )
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [("", False), ("0", False), ("1", True)],
+)
+def test_probe_inspection_control_is_explicit_and_not_part_of_execution_profile(
+    tmp_path: Path,
+    configured: str,
+    expected: bool,
+) -> None:
+    environment = _environment(tmp_path)
+    environment[PIPELINE_VLM_STOP_AFTER_PROBE_ENV] = configured
+
+    runtime = compose_pipeline_runtime_from_environment(environment)
+
+    assert runtime is not None
+    stage = runtime.worker._runner._registry.require("vlm")
+    assert stage._stop_after_probe is expected  # pyright: ignore[reportPrivateUsage]
+
+
+def test_probe_inspection_control_rejects_ambiguous_value(tmp_path: Path) -> None:
+    environment = _environment(tmp_path)
+    environment[PIPELINE_VLM_STOP_AFTER_PROBE_ENV] = "true"
+
+    with pytest.raises(PipelineRuntimeConfigurationError, match="exactly 0 or 1"):
+        compose_pipeline_runtime_from_environment(environment)
 
 
 def test_explicit_semantic_only_plan_composes_without_media_authority(

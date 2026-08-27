@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "review",
-  "nextAction": "提交分阶段调试功能；PC 拉取后用真实 Pipeline 验证目录内容",
+  "nextAction": "push real-flow probe inspection hold; validate on PC runtime",
   "createdAt": "2026-08-27T00:00:00Z",
   "branch": "feat/v213-contract-codegen"
 }

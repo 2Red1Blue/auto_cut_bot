@@ -44,6 +44,8 @@ AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR=/mnt/d/code/auto_cut/debug/model-io
 
 每个已执行的阶段都会保存到 `<debug-root>/<run_id>/<stage>/`：固定的 `input.json` 与 `output.json`，阶段未捕获异常时的 `error.json`，以及模型调用的 `model/<provider>/<call>/request.json`、`terminal.json`、`raw-output.bin`（有原始输出时）。这覆盖 source prep、VLM、media preflight 与后续 Narrative/Portfolio/Blueprint 阶段。它们是可删除的调试镜像，不是重跑、准入或发布依据；请求中的 API key、Authorization、Token/Cookie 和视频字节会被排除或脱敏。目录必须在仓库外；未设置时完全关闭，不影响正常运行。
 
+若要在真实流程中先查看首个 VLM 请求与响应，再允许批量剧集继续，启动前额外设置 `AUTO_CUT_BOT_PIPELINE_VLM_STOP_AFTER_PROBE=1`。Pipeline 仍会完成真实 SourcePrep，并用正常的 Kernel idempotency key 调用第 1 集 VLM；成功后会保持 VLM 命令为 `indeterminate`，不生成 Batch Receipt，也不会发起其他剧集。此后每次 worker 轮询只读取持久化结果，不会重复调用模型。查看 `<debug-root>/<run_id>/vlm/model/.../request.json`、`terminal.json` 与 `raw-output.bin` 后，重启服务时移除此变量（或设为 `0`）；启动重建会自动 reconcile 同一 run，首个调用由幂等记录复用，随后才进入并发批处理。
+
 The closed source catalog must contain exactly one authorized entry for book
 `42000021919`, with `expected_source_count: 50` and
 `authorized_purposes: ["semantic_analysis"]`.  Its policy hash must be the

@@ -159,6 +159,7 @@ class VlmPipelineStage:
         command: GenerateVlmEvidenceCommand | None = None,
         finalizer: FinalizeVlmBatchCommand | None = None,
         installed_profile: LocalRunResource | None = None,
+        stop_after_probe: bool = False,
     ) -> None:
         if not callable(getattr(provider, "dispatch", None)) or not callable(
             getattr(provider, "reconcile", None)
@@ -170,7 +171,13 @@ class VlmPipelineStage:
         # None is an internal unit-test/adapter seam, never standard HTTP composition.
         if installed_profile is not None and type(installed_profile) is not LocalRunResource:  # noqa: E721
             raise PipelineRunValidationError("VLM requires an exact installed local-run resource")
+        if type(stop_after_probe) is not bool:  # noqa: E721
+            raise PipelineRunValidationError("VLM probe inspection control must be a bool")
         self._installed_profile = installed_profile
+        # This is an operational inspection hold only. It is deliberately not
+        # part of the persisted execution profile: it cannot change the VLM
+        # request, idempotency key, or semantic result being inspected.
+        self._stop_after_probe = stop_after_probe
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -231,7 +238,14 @@ class VlmPipelineStage:
             )
         if self._installed_profile is not None:
             validate_installed_source_sampling(source_bundle)
-        _episode_selection_strategy(policy)
+        selection_strategy, _max_concurrency = _episode_selection_strategy(policy)
+        if (
+            self._stop_after_probe
+            and selection_strategy != VLM_EPISODE_SELECTION_STRATEGY_VERSION
+        ):
+            raise PipelineRunValidationError(
+                "probe inspection requires the registered single-episode probe strategy"
+            )
         return source_bundle, policy, tuple(
             replace(
                 build_doubao_vlm_request(
@@ -260,13 +274,25 @@ class VlmPipelineStage:
         if prepared is None:
             return PipelineStageResult(context.command.command_id, "indeterminate")
         result = await self._execute_batch(context, *prepared)
+        if result is None:
+            # Episode zero completed through the normal Kernel command and
+            # provider path. Do not finalize or dispatch subsequent work until
+            # the operator restarts without this inspection control.
+            return PipelineStageResult(context.command.command_id, "indeterminate")
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
         prepared = await asyncio.to_thread(self._requests, context)
         if prepared is None:
             return None
+        if self._probe_inspection_is_holding(context, prepared[2][0]):
+            # The worker polls reconciliation. Once the real probe has a
+            # terminal success, holding must be a pure store read rather than
+            # repeatedly touching the provider command.
+            return None
         result = await self._execute_batch(context, *prepared)
+        if result is None:
+            return None
         projected = self._project(context, result.outcome)
         if projected.outcome == "indeterminate":
             return None
@@ -278,7 +304,7 @@ class VlmPipelineStage:
         source_bundle: PersistedPreparedSources,
         policy: DoubaoVlmRequestPolicy,
         requests: tuple[GenerateVlmEvidenceRequest, ...],
-    ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult:
+    ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult | None:
         children: list[VlmBatchChildOutcome] = []
         selection_strategy, max_concurrency = _episode_selection_strategy(policy)
         chunks = (
@@ -293,7 +319,7 @@ class VlmPipelineStage:
                 for start in range(0, len(requests), max_concurrency)
             )
         )
-        for chunk in chunks:
+        for chunk_index, chunk in enumerate(chunks):
             results = await asyncio.gather(
                 *(asyncio.to_thread(self._command.execute, request) for request in chunk),
             )
@@ -332,6 +358,19 @@ class VlmPipelineStage:
                 return terminal
             if unresolved is not None:
                 return unresolved
+            if self._stop_after_probe and chunk_index == 0:
+                # The registered v3 policy always makes this first chunk the
+                # single episode-zero probe. Never reinterpret another policy
+                # as safe to pause after an arbitrary multi-episode chunk.
+                if (
+                    selection_strategy != VLM_EPISODE_SELECTION_STRATEGY_VERSION
+                    or len(chunk) != 1
+                    or chunk[0].episode_index != 0
+                ):
+                    raise PipelineRunValidationError(
+                        "probe inspection requires the registered single-episode probe strategy"
+                    )
+                return None
         finalizer_request = FinalizeVlmBatchRequest(
             job=Job(context.run_id, context.request.profile),
             idempotency_key=vlm_batch_kernel_idempotency_key(
@@ -348,6 +387,16 @@ class VlmPipelineStage:
             children=tuple(children),
         )
         return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
+
+    def _probe_inspection_is_holding(
+        self,
+        context: PipelineStageContext,
+        request: GenerateVlmEvidenceRequest,
+    ) -> bool:
+        if not self._stop_after_probe:
+            return False
+        outcome = self._store.read_outcome(self._job(context), request.idempotency_key)
+        return outcome is not None and outcome.state == "succeeded"
 
     @staticmethod
     def _project(

@@ -965,6 +965,7 @@ def _stage(
     source_outcome: CommandOutcome | None,
     indeterminate_first: bool = False,
     deny_first: bool = False,
+    stop_after_probe: bool = False,
 ) -> tuple[VlmPipelineStage, KernelStore, Provider]:
     monkeypatch.setattr(
         "auto_cut_bot.pipeline.runtime.vlm_stage.read_persisted_prepared_sources_bundle",
@@ -980,7 +981,11 @@ def _stage(
         indeterminate_first=indeterminate_first,
         deny_first=deny_first,
     )
-    return VlmPipelineStage(store, provider), store, provider  # type: ignore[arg-type]
+    return VlmPipelineStage(  # type: ignore[arg-type]
+        store,
+        provider,
+        stop_after_probe=stop_after_probe,
+    ), store, provider
 
 
 @pytest.mark.asyncio
@@ -1121,6 +1126,43 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
         policy=_context().execution_profile.to_doubao_policy(),
         execution_profile_hash=_context().execution_profile_hash,
     )
+
+
+@pytest.mark.asyncio
+async def test_probe_inspection_runs_the_real_first_episode_then_holds_before_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(2)
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+        stop_after_probe=True,
+    )
+
+    first = await stage.execute(_context())
+    recovered = await stage.reconcile(_context(status="indeterminate"))
+
+    assert first.outcome == "indeterminate"
+    assert recovered is None
+    assert len(provider.dispatch_calls) == 1
+    assert json.loads(provider.dispatch_calls[0].request_payload)["window_manifest_sha256"] == (
+        bundle.prepared.episodes[0].manifest.canonical_hash
+    )
+    assert not any(
+        claim.command_name == "FinalizeVlmBatchCommand"
+        for claim, _outcome in store.claims.values()
+    )
+
+    # Restarting without the operational hold reconciles the same persisted
+    # command. The first episode is reused by its Kernel idempotency key; only
+    # the remaining episode can cause a second provider dispatch.
+    continued = VlmPipelineStage(store, provider)  # type: ignore[arg-type]
+    completed = await continued.reconcile(_context(status="indeterminate"))
+
+    assert completed is not None and completed.outcome == "succeeded"
+    assert len(provider.dispatch_calls) == 2
 
 
 class _ProbeThenParallelCommand:

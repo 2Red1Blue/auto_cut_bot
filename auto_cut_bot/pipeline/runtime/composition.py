@@ -79,6 +79,7 @@ PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
 PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS"
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
 PIPELINE_MODEL_DEBUG_DIR_ENV = "AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR"
+PIPELINE_VLM_STOP_AFTER_PROBE_ENV = "AUTO_CUT_BOT_PIPELINE_VLM_STOP_AFTER_PROBE"
 PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
 PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGING_ROOT"
 PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
@@ -468,6 +469,7 @@ def compose_pipeline_runtime_from_environment(
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
         configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
         debug_sink = _model_io_debug_sink(values)
+        stop_after_probe = _vlm_stop_after_probe(values)
         provider_config = (
             DoubaoArkVlmProviderConfig(
                 api_key=api_key,
@@ -541,6 +543,7 @@ def compose_pipeline_runtime_from_environment(
         kernel_store,
         provider,
         installed_profile=authority_profile_resolver.resource,
+        stop_after_probe=stop_after_probe,
     )
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
@@ -652,6 +655,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
         configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
         debug_sink = _model_io_debug_sink(values)
+        stop_after_probe = _vlm_stop_after_probe(values)
         provider_config = (
             DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id, base_url=configured_base_url)
             if configured_base_url
@@ -678,7 +682,11 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         debug_sink=debug_sink,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
-    vlm_stage = VlmPipelineStage(kernel_store, provider)
+    vlm_stage = VlmPipelineStage(
+        kernel_store,
+        provider,
+        stop_after_probe=stop_after_probe,
+    )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
         ("vlm", vlm_stage),
@@ -765,6 +773,19 @@ def _model_io_debug_sink(values: Mapping[str, str]) -> FileModelIoDebugSink | No
         ) from error
 
 
+def _vlm_stop_after_probe(values: Mapping[str, str]) -> bool:
+    """Return an explicit operational hold for inspecting a real VLM probe."""
+
+    raw = values.get(PIPELINE_VLM_STOP_AFTER_PROBE_ENV, "").strip()
+    if raw in ("", "0"):
+        return False
+    if raw == "1":
+        return True
+    raise PipelineRuntimeConfigurationError(
+        f"{PIPELINE_VLM_STOP_AFTER_PROBE_ENV} must be exactly 0 or 1"
+    )
+
+
 def _staging_root(raw: str) -> Path:
     root = Path(raw)
     if not raw or not root.is_absolute():
@@ -795,6 +816,7 @@ __all__ = (
     "PIPELINE_ARK_MODEL_ID_ENV",
     "PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV",
     "PIPELINE_MODEL_DEBUG_DIR_ENV",
+    "PIPELINE_VLM_STOP_AFTER_PROBE_ENV",
     "PIPELINE_PLAN_ENV",
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",
