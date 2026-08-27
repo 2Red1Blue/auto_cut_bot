@@ -1,6 +1,7 @@
 # VLM 视频语义支持 v4 — 修正模型接口，不改物理剪切职责
 
-状态：详细设计/实施中，**尚未启用新模型调用**。v3历史仍按原规则读取。
+状态：实现、独立审查及数据库回归完成；semantic-only已选择新协议，待单集真实验真。
+v3历史仍按原规则读取，Stage1–3尚不消费V4。
 证据：[Mac真实记录](mac-semantic-run-20260828.md)，第三次调用完整JSON、reasoning0；
 79处support中34处区间非法，另有合法区间找不到可引用帧。不能统一缩放或裁剪修复。
 
@@ -88,3 +89,14 @@ ProxyTimelineMap得到粗源区间。绝不使用二进制float推导媒体时�
 必须覆盖：非零proxy起点、非整数毫秒time_base、半开区间、量化误差、未知/错帧alias、
 视频观察不伪造帧证明、越界/倒置反例、rawhash不被投影覆盖、旧历史逐字节不变。
 真实语义仍需与视频抽查；parser通过不能证明模型没有幻觉，更不是ASR/剪切/QC通过。
+
+## 6. 2026-0828部署检查点
+
+- 纯Kernel提交`7980bc52`；Pipeline/Store/profile接线提交`5c0960c5`。
+- 更新本机实际安装的Kernel wheel，不只靠pytest的源码路径通过测试。
+- 真实`autocut`应用0030前完整备份并经pg_restore验证；六条既有run逐字节不变，
+  旧profile全部仍合法，新V4 profile通过SQL校验。未重建库，未改旧Receipt。
+- V4实现摘要：`sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630`。
+- 新execution profile：`sha256:59c09cd593452ca9d33816690da2dc996b0ff69ded5219572f51a18a70f5d518`。
+- 全量离线检查点1761passed/218skipped；真实disposable Store39passed、
+  profile/run-store218passed；启用新authority后重点回归144passed/1skipped。

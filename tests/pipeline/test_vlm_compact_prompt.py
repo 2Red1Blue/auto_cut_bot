@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 from autocut_kernel.media import TimeBase
 from autocut_kernel.pipeline import GenerateVlmEvidenceRequest
+from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
 
 from auto_cut_bot.pipeline.runtime import composition, vlm_stage
 from auto_cut_bot.pipeline.runtime.models import PipelineExecutionProfile, PipelineStageContext
@@ -35,6 +36,7 @@ from auto_cut_bot.pipeline.vlm.request_factory import (
     build_doubao_vlm_request,
 )
 from auto_cut_bot.pipeline.vlm.reuse import derive_vlm_reuse_identity
+from auto_cut_bot.pipeline.vlm.video_prompt import VLM_VIDEO_PROMPT_VERSION
 from tests.pipeline import test_doubao_vlm_request_factory as factory_fixture
 from tests.pipeline.test_pipeline_runtime_composition import _environment
 from tests.pipeline.test_pipeline_vlm_stage import (
@@ -148,15 +150,18 @@ def test_compact_factory_changes_only_prompt_identity_and_preserves_budgets() ->
     assert compact_policy.max_output_tokens == legacy_policy.max_output_tokens == 32768
 
 
-def test_installed_semantic_authority_explicitly_selects_compact_without_changing_default() -> None:
+def test_installed_semantic_authority_explicitly_selects_video_without_changing_default() -> None:
     authority = load_installed_semantic_run_authority()
-    assert authority.vlm_policy.prompt_version == VLM_COMPACT_PROMPT_VERSION
+    assert authority.vlm_policy.prompt_version == VLM_VIDEO_PROMPT_VERSION
     assert factory_fixture._policy().prompt_version == VLM_PROMPT_VERSION
     default_policy = factory_fixture._policy()
     assert authority.vlm_policy.thinking_type == "disabled"
     assert replace(
         authority.vlm_policy, prompt_version=VLM_PROMPT_VERSION,
         adapter_strategy_version=default_policy.adapter_strategy_version, thinking_type=None,
+        parser_strategy_version=default_policy.parser_strategy_version,
+        parser_contract_sha256=None, response_schema_json=default_policy.response_schema_json,
+        stage_strategy_version=default_policy.stage_strategy_version,
     ) == default_policy
 
 
@@ -168,6 +173,13 @@ def test_semantic_authority_checks_the_selected_template_hash() -> None:
     with pytest.raises(SemanticRunAuthorityError, match="implementation binding"):
         decode_semantic_run_authority(raw, expected_sha256="sha256:" + hashlib.sha256(raw).hexdigest())
     document["vlm"]["prompt_version"] = VLM_PROMPT_VERSION
+    legacy_policy = factory_fixture._policy()
+    document["vlm"].update(
+        parser_strategy_version=legacy_policy.parser_strategy_version,
+        parser_contract_sha256=vlm_parser_contract_sha256(),
+        response_schema_sha256=_sha256(legacy_policy.response_schema_json),
+        stage_strategy_version=legacy_policy.stage_strategy_version,
+    )
     legacy_raw = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("utf-8")
     legacy = decode_semantic_run_authority(legacy_raw, expected_sha256="sha256:" + hashlib.sha256(legacy_raw).hexdigest())
     assert legacy.vlm_policy.prompt_version == VLM_PROMPT_VERSION
@@ -179,7 +191,7 @@ def test_semantic_composition_preserves_installed_prompt_choice(tmp_path: Path) 
     runtime = composition.compose_pipeline_runtime_from_environment(environment)
     assert runtime is not None
     assert runtime.execution_profile.to_doubao_policy() == load_installed_semantic_run_authority().vlm_policy
-    assert runtime.execution_profile.prompt_version == VLM_COMPACT_PROMPT_VERSION
+    assert runtime.execution_profile.prompt_version == VLM_VIDEO_PROMPT_VERSION
 
 
 @pytest.mark.parametrize("version", [VLM_PROMPT_VERSION, VLM_COMPACT_PROMPT_VERSION])
@@ -212,7 +224,7 @@ def test_reuse_projection_selects_the_original_requests_template(version: str) -
 
 @pytest.mark.asyncio
 async def test_new_semantic_authority_does_not_relabel_a_v3_reconcile_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert load_installed_semantic_run_authority().vlm_policy.prompt_version == VLM_COMPACT_PROMPT_VERSION
+    assert load_installed_semantic_run_authority().vlm_policy.prompt_version == VLM_VIDEO_PROMPT_VERSION
     bundle, blobs = _bundle()
     monkeypatch.setattr(vlm_stage, "read_persisted_prepared_sources_bundle", lambda *_args, **_kwargs: bundle)
     legacy_policy = factory_fixture._policy()
