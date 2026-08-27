@@ -39,6 +39,7 @@ from .prompt import (
     VLM_PROMPT_VERSION,
     VLM_RESPONSE_SCHEMA,
     build_vlm_prompt,
+    resolve_vlm_prompt_template,
     vlm_response_schema_json,
 )
 
@@ -148,9 +149,9 @@ class DoubaoVlmRequestPolicy:
     prompt_version: str = VLM_PROMPT_VERSION
     response_schema_json: str = field(default_factory=vlm_response_schema_json)
     video_fps: float = 1.0
-    # The verified 50-episode run exhausted 16,384 reasoning tokens before
-    # emitting JSON.  The registered first-run budget leaves the provider's
-    # documented 32,768-token ceiling available for a complete strict result.
+    # Explicit budget frozen into each request, not an automatic repair knob.
+    # A length terminal requires a deliberate new policy/run, never a silent
+    # increase while replaying the same provider command.
     max_output_tokens: int = 32_768
     temperature: int | float = 0
     parse_policy: VlmParsePolicy = field(default_factory=_default_parse_policy)
@@ -165,8 +166,7 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("provider_id must be the registered Doubao provider")
         if self.adapter_strategy_version not in DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS:
             raise ValueError("adapter strategy must be a registered Doubao version")
-        if self.prompt_version != VLM_PROMPT_VERSION:
-            raise ValueError("prompt version must be the registered VLM prompt version")
+        resolve_vlm_prompt_template(self.prompt_version)
         schema = _strict_json_object(self.response_schema_json, "response schema JSON")
         if schema != VLM_RESPONSE_SCHEMA or self.response_schema_json != vlm_response_schema_json():
             raise ValueError("response schema JSON must be the exact registered canonical schema")
@@ -293,7 +293,7 @@ def build_doubao_vlm_request(
         manifest=prepared_episode.manifest,
         manifest_set=prepared_episode.manifest_set,
         proxy_blob=prepared_episode.proxy_blob,
-        prompt_template=build_vlm_prompt(prepared_episode.manifest),
+        prompt_template=build_vlm_prompt(prepared_episode.manifest, prompt_version=policy.prompt_version),
         prompt_version=policy.prompt_version,
         response_schema_json=policy.response_schema_json,
         request_parameters_json=policy.request_parameters_json,

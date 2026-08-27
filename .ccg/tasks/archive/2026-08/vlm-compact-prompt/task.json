@@ -1,0 +1,12 @@
+{
+  "id": "vlm-compact-prompt",
+  "title": "为真实VLM length失败注册紧凑提示词并保留旧请求重放",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "代码已审查；单独执行真实新run并追加操作结果，不能宣称模型已通过",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}

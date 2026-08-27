@@ -156,8 +156,12 @@ def test_matching_persisted_policy_and_identity_samples_build_requests(monkeypat
     stage = VlmPipelineStage(KernelStore(_source_success(), blobs), provider,
                              installed_profile=resource)
     prepared = stage._requests(context)
-    assert prepared is not None and len(prepared[1]) == 1
-    assert prepared[1][0].manifest is bundle.prepared.episodes[0].manifest
+    assert prepared is not None
+    source, policy, requests = prepared
+    assert source is bundle
+    assert policy == context.execution_profile.to_doubao_policy()
+    assert len(requests) == 1
+    assert requests[0].manifest is bundle.prepared.episodes[0].manifest
     assert provider.dispatch_calls == provider.reconcile_calls == []
 
 

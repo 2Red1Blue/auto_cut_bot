@@ -18,7 +18,7 @@ from autocut_kernel.vlm.reuse_identity import (
 
 from auto_cut_bot.pipeline.source_prep.command import PersistedPreparedSources
 
-from .prompt import VLM_PROMPT_TEMPLATE
+from .prompt import resolve_vlm_prompt_template
 
 
 def derive_vlm_reuse_identity(
@@ -63,6 +63,7 @@ payload, Job, Receipt and ArtifactSet are not rewritten or redispatched.
     # This local value is identity input only, never a replacement command.
     facts = replace(request, source_manifest_sha256=manifest_hash)
     policy = VlmSemanticPolicyIdentityV1.from_request(
-        facts, provider_scope=provider_scope, prompt_template=VLM_PROMPT_TEMPLATE,
+        facts, provider_scope=provider_scope,
+        prompt_template=resolve_vlm_prompt_template(request.prompt_version),
     )
     return VlmReuseIdentityV1.from_request(facts, semantic_policy=policy)

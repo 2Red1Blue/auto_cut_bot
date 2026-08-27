@@ -46,7 +46,7 @@ def validate_installed_vlm_policy(
         "adapter_strategy_version": policy.adapter_strategy_version,
         "prompt_version": policy.prompt_version,
         "parser_strategy_version": policy.parser_strategy_version,
-        "prompt_template_sha256": vlm_prompt_template_sha256(),
+        "prompt_template_sha256": vlm_prompt_template_sha256(policy.prompt_version),
         "response_schema_sha256": _text_sha256(policy.response_schema_json),
         "parser_contract_sha256": vlm_parser_contract_sha256(),
         "request_parameters_sha256": _text_sha256(policy.request_parameters_json),

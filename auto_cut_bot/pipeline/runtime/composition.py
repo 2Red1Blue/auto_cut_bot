@@ -8,7 +8,7 @@ import asyncio
 import json
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -639,11 +639,12 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         raw_max_output_tokens = values[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV].strip()
         if not raw_max_output_tokens.isdecimal():
             raise ValueError("Ark max output tokens must be a decimal integer")
-        configured_policy = DoubaoVlmRequestPolicy(
+        semantic_authority = load_installed_semantic_run_authority()
+        configured_policy = replace(
+            semantic_authority.vlm_policy,
             model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip(),
             max_output_tokens=int(raw_max_output_tokens),
         )
-        semantic_authority = load_installed_semantic_run_authority()
         if configured_policy != semantic_authority.vlm_policy:
             raise ValueError("configured Doubao policy differs from installed semantic authority")
         execution_profile = PipelineExecutionProfile.from_semantic_policies(

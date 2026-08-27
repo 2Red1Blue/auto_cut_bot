@@ -40,3 +40,13 @@ API token、Ark凭据和数据库密码不可复制到文档/Git。开发测试�
 交接均未完成。非终态resume修复与兼容身份基础已通过测试；不等于这些功能上线。
 SSH按用户要求暂不使用。后续先修正真实VLM输出问题，再验证单集；重算设计见
 [选择性重算](pipeline-selective-recompute-design.md)。
+
+## 已验证的代码修正
+
+- `1c992098`：非终态VLM resume、精确来源兼容身份；真实PostgreSQL测试116通过。
+- `58654532`：debug保留明确非负整数token计数，凭证与未知嵌套字段仍脱敏。
+- 新的v4紧凑prompt显式注册；v3旧模板、完整请求和profile固定哈希回归通过。
+  v3与v4 profile均通过真实数据库只读SQL形状检查，无需改数据库迁移。
+- 原run相同幂等键重新提交仍返回原failed run；GenerationAttempt数量仍为1。
+
+v4代码/单测通过不代表真实生成成功；真实第二次调用结果需另行追加，不覆盖上述失败。

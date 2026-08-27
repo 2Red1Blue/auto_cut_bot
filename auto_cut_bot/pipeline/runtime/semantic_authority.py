@@ -151,7 +151,7 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
     except (TypeError, ValueError) as error:
         raise SemanticRunAuthorityError("semantic authority VLM policy is invalid") from error
     expected_hashes = {
-        "prompt_template_sha256": vlm_prompt_template_sha256(),
+        "prompt_template_sha256": vlm_prompt_template_sha256(policy.prompt_version),
         "response_schema_sha256": _text_sha256(policy.response_schema_json),
         "parser_contract_sha256": vlm_parser_contract_sha256(),
         "window_sampling_policy_sha256": identity_window_sampling_policy_sha256(),

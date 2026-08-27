@@ -18,6 +18,14 @@ immutable Artifact/Receipt closure.  The plan cannot instantiate FunASR/VAD,
 story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
+The installed semantic-only policy now selects `vlm-semantic-pack-v4-compact`:
+compact JSON, concise nonduplicate descriptions, and an explicit proxy time
+base. The schema, parser and 32768 output-token budget are unchanged. Existing
+v3 requests retain their original prompt bytes and hashes on replay; the normal
+full-pipeline default remains v3 until its separate installed policy is updated.
+Changing the prompt is not permission to reopen a failed run. See the
+[Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
+
 ## Required private configuration
 
 Keep credentials and host paths outside Git.  In the PC private environment
