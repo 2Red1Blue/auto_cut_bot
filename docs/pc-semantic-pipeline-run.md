@@ -45,10 +45,11 @@ because the environment-composed pipeline accepts HTTP requests.
 
 ## Start and submit
 
-From the PC v2.1.3 worktree in WSL, load the private environment, then start
-the server on loopback:
+From the PC v2.1.3 worktree in WSL, install the API extra once, load the
+private environment, then start the server on loopback:
 
 ```bash
+uv sync --extra api
 uv run auto_cut_bot serve --host 127.0.0.1 --port 18766 --config /private/auto_cut_bot.config.json
 ```
 
