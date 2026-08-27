@@ -82,3 +82,34 @@ The real Pipeline runs in WSL because SourcePrep requires POSIX directory-FD
 safety.  CUDA inference remains in the hardened Podman service on loopback;
 WSL calls only its authenticated HTTP endpoint.  The `D:` corpus is read as
 `/mnt/d/...` by WSL and never copied into the repository.
+
+## Normal CUDA request projection (remediation)
+
+The original CPU `LocalRunProfileSource` is a closed historical contract.  It
+must **not** be widened from `device=cpu` to a free `cpu|cuda|mps` switch:
+doing so would let a PC CUDA service appear to be backed by a CPU shadow
+source and its old aggregate CalibrationRecord.
+
+For a normal PC CUDA call, the Pipeline must instead resolve exactly one
+accepted `RuntimeCalibrationCapability` from the Store, then construct the
+request-facing timed-speech identity from that capability's immutable
+measurement identity and its anchored CalibrationRecord.  The resulting
+projection must bind:
+
+- `runtime_capability_id=pc_cuda` and the measured CUDA device identity;
+- FunASR/Torch versions and ASR/VAD model identities from the measurement;
+- service, detector, producer and timing-bound identities from the anchored
+  accepted calibration record;
+- the static timing and source-clock policy only when its protected hashes
+  agree with the selected measurement/record; and
+- the selected capability's exact measurement and calibration identities into
+  the request/receipt identity.
+
+The ordinary CPU local-run projection remains unchanged.  A CPU execution
+must never consume a PC CUDA capability, and a CUDA execution must never fall
+back to the CPU local-run record.  The service independently remeasures the
+same projection at startup and rejects a request whose profile differs.
+
+Before implementation, add tests that demonstrate all four cases: accepted
+CUDA projection, accepted CPU projection, CPU/CUDA cross-binding denial, and
+audit-only service-build change acceptance when timing compatibility is equal.

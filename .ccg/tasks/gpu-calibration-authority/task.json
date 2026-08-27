@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend/deployment/authority",
-  "currentPhase": "review",
-  "nextAction": "Apply migrations 0024–0027 on the PC disposable PostgreSQL database, then run the newly wired Media Preflight capability gate against the real FunASR measurement endpoint before enabling normal timed-speech evidence.",
+  "currentPhase": "planning",
+  "nextAction": "Complete the missing capability-to-normal-request projection before PC deployment. Do not widen the legacy local-run CPU profile to accept CUDA; derive the selected runtime identity and its accepted calibration record into the exact normal timed-speech request contract, with PC-CUDA/CPU cross-binding tests.",
   "branch": "feat/v213-contract-codegen"
 }

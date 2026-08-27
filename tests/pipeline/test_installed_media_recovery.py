@@ -163,3 +163,45 @@ async def test_runtime_capability_gate_projects_wait_or_recompute_before_native(
     )
     result = await stage._runtime_capability_outcome(context)
     assert result is not None and result.outcome == expected and result.receipt_id is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("execute", "reconcile"))
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        (MediaEvidenceUnavailableError("missing"), "awaiting_calibration"),
+        (RuntimeCalibrationIdentityMismatchError("changed"), "recompute_needed"),
+    ),
+)
+async def test_runtime_capability_outcome_precedes_pipeline_input_reads(
+    monkeypatch, operation, failure, expected,
+):
+    """No source/VLM/authority read may happen before live capability admission."""
+    context, resource, _ = _matching_context()
+    resolver = InstalledRuntimeCapabilityResolver(
+        runtime_calibration_policy_for_installed_resource(resource)
+    )
+
+    class IdentityPort:
+        def read_identity(self):
+            return _runtime_measurement()
+
+    def missing_capability(self, store, identity):
+        assert self is resolver
+        assert identity == _runtime_measurement()
+        raise failure
+
+    monkeypatch.setattr(InstalledRuntimeCapabilityResolver, "resolve", missing_capability)
+    stage = MediaPreflightPipelineStage(
+        object(), object(), InstalledLocalRunProfileResolver(resource), resolver, IdentityPort()
+    )
+    monkeypatch.setattr(
+        stage,
+        "_requests",
+        lambda *_args: pytest.fail("runtime capability wait reached pipeline input reads"),
+    )
+
+    result = await getattr(stage, operation)(context)
+    assert result is not None
+    assert result.outcome == expected

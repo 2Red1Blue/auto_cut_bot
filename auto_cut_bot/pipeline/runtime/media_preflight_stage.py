@@ -267,19 +267,9 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
-        materialization_limits = context.execution_profile.to_materialization_limits()
-        media_evidence_read_limits(context.execution_profile)
+        materialization_limits = self._validate_execution_profile(context, policy)
         job = self._job(context)
-        resolver = self._authority_profile_resolver
-        validate_installed_media_policy(resolver.resource, policy)
-        validate_installed_vlm_policy(
-            resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
-            context.execution_profile.to_generation_retry_policy(),
-        )
-        if materialization_limits.timed_speech_max_request_bytes != (
-            resolver.resource.local_run.native_timed_speech.max_request_bytes
-        ):
-            raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
+
         source_outcome = self._store.read_outcome(
             job,
             source_prep_kernel_idempotency_key(context.run_id),
@@ -396,25 +386,47 @@ class MediaPreflightPipelineStage:
             )
         return source_bundle, tuple(requests)
 
+    def _validate_execution_profile(
+        self,
+        context: PipelineStageContext,
+        policy: LocalMediaPreflightPolicy,
+    ) -> MaterializationLimits:
+        """Validate only frozen local configuration; this must not read the Store."""
+        materialization_limits = context.execution_profile.to_materialization_limits()
+        media_evidence_read_limits(context.execution_profile)
+        resolver = self._authority_profile_resolver
+        validate_installed_media_policy(resolver.resource, policy)
+        validate_installed_vlm_policy(
+            resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
+            context.execution_profile.to_generation_retry_policy(),
+        )
+        if materialization_limits.timed_speech_max_request_bytes != (
+            resolver.resource.local_run.native_timed_speech.max_request_bytes
+        ):
+            raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
+        return materialization_limits
+
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
         policy = context.execution_profile.to_media_preflight_policy()
-        prepared = await asyncio.to_thread(self._requests, context, policy)
-        if prepared is None:
-            return PipelineStageResult(context.command.command_id, "indeterminate")
+        await asyncio.to_thread(self._validate_execution_profile, context, policy)
         runtime_outcome = await self._runtime_capability_outcome(context)
         if runtime_outcome is not None:
             return runtime_outcome
+        prepared = await asyncio.to_thread(self._requests, context, policy)
+        if prepared is None:
+            return PipelineStageResult(context.command.command_id, "indeterminate")
         result = await self._execute_batch(context, *prepared, policy)
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
         policy = context.execution_profile.to_media_preflight_policy()
-        prepared = await asyncio.to_thread(self._requests, context, policy)
-        if prepared is None:
-            return None
+        await asyncio.to_thread(self._validate_execution_profile, context, policy)
         runtime_outcome = await self._runtime_capability_outcome(context)
         if runtime_outcome is not None:
             return runtime_outcome
+        prepared = await asyncio.to_thread(self._requests, context, policy)
+        if prepared is None:
+            return None
         result = await self._execute_batch(context, *prepared, policy)
         projected = self._project(context, result.outcome)
         return None if projected.outcome == "indeterminate" else projected
