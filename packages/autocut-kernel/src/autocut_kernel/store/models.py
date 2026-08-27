@@ -444,8 +444,15 @@ class PersistedVlmGenerationChild:
     source_manifest_sha256: str
     source_provenance_sha256: str
     request_identity_sha256: str
+    # Readback metadata, not new fields in the immutable v3 request-record wire.
+    parser_strategy_version: str = "strict-semantic-pack-v3"
+    semantic_schema_version: int = 3
 
     def __post_init__(self) -> None:
+        if type(self.semantic_schema_version) is not int or (  # noqa: E721
+            self.parser_strategy_version, self.semantic_schema_version
+        ) not in (("strict-semantic-pack-v3", 3), ("strict-semantic-pack-v4", 4)):
+            raise StoreValidationError("VLM child parser and schema versions disagree")
         if type(self.reference) is not VlmRequestRecordReference:  # noqa: E721
             raise StoreValidationError("VLM request reference is invalid")
         if type(self.source_job) is not Job:  # noqa: E721

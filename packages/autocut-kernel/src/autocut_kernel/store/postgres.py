@@ -12,7 +12,7 @@ import json
 import os
 import stat
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
@@ -164,6 +164,13 @@ from .shadow_local_measurement_artifacts import (
     validate_shadow_local_measurement_artifact_metadata,
 )
 from .terminal_receipts import PersistedTerminalCommandReceipt
+from .vlm_v4 import (
+    VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4,
+    batch_version_fields,
+    generation_semantic_version,
+    require_batch_child_version,
+    verify_v4_semantic_pack,
+)
 
 
 class DbCursor(Protocol):
@@ -708,6 +715,7 @@ class _DecodedVlmSemanticPackSet:
 
     def verified_payload_mapping(self) -> dict[str, object]:
         return {
+            **batch_version_fields(self.strategy_version),
             "children": [child.to_mapping() for child in self.children],
             "declared_episode_count": self.declared_episode_count,
             "request_policy": self.request_policy.to_mapping(),
@@ -847,6 +855,23 @@ def _decode_vlm_semantic_pack_set(
         declared_episode_count=declared_count,
         strategy_version=VLM_BATCH_FINALIZER_STRATEGY_VERSION,
     )
+def _decode_registered_vlm_semantic_pack_set(payload_json: str) -> _DecodedVlmSemanticPackSet:
+    payload = _strict_json_object(payload_json, "VLM Semantic Pack set")
+    if payload.get("strategy_version") != VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4:
+        return _decode_vlm_semantic_pack_set(payload_json)
+    version = batch_version_fields(VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4)
+    if (
+        type(payload.get("schema_version")) is not int  # noqa: E721
+        or any(payload.get(key) != value for key, value in version.items())
+    ):
+        raise StoreValidationError("V4 VLM batch parser/schema version binding is invalid")
+    # Reuse only the unchanged structural checks, not v3 semantic decoding.
+    legacy_shape = {key: value for key, value in payload.items() if key not in version}
+    legacy_shape["strategy_version"] = VLM_BATCH_FINALIZER_STRATEGY_VERSION
+    decoded = _decode_vlm_semantic_pack_set(json.dumps(legacy_shape))
+    return replace(decoded, strategy_version=VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4)
+
+
 def _vlm_request_record_projection(
     payload_json: str,
 ) -> tuple[int, str, str, str, str, str]:
@@ -2843,7 +2868,7 @@ class PostgresRuntimeStore:
             artifact = success.artifacts[0]
             if artifact.scope != canonical_recipe_scope(job):
                 raise StoreValidationError("VLM SemanticPackSet has a non-canonical Job scope")
-            decoded = _decode_vlm_semantic_pack_set(artifact.payload_json)
+            decoded = _decode_registered_vlm_semantic_pack_set(artifact.payload_json)
             if _vlm_batch_request_hash(job, artifact, decoded) != request_hash:
                 raise IdempotencyConflictError(
                     "VLM batch request hash does not bind its exact aggregate payload"
@@ -4920,6 +4945,12 @@ class PostgresRuntimeStore:
                     "exact committed VLM Semantic Pack set is unavailable"
                 )
             try:
+                if _strict_json_object(
+                    aggregate_set.members[0][1].payload_json, "VLM Semantic Pack set"
+                ).get("strategy_version") == VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4:
+                    raise SemanticInputUnavailableError(
+                        "V4 video observations are unsupported by the Stage1-3 semantic input reader"
+                    )
                 aggregate = _decode_vlm_semantic_pack_set(
                     aggregate_set.members[0][1].payload_json
                 )
@@ -5318,233 +5349,262 @@ class PostgresRuntimeStore:
         if type(idempotency_key) is not str or not idempotency_key.strip():  # noqa: E721
             raise StoreValidationError("idempotency_key must be a non-empty string")
 
-        def operation(cursor: DbCursor) -> PersistedVlmGenerationChild:
-            cursor.execute(
-                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
-                (job.job_key,),
+        return self._transaction(
+            lambda cursor: self._read_committed_vlm_generation_child(cursor, job, idempotency_key)
+        )
+
+    def _read_committed_vlm_generation_child(
+        self, cursor: DbCursor, job: Job, idempotency_key: str,
+    ) -> PersistedVlmGenerationChild:
+        cursor.execute(
+            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+            (job.job_key,),
+        )
+        job_row = cursor.fetchone()
+        if job_row is None:
+            raise StoreValidationError("VLM generation Job is unavailable")
+        job_id, profile = job_row
+        durable_job_id = UUID(str(job_id))
+        if _text(profile) != job.profile:
+            raise JobProfileMismatchError("job_key belongs to a different profile")
+        cursor.execute(
+            """
+            SELECT slot.command_slot_id, slot.command_name, slot.request_hash,
+                   attempt.attempt_id, attempt.request_hash,
+                   attempt.provider_idempotency_key, attempt.state,
+                   request_blob.object_id, request_blob.content_hash,
+                   request_blob.byte_length, request_blob.media_type,
+                   response_blob.object_id, response_blob.content_hash,
+                   response_blob.byte_length, response_blob.media_type,
+                   attempt.provider_request_id,
+                   attempt.receipt_id, attempt.artifact_set_id,
+                   receipt.receipt_id, receipt.outcome,
+                   receipt.result_artifact_set_id, artifact_set.set_hash,
+                   artifact_set.member_count
+              FROM runtime.command_slots AS slot
+              JOIN runtime.generation_attempts AS attempt
+                ON attempt.command_slot_id = slot.command_slot_id
+               AND attempt.job_id = slot.job_id
+              JOIN storage.blob_objects AS request_blob
+                ON request_blob.object_id = attempt.request_payload_object_id
+              JOIN storage.blob_objects AS response_blob
+                ON response_blob.object_id = attempt.raw_response_object_id
+              JOIN runtime.command_receipts AS receipt
+                ON receipt.command_slot_id = slot.command_slot_id
+               AND receipt.receipt_id = attempt.receipt_id
+              JOIN runtime.artifact_sets AS artifact_set
+                ON artifact_set.artifact_set_id = attempt.artifact_set_id
+               AND artifact_set.artifact_set_id = receipt.result_artifact_set_id
+               AND artifact_set.command_slot_id = slot.command_slot_id
+               AND artifact_set.job_id = slot.job_id
+             WHERE slot.job_id = %s
+               AND slot.idempotency_key = %s
+               AND slot.command_name = 'GenerateVlmEvidenceCommand'
+               AND slot.state = 'succeeded'
+               AND attempt.state = 'committed'
+               AND receipt.outcome = 'succeeded'
+            """,
+            (durable_job_id, idempotency_key),
+        )
+        row = cursor.fetchone()
+        if row is None or cursor.fetchone() is not None:
+            raise StoreValidationError(
+                "exact committed VLM generation child is unavailable"
             )
-            job_row = cursor.fetchone()
-            if job_row is None:
-                raise StoreValidationError("VLM generation Job is unavailable")
-            job_id, profile = job_row
-            durable_job_id = UUID(str(job_id))
-            if _text(profile) != job.profile:
-                raise JobProfileMismatchError("job_key belongs to a different profile")
-            cursor.execute(
-                """
-                SELECT slot.command_slot_id, slot.command_name, slot.request_hash,
-                       attempt.attempt_id, attempt.request_hash,
-                       attempt.provider_idempotency_key, attempt.state,
-                       request_blob.object_id, request_blob.content_hash,
-                       request_blob.byte_length, request_blob.media_type,
-                       response_blob.object_id, response_blob.content_hash,
-                       response_blob.byte_length, response_blob.media_type,
-                       attempt.provider_request_id,
-                       attempt.receipt_id, attempt.artifact_set_id,
-                       receipt.receipt_id, receipt.outcome,
-                       receipt.result_artifact_set_id, artifact_set.set_hash,
-                       artifact_set.member_count
-                  FROM runtime.command_slots AS slot
-                  JOIN runtime.generation_attempts AS attempt
-                    ON attempt.command_slot_id = slot.command_slot_id
-                   AND attempt.job_id = slot.job_id
-                  JOIN storage.blob_objects AS request_blob
-                    ON request_blob.object_id = attempt.request_payload_object_id
-                  JOIN storage.blob_objects AS response_blob
-                    ON response_blob.object_id = attempt.raw_response_object_id
-                  JOIN runtime.command_receipts AS receipt
-                    ON receipt.command_slot_id = slot.command_slot_id
-                   AND receipt.receipt_id = attempt.receipt_id
-                  JOIN runtime.artifact_sets AS artifact_set
-                    ON artifact_set.artifact_set_id = attempt.artifact_set_id
-                   AND artifact_set.artifact_set_id = receipt.result_artifact_set_id
-                   AND artifact_set.command_slot_id = slot.command_slot_id
-                   AND artifact_set.job_id = slot.job_id
-                 WHERE slot.job_id = %s
-                   AND slot.idempotency_key = %s
-                   AND slot.command_name = 'GenerateVlmEvidenceCommand'
-                   AND slot.state = 'succeeded'
-                   AND attempt.state = 'committed'
-                   AND receipt.outcome = 'succeeded'
-                """,
-                (durable_job_id, idempotency_key),
+        (
+            command_slot_id,
+            command_name,
+            slot_request_hash,
+            attempt_id,
+            attempt_request_hash,
+            provider_idempotency_key,
+            attempt_state,
+            request_object_id,
+            request_blob_hash,
+            request_byte_length,
+            request_media_type,
+            response_object_id,
+            response_blob_hash,
+            response_byte_length,
+            response_media_type,
+            provider_request_id,
+            attempt_receipt_id,
+            attempt_artifact_set_id,
+            receipt_id,
+            receipt_outcome,
+            receipt_artifact_set_id,
+            set_hash,
+            member_count,
+        ) = row
+        slot_id = UUID(str(command_slot_id))
+        durable_attempt_id = UUID(str(attempt_id))
+        durable_receipt_id = UUID(str(receipt_id))
+        durable_artifact_set_id = UUID(str(attempt_artifact_set_id))
+        if (
+            _text(command_name) != "GenerateVlmEvidenceCommand"
+            or _text(slot_request_hash) != _text(attempt_request_hash)
+            or _text(attempt_state) != "committed"
+            or UUID(str(attempt_receipt_id)) != durable_receipt_id
+            or UUID(str(receipt_artifact_set_id)) != durable_artifact_set_id
+            or _text(receipt_outcome) != "succeeded"
+            or int(_text(member_count)) != 3
+        ):
+            raise StoreValidationError(
+                "committed VLM generation identity is internally inconsistent"
             )
-            row = cursor.fetchone()
-            if row is None or cursor.fetchone() is not None:
-                raise StoreValidationError(
-                    "exact committed VLM generation child is unavailable"
-                )
+        request_payload = BlobRef(
+            UUID(str(request_object_id)),
+            _text(request_blob_hash),
+            int(_text(request_byte_length)),
+            _text(request_media_type),
+        )
+        self._claimed_blob_ref(
+            cursor,
+            durable_job_id,
+            request_payload,
+            field_name="VLM request payload",
+        )
+        raw_response = BlobRef(
+            UUID(str(response_object_id)),
+            _text(response_blob_hash),
+            int(_text(response_byte_length)),
+            _text(response_media_type),
+        )
+        self._claimed_blob_ref(
+            cursor,
+            durable_job_id,
+            raw_response,
+            field_name="VLM raw response",
+        )
+        cursor.execute(
+            """
+            SELECT artifact.artifact_type, artifact.logical_id,
+                   artifact.revision, artifact.namespace,
+                   artifact.scope_kind, artifact.scope_key,
+                   artifact.content_hash, artifact.payload_json::text
+              FROM runtime.artifact_set_members AS member
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = member.artifact_set_id
+             WHERE member.artifact_set_id = %s
+             ORDER BY member.ordinal
+            """,
+            (durable_artifact_set_id,),
+        )
+        artifacts: list[ArtifactMember] = []
+        while (artifact_row := cursor.fetchone()) is not None:
             (
-                command_slot_id,
-                command_name,
-                slot_request_hash,
-                attempt_id,
-                attempt_request_hash,
-                provider_idempotency_key,
-                attempt_state,
-                request_object_id,
-                request_blob_hash,
-                request_byte_length,
-                request_media_type,
-                response_object_id,
-                response_blob_hash,
-                response_byte_length,
-                response_media_type,
-                provider_request_id,
-                attempt_receipt_id,
-                attempt_artifact_set_id,
-                receipt_id,
-                receipt_outcome,
-                receipt_artifact_set_id,
-                set_hash,
-                member_count,
-            ) = row
-            slot_id = UUID(str(command_slot_id))
-            durable_attempt_id = UUID(str(attempt_id))
-            durable_receipt_id = UUID(str(receipt_id))
-            durable_artifact_set_id = UUID(str(attempt_artifact_set_id))
-            if (
-                _text(command_name) != "GenerateVlmEvidenceCommand"
-                or _text(slot_request_hash) != _text(attempt_request_hash)
-                or _text(attempt_state) != "committed"
-                or UUID(str(attempt_receipt_id)) != durable_receipt_id
-                or UUID(str(receipt_artifact_set_id)) != durable_artifact_set_id
-                or _text(receipt_outcome) != "succeeded"
-                or int(_text(member_count)) != 3
-            ):
+                artifact_type,
+                logical_id,
+                revision,
+                namespace,
+                scope_kind,
+                scope_key,
+                content_hash,
+                payload_json,
+            ) = artifact_row
+            serialized = _text(payload_json)
+            if canonical_payload_hash(serialized) != _text(content_hash):
                 raise StoreValidationError(
-                    "committed VLM generation identity is internally inconsistent"
+                    "VLM ArtifactSet member payload hash is invalid"
                 )
-            request_payload = BlobRef(
-                UUID(str(request_object_id)),
-                _text(request_blob_hash),
-                int(_text(request_byte_length)),
-                _text(request_media_type),
-            )
-            self._claimed_blob_ref(
-                cursor,
-                durable_job_id,
-                request_payload,
-                field_name="VLM request payload",
-            )
-            raw_response = BlobRef(
-                UUID(str(response_object_id)),
-                _text(response_blob_hash),
-                int(_text(response_byte_length)),
-                _text(response_media_type),
-            )
-            self._claimed_blob_ref(
-                cursor,
-                durable_job_id,
-                raw_response,
-                field_name="VLM raw response",
-            )
-            cursor.execute(
-                """
-                SELECT artifact.artifact_type, artifact.logical_id,
-                       artifact.revision, artifact.namespace,
-                       artifact.scope_kind, artifact.scope_key,
-                       artifact.content_hash, artifact.payload_json::text
-                  FROM runtime.artifact_set_members AS member
-                  JOIN runtime.artifacts AS artifact
-                    ON artifact.artifact_id = member.artifact_id
-                   AND artifact.artifact_set_id = member.artifact_set_id
-                 WHERE member.artifact_set_id = %s
-                 ORDER BY member.ordinal
-                """,
-                (durable_artifact_set_id,),
-            )
-            artifacts: list[ArtifactMember] = []
-            while (artifact_row := cursor.fetchone()) is not None:
-                (
-                    artifact_type,
-                    logical_id,
-                    revision,
-                    namespace,
-                    scope_kind,
-                    scope_key,
-                    content_hash,
-                    payload_json,
-                ) = artifact_row
-                serialized = _text(payload_json)
-                if canonical_payload_hash(serialized) != _text(content_hash):
-                    raise StoreValidationError(
-                        "VLM ArtifactSet member payload hash is invalid"
-                    )
-                artifacts.append(
-                    ArtifactMember(
-                        _text(artifact_type),
-                        _text(logical_id),
-                        int(_text(revision)),
-                        ArtifactScope(
-                            _text(namespace),
-                            _text(scope_kind),
-                            _text(scope_key),
-                        ),
-                        _text(content_hash),
-                        serialized,
-                    )
+            artifacts.append(
+                ArtifactMember(
+                    _text(artifact_type),
+                    _text(logical_id),
+                    int(_text(revision)),
+                    ArtifactScope(
+                        _text(namespace),
+                        _text(scope_kind),
+                        _text(scope_key),
+                    ),
+                    _text(content_hash),
+                    serialized,
                 )
-            artifact_tuple = tuple(artifacts)
-            if tuple(item.artifact_type for item in artifact_tuple) != (
-                "vlm_request_record",
-                "vlm_response_record",
-                "vlm_semantic_pack",
-            ):
-                raise StoreValidationError(
-                    "VLM ArtifactSet must exact-bind request, response, and Semantic Pack"
-                )
-            if any(
-                item.scope != canonical_recipe_scope(job)
-                or item.revision != artifact_tuple[0].revision
-                for item in artifact_tuple
-            ):
-                raise StoreValidationError(
-                    "VLM ArtifactSet members do not share one Job scope/revision"
-                )
-            CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
-            record, response_record, semantic_pack_record = artifact_tuple
-            (
-                episode_index,
-                window_manifest_sha256,
-                window_manifest_set_sha256,
-                source_manifest_sha256,
-                source_provenance_sha256,
-                request_identity_sha256,
-            ) = _vlm_request_record_projection(record.payload_json)
-            reference = VlmRequestRecordReference(
-                record.scope,
-                record.logical_id,
-                record.revision,
-                record.content_hash,
             )
-            child = PersistedVlmGenerationChild(
-                reference=reference,
-                payload_json=record.payload_json,
-                source_job=job,
-                kernel_job_id=durable_job_id,
-                command_slot_id=slot_id,
-                idempotency_key=idempotency_key,
-                request_hash=_text(slot_request_hash),
-                attempt_id=durable_attempt_id,
-                provider_idempotency_key=_text(provider_idempotency_key),
-                request_payload=request_payload,
-                receipt_id=durable_receipt_id,
-                artifact_set_id=durable_artifact_set_id,
-                episode_index=episode_index,
-                window_manifest_sha256=window_manifest_sha256,
-                window_manifest_set_sha256=window_manifest_set_sha256,
-                source_manifest_sha256=source_manifest_sha256,
-                source_provenance_sha256=source_provenance_sha256,
-                request_identity_sha256=request_identity_sha256,
+        artifact_tuple = tuple(artifacts)
+        if tuple(item.artifact_type for item in artifact_tuple) != (
+            "vlm_request_record",
+            "vlm_response_record",
+            "vlm_semantic_pack",
+        ):
+            raise StoreValidationError(
+                "VLM ArtifactSet must exact-bind request, response, and Semantic Pack"
             )
-            try:
-                decoded = decode_vlm_semantic_pack(
-                    _strict_json_object(
-                        semantic_pack_record.payload_json,
-                        "VLM Semantic Pack",
-                    )
+        if any(
+            item.scope != canonical_recipe_scope(job)
+            or item.revision != artifact_tuple[0].revision
+            for item in artifact_tuple
+        ):
+            raise StoreValidationError(
+                "VLM ArtifactSet members do not share one Job scope/revision"
+            )
+        CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
+        record, response_record, semantic_pack_record = artifact_tuple
+        frozen_request = _strict_json_object(
+            _exact_blob_bytes(cursor, request_payload, "VLM request payload").decode("utf-8", "strict"),
+            "VLM provider request payload",
+        )
+        pack_payload = _strict_json_object(semantic_pack_record.payload_json, "VLM Semantic Pack")
+        parser_version, semantic_version = generation_semantic_version(frozen_request, pack_payload)
+        (
+            episode_index,
+            window_manifest_sha256,
+            window_manifest_set_sha256,
+            source_manifest_sha256,
+            source_provenance_sha256,
+            request_identity_sha256,
+        ) = _vlm_request_record_projection(record.payload_json)
+        reference = VlmRequestRecordReference(
+            record.scope,
+            record.logical_id,
+            record.revision,
+            record.content_hash,
+        )
+        child = PersistedVlmGenerationChild(
+            reference=reference,
+            payload_json=record.payload_json,
+            source_job=job,
+            kernel_job_id=durable_job_id,
+            command_slot_id=slot_id,
+            idempotency_key=idempotency_key,
+            request_hash=_text(slot_request_hash),
+            attempt_id=durable_attempt_id,
+            provider_idempotency_key=_text(provider_idempotency_key),
+            request_payload=request_payload,
+            receipt_id=durable_receipt_id,
+            artifact_set_id=durable_artifact_set_id,
+            episode_index=episode_index,
+            window_manifest_sha256=window_manifest_sha256,
+            window_manifest_set_sha256=window_manifest_set_sha256,
+            source_manifest_sha256=source_manifest_sha256,
+            source_provenance_sha256=source_provenance_sha256,
+            request_identity_sha256=request_identity_sha256,
+            parser_strategy_version=parser_version,
+            semantic_schema_version=semantic_version,
+        )
+        try:
+            if semantic_version == 4:
+                cursor.execute(
+                    "SELECT provider_id, retry_policy_hash FROM runtime.generation_attempts WHERE attempt_id = %s",
+                    (child.attempt_id,),
                 )
+                policy_row = cursor.fetchone()
+                if policy_row is None or (
+                    _text(policy_row[0]) != frozen_request.get("provider_id")
+                    or _text(policy_row[1]) != frozen_request.get("retry_policy_sha256")
+                ):
+                    raise StoreValidationError("V4 generation attempt differs from its frozen provider/retry policy")
+                persisted_v4 = verify_v4_semantic_pack(
+                    child=child, artifact=semantic_pack_record,
+                    request_record=_strict_json_object(record.payload_json, "VLM request record"),
+                    request_payload=frozen_request, pack_payload=pack_payload,
+                    raw_response=_exact_blob_bytes(cursor, raw_response, "VLM raw response"),
+                    source=self._read_v4_source_owner(cursor, child),
+                )
+                decoded_raw_hash = persisted_v4.semantic_pack.raw_response_sha256
+            else:
+                decoded = decode_vlm_semantic_pack(pack_payload)
                 PersistedVlmSemanticPack(
                     reference=VlmSemanticPackReference(
                         semantic_pack_record.scope,
@@ -5556,48 +5616,47 @@ class PostgresRuntimeStore:
                     semantic_pack=decoded,
                     source_child=child,
                 )
-                response = _closed_mapping(
-                    _strict_json_object(
-                        response_record.payload_json,
-                        "VLM response record",
-                    ),
-                    frozenset(
-                        {
-                            "attempt_id",
-                            "provider_request_id",
-                            "raw_response_blob",
-                            "raw_response_sha256",
-                        }
-                    ),
+                decoded_raw_hash = decoded.raw_response_sha256
+            response = _closed_mapping(
+                _strict_json_object(
+                    response_record.payload_json,
                     "VLM response record",
+                ),
+                frozenset(
+                    {
+                        "attempt_id",
+                        "provider_request_id",
+                        "raw_response_blob",
+                        "raw_response_sha256",
+                    }
+                ),
+                "VLM response record",
+            )
+            if (
+                response["attempt_id"] != str(child.attempt_id)
+                or response["provider_request_id"]
+                != (
+                    None
+                    if provider_request_id is None
+                    else _text(provider_request_id)
                 )
-                if (
-                    response["attempt_id"] != str(child.attempt_id)
-                    or response["provider_request_id"]
-                    != (
-                        None
-                        if provider_request_id is None
-                        else _text(provider_request_id)
-                    )
-                    or _blob_ref(
-                        response["raw_response_blob"],
-                        "VLM response raw_response_blob",
-                    )
-                    != raw_response
-                    or response["raw_response_sha256"]
-                    != decoded.raw_response_sha256
-                    or raw_response.content_hash != decoded.raw_response_sha256
-                ):
-                    raise StoreValidationError(
-                        "VLM response and Semantic Pack provenance do not match"
-                    )
-            except (StoreValidationError, VlmValidationError) as error:
+                or _blob_ref(
+                    response["raw_response_blob"],
+                    "VLM response raw_response_blob",
+                )
+                != raw_response
+                or response["raw_response_sha256"]
+                != decoded_raw_hash
+                or raw_response.content_hash != decoded_raw_hash
+            ):
                 raise StoreValidationError(
-                    "committed VLM ArtifactSet failed exact v3 verification"
-                ) from error
-            return child
-
-        return self._transaction(operation)
+                    "VLM response and Semantic Pack provenance do not match"
+                )
+        except (StoreValidationError, VlmValidationError, TypeError, ValueError) as error:
+            raise StoreValidationError(
+                f"committed VLM ArtifactSet failed exact v{semantic_version} verification"
+            ) from error
+        return child
 
     def read_committed_vlm_input_reference(
         self,
@@ -5868,7 +5927,7 @@ class PostgresRuntimeStore:
                     raise StoreValidationError(
                         "VLM SemanticPackSet member identity is invalid"
                     )
-                decoded = _decode_vlm_semantic_pack_set(serialized)
+                decoded = _decode_registered_vlm_semantic_pack_set(serialized)
                 if _vlm_batch_request_hash(job, artifact, decoded) != _text(request_hash):
                     raise StoreValidationError(
                         "VLM SemanticPackSet does not match its command request hash"
@@ -5878,6 +5937,8 @@ class PostgresRuntimeStore:
                     _text(set_hash),
                     (artifact,),
                 )
+                if decoded.strategy_version == VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4:
+                    self._assert_vlm_batch_child_closure(cursor, job, decoded)
             except (StoreValidationError, TypeError, ValueError) as error:
                 raise SemanticInputIntegrityError(
                     "committed VLM SemanticPackSet failed immutable verification "
@@ -6332,6 +6393,63 @@ class PostgresRuntimeStore:
             and artifact.content_hash == reference.content_hash
         )
 
+    def _read_v4_source_owner(
+        self, cursor: DbCursor, child: PersistedVlmGenerationChild,
+    ) -> PersistedWholeSeriesSourceManifest:
+        """Resolve the frozen same-Job owner, never a logical head or another Job."""
+        cursor.execute(
+            """
+            SELECT receipt.receipt_id, artifact.artifact_set_id
+              FROM runtime.artifacts AS artifact
+              JOIN runtime.artifact_sets AS artifact_set
+                ON artifact_set.artifact_set_id = artifact.artifact_set_id
+               AND artifact_set.job_id = artifact.job_id
+              JOIN runtime.command_receipts AS receipt
+                ON receipt.result_artifact_set_id = artifact_set.artifact_set_id
+               AND receipt.command_slot_id = artifact_set.command_slot_id
+               AND receipt.outcome = 'succeeded'
+              JOIN runtime.command_slots AS slot
+                ON slot.command_slot_id = artifact_set.command_slot_id
+               AND slot.job_id = artifact.job_id
+               AND slot.command_name = 'PrepareWholeSeriesSourcesCommand'
+               AND slot.state = 'succeeded'
+             WHERE artifact.job_id = %s AND artifact.content_hash = %s
+               AND artifact.artifact_type = 'whole_series_source_manifest'
+               AND artifact.logical_id = 'whole_series_source_manifest'
+            """,
+            (child.kernel_job_id, child.source_manifest_sha256),
+        )
+        owners: list[tuple[UUID, UUID]] = []
+        while (row := cursor.fetchone()) is not None:
+            owners.append((UUID(str(row[0])), UUID(str(row[1]))))
+        matches: list[PersistedWholeSeriesSourceManifest] = []
+        for receipt_id, artifact_set_id in owners:
+            committed = self._read_exact_committed_set_by_ids(
+                cursor, child.source_job, receipt_id=receipt_id, artifact_set_id=artifact_set_id,
+            )
+            if committed.command_name != "PrepareWholeSeriesSourcesCommand" or len(committed.members) != 1:
+                raise StoreValidationError("V4 source owner is not an exact singleton SourcePrep set")
+            ordinal, artifact = committed.members[0]
+            if ordinal != 0 or artifact.scope != canonical_recipe_scope(child.source_job):
+                raise StoreValidationError("V4 source owner scope or ordinal is invalid")
+            source = PersistedWholeSeriesSourceManifest(
+                reference=WholeSeriesSourceManifestReference(
+                    artifact.scope, artifact.logical_id, artifact.revision, artifact.content_hash,
+                ),
+                payload_json=artifact.payload_json,
+                proxy_blobs=tuple(
+                    self._claimed_blob_ref(cursor, committed.job_id, blob, field_name="V4 source proxy")
+                    for blob in _source_manifest_blob_refs(artifact.payload_json)
+                ),
+                job_id=committed.job_id, receipt_id=receipt_id, artifact_set_id=artifact_set_id,
+                command_slot_id=committed.command_slot_id, source_job=child.source_job,
+            )
+            if source.canonical_hash == child.source_provenance_sha256:
+                matches.append(source)
+        if len(matches) != 1:
+            raise StoreValidationError("V4 exact same-Job committed Source owner is unavailable or ambiguous")
+        return matches[0]
+
     def _assert_vlm_batch_child_closure(
         self,
         cursor: DbCursor,
@@ -6390,6 +6508,23 @@ class PostgresRuntimeStore:
             request_identity = _decode_request_identity(
                 request_payload["request_identity"]
             )
+            request_blob = _blob_ref(request_payload["request_payload_blob"], "VLM request payload")
+            self._claimed_blob_ref(cursor, committed.job_id, request_blob, field_name="VLM batch request payload")
+            frozen_request = _strict_json_object(
+                _exact_blob_bytes(cursor, request_blob, "VLM batch request payload").decode("utf-8", "strict"),
+                "VLM batch frozen request",
+            )
+            parser_version, schema_version = generation_semantic_version(
+                frozen_request, _strict_json_object(committed.members[2][1].payload_json, "VLM batch pack"),
+            )
+            require_batch_child_version(decoded.strategy_version, parser_version, schema_version)
+            if schema_version == 4:
+                verified = self._read_committed_vlm_generation_child(cursor, job, child.idempotency_key)
+                if (
+                    verified.receipt_id != child.request_record.receipt_id
+                    or verified.artifact_set_id != child.request_record.artifact_set_id
+                ):
+                    raise StoreValidationError("V4 batch child differs from its verified generation")
             (
                 episode_index,
                 _window_manifest_sha256,

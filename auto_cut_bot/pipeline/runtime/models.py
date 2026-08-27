@@ -288,6 +288,7 @@ class PipelineExecutionProfile:
     evidence_read_limits_json: str | None = None
     schema_version: str = _EXECUTION_PROFILE_SCHEMA_VERSION_V9
     kind: PipelineExecutionProfileKind = "doubao_vlm"
+    parser_contract_sha256: str | None = None
     _historical_read_token: InitVar[object | None] = None
 
     def __post_init__(self, _historical_read_token: object | None) -> None:
@@ -300,6 +301,7 @@ class PipelineExecutionProfile:
                     self.adapter_strategy_version,
                     self.prompt_version,
                     self.kernel_parser_strategy_version,
+                    self.parser_contract_sha256,
                     self.response_schema_json,
                     self.request_parameters_json,
                     self.parse_policy_json,
@@ -343,6 +345,29 @@ class PipelineExecutionProfile:
             "vlm_stage_strategy_version",
         ):
             _profile_text(getattr(self, field_name), f"execution_profile.{field_name}")
+        # This boundary is independent of transport registration: a historical
+        # profile must not admit v4 merely by retaining an older adapter.
+        if (
+            self.kernel_parser_strategy_version == "strict-semantic-pack-v4"
+            and self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V10
+        ):
+            raise PipelineRunValidationError(
+                "video-observation parser v4 requires semantic-only execution profile v10"
+            )
+        if self.kernel_parser_strategy_version == "strict-semantic-pack-v4":
+            from autocut_kernel.vlm.semantic_contracts import parser_contract_sha256_for
+
+            if (
+                type(self.parser_contract_sha256) is not str  # noqa: E721
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", self.parser_contract_sha256) is None
+                or self.parser_contract_sha256
+                != parser_contract_sha256_for(self.kernel_parser_strategy_version)
+            ):
+                raise PipelineRunValidationError(
+                    "V4 profile must explicitly bind the registered parser implementation"
+                )
+        elif self.parser_contract_sha256 is not None:
+            raise PipelineRunValidationError("legacy parser profile cannot claim an implementation field")
         response_schema = _decode_canonical_json(
             self.response_schema_json,
             "response_schema_json",
@@ -619,6 +644,7 @@ class PipelineExecutionProfile:
             adapter_strategy_version=policy.adapter_strategy_version,
             prompt_version=policy.prompt_version,
             kernel_parser_strategy_version=policy.parser_strategy_version,
+            parser_contract_sha256=policy.parser_contract_sha256,
             response_schema_json=policy.response_schema_json,
             request_parameters_json=policy.request_parameters_json,
             parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
@@ -665,6 +691,7 @@ class PipelineExecutionProfile:
             adapter_strategy_version=policy.adapter_strategy_version,
             prompt_version=policy.prompt_version,
             kernel_parser_strategy_version=policy.parser_strategy_version,
+            parser_contract_sha256=policy.parser_contract_sha256,
             response_schema_json=policy.response_schema_json,
             request_parameters_json=policy.request_parameters_json,
             parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
@@ -746,6 +773,11 @@ class PipelineExecutionProfile:
             allowed = allowed | {"stage3_command_policy"}
         if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
             allowed = allowed | {"evidence_read_limits"}
+        if (
+            schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V10
+            and value.get("kernel_parser_strategy_version") == "strict-semantic-pack-v4"
+        ):
+            allowed = allowed | {"parser_contract_sha256"}
         unsupported = set(value) - allowed
         if unsupported:
             raise PipelineRunValidationError(
@@ -905,6 +937,10 @@ class PipelineExecutionProfile:
                 if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9 else None
             ),
             schema_version=cast(str, schema_version),
+            parser_contract_sha256=(
+                _profile_text(value["parser_contract_sha256"], "execution_profile.parser_contract_sha256")
+                if "parser_contract_sha256" in allowed else None
+            ),
             _historical_read_token=(
                 _HISTORICAL_PROFILE_READ_TOKEN
                 if schema_version
@@ -967,6 +1003,8 @@ class PipelineExecutionProfile:
             "schema_version": self.schema_version,
             "vlm_stage_strategy_version": self.vlm_stage_strategy_version,
         }
+        if self.parser_contract_sha256 is not None:
+            result["parser_contract_sha256"] = self.parser_contract_sha256
         if self.schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V2,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
@@ -1279,6 +1317,7 @@ def _build_registered_doubao_policy(
                 str,
                 profile.kernel_parser_strategy_version,
             ),
+            parser_contract_sha256=profile.parser_contract_sha256,
             response_schema_json=cast(str, profile.response_schema_json),
             video_fps=cast(float, parameters["video_fps"]),
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
@@ -1320,6 +1359,8 @@ def _build_registered_doubao_policy(
     registered_mapping["generation_retry_policy"] = (
         profile.to_generation_retry_policy().to_mapping()
     )
+    if rebuilt.parser_contract_sha256 is not None:
+        registered_mapping["parser_contract_sha256"] = rebuilt.parser_contract_sha256
     if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
         registered_mapping["media_preflight_policy"] = profile.to_media_preflight_policy().to_mapping()
         registered_mapping["media_preflight_policy_hash"] = profile.media_preflight_policy_hash

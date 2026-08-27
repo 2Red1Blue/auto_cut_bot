@@ -28,8 +28,10 @@ from autocut_kernel.store import (
     CommandOutcome,
     Job,
 )
-from autocut_kernel.store.models import canonical_recipe_scope
+from autocut_kernel.store.models import VLM_BATCH_FINALIZER_STRATEGY_VERSION, canonical_recipe_scope
+from autocut_kernel.store.vlm_v4 import VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4
 from autocut_kernel.vlm import VlmProviderPort
+from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4
 
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import (
@@ -48,6 +50,7 @@ from auto_cut_bot.pipeline.vlm.policy_binding import (
     validate_installed_source_sampling,
     validate_installed_vlm_policy,
 )
+from auto_cut_bot.pipeline.vlm.request_factory import DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
@@ -69,7 +72,7 @@ def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, in
         return VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION, 1
     if policy.stage_strategy_version == DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION:
         return VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
-    if policy.stage_strategy_version == DOUBAO_VLM_STAGE_STRATEGY_VERSION:
+    if policy.stage_strategy_version in {DOUBAO_VLM_STAGE_STRATEGY_VERSION, DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION}:
         return VLM_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
     raise PipelineRunValidationError("VLM profile has no registered episode selection strategy")
 
@@ -385,6 +388,11 @@ class VlmPipelineStage:
             source_manifest_sha256=source_bundle.artifact_reference.content_hash,
             source_provenance_sha256=source_bundle.canonical_hash,
             children=tuple(children),
+            strategy_version=(
+                VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4
+                if policy.parser_strategy_version == VLM_PARSER_V4
+                else VLM_BATCH_FINALIZER_STRATEGY_VERSION
+            ),
         )
         return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
 

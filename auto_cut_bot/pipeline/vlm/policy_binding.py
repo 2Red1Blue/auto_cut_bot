@@ -12,7 +12,7 @@ import hashlib
 from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.registry.authority_profiles import Stage1NarrativeProfileSource
 from autocut_kernel.vlm import GenerationRetryPolicy
-from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
+from autocut_kernel.vlm.semantic_contracts import parser_contract_sha256_for
 
 from auto_cut_bot.pipeline.source_prep.command import (
     PersistedPreparedSources,
@@ -48,7 +48,7 @@ def validate_installed_vlm_policy(
         "parser_strategy_version": policy.parser_strategy_version,
         "prompt_template_sha256": vlm_prompt_template_sha256(policy.prompt_version),
         "response_schema_sha256": _text_sha256(policy.response_schema_json),
-        "parser_contract_sha256": vlm_parser_contract_sha256(),
+        "parser_contract_sha256": parser_contract_sha256_for(policy.parser_strategy_version),
         "request_parameters_sha256": _text_sha256(policy.request_parameters_json),
         "parse_policy_sha256": policy.parse_policy.canonical_hash,
         "retry_policy_sha256": retry_policy.canonical_hash,

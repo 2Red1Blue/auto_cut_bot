@@ -24,6 +24,7 @@ from autocut_kernel.vlm import (
     ProviderReconcileQuery,
     ProviderResult,
 )
+from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4, require_parser_contract
 
 from auto_cut_bot.pipeline.debug import ModelIoDebugContext, ModelIoDebugSink
 
@@ -478,8 +479,12 @@ def _request_payload(raw: bytes) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError("request payload must be an object")
     payload = cast(dict[str, object], value)
-    if frozenset(payload) != _EXPECTED_PAYLOAD_FIELDS:
+    is_video = payload.get("parser_strategy_version") == VLM_PARSER_V4
+    expected_fields = _EXPECTED_PAYLOAD_FIELDS | {"parser_contract_sha256"} if is_video else _EXPECTED_PAYLOAD_FIELDS
+    if frozenset(payload) != expected_fields:
         raise ValueError("request payload does not match the closed Ark adapter contract")
+    if is_video:
+        require_parser_contract(VLM_PARSER_V4, cast(str | None, payload["parser_contract_sha256"]))
     for field in ("model_id", "prompt", "prompt_version", "provider_id"):
         _required_text(payload[field], field)
     if payload["provider_id"] != DOUBAO_ARK_PROVIDER_ID:
@@ -569,8 +574,12 @@ def _response_text_format(
     endpoint-accepted v4 form is direct under ``text.format``.  A persisted
     v3 request must still reproduce its original wire contract during replay.
     """
+    properties = response_schema.get("properties")
+    version = cast(dict[str, object], properties).get("schema_version") if isinstance(properties, dict) else None
+    declared = cast(dict[str, object], version).get("const") if isinstance(version, dict) else None
+    video_contract = type(declared) is int and declared == 4
     descriptor = {
-        "name": "vlm_semantic_pack_v3",
+        "name": "vlm_semantic_pack_v4" if video_contract else "vlm_semantic_pack_v3",
         "strict": True,
         "schema": response_schema,
     }

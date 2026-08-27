@@ -22,6 +22,7 @@ from autocut_kernel.pipeline import (
 from autocut_kernel.store import BlobRef, Job
 from autocut_kernel.store.models import canonical_recipe_scope
 from autocut_kernel.vlm import GenerationRetryPolicy, VlmParsePolicy
+from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4, require_parser_contract
 
 from auto_cut_bot.pipeline.source_prep.command import (
     PersistedPreparedSources,
@@ -38,11 +39,11 @@ from .doubao_ark_provider import (
 )
 from .prompt import (
     VLM_PROMPT_VERSION,
-    VLM_RESPONSE_SCHEMA,
     build_vlm_prompt,
     resolve_vlm_prompt_template,
     vlm_response_schema_json,
 )
+from .video_prompt import VLM_VIDEO_PROMPT_VERSION, vlm_video_response_schema_json
 
 DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-semantic-pack-v3-request-v1"
 DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION = (
@@ -53,6 +54,18 @@ DOUBAO_VLM_PROBE_THEN_PARALLEL_STAGE_STRATEGY_VERSION = (
 )
 DOUBAO_VLM_STAGE_STRATEGY_VERSION = DOUBAO_VLM_PROBE_THEN_PARALLEL_STAGE_STRATEGY_VERSION
 DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION = DOUBAO_VLM_STAGE_STRATEGY_VERSION
+DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION = (
+    "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-10-v1"
+)
+
+
+def registered_response_schema_json(parser_strategy_version: str) -> str:
+    """Resolve the frozen wire schema; never infer a parser from failed output."""
+    if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
+        return vlm_response_schema_json()
+    if parser_strategy_version == VLM_PARSER_V4:
+        return vlm_video_response_schema_json()
+    raise ValueError("parser strategy must be a registered Kernel version")
 
 
 def _default_parse_policy() -> VlmParsePolicy:
@@ -159,6 +172,7 @@ class DoubaoVlmRequestPolicy:
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
     stage_strategy_version: str = DOUBAO_VLM_STAGE_STRATEGY_VERSION
     thinking_type: str | None = None
+    parser_contract_sha256: str | None = None
 
     def __post_init__(self) -> None:
         model_id = _closed_text(self.model_id, "model_id")
@@ -174,21 +188,26 @@ class DoubaoVlmRequestPolicy:
         elif self.thinking_type is not None:
             raise ValueError("legacy Ark adapters do not accept thinking_type")
         resolve_vlm_prompt_template(self.prompt_version)
-        schema = _strict_json_object(self.response_schema_json, "response schema JSON")
-        if schema != VLM_RESPONSE_SCHEMA or self.response_schema_json != vlm_response_schema_json():
+        _strict_json_object(self.response_schema_json, "response schema JSON")
+        if self.response_schema_json != registered_response_schema_json(self.parser_strategy_version):
             raise ValueError("response schema JSON must be the exact registered canonical schema")
+        video_contract = self.parser_strategy_version == VLM_PARSER_V4
+        require_parser_contract(self.parser_strategy_version, self.parser_contract_sha256)
+        if video_contract != (self.prompt_version == VLM_VIDEO_PROMPT_VERSION):
+            raise ValueError("V4 video prompt and parser must be selected together")
+        if video_contract != (self.stage_strategy_version == DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION):
+            raise ValueError("V4 video parser requires its registered stage strategy")
         fps = _finite_number(self.video_fps, "video_fps", minimum=0.1, maximum=10)
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 32_768:  # noqa: E721
             raise ValueError("max_output_tokens must be an integer between 1 and 32768")
         temperature = _finite_number(self.temperature, "temperature", minimum=0, maximum=2)
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
             raise TypeError("parse_policy must be an exact VlmParsePolicy")
-        if self.parser_strategy_version != VLM_PARSER_STRATEGY_VERSION:
-            raise ValueError("parser strategy must be the registered Kernel version")
         if self.stage_strategy_version not in {
             DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_STAGE_STRATEGY_VERSION,
+            DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION,
         }:
             raise ValueError("stage strategy must be a registered Doubao request version")
         supported_combinations = {
@@ -203,6 +222,7 @@ class DoubaoVlmRequestPolicy:
             (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
+            (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION),
         }
         if (self.adapter_strategy_version, self.stage_strategy_version) not in supported_combinations:
             raise ValueError(
@@ -231,6 +251,8 @@ class DoubaoVlmRequestPolicy:
 
     def to_mapping(self) -> dict[str, object]:
         return {
+            **({"parser_contract_sha256": self.parser_contract_sha256}
+               if self.parser_strategy_version == VLM_PARSER_V4 else {}),
             "adapter_strategy_version": self.adapter_strategy_version,
             "model_id": self.model_id,
             "parse_policy": self.parse_policy.to_mapping(),
@@ -313,6 +335,7 @@ def build_doubao_vlm_request(
         parse_policy=policy.parse_policy,
         retry_policy=retry_policy,
         parser_strategy_version=policy.parser_strategy_version,
+        parser_contract_sha256=policy.parser_contract_sha256,
         source_provenance_sha256=source_bundle.canonical_hash,
     )
 

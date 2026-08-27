@@ -22,6 +22,7 @@ from typing import Protocol, cast, runtime_checkable
 
 from ..media.types import canonical_sha256, sha256_prefixed
 from .models import VlmParsePolicy, VlmRequestIdentity, VlmValidationError
+from .semantic_contracts import VLM_PARSER_V4, parser_contract_sha256_for
 from .window import WindowManifest, WindowManifestSet
 
 
@@ -55,6 +56,8 @@ class VlmReuseRequestFacts(Protocol):
     def parse_policy(self) -> VlmParsePolicy: ...
     @property
     def parser_strategy_version(self) -> str: ...
+    @property
+    def parser_contract_sha256(self) -> str | None: ...
     @property
     def source_provenance_sha256(self) -> str | None: ...
     @property
@@ -178,6 +181,7 @@ class VlmSemanticPolicyIdentityV1:
     parser_strategy_version: str
     preprocess_policy_sha256: str
     window_sampling_policy_sha256: str
+    parser_contract_sha256: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("prompt_template", "prompt_version", "model_id", "provider_id", "parser_strategy_version"):
@@ -190,6 +194,15 @@ class VlmSemanticPolicyIdentityV1:
             self, "response_schema_json", _json_text(_json_object(self.response_schema_json, "response_schema_json")),
         )
         object.__setattr__(self, "request_parameters_json", _json_text(_parameters(self.request_parameters_json)))
+        # Historical v3 compatibility projections have no implementation field;
+        # preserve their exact bytes. The new v4 contract explicitly binds its
+        # installed implementation, including the shared frozen v3 helpers.
+        if self.parser_strategy_version == VLM_PARSER_V4:
+            _hash(self.parser_contract_sha256, "parser_contract_sha256")
+            if self.parser_contract_sha256 != parser_contract_sha256_for(self.parser_strategy_version):
+                raise VlmValidationError("frozen V4 parser implementation differs from the registered parser")
+        elif self.parser_contract_sha256 is not None:
+            raise VlmValidationError("legacy semantic policy cannot claim a parser implementation field")
 
     @classmethod
     def from_request(
@@ -215,12 +228,13 @@ class VlmSemanticPolicyIdentityV1:
             provider_scope_fingerprint=provider_scope.provider_scope_fingerprint,
             parse_policy=request.parse_policy,
             parser_strategy_version=request.parser_strategy_version,
+            parser_contract_sha256=request.parser_contract_sha256,
             preprocess_policy_sha256=request.manifest.preprocess_policy_sha256,
             window_sampling_policy_sha256=request.manifest.window_sampling_policy_sha256,
         )
 
     def to_mapping(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "kind": "VlmSemanticPolicyIdentity/v1",
             "prompt_template_sha256": _bytes_hash(self.prompt_template.encode("utf-8")),
             "prompt_version": self.prompt_version,
@@ -234,6 +248,9 @@ class VlmSemanticPolicyIdentityV1:
             "preprocess_policy_sha256": self.preprocess_policy_sha256,
             "window_sampling_policy_sha256": self.window_sampling_policy_sha256,
         }
+        if self.parser_contract_sha256 is not None:
+            result["parser_contract_sha256"] = self.parser_contract_sha256
+        return result
 
     @property
     def canonical_hash(self) -> str:
@@ -281,6 +298,13 @@ def _verified_request(request: VlmReuseRequestFacts) -> VlmRequestIdentity:
         "window_manifest_sha256": request.manifest.canonical_hash,
         "window_manifest_set_sha256": request.manifest_set.canonical_hash,
     }
+    if request.parser_strategy_version == VLM_PARSER_V4:
+        parser_digest = _hash(request.parser_contract_sha256, "parser_contract_sha256")
+        if parser_digest != parser_contract_sha256_for(request.parser_strategy_version):
+            raise VlmValidationError("origin V4 request binds a different parser implementation")
+        semantic_payload["parser_contract_sha256"] = parser_digest
+    elif request.parser_contract_sha256 is not None:
+        raise VlmValidationError("legacy request cannot claim a parser implementation field")
     if set(payload) != set(semantic_payload) | {"retry_policy", "retry_policy_sha256"}:
         raise VlmValidationError("origin request payload fields are not closed")
     if any(payload[name] != value for name, value in semantic_payload.items()):
@@ -347,6 +371,8 @@ class VlmReuseIdentityV1:
             "window_manifest_sha256": self.manifest.canonical_hash,
             "window_manifest_set_sha256": self.manifest_set.canonical_hash,
         }
+        if policy.parser_contract_sha256 is not None:
+            expected_payload["parser_contract_sha256"] = policy.parser_contract_sha256
         if (
             set(payload) != set(expected_payload) | {"retry_policy", "retry_policy_sha256"}
             or any(payload[name] != value for name, value in expected_payload.items())

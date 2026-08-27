@@ -486,6 +486,10 @@ def resolve_vlm_prompt_template(prompt_version: str) -> str:
         return VLM_PROMPT_TEMPLATE
     if prompt_version == VLM_COMPACT_PROMPT_VERSION:
         return VLM_COMPACT_PROMPT_TEMPLATE
+    from .video_prompt import VLM_VIDEO_PROMPT_TEMPLATE, VLM_VIDEO_PROMPT_VERSION
+
+    if prompt_version == VLM_VIDEO_PROMPT_VERSION:
+        return VLM_VIDEO_PROMPT_TEMPLATE
     raise ValueError("prompt version must be a registered VLM prompt version")
 
 
@@ -502,6 +506,10 @@ def build_vlm_prompt(
 
     if type(manifest) is not WindowManifest:  # noqa: E721
         raise TypeError("manifest must be an exact WindowManifest")
+    from .video_prompt import VLM_VIDEO_PROMPT_VERSION, build_vlm_video_prompt
+
+    if prompt_version == VLM_VIDEO_PROMPT_VERSION:
+        return build_vlm_video_prompt(manifest)
     template = resolve_vlm_prompt_template(prompt_version)
     frame_anchors = [
         {"frame_id": sample.frame_id, "proxy_pts": sample.proxy_pts}

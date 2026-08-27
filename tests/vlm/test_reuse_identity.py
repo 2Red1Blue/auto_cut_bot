@@ -320,5 +320,7 @@ def test_nonfinite_or_invalid_unicode_schema_fails_during_construction(schema_js
 
 def test_parser_strategy_is_an_explicit_semantic_dependency() -> None:
     original = _identity(_request()).semantic_policy
-    changed = replace(original, parser_strategy_version="strict-semantic-pack-v4")
+    # This tests the generic compatibility projection, not admission of the
+    # now-registered v4 parser (which requires its explicit implementation hash).
+    changed = replace(original, parser_strategy_version="strict-semantic-pack-test-alternate")
     assert original.canonical_hash != changed.canonical_hash

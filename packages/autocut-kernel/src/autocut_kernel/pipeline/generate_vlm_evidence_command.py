@@ -40,10 +40,15 @@ from ..vlm import (
     VlmRequestIdentity,
     VlmResponseIndeterminate,
     VlmResponseRejected,
-    VlmSemanticPack,
     WindowManifest,
     WindowManifestSet,
-    parse_vlm_response,
+)
+from ..vlm.semantic_contracts import (
+    REGISTERED_VLM_PARSERS,
+    VLM_PARSER_V4,
+    SemanticPackValue,
+    parse_registered_vlm_response,
+    require_parser_contract,
 )
 
 _COMMAND_NAME = "GenerateVlmEvidenceCommand"
@@ -233,6 +238,7 @@ class GenerateVlmEvidenceRequest:
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
     source_provenance_sha256: str | None = None
     source_manifest_sha256: str | None = None
+    parser_contract_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:  # noqa: E721
@@ -270,8 +276,9 @@ class GenerateVlmEvidenceRequest:
         ):
             if type(value) is not str or not value.strip():  # noqa: E721
                 raise ValueError(f"{name} must be non-empty")
-        if self.parser_strategy_version != VLM_PARSER_STRATEGY_VERSION:
+        if self.parser_strategy_version not in REGISTERED_VLM_PARSERS:
             raise ValueError("parser_strategy_version is not registered")
+        require_parser_contract(self.parser_strategy_version, self.parser_contract_sha256)
         if self.source_provenance_sha256 is not None:
             sha256_prefixed(
                 self.source_provenance_sha256,
@@ -279,7 +286,19 @@ class GenerateVlmEvidenceRequest:
             )
         if self.source_manifest_sha256 is not None:
             sha256_prefixed(self.source_manifest_sha256, "source_manifest_sha256")
-        _json_object(self.response_schema_json, "response_schema_json")
+        response_schema = _json_object(self.response_schema_json, "response_schema_json")
+        properties = response_schema.get("properties")
+        version_schema = (
+            cast(dict[str, object], properties).get("schema_version")
+            if isinstance(properties, dict) else None
+        )
+        wire_version = (
+            cast(dict[str, object], version_schema).get("const")
+            if isinstance(version_schema, dict) else None
+        )
+        if self.parser_strategy_version == VLM_PARSER_V4 or wire_version == 4:
+            if self.parser_strategy_version != VLM_PARSER_V4 or type(wire_version) is not int or wire_version != 4:  # noqa: E721
+                raise ValueError("V4 parser requires the explicit V4 response wire schema")
         _json_object(self.request_parameters_json, "request_parameters_json")
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
             raise ValueError("parse_policy must be a VlmParsePolicy")
@@ -292,6 +311,8 @@ class GenerateVlmEvidenceRequest:
     def request_payload(self) -> bytes:
         return _json_bytes(
             {
+                **({"parser_contract_sha256": self.parser_contract_sha256}
+                   if self.parser_strategy_version == VLM_PARSER_V4 else {}),
                 "model_id": self.model_id,
                 "parse_policy": self.parse_policy.to_mapping(),
                 "parser_strategy_version": self.parser_strategy_version,
@@ -391,7 +412,7 @@ class GenerateVlmEvidenceRequest:
 class GenerateVlmEvidenceResult:
     outcome: CommandOutcome
     attempt: GenerationAttempt | None = None
-    semantic_pack: VlmSemanticPack | None = None
+    semantic_pack: SemanticPackValue | None = None
     artifacts: tuple[ArtifactMember, ...] = ()
 
 
@@ -597,8 +618,10 @@ class GenerateVlmEvidenceCommand:
             return GenerateVlmEvidenceResult(outcome, attempt)
         raw_response = self._store.read_immutable_blob(request.job, attempt.raw_response)
         try:
-            semantic_pack = parse_vlm_response(
+            semantic_pack = parse_registered_vlm_response(
                 raw_response,
+                parser_strategy_version=request.parser_strategy_version,
+                parser_contract_sha256=request.parser_contract_sha256,
                 manifest=request.manifest,
                 manifest_set=request.manifest_set,
                 request_identity=request.request_identity,
@@ -752,8 +775,10 @@ class GenerateVlmEvidenceCommand:
             return GenerateVlmEvidenceResult(outcome, attempt)
         self._assert_attempt_identity(request, outcome, attempt)
         raw_response = self._store.read_immutable_blob(request.job, attempt.raw_response)
-        semantic_pack = parse_vlm_response(
+        semantic_pack = parse_registered_vlm_response(
             raw_response,
+            parser_strategy_version=request.parser_strategy_version,
+            parser_contract_sha256=request.parser_contract_sha256,
             manifest=request.manifest,
             manifest_set=request.manifest_set,
             request_identity=request.request_identity,
@@ -807,7 +832,7 @@ def _artifact(
 def _artifacts(
     request: GenerateVlmEvidenceRequest,
     attempt: GenerationAttempt,
-    semantic_pack: VlmSemanticPack,
+    semantic_pack: SemanticPackValue,
 ) -> tuple[ArtifactMember, ...]:
     if attempt.raw_response is None:
         raise ValueError("generation artifacts require an exact raw-response BlobRef")

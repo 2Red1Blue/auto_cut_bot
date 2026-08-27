@@ -14,14 +14,17 @@ from importlib import resources
 from typing import cast
 
 from autocut_kernel.vlm import GenerationRetryPolicy, VlmParsePolicy
-from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
+from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4, parser_contract_sha256_for
 
 from auto_cut_bot.pipeline.source_prep.command import identity_window_sampling_policy_sha256
 from auto_cut_bot.pipeline.vlm.doubao_ark_provider import (
     DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
 )
 from auto_cut_bot.pipeline.vlm.prompt import vlm_prompt_template_sha256
-from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
+from auto_cut_bot.pipeline.vlm.request_factory import (
+    DoubaoVlmRequestPolicy,
+    registered_response_schema_json,
+)
 
 
 class SemanticRunAuthorityError(ValueError):
@@ -139,6 +142,7 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
             provider_id=cast(str, vlm["provider_id"]),
             adapter_strategy_version=cast(str, vlm["adapter_strategy_version"]),
             prompt_version=cast(str, vlm["prompt_version"]),
+            response_schema_json=registered_response_schema_json(cast(str, vlm["parser_strategy_version"])),
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
             temperature=cast(int | float, parameters["temperature"]),
             video_fps=cast(int | float, parameters["video_fps"]),
@@ -155,6 +159,10 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
                 max_total_text_characters=_required_int(parse_policy, "max_total_text_characters"),
             ),
             parser_strategy_version=cast(str, vlm["parser_strategy_version"]),
+            parser_contract_sha256=(
+                cast(str, vlm["parser_contract_sha256"])
+                if vlm["parser_strategy_version"] == VLM_PARSER_V4 else None
+            ),
             stage_strategy_version=cast(str, vlm["stage_strategy_version"]),
         )
     except (TypeError, ValueError) as error:
@@ -162,7 +170,7 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
     expected_hashes = {
         "prompt_template_sha256": vlm_prompt_template_sha256(policy.prompt_version),
         "response_schema_sha256": _text_sha256(policy.response_schema_json),
-        "parser_contract_sha256": vlm_parser_contract_sha256(),
+        "parser_contract_sha256": parser_contract_sha256_for(policy.parser_strategy_version),
         "window_sampling_policy_sha256": identity_window_sampling_policy_sha256(),
     }
     if any(vlm[key] != value for key, value in expected_hashes.items()):

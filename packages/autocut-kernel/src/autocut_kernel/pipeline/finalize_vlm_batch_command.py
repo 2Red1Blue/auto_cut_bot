@@ -23,6 +23,7 @@ from ..store import (
     VlmSemanticPackSetChild,
 )
 from ..store.models import canonical_payload_hash, canonical_recipe_scope
+from ..store.vlm_v4 import batch_version_fields, require_batch_child_version
 
 VlmBatchChildState = Literal["succeeded", "denied", "failed"]
 
@@ -104,8 +105,7 @@ class FinalizeVlmBatchRequest:
             raise ValueError("declared_episode_count must be positive")
         sha256_prefixed(self.source_manifest_sha256, "source_manifest_sha256")
         sha256_prefixed(self.source_provenance_sha256, "source_provenance_sha256")
-        if self.strategy_version != VLM_BATCH_FINALIZER_STRATEGY_VERSION:
-            raise ValueError("VLM batch finalizer strategy is not registered")
+        batch_version_fields(self.strategy_version)
         if type(self.children) is not tuple or not self.children:  # noqa: E721
             raise ValueError("VLM batch requires terminal child outcomes")
         if any(type(item) is not VlmBatchChildOutcome for item in self.children):  # noqa: E721
@@ -335,7 +335,12 @@ class FinalizeVlmBatchCommand:
         policies = tuple(child.request_policy for child in children)
         if not policies or any(policy != policies[0] for policy in policies[1:]):
             raise ValueError("VLM batch children do not share one frozen request policy")
+        for child in children:
+            require_batch_child_version(
+                request.strategy_version, child.parser_strategy_version, child.semantic_schema_version,
+            )
         return {
+            **batch_version_fields(request.strategy_version),
             "children": [child.to_mapping() for child in member_children],
             "declared_episode_count": request.declared_episode_count,
             "request_policy": policies[0].to_mapping(),
