@@ -129,9 +129,19 @@ def _json_object(value: str, name: str) -> dict[str, object]:
 
 def _parameters(value: str) -> dict[str, object]:
     result = _json_object(value, "request_parameters_json")
-    if set(result) != {"adapter_strategy_version", "max_output_tokens", "temperature", "video_fps"}:
+    adapter_version = _text(result.get("adapter_strategy_version"), "adapter_strategy_version")
+    # This is a wire-contract discriminator, not a dependency on a runtime
+    # adapter. Historical four-field identities retain their original bytes.
+    explicit_thinking = adapter_version == "doubao-ark-files-responses-stream-v5"
+    expected_fields = {"adapter_strategy_version", "max_output_tokens", "temperature", "video_fps"}
+    if explicit_thinking:
+        expected_fields.add("thinking_type")
+    if set(result) != expected_fields:
         raise VlmValidationError("VLM reuse v1 requires the complete closed request parameters")
-    _text(result["adapter_strategy_version"], "adapter_strategy_version")
+    if explicit_thinking:
+        thinking_type = result["thinking_type"]
+        if type(thinking_type) is not str or thinking_type not in {"enabled", "disabled", "auto"}:  # noqa: E721
+            raise VlmValidationError("thinking_type must be an explicit enabled, disabled, or auto mode")
     tokens = result["max_output_tokens"]
     if type(tokens) is not int or not 1 <= tokens <= 32768:  # noqa: E721
         raise VlmValidationError("max_output_tokens must be an integer between 1 and 32768")

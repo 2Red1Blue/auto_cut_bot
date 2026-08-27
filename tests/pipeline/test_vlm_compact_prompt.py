@@ -152,7 +152,12 @@ def test_installed_semantic_authority_explicitly_selects_compact_without_changin
     authority = load_installed_semantic_run_authority()
     assert authority.vlm_policy.prompt_version == VLM_COMPACT_PROMPT_VERSION
     assert factory_fixture._policy().prompt_version == VLM_PROMPT_VERSION
-    assert replace(authority.vlm_policy, prompt_version=VLM_PROMPT_VERSION) == factory_fixture._policy()
+    default_policy = factory_fixture._policy()
+    assert authority.vlm_policy.thinking_type == "disabled"
+    assert replace(
+        authority.vlm_policy, prompt_version=VLM_PROMPT_VERSION,
+        adapter_strategy_version=default_policy.adapter_strategy_version, thinking_type=None,
+    ) == default_policy
 
 
 def test_semantic_authority_checks_the_selected_template_hash() -> None:

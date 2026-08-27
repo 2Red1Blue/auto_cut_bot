@@ -352,10 +352,28 @@ class PipelineExecutionProfile:
             self.request_parameters_json,
             "request_parameters_json",
         )
-        if frozenset(request_parameters) != _REQUEST_PARAMETER_FIELDS:
+        from auto_cut_bot.pipeline.vlm.doubao_ark_provider import (
+            DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
+        )
+
+        explicit_thinking = (
+            self.adapter_strategy_version
+            == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION
+        )
+        if explicit_thinking and self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V10:
+            raise PipelineRunValidationError("explicit thinking requires execution profile v10")
+        parameter_fields = (
+            _REQUEST_PARAMETER_FIELDS | {"thinking_type"}
+            if explicit_thinking else _REQUEST_PARAMETER_FIELDS
+        )
+        if frozenset(request_parameters) != parameter_fields:
             raise PipelineRunValidationError(
                 "request_parameters_json must match the closed Doubao parameter contract"
             )
+        if explicit_thinking:
+            thinking_type = request_parameters["thinking_type"]
+            if type(thinking_type) is not str or thinking_type not in {"enabled", "disabled", "auto"}:  # noqa: E721
+                raise PipelineRunValidationError("request_parameters_json.thinking_type is invalid")
         if request_parameters["adapter_strategy_version"] != self.adapter_strategy_version:
             raise PipelineRunValidationError(
                 "request parameters must bind adapter_strategy_version"
@@ -1265,6 +1283,7 @@ def _build_registered_doubao_policy(
             video_fps=cast(float, parameters["video_fps"]),
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
             temperature=cast(int | float, parameters["temperature"]),
+            thinking_type=cast(str | None, parameters.get("thinking_type")),
             parse_policy=VlmParsePolicy(
                 max_response_bytes=cast(int, parse_policy["max_response_bytes"]),
                 max_entities=cast(int, parse_policy["max_entities"]),

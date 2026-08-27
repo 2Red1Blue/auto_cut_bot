@@ -1,0 +1,12 @@
+{
+  "id": "vlm-explicit-thinking",
+  "title": "显式冻结Doubao深度思考参数，修复真实length预算耗尽",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "代码完成；真实单集运行由mac-episode-real-run跟踪，不声称已成功",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}

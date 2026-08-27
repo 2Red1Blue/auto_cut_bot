@@ -49,4 +49,15 @@ SSH按用户要求暂不使用。后续先修正真实VLM输出问题，再验�
   v3与v4 profile均通过真实数据库只读SQL形状检查，无需改数据库迁移。
 - 原run相同幂等键重新提交仍返回原failed run；GenerationAttempt数量仍为1。
 
-v4代码/单测通过不代表真实生成成功；真实第二次调用结果需另行追加，不覆盖上述失败。
+## 第二次真实调用：仅紧凑输出仍失败
+
+`pipeline_run_18ac0863c1894ac5ae3c0eebb0804620` 使用compact prompt与同一已上传视频，
+SourcePrep Receipt为`b512a49e-a792-4168-9ad5-9e447903787c`。
+VLM单次Attempt仍以`length`结束，失败Receipt为
+`c8d52444-4a36-4671-80b1-652556937458`。
+input34413/output32768/reasoning26780/total67181；正文10973字符、单行。
+因此未把“紧凑输出”当作已解决根因，也未增加预算或自动重试不完整JSON。
+
+新adapter v5把`thinking_type`明确纳入请求与profile，当前semantic-only选择disabled。
+先通过独立审查、旧哈希回归与临时数据库迁移测试，再启动新的单集run；
+旧失败run不会更改profile或重新标记为成功。运行结果将在下节追加。

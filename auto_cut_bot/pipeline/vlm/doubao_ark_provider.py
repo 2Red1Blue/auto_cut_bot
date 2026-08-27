@@ -51,10 +51,14 @@ DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-
 # identity is distinct from v3; the byte-identical MIME-bearing Files upload
 # may safely reuse a v3 provider-media cache entry.
 DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v4"
+# v5 adds an explicit Responses thinking mode without changing v4's default
+# or its media-upload/cache and structured-output contracts.
+DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v5"
 DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
 })
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
 _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
@@ -237,6 +241,8 @@ class DoubaoArkVlmProvider:
             stream=True,
             store=True,
         )
+        if parameters["adapter_strategy_version"] == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION:
+            body["thinking"] = {"type": parameters["thinking_type"]}
         return self._transport.dispatch(
             body,
             expected_model=request.model_id,
@@ -498,14 +504,16 @@ def _request_parameters(value: object) -> dict[str, str | int | float]:
     if not isinstance(value, dict):
         raise ValueError("Ark request_parameters must be an object")
     parameters = cast(dict[str, object], value)
-    if frozenset(parameters) != _EXPECTED_PARAMETER_FIELDS:
-        raise ValueError("Ark request_parameters are not closed")
-    adapter_strategy_version = parameters["adapter_strategy_version"]
+    adapter_strategy_version = parameters.get("adapter_strategy_version")
     if (
         type(adapter_strategy_version) is not str  # noqa: E721
         or adapter_strategy_version not in DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS
     ):
         raise ValueError("Ark adapter strategy version is not registered")
+    explicit_thinking = adapter_strategy_version == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION
+    expected_fields = _EXPECTED_PARAMETER_FIELDS | {"thinking_type"} if explicit_thinking else _EXPECTED_PARAMETER_FIELDS
+    if frozenset(parameters) != expected_fields:
+        raise ValueError("Ark request_parameters are not closed")
     fps = parameters["video_fps"]
     tokens = parameters["max_output_tokens"]
     temperature = parameters["temperature"]
@@ -517,12 +525,18 @@ def _request_parameters(value: object) -> dict[str, str | int | float]:
         raise ValueError("temperature must be numeric")
     if not 0 <= temperature <= 2:
         raise ValueError("temperature must be between 0 and 2")
-    return {
+    result: dict[str, str | int | float] = {
         "adapter_strategy_version": adapter_strategy_version,
         "video_fps": float(fps),
         "max_output_tokens": tokens,
         "temperature": float(temperature),
     }
+    if explicit_thinking:
+        thinking_type = parameters["thinking_type"]
+        if type(thinking_type) is not str or thinking_type not in {"enabled", "disabled", "auto"}:  # noqa: E721
+            raise ValueError("thinking_type must be an explicit enabled, disabled, or auto mode")
+        result["thinking_type"] = thinking_type
+    return result
 
 
 def _upload_file_argument(
@@ -536,6 +550,7 @@ def _upload_file_argument(
     if adapter_strategy_version in {
         DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
         DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+        DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
     }:
         # Ark validates the multipart part's declared MIME type.  Without it
         # the SDK infers application/octet-stream, which is a distinct v2
@@ -564,18 +579,24 @@ def _response_text_format(
         DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     }:
         return {"format": {"type": "json_schema", "json_schema": descriptor}}
-    if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+    if adapter_strategy_version in {
+        DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+        DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
+    }:
         return {"format": {"type": "json_schema", **descriptor}}
     raise ValueError("Ark adapter strategy version is not registered")
 
 
 def _preprocess_policy_hash(adapter_strategy_version: str, video_fps: float) -> str:
-    # v3 and v4 differ only in the Responses request after file upload.  Their
+    # v3, v4, and v5 differ only in the Responses request after file upload. Their
     # completed Files objects are byte/MIME/purpose-equivalent and may be
     # reused. v2 remains isolated because it omitted the multipart MIME type.
     media_adapter_strategy_version = (
         DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION
-        if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION
+        if adapter_strategy_version in {
+            DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+            DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
+        }
         else adapter_strategy_version
     )
     encoded = json.dumps(
@@ -630,6 +651,7 @@ def _map_file_error(error: Exception) -> ProviderResult:
 
 __all__ = [
     "DOUBAO_ARK_ADAPTER_STRATEGY_VERSION",
+    "DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION",
     "DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION",
     "DOUBAO_ARK_PROVIDER_ID",
     "DoubaoArkVlmProvider",

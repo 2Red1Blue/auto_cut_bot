@@ -17,6 +17,9 @@ from autocut_kernel.vlm import GenerationRetryPolicy, VlmParsePolicy
 from autocut_kernel.vlm.parser_contract import vlm_parser_contract_sha256
 
 from auto_cut_bot.pipeline.source_prep.command import identity_window_sampling_policy_sha256
+from auto_cut_bot.pipeline.vlm.doubao_ark_provider import (
+    DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
+)
 from auto_cut_bot.pipeline.vlm.prompt import vlm_prompt_template_sha256
 from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
@@ -118,7 +121,12 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
     if capabilities != expected_capabilities:
         raise SemanticRunAuthorityError("semantic authority capabilities are widened or incomplete")
     vlm = _closed_object(document["vlm"], _VLM_FIELDS, "vlm")
-    parameters = _closed_object(vlm["request_parameters"], _REQUEST_FIELDS, "request_parameters")
+    parameter_fields = (
+        _REQUEST_FIELDS | {"thinking_type"}
+        if vlm["adapter_strategy_version"] == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION
+        else _REQUEST_FIELDS
+    )
+    parameters = _closed_object(vlm["request_parameters"], parameter_fields, "request_parameters")
     parse_policy_raw = vlm["parse_policy"]
     if type(parse_policy_raw) is not dict:  # noqa: E721
         raise SemanticRunAuthorityError("VLM parse policy is invalid")
@@ -134,6 +142,7 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
             temperature=cast(int | float, parameters["temperature"]),
             video_fps=cast(int | float, parameters["video_fps"]),
+            thinking_type=cast(str | None, parameters.get("thinking_type")),
             parse_policy=VlmParsePolicy(
                 max_response_bytes=_required_int(parse_policy, "max_response_bytes"),
                 max_entities=_required_int(parse_policy, "max_entities"),

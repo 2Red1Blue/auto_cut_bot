@@ -26,6 +26,20 @@ full-pipeline default remains v3 until its separate installed policy is updated.
 Changing the prompt is not permission to reopen a failed run. See the
 [Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
 
+The semantic-only authority additionally selects adapter
+`doubao-ark-files-responses-stream-v5` with explicit `thinking_type=disabled`.
+This maps to Ark `thinking.type`; it is frozen in the request/profile and reuse
+identity, not injected from an environment default. v2/v3/v4 request bytes and
+their replay behavior remain unchanged. Files uploads can still reuse v4 cache
+entries because upload bytes/MIME/purpose are identical; semantic outputs from
+different thinking modes are not interchangeable.
+
+Before enabling v5, stop all older Pipeline workers and apply migration
+`0029_vlm_explicit_thinking.sql` after the existing migrations. The v10 profile
+has a closed five-field parameter variant for v5; v9/full-pipeline is not widened.
+The outbox does not yet partition workers by supported adapter version, so do
+not run pre-v5 workers against new v5 work. No historical rows are rewritten.
+
 ## Required private configuration
 
 Keep credentials and host paths outside Git.  In the PC private environment

@@ -30,6 +30,7 @@ from auto_cut_bot.pipeline.source_prep.command import (
 
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
@@ -157,6 +158,7 @@ class DoubaoVlmRequestPolicy:
     parse_policy: VlmParsePolicy = field(default_factory=_default_parse_policy)
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
     stage_strategy_version: str = DOUBAO_VLM_STAGE_STRATEGY_VERSION
+    thinking_type: str | None = None
 
     def __post_init__(self) -> None:
         model_id = _closed_text(self.model_id, "model_id")
@@ -166,6 +168,11 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("provider_id must be the registered Doubao provider")
         if self.adapter_strategy_version not in DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS:
             raise ValueError("adapter strategy must be a registered Doubao version")
+        if self.adapter_strategy_version == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION:
+            if type(self.thinking_type) is not str or self.thinking_type not in {"enabled", "disabled", "auto"}:  # noqa: E721
+                raise ValueError("v5 requires an explicit enabled, disabled, or auto thinking_type")
+        elif self.thinking_type is not None:
+            raise ValueError("legacy Ark adapters do not accept thinking_type")
         resolve_vlm_prompt_template(self.prompt_version)
         schema = _strict_json_object(self.response_schema_json, "response schema JSON")
         if schema != VLM_RESPONSE_SCHEMA or self.response_schema_json != vlm_response_schema_json():
@@ -195,6 +202,7 @@ class DoubaoVlmRequestPolicy:
             ),
             (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
+            (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
         }
         if (self.adapter_strategy_version, self.stage_strategy_version) not in supported_combinations:
             raise ValueError(
@@ -207,12 +215,15 @@ class DoubaoVlmRequestPolicy:
     def request_parameters(self) -> dict[str, object]:
         """Return a fresh closed mapping accepted by ``DoubaoArkVlmProvider``."""
 
-        return {
+        result: dict[str, object] = {
             "adapter_strategy_version": self.adapter_strategy_version,
             "max_output_tokens": self.max_output_tokens,
             "temperature": self.temperature,
             "video_fps": self.video_fps,
         }
+        if self.adapter_strategy_version == DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION:
+            result["thinking_type"] = self.thinking_type
+        return result
 
     @property
     def request_parameters_json(self) -> str:
