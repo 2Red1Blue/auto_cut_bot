@@ -219,7 +219,6 @@ class RuntimeTimedSpeechEvidenceRequest:
                 "out_tick": self.requested_out_tick,
             },
             "runtime_authority": self.runtime_policy.to_mapping(),
-            "expected_producers": [item.to_mapping() for item in self.expected_producers],
             "timed_speech_policy_sha256": self.policy_sha256,
             "response_limits": {"max_response_bytes": self.max_response_bytes},
             "timing_policy": {

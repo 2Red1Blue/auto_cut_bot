@@ -79,6 +79,8 @@ CUDA_SHADOW_TIMING_ENGINE_VERSION = "funasr-cuda-timing-v1"
 NORMAL_RUNTIME_TIMING_ENGINE_VERSION = "funasr-runtime-timing-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
+RUNTIME_TIMED_SPEECH_REQUEST_SCHEMA = "runtime-timed-speech-evidence-request-v2"
+RUNTIME_TIMED_SPEECH_RESPONSE_SCHEMA = "runtime-timed-speech-evidence-response-v2"
 _InferenceResult = TypeVar("_InferenceResult")
 
 
@@ -1709,6 +1711,242 @@ class Service:
         ]:
             raise web.HTTPConflict(text="measured producer identity drift")
 
+    def validate_runtime_manifest_identity(self, manifest: dict[str, object]) -> None:
+        """Validate the v2 CUDA request against the self-measured runtime only.
+
+        PostgreSQL acceptance is intentionally absent from this service.  The
+        authenticated Pipeline has already resolved the immutable capability;
+        this boundary proves only that that capability still describes the live
+        CUDA process and that the request did not substitute its ASR/VAD
+        authority on the way to the native model.
+        """
+        measured = self.measured_profile
+        if (
+            type(measured) is not dict
+            or measured.get("schema_version") != CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA
+        ):
+            raise web.HTTPConflict(text="runtime CUDA timed-speech profile is unavailable")
+        authority = cast(dict[str, object], manifest["runtime_authority"])
+        runtime = authority.get("runtime")
+        timing = authority.get("timing")
+        operation = authority.get("operation")
+        source_clock = authority.get("source_clock")
+        producers = authority.get("producers")
+        # ``validate_runtime_manifest_schema`` has already checked the closed
+        # wire grammar.  Keep this method about live-identity equality, rather
+        # than allowing a partial object to reach native inference.
+        try:
+            identity = decode_runtime_measurement_identity(
+                canon(
+                    {
+                        "schema_version": "runtime-measurement-identity-v1",
+                        "runtime_capability_id": "pc_cuda",
+                        "timing_compatibility": measured["timing_compatibility"],
+                    }
+                )
+            )
+        except (KeyError, TypeError, ValueError, RuntimeMeasurementIdentityError):
+            raise web.HTTPConflict(text="runtime CUDA measurement identity is unavailable") from None
+        clock = cast(dict[str, object], manifest["audio_clock"])
+        expected_clock = {
+            "clock_id": clock["clock_id"],
+            "time_base": clock["time_base"],
+        }
+        if source_clock != expected_clock:
+            raise web.HTTPConflict(text="runtime authority source-clock drift")
+        if (
+            authority.get("runtime_measurement_identity_sha256") != identity.canonical_sha256
+            or authority.get("timing_compatibility_sha256") != identity.timing_compatibility_sha256
+            or authority.get("build_audit_sha256") != measured.get("build_audit_sha256")
+            or authority.get("native_port_identity_sha256") != measured.get(
+                "native_port_identity_sha256"
+            )
+            or runtime != {
+                "funasr_version": measured.get("funasr_version"),
+                "torch_version": measured.get("torch_version"),
+            }
+        ):
+            raise web.HTTPConflict(text="runtime authority identity drift")
+        expected_timing = {
+            "timed_speech_policy_sha256": measured.get("timed_speech_policy_sha256"),
+            "word_gap_policy_sha256": measured.get("word_gap_policy_sha256"),
+            "vad_merge_policy_sha256": measured.get("vad_merge_policy_sha256"),
+            "utterance_gap_milliseconds": measured.get("utterance_gap_milliseconds"),
+            "vad_merge_gap_milliseconds": measured.get("vad_merge_gap_milliseconds"),
+        }
+        if any(timing.get(key) != value for key, value in expected_timing.items()):
+            raise web.HTTPConflict(text="runtime timing policy drift")
+        if (
+            operation["provider_id"] != PROVIDER_ID
+            or operation["provider_version"] != PROVIDER_VERSION
+            or not re.fullmatch(
+                r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/v1/timed-speech-evidence",
+                cast(str, operation["endpoint_url"]),
+            )
+        ):
+            raise web.HTTPConflict(text="runtime provider identity drift")
+        if tuple(cast(dict[str, object], item).get("producer_kind") for item in producers) != (
+            "asr", "vad"
+        ):
+            raise web.HTTPConflict(text="runtime producer order is invalid")
+        measured_by_kind = {
+            cast(str, item["producer_kind"]): item for item in self.identities
+        }
+        for expected in cast(list[object], producers):
+            if type(expected) is not dict:
+                raise web.HTTPConflict(text="runtime producer identity is invalid")
+            requested = cast(dict[str, object], expected)
+            actual = measured_by_kind.get(cast(str, requested.get("producer_kind")))
+            if actual is None:
+                raise web.HTTPConflict(text="runtime producer is unavailable")
+            for key, value in actual.items():
+                if key != "service_sha256" and requested.get(key) != value:
+                    raise web.HTTPConflict(text="runtime producer measurement drift")
+        if (
+            manifest.get("timed_speech_policy_sha256") != timing.get("timed_speech_policy_sha256")
+            or manifest.get("timing_policy")
+            != {
+                "utterance_gap_milliseconds": timing.get("utterance_gap_milliseconds"),
+                "vad_merge_gap_milliseconds": timing.get("vad_merge_gap_milliseconds"),
+            }
+            or manifest.get("transcript_capability")
+            != {
+                "profile": SENSEVOICE_WORD_GUARD_PROFILE,
+                "segment": "complete",
+                "segment_semantics": "utterance_gap_protected_range",
+                "sentence": "not_applicable",
+                "word": "complete",
+                "word_timing": "required",
+            }
+        ):
+            raise web.HTTPConflict(text="runtime timed-speech policy drift")
+
+    @staticmethod
+    def validate_runtime_manifest_schema(manifest: object) -> dict[str, object]:
+        fields = {
+            "schema_version", "source", "source_byte_limits", "container", "audio_clock",
+            "requested_range", "runtime_authority",
+            "timed_speech_policy_sha256", "response_limits", "timing_policy",
+            "transcript_capability",
+        }
+        if type(manifest) is not dict or set(manifest) != fields:
+            raise web.HTTPBadRequest(text="runtime timed-speech manifest schema is not closed")
+        value = cast(dict[str, object], manifest)
+        if value["schema_version"] != RUNTIME_TIMED_SPEECH_REQUEST_SCHEMA:
+            raise web.HTTPBadRequest(text="runtime timed-speech manifest schema is invalid")
+        # Reuse the complete v1 structural validation by injecting its ignored
+        # profile member into a detached view; the public v2 wire remains free
+        # of that CPU-only profile grammar.
+        Service.validate_manifest_schema({
+            **{key: item for key, item in value.items() if key != "runtime_authority"},
+            "profile": {},
+            "expected_producers": cast(dict[str, object], value["runtime_authority"])[
+                "producers"
+            ],
+        })
+        authority = value["runtime_authority"]
+        authority_fields = {
+            "schema_version", "static_policy_sha256", "runtime_capability_id", "device",
+            "runtime_measurement_identity_sha256", "timing_compatibility_sha256",
+            "runtime_projection_compatibility_sha256", "build_audit_sha256",
+            "runtime_projection_sha256", "runtime", "profile_source_sha256",
+            "registry_snapshot_sha256", "accepted_record_sha256", "validation_receipt_sha256",
+            "native_port_identity_sha256", "source_clock", "timing", "operation", "producers",
+        }
+        if type(authority) is not dict or set(authority) != authority_fields:
+            raise web.HTTPBadRequest(text="runtime authority must be a closed object")
+        a = cast(dict[str, object], authority)
+        runtime = a["runtime"]
+        source_clock = a["source_clock"]
+        timing = a["timing"]
+        operation = a["operation"]
+        producers = a["producers"]
+        sha_fields = {
+            "static_policy_sha256", "runtime_measurement_identity_sha256",
+            "timing_compatibility_sha256", "runtime_projection_compatibility_sha256",
+            "build_audit_sha256", "runtime_projection_sha256", "profile_source_sha256",
+            "registry_snapshot_sha256", "accepted_record_sha256", "validation_receipt_sha256",
+            "native_port_identity_sha256",
+        }
+        timing_sha_fields = {
+            "timed_speech_policy_sha256", "word_gap_policy_sha256",
+            "vad_merge_policy_sha256", "alignment_policy_sha256", "acceptance_policy_sha256",
+        }
+        producer_fields = {
+            "calibration_policy_sha256", "calibration_record_sha256", "detector_sha256",
+            "generation_policy_sha256", "inference_kind", "model_id", "model_revision",
+            "model_sha256", "producer_id", "producer_kind", "producer_version",
+            "service_sha256", "timing_error_bound_tick",
+        }
+        if (
+            a["schema_version"] != "pc-cuda-runtime-timed-speech-policy-v1"
+            or a["runtime_capability_id"] != "pc_cuda"
+            or a["device"] != "cuda"
+            or any(not is_sha256(a[key]) for key in sha_fields)
+            or a["accepted_record_sha256"] == a["validation_receipt_sha256"]
+            or type(runtime) is not dict
+            or set(runtime) != {"funasr_version", "torch_version"}
+            or any(type(item) is not str or not item for item in runtime.values())
+            or type(source_clock) is not dict
+            or set(source_clock) != {"clock_id", "time_base"}
+            or type(source_clock["clock_id"]) is not str
+            or not source_clock["clock_id"]
+            or type(source_clock["time_base"]) is not dict
+            or set(cast(dict[object, object], source_clock["time_base"]))
+            != {"numerator", "denominator"}
+            or any(
+                type(item) is not int or item <= 0
+                for item in cast(dict[object, object], source_clock["time_base"]).values()
+            )
+            or type(timing) is not dict
+            or set(timing)
+            != timing_sha_fields
+            | {"utterance_gap_milliseconds", "vad_merge_gap_milliseconds"}
+            or any(not is_sha256(timing[key]) for key in timing_sha_fields)
+            or any(
+                type(timing[key]) is not int or timing[key] < 0
+                for key in ("utterance_gap_milliseconds", "vad_merge_gap_milliseconds")
+            )
+            or type(operation) is not dict
+            or set(operation)
+            != {"endpoint_url", "provider_id", "provider_version", "timeout_seconds", "max_response_bytes"}
+            or any(
+                type(operation[key]) is not str or not operation[key]
+                for key in ("endpoint_url", "provider_id", "provider_version")
+            )
+            or any(
+                type(operation[key]) is not int or operation[key] <= 0
+                for key in ("timeout_seconds", "max_response_bytes")
+            )
+            or type(producers) is not list
+            or len(producers) != 2
+            or any(
+                type(item) is not dict or set(cast(dict[object, object], item)) != producer_fields
+                for item in cast(list[object], producers)
+            )
+        ):
+            raise web.HTTPBadRequest(text="runtime authority schema is invalid")
+        for expected_kind, producer in zip(("asr", "vad"), cast(list[object], producers), strict=True):
+            p = cast(dict[str, object], producer)
+            if (
+                p["producer_kind"] != expected_kind
+                or any(
+                    type(p[key]) is not str or not p[key]
+                    for key in producer_fields - {"producer_kind", "timing_error_bound_tick"}
+                )
+                or any(
+                    not is_sha256(p[key])
+                    for key in {
+                        "calibration_policy_sha256", "calibration_record_sha256", "detector_sha256",
+                        "generation_policy_sha256", "model_sha256", "service_sha256",
+                    }
+                )
+                or type(p["timing_error_bound_tick"]) is not int
+                or p["timing_error_bound_tick"] <= 0
+            ):
+                raise web.HTTPBadRequest(text="runtime producer schema is invalid")
+        return value
+
     @staticmethod
     def validate_manifest_schema(manifest: object) -> dict[str, object]:
         fields = {
@@ -2156,6 +2394,144 @@ class Service:
             if cancelled:
                 raise asyncio.CancelledError
 
+    async def runtime_evidence(self, req: web.Request) -> web.Response:
+        """Serve calibrated evidence only through the distinct PC-CUDA v2 wire."""
+        if not self.ready:
+            raise web.HTTPServiceUnavailable()
+        supplied = req.headers.get("Authorization", "")
+        if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
+            raise web.HTTPUnauthorized(text="unauthorized")
+        try:
+            decoded = strict_json_loads(
+                base64.b64decode(req.headers["X-Timed-Speech-Manifest"], validate=True)
+            )
+            manifest = self.validate_runtime_manifest_schema(decoded)
+        except Exception as error:
+            if isinstance(error, web.HTTPException):
+                raise
+            raise web.HTTPBadRequest(text="bad runtime timed-speech manifest") from error
+        request_identity = sha(canon(manifest))
+        if request_identity != req.headers.get("X-Timed-Speech-Request-SHA256"):
+            raise web.HTTPBadRequest(text="identity")
+        self.validate_runtime_manifest_identity(manifest)
+        requested_range = cast(dict[str, int], manifest["requested_range"])
+        clock = cast(dict[str, object], manifest["audio_clock"])
+        if requested_range != {
+            "in_tick": clock["origin_tick"],
+            "out_tick": clock["origin_tick"] + clock["duration_tick"],
+        }:
+            raise web.HTTPBadRequest(text="full source only")
+        await self.admit()
+        try:
+            with tempfile.TemporaryDirectory(prefix="funasr-runtime-cuda-request-") as directory:
+                source_path = Path(directory) / "source.mp4"
+                digest, size = hashlib.sha256(), 0
+                with source_path.open("xb") as output:
+                    async for chunk in req.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > cast(dict[str, int], manifest["source_byte_limits"])[
+                            "effective_max_source_bytes"
+                        ]:
+                            raise web.HTTPRequestEntityTooLarge(
+                                max_size=cast(dict[str, int], manifest["source_byte_limits"])[
+                                    "effective_max_source_bytes"
+                                ],
+                                actual_size=size,
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+                if "sha256:" + digest.hexdigest() != cast(dict[str, str], manifest["source"])[
+                    "source_sha256"
+                ]:
+                    raise web.HTTPBadRequest(text="source hash")
+                asr, vad_output = await self.run_inference(source_path)
+            state, speech_segments = vad(
+                vad_output,
+                cast(dict[str, int], clock["time_base"]),
+                requested_range,
+                cast(dict[str, int], manifest["timing_policy"])["vad_merge_gap_milliseconds"],
+            )
+            transcript_payload = transcript(
+                asr,
+                cast(dict[str, int], clock["time_base"]),
+                requested_range,
+                True,
+                cast(dict[str, int], manifest["timing_policy"])[
+                    "utterance_gap_milliseconds"
+                ],
+            )
+            transcript_payload["coverage"] = coverage(
+                manifest, transcript_payload.pop("coverage_outcome")
+            )
+            speech_payload = {
+                "coverage": coverage(
+                    manifest, "partial" if state == "indeterminate" else "complete"
+                ),
+                "speech_outcome": {
+                    "speech": "speech_detected",
+                    "no_speech": "none_detected",
+                    "indeterminate": "indeterminate",
+                }[state],
+                "segments": speech_segments,
+            }
+            authority = cast(dict[str, object], manifest["runtime_authority"])
+            expected_producers = cast(
+                list[dict[str, object]],
+                cast(dict[str, object], authority)["producers"],
+            )
+            identities = [
+                {
+                    **{
+                        key: value
+                        for key, value in producer.items()
+                        if key != "timing_error_bound_tick"
+                    },
+                    "provider_id": PROVIDER_ID,
+                    "provider_version": PROVIDER_VERSION,
+                    "funasr_version": cast(dict[str, object], authority["runtime"])[
+                        "funasr_version"
+                    ],
+                    "torch_version": cast(dict[str, object], authority["runtime"])[
+                        "torch_version"
+                    ],
+                    "device": "cuda",
+                }
+                for producer in expected_producers
+            ]
+            bounds = {
+                producer["producer_kind"]: {
+                    "early_tick": producer["timing_error_bound_tick"],
+                    "late_tick": producer["timing_error_bound_tick"],
+                    "time_base": clock["time_base"],
+                }
+                for producer in expected_producers
+            }
+            response = {
+                "schema_version": RUNTIME_TIMED_SPEECH_RESPONSE_SCHEMA,
+                "request_identity_sha256": request_identity,
+                "source": manifest["source"],
+                "source_byte_limits": manifest["source_byte_limits"],
+                "container": manifest["container"],
+                "audio_clock": clock,
+                "requested_range": requested_range,
+                "runtime_authority": authority,
+                "timed_speech_policy_sha256": manifest["timed_speech_policy_sha256"],
+                "transcript_capability": manifest["transcript_capability"],
+                "producer_identities": identities,
+                "timing_error_bounds": bounds,
+                "transcript": transcript_payload,
+                "speech_activity": speech_payload,
+            }
+            raw = canon(response)
+            if len(raw) > min(
+                self.max_response,
+                cast(dict[str, int], manifest["response_limits"])["max_response_bytes"],
+            ):
+                raise web.HTTPInternalServerError(text="response bound")
+            return web.Response(body=raw, content_type="application/json")
+        finally:
+            await self.release()
+
     async def evidence(self, req: web.Request) -> web.Response:
         if not self.ready:
             raise web.HTTPServiceUnavailable()
@@ -2377,6 +2753,7 @@ def create_app(service: Service | None = None) -> web.Application:
             web.get("/v1/shadow-calibration/identity", shadow_identity),
             web.get("/v1/runtime-measurement-identity", runtime_measurement_identity),
             web.post("/v1/timed-speech-evidence", s.evidence),
+            web.post("/v2/runtime-timed-speech-evidence", s.runtime_evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
             web.post("/v2/timed-speech-window", s.window_evidence),
             web.post("/v2/shadow-calibration-speech-window", s.shadow_local_window_evidence),

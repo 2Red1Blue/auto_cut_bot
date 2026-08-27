@@ -6,6 +6,6 @@
   "risk": "high",
   "domain": "backend/deployment/authority",
   "currentPhase": "implementation",
-  "nextAction": "Add the versioned CUDA timed-speech request, response and Receipt path using the closed RuntimeTimedSpeechProjection; keep the legacy CPU request and command byte-compatible, then deploy the configured PC service and run an actual source through Media Preflight.",
+  "nextAction": "Implement the CUDA-only Store command, committed reader, and Receipt path using the closed RuntimeTimedSpeechProjection; keep the legacy CPU command byte-compatible.",
   "branch": "feat/v213-contract-codegen"
 }

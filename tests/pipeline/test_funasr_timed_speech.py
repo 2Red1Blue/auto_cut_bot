@@ -25,6 +25,13 @@ from auto_cut_bot.pipeline.media_preflight import (
     TimedSpeechEvidenceRequest,
     TimedSpeechExpectedProducer,
 )
+from auto_cut_bot.pipeline.media_preflight.runtime_policy import (
+    PcCudaRuntimeTimedSpeechPolicy,
+    RuntimeTimedSpeechProducerPolicy,
+)
+from auto_cut_bot.pipeline.media_preflight.runtime_speech import (
+    RuntimeTimedSpeechEvidenceRequest,
+)
 from auto_cut_bot.pipeline.media_preflight.speech_port import SENSEVOICE_WORD_GUARD_PROFILE
 
 H = "sha256:" + "1" * 64
@@ -471,6 +478,114 @@ def _request_for_profile(
 
 
 def _headers(request_value: TimedSpeechEvidenceRequest, token: str = "secret") -> dict[str, str]:
+    manifest = json.dumps(
+        request_value.to_mapping(), sort_keys=True, separators=(",", ":")
+    ).encode()
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/octet-stream",
+        "X-Timed-Speech-Manifest": base64.b64encode(manifest).decode(),
+        "X-Timed-Speech-Request-SHA256": request_value.identity_sha256,
+    }
+
+
+def _runtime_cuda_request(
+    tmp_path: Path,
+    ns: dict[str, object],
+    profile: dict[str, object],
+    endpoint_url: str,
+) -> RuntimeTimedSpeechEvidenceRequest:
+    """Build the request only from the measured CUDA profile plus accepted refs.
+
+    The accepted-record digests are intentionally synthetic in this service
+    boundary test: PostgreSQL resolves them before this request object exists.
+    The server must nevertheless receive their immutable closure, rather than
+    accepting a legacy CPU local-run profile.
+    """
+    source = (tmp_path / "runtime-cuda.mp4").resolve()
+    body = b"runtime cuda source"
+    source.write_bytes(body)
+    identity = ns["decode_runtime_measurement_identity"](
+        ns["canon"](
+            {
+                "schema_version": "runtime-measurement-identity-v1",
+                "runtime_capability_id": "pc_cuda",
+                "timing_compatibility": profile["timing_compatibility"],
+            }
+        )
+    )
+    accepted_record = "sha256:" + "2" * 64
+    validation_receipt = "sha256:" + "3" * 64
+    producers = tuple(
+        RuntimeTimedSpeechProducerPolicy(
+            item["producer_kind"],  # type: ignore[arg-type]
+            item["producer_id"],  # type: ignore[arg-type]
+            item["producer_version"],  # type: ignore[arg-type]
+            item["generation_policy_sha256"],  # type: ignore[arg-type]
+            item["detector_sha256"],  # type: ignore[arg-type]
+            item["calibration_policy_sha256"],  # type: ignore[arg-type]
+            item["model_id"],  # type: ignore[arg-type]
+            item["model_revision"],  # type: ignore[arg-type]
+            item["model_sha256"],  # type: ignore[arg-type]
+            item["inference_kind"],  # type: ignore[arg-type]
+            item["service_sha256"],  # type: ignore[arg-type]
+            "sha256:" + ("4" if item["producer_kind"] == "asr" else "5") * 64,
+            50,
+        )
+        for item in profile["producers"]  # type: ignore[union-attr]
+    )
+    policy = PcCudaRuntimeTimedSpeechPolicy(
+        H,
+        "pc_cuda",
+        "cuda",
+        identity.canonical_sha256,
+        identity.timing_compatibility_sha256,
+        H,
+        profile["build_audit_sha256"],  # type: ignore[arg-type]
+        H,
+        profile["funasr_version"],  # type: ignore[arg-type]
+        profile["torch_version"],  # type: ignore[arg-type]
+        H,
+        H,
+        accepted_record,
+        validation_receipt,
+        profile["native_port_identity_sha256"],  # type: ignore[arg-type]
+        "a",
+        TimeBase(1, 1000),
+        profile["timed_speech_policy_sha256"],  # type: ignore[arg-type]
+        profile["word_gap_policy_sha256"],  # type: ignore[arg-type]
+        profile["vad_merge_policy_sha256"],  # type: ignore[arg-type]
+        H,
+        H,
+        endpoint_url,
+        profile["provider_id"],  # type: ignore[arg-type]
+        profile["provider_version"],  # type: ignore[arg-type]
+        30,
+        1_000_000,
+        700,
+        350,
+        (producers[0], producers[1]),
+    )
+    return RuntimeTimedSpeechEvidenceRequest(
+        source,
+        "runtime-cuda-episode",
+        "sha256:" + hashlib.sha256(body).hexdigest(),
+        1_000_000,
+        1_000_000,
+        1_000_000,
+        "a",
+        TimeBase(1, 1000),
+        100,
+        4000,
+        100,
+        4100,
+        policy,
+    )
+
+
+def _runtime_headers(
+    request_value: RuntimeTimedSpeechEvidenceRequest, token: str = "secret"
+) -> dict[str, str]:
     manifest = json.dumps(
         request_value.to_mapping(), sort_keys=True, separators=(",", ":")
     ).encode()
@@ -1227,6 +1342,73 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
         )
         assert raw.status == 200
         assert (await raw.json())["producer_identities"] == service.identities
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_accepted_cuda_projection_uses_v2_route_and_rejects_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _CudaAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        legacy_endpoint = str(client.make_url("/v1/timed-speech-evidence"))
+        request_value = _runtime_cuda_request(
+            tmp_path, ns, service.measured_profile, legacy_endpoint
+        )
+
+        evidence = await asyncio.to_thread(
+            FunASRHttpTimedSpeechEvidencePort(shared_token="secret").produce,
+            request_value,
+        )
+        assert evidence.transcript.words
+        assert evidence.speech_activity.segments
+        assert evidence.invocation_trace.endpoint_url.endswith(
+            "/v2/runtime-timed-speech-evidence"
+        )
+        assert [identity.device for identity in evidence.producer_identities] == ["cuda", "cuda"]
+
+        # The legacy CPU grammar remains rejected by the CUDA shadow service.
+        legacy = request(tmp_path)
+        rejected_legacy = await client.post(
+            "/v1/timed-speech-evidence",
+            data=legacy.source_path.read_bytes(),
+            headers=_headers(legacy),
+        )
+        assert rejected_legacy.status == 409
+
+        # A validly hashed request with a different live measurement cannot
+        # reach model inference; capability equality is checked first.
+        drifted = request_value.to_mapping()
+        authority = drifted["runtime_authority"]
+        assert isinstance(authority, dict)
+        authority["runtime_measurement_identity_sha256"] = "sha256:" + "6" * 64
+        raw = json.dumps(drifted, sort_keys=True, separators=(",", ":")).encode()
+        rejected_drift = await client.post(
+            "/v2/runtime-timed-speech-evidence",
+            data=request_value.source_path.read_bytes(),
+            headers={
+                "Authorization": "Bearer secret",
+                "Content-Type": "application/octet-stream",
+                "X-Timed-Speech-Manifest": base64.b64encode(raw).decode(),
+                "X-Timed-Speech-Request-SHA256": "sha256:"
+                + hashlib.sha256(raw).hexdigest(),
+            },
+        )
+        assert rejected_drift.status == 409
+        assert service.admitted == 0
     finally:
         await client.close()
 

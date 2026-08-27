@@ -28,12 +28,19 @@
    from the historical CPU policy.  `PcCudaRuntimeTimedSpeechPolicy` then takes
    only operational HTTP/physical limits from the static media policy and all
    CUDA authority from that projection.
-8. [next] Add a versioned CUDA timed-speech request/response and Media Evidence
-   Receipt path.  Its request identity must include the exact projection closure
-   (capability/measurement/record/validation/ASR/VAD refs and bounds); the
-   legacy CPU request and `PrepareTimedMediaEvidence@2.1.3` must remain
-   byte-compatible.  Do not change the old CPU device grammar or merge the
-   discarded PC `.gpu` configuration files.
-9. [then] Run focused unit/PostgreSQL/integration regressions and an independent
+8. [done] Add the versioned PC-CUDA timed-speech HTTP contract. The v2 request
+   carries one closed accepted projection (capability/measurement/record/
+   validation/ASR/VAD refs and bounds), derives a dedicated loopback route, and
+   the service independently matches it to its self-measured CUDA process.
+   The response echoes that authority exactly. The legacy CPU v1 request and
+   `/v1/timed-speech-evidence` remain byte-compatible; the discarded PC `.gpu`
+   configuration files are not used. The v2 manifest intentionally omits a
+   duplicate `expected_producers` member so the closed projection fits standard
+   HTTP header limits; producers are derived only from `runtime_authority`.
+9. [next] Add the sibling CUDA command, committed reader and batch finalizer
+   that persist a `runtime_timed_speech_capability_admission` artifact and a
+   normal Store CommandOutcome/Receipt. It must replay the v2 projection,
+   never the CPU `local_run` profile or `PrepareTimedMediaEvidence@2.1.3`.
+10. [then] Run focused unit/PostgreSQL/integration regressions and an independent
    adversarial review. Then commit, push, and update the PC checkout before
    attempting the real PC calibration/run.
