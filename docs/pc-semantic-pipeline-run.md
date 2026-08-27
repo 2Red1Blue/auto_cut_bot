@@ -69,6 +69,50 @@ Do not reuse an idempotency key with a different request.  A VLM provider
 failure creates the existing precise receipt/indeterminate state; it does not
 silently skip an episode.
 
+## Re-run, restart, and move to another machine
+
+The PostgreSQL database is the execution authority.  It holds the run request,
+frozen execution profile, source-preparation ArtifactSet, immutable proxy
+Blobs, per-episode VLM request identity, provider attempt identity, and every
+terminal Receipt.  The HTTP process and the machine that happens to run it are
+not success authority.
+
+- **Repeat a submission:** submit exactly the same body with the same
+  `Idempotency-Key`.  It returns the original `run_id` and re-enqueues durable
+  work; it never creates another run.  A changed request must use a new key and
+  creates a deliberate new run, leaving the earlier Receipt history intact.
+- **Restart on the same machine:** start `pipeline-serve` again with the same
+  PostgreSQL DSN.  Startup reconstructs accepted/running/indeterminate runs
+  from the durable outbox.  A stale command lease becomes indeterminate and is
+  reconciled from the existing Command/Provider identity rather than blindly
+  submitting a second VLM request.
+- **Move after SourcePrep succeeds:** another machine can start the same Git
+  revision with the same semantic authority resource, PostgreSQL DSN, and Ark
+  credentials.  The VLM stage re-reads the committed source ArtifactSet and
+  proxy Blobs from PostgreSQL; it does not need the PC's original video path.
+  The persisted execution-profile hash and request hashes must match.  A code
+  or policy mismatch is rejected instead of silently changing the request.
+- **Move while SourcePrep is unfinished:** the new host must have the same
+  authorized 50-episode source directory mounted and named in its private
+  source catalog.  SourcePrep deliberately has no partially committed media
+  result, so without that source access it cannot be safely continued.  Do not
+  claim that an uncommitted frame scan is portable.
+
+To explicitly wake a nonterminal run after inspecting its status, use the
+current `version` returned by the status endpoint as an optimistic-concurrency
+precondition:
+
+```bash
+curl -sS -X POST http://127.0.0.1:18766/v1/pipeline/resume \
+  -H "Authorization: Bearer <server-api-key>" \
+  -H "Content-Type: application/json" \
+  --data '{"run_id":"pipeline_run_...","expected_version":<status-version>}'
+```
+
+This does not overwrite a terminal success, denial, or failure.  A stale
+`expected_version` is rejected, which prevents two hosts from both claiming
+the same recovery transition.
+
 ## Moving to calibrated media evidence
 
 After independent ASR/VAD timing anchors are accepted, create a separate full
