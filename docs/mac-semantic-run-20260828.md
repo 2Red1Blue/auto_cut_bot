@@ -60,4 +60,25 @@ input34413/output32768/reasoning26780/total67181；正文10973字符、单行。
 
 新adapter v5把`thinking_type`明确纳入请求与profile，当前semantic-only选择disabled。
 先通过独立审查、旧哈希回归与临时数据库迁移测试，再启动新的单集run；
-旧失败run不会更改profile或重新标记为成功。运行结果将在下节追加。
+旧失败run不会更改profile或重新标记为成功。
+
+## 第三次真实调用：完整JSON，但时间证据被拒绝
+
+代码`70d90288`，run `pipeline_run_00cce9541d5546638ea69f3a9f8f86b9`。
+SourcePrep成功Receipt：`98fc6a4c-4ddc-48b5-a557-42a6272046d5`。
+Provider返回completed，完整原文39142bytes，input34412/output16808/reasoning0，
+total51220。已实际确认thinkingdisabled与上传文件缓存复用生效；不再length。
+
+但Kernel拒绝`OUT_OF_BOUNDS_INTERVAL`，Receipt
+`fdd59f37-a52f-45f6-b5ed-862248277ba8`。79处support中34处区间非法，
+60处没有引用帧落在声明区间内（两类可以重叠）。模型给出的最大时间超过735秒，
+实际代理只有241.32秒；还有起止倒置。未裁剪、补写或重新标记这些结果。
+
+完整原始输入/输出：上文debug根目录加本run的
+`vlm/model/doubao-ark-responses-stream/vlm_semantic_evidence-188407afe91bcb104f97/`。
+`raw-output.bin` 是完整UTF-8 JSON；`terminal.json` 保存真实completed与用量。
+这证明预算问题本次已解决，不证明VLM阶段成功或语义内容已验收。
+
+当前还需修正模型时间表达与稀疏帧证据之间的接口设计；下一次调用前先离线验证。
+恢复回归另有5项真实PostgreSQL测试通过，覆盖不可达旧Windows路径时读取持久化
+Blob/精确请求及缺claim/bytes拒绝，不等于真正PC/Mac迁移验证。

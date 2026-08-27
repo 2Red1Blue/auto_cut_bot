@@ -17,6 +17,7 @@ before client creation; v4/v5 identical upload MIME and actual cache keys.
 - Pipeline suite without PostgreSQL/native audio: 1437 passed, 181 skipped at
   that checkpoint (subsequent added cases covered by focused suites).
 - SQL migration and profile suite: 46 passed on disposable PostgreSQL only.
+- Combined migration/profile plus full run-store suite: 162 passed.
 - Ruff/BasedPyright on changed production code: clean.
 - Unfiltered pipeline collection still has the unrelated legacy-only
   test_artifact_cache.py -> autocut_core import failure; it was explicitly

@@ -1,6 +1,6 @@
 # Real execution, no synthetic success
 
-Current code c16c494e. mac-local-run private launch uses normal pipeline-serve,
+Current code 70d90288. mac-local-run private launch uses normal pipeline-serve,
 loopback18767, actual Podman ac_postgres/autocut. Only authorized episode1 is in
 this semantic_only dataset; no claim for all50, ASR, story, render or publication.
 
@@ -24,5 +24,18 @@ Cross-Job selective recompute API and actual cross-machine handoff remain pendin
 
 Second call metrics:input34413/output32768/reasoning26780/total67181; compact
 body10973chars, one line. Representation improvement did not solve reasoning
-budget exhaustion. Next code task vlm-explicit-thinking must pass before another
-new run; neither failed run will be rewritten or resumed into success.
+budget exhaustion. Code task vlm-explicit-thinking passed independent review and
+162 combined PostgreSQL profile/run-store tests, then committed as70d90288.
+
+3rd run `pipeline_run_00cce9541d5546638ea69f3a9f8f86b9` now running:
+- all oldworkers stopped before0029; fullbackup669MiB validated by native
+  pg_restore --file=/dev/null (Podman stdin list emitted a disconnect afterTOC,
+  so that listing alone was not treated as validation).
+- existing5run fullrowchecksum remainsfb7b5128586535e0a5867c057c69e706,
+  all5stillpassSQLvalidator; migrationcontainsnohistoricalrowrewrite.
+- newprofilehash sha256:fb92757b38d73c4a5f42a12fdf134ca4078144d2f665f3023ce3dc85395cee5e.
+- SourcePrep successReceipt98fc6a4c-4ddc-48b5-a557-42a6272046d5.
+- actualproviderrequest thinking.type=disabled,32768tokens,stream=true;
+  same exact uploadedvideo reference as secondcall.
+- provider resp_021787858370633b7d8c272fa1fe35aa5baeadeea4f72cccea670,
+  singleAttempt, stillawaitingterminal; notyetclaimedasVLMsuccess.

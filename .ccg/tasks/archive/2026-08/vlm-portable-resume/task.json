@@ -1,0 +1,11 @@
+{
+  "id": "vlm-portable-resume",
+  "title": "跨平台SourcePrep已提交后的VLM恢复回归",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "模拟路径迁移已验证；真正跨机部署及重算API仍另行跟踪",
+  "branch": "feat/v213-contract-codegen"
+}
