@@ -12,6 +12,7 @@ from typing import Protocol
 
 from ..contracts.compiler.canonical import canonical_json_bytes
 from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
+from ..media.types import sha256_prefixed
 from ..store.models import PersistedRuntimeCalibrationCapability
 from .authority_profiles import (
     RuntimeCalibrationCapabilityPolicy,
@@ -25,6 +26,10 @@ from .calibration_binding import (
     bind_runtime_calibration_capability,
 )
 from .installed_local_run import LocalRunResource, load_installed_local_run_resource
+from .runtime_timed_speech import (
+    RuntimeTimedMediaAuthoritySelector,
+    RuntimeTimedSpeechProjection,
+)
 from .timed_speech import (
     AuthorityRegistrySnapshot,
     AuthorityRegistryStore,
@@ -38,7 +43,9 @@ class InstalledLocalRunError(ValueError):
     """Installed content differs from its exact persisted runtime profile."""
 
 
-class InstalledLocalRunAuthorityStore(CalibrationRecordAnchorReader, AuthorityRegistryStore, Protocol):
+class InstalledLocalRunAuthorityStore(
+    CalibrationRecordAnchorReader, AuthorityRegistryStore, Protocol
+):
     """Only the two authoritative reads needed for installed startup."""
 
 
@@ -54,7 +61,9 @@ class InstalledRuntimeCapabilityResolver:
 
     def __post_init__(self) -> None:
         if type(self.policy) is not RuntimeCalibrationPolicySource:  # noqa: E721
-            raise InstalledLocalRunError("runtime resolver requires an exact static calibration policy")
+            raise InstalledLocalRunError(
+                "runtime resolver requires an exact static calibration policy"
+            )
 
     def resolve(
         self,
@@ -66,6 +75,48 @@ class InstalledRuntimeCapabilityResolver:
             measurement_identity=measurement_identity,
             store=store,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledRuntimeTimedSpeechAuthorityResolver:
+    """Re-read accepted PC capability, then derive its only request projection.
+
+    A ``RuntimeTimedSpeechProjection`` is deliberately not an externally
+    supplied command value.  This resolver reconstructs it immediately before
+    native evidence work from the authenticated live measurement, the static
+    installed policy and the Store's immutable accepted capability.
+    """
+
+    capability_resolver: InstalledRuntimeCapabilityResolver
+    selector: RuntimeTimedMediaAuthoritySelector
+    static_operation_policy_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.capability_resolver) is not InstalledRuntimeCapabilityResolver:  # noqa: E721
+            raise InstalledLocalRunError(
+                "runtime timed-speech resolver requires exact capability resolver"
+            )
+        if type(self.selector) is not RuntimeTimedMediaAuthoritySelector:  # noqa: E721
+            raise InstalledLocalRunError(
+                "runtime timed-speech resolver requires exact authority selector"
+            )
+        try:
+            sha256_prefixed(
+                self.static_operation_policy_sha256,
+                "runtime timed-speech static operation policy",
+            )
+        except ValueError as error:
+            raise InstalledLocalRunError(
+                "runtime timed-speech resolver requires a static operation policy hash"
+            ) from error
+
+    def resolve(
+        self,
+        store: InstalledRuntimeCapabilityStore,
+        measurement_identity: RuntimeMeasurementIdentity,
+    ) -> RuntimeTimedSpeechProjection:
+        capability = self.capability_resolver.resolve(store, measurement_identity)
+        return self.selector.select(capability, measurement_identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,7 +144,9 @@ class InstalledLocalRunProfileResolver:
         )
         resolved = StoreAnchoredTimedSpeechProfileResolver(self.snapshot).resolve(store)
         if resolved.entry != self.resource.local_run.timed_speech_registry_entry:
-            raise InstalledLocalRunError("bootstrapped profile differs from installed local-run entry")
+            raise InstalledLocalRunError(
+                "bootstrapped profile differs from installed local-run entry"
+            )
         return resolved
 
 
@@ -113,7 +166,9 @@ def runtime_calibration_policy_for_installed_resource(
     path through its environment.  Accepted records remain a fresh Store read.
     """
     if type(resource) is not LocalRunResource:  # noqa: E721
-        raise InstalledLocalRunError("runtime calibration policy requires an exact installed resource")
+        raise InstalledLocalRunError(
+            "runtime calibration policy requires an exact installed resource"
+        )
     return decode_runtime_calibration_policy_source(
         canonical_json_bytes(
             {

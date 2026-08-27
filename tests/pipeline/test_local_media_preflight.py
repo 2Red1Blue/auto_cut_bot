@@ -48,11 +48,20 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaSourceError,
     LocalMediaToolError,
     ProducerCalibrationIdentity,
+    RuntimeMediaPreflightRequest,
     TimedSpeechEvidence,
     TimedSpeechEvidenceRequest,
     TimedSpeechInvocationTrace,
     TimedSpeechProducerIdentity,
     TimedSpeechTimingErrorBound,
+)
+from auto_cut_bot.pipeline.media_preflight.runtime_policy import (
+    PcCudaRuntimeTimedSpeechPolicy,
+    RuntimeTimedSpeechProducerPolicy,
+)
+from auto_cut_bot.pipeline.media_preflight.runtime_speech import (
+    RUNTIME_TIMED_SPEECH_ROUTE,
+    RuntimeTimedSpeechEvidenceRequest,
 )
 
 
@@ -559,6 +568,81 @@ def test_response_bound_above_accepted_calibration_is_rejected(tmp_path: Path) -
     speech.timing_error_bound_tick = 1001
     with pytest.raises(LocalMediaEvidenceError, match="exceeds calibration"):
         port.prepare(request, kernel_max_source_bytes=1_048_576, service_max_request_bytes=1_048_576)
+
+
+def _runtime_cuda_policy(request: LocalMediaPreflightRequest) -> PcCudaRuntimeTimedSpeechPolicy:
+    digest = "sha256:" + "e" * 64
+    native_port = _sha(b"accepted-pc-cuda-native-port")
+    runtime_producers = (
+        RuntimeTimedSpeechProducerPolicy(
+            "asr", "accepted-cuda-asr", "v2", digest, digest, digest,
+            "SenseVoiceSmall", "cuda-model", digest, "sensevoice-word-timestamp",
+            digest, "sha256:" + "a" * 64, 23,
+        ),
+        RuntimeTimedSpeechProducerPolicy(
+            "vad", "accepted-cuda-vad", "v2", digest, digest, digest,
+            "fsmn-vad", "cuda-model", digest, "fsmn-vad-direct",
+            digest, "sha256:" + "b" * 64, 29,
+        ),
+    )
+    audio = request.audio_sample_boundaries.context
+    return PcCudaRuntimeTimedSpeechPolicy(
+        digest, "pc_cuda", "cuda", digest, digest, digest, digest, digest,
+        request.policy.funasr_version, request.policy.torch_version, digest, digest,
+        "sha256:" + "c" * 64, "sha256:" + "d" * 64, native_port,
+        audio.clock_id, audio.time_base, request.policy.timed_speech_policy_sha256,
+        digest, digest, digest, digest, request.policy.timed_speech_endpoint_url,
+        request.policy.timed_speech_provider_id, request.policy.timed_speech_provider_version,
+        request.policy.timed_speech_timeout_seconds, request.policy.timed_speech_max_response_bytes,
+        request.policy.utterance_gap_milliseconds, request.policy.vad_merge_gap_milliseconds,
+        runtime_producers,
+    )
+
+
+def test_runtime_cuda_preflight_uses_v2_request_not_cpu_legacy_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port, local, speech = _request(tmp_path, _Runner())
+    speech.timing_error_bound_tick = 1
+    runtime_policy = _runtime_cuda_policy(local)
+    request = RuntimeMediaPreflightRequest(
+        replace(local, timed_speech_adapter_sha256=runtime_policy.native_port_identity_sha256),
+        runtime_policy,
+    )
+
+    def legacy_request_must_not_run(*args: object, **kwargs: object) -> object:
+        raise AssertionError("CPU/MPS _speech_request must never be used by CUDA")
+
+    monkeypatch.setattr(port, "_speech_request", legacy_request_must_not_run)
+    result = port.prepare_runtime_cuda(
+        request, kernel_max_source_bytes=1_048_576, service_max_request_bytes=1_048_576,
+    )
+
+    dispatched = speech.requests[0]
+    assert type(dispatched) is RuntimeTimedSpeechEvidenceRequest
+    assert dispatched.endpoint_url.endswith(RUNTIME_TIMED_SPEECH_ROUTE)
+    assert result.runtime_policy == runtime_policy
+    assert result.producer_identities[2].adapter_sha256 == runtime_policy.native_port_identity_sha256
+    assert result.producer_identities[3].adapter_sha256 == runtime_policy.native_port_identity_sha256
+    assert tuple(item.calibration_record_sha256 for item in result.producer_identities[2:4]) == (
+        "sha256:" + "a" * 64,
+        "sha256:" + "b" * 64,
+    )
+    assert tuple(item.timing_error_bound_tick for item in result.calibration_bindings[2:4]) == (23, 29)
+    assert result.provenance_mapping()["runtime_timed_speech_authority"] == runtime_policy.to_mapping()
+
+
+def test_runtime_cuda_preflight_rejects_native_port_adapter_drift_before_io(tmp_path: Path) -> None:
+    runner = _Runner()
+    _port, local, speech = _request(tmp_path, runner)
+    runtime_policy = _runtime_cuda_policy(local)
+    runner.argvs.clear()
+
+    with pytest.raises(LocalMediaSourceError, match="native port"):
+        RuntimeMediaPreflightRequest(local, runtime_policy)
+
+    assert runner.argvs == []
+    assert speech.requests == []
 
 
 @pytest.mark.parametrize("field,value", [

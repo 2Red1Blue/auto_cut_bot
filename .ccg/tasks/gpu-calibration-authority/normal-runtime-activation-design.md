@@ -58,6 +58,33 @@ Pipeline independently reads the accepted capability immediately before the
 request and writes that exact capability reference into the resulting
 Receipt/evidence closure.
 
+## CUDA Command and Receipt boundary
+
+The CUDA command accepts the authenticated `RuntimeMeasurementIdentity`, not a
+caller-built projection. Before it claims native work it re-reads the matching
+accepted capability from the Store and derives one
+`RuntimeTimedSpeechProjection`; that projection is included in the actual
+Command hash and in the `runtime_timed_speech_capability_admission` Artifact.
+
+The CUDA producer receives that exact projection and must call only the
+dedicated v2 CUDA endpoint. Its v2 provenance carries the corresponding runtime
+policy mapping. The installed CUDA authority resolver also carries the hash of
+the protected static operation policy used to construct that mapping; Kernel
+admission requires exact equality, rather than accepting a caller-provided
+policy hash. It independently verifies the closed policy schema and v2
+loopback route, projection hash, runtime versions, static profile/registry,
+record/validation hashes, source clock, timing-policy hashes and gaps, ASR/VAD
+producer identities, timing bounds and native-port adapter hash. CPU v1 and
+CUDA v2 provenance are command-specific grammars: neither command accepts the
+other's evidence. A successful command uses the shared Store
+`artifact_set_hash`; a success-commit acknowledgement error is indeterminate
+and must be reconciled, never overwritten with a rejection.
+
+The CPU reader/finalizer is deliberately not a compatibility adapter. The
+runtime five-member layout has its own exact reader and batch finalizer as a
+required follow-up; until both exist, the CUDA child command must not be wired
+to normal Pipeline completion.
+
 ## Pipeline waiting and recompute states
 
 Pipeline startup validates static configuration and service health, not the

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 from autocut_kernel.media import SpeechActivitySet, TimeBase, TranscriptSet
 from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
 
 from .models import LocalMediaEvidenceError, LocalMediaPolicyError, validate_timed_speech_endpoint
+
+if TYPE_CHECKING:
+    from .runtime_speech import RuntimeTimedSpeechEvidenceRequest
 
 SENSEVOICE_WORD_GUARD_PROFILE = "sensevoice_word_guard_v1"
 
@@ -123,9 +126,7 @@ class TimedSpeechEvidenceRequest:
         if tuple(x.producer_kind for x in self.expected_producers) != ("asr", "vad"):
             raise LocalMediaPolicyError("producers must be asr then vad")
         if self.word_timing_capability != "required":
-            raise LocalMediaPolicyError(
-                "sensevoice_word_guard_v1 requires real word timestamps"
-            )
+            raise LocalMediaPolicyError("sensevoice_word_guard_v1 requires real word timestamps")
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -258,4 +259,6 @@ class TimedSpeechEvidence:
 
 
 class TimedSpeechEvidencePort(Protocol):
-    def produce(self, request: TimedSpeechEvidenceRequest) -> TimedSpeechEvidence: ...
+    def produce(
+        self, request: TimedSpeechEvidenceRequest | RuntimeTimedSpeechEvidenceRequest
+    ) -> TimedSpeechEvidence: ...

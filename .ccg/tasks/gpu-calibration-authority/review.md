@@ -166,3 +166,35 @@ capability from any older authority lineage now yields `recompute_needed`
 rather than an unsafe wakeable wait state, and the CAS wake query is explicitly
 limited to the `media_preflight` command. The reviewer reported no remaining
 Critical findings after the final patch.
+
+## CUDA command authority projection review
+
+### Result
+
+Approved as an isolated durable-command slice. It does not yet wire CUDA into
+Pipeline completion: that remains gated on a CUDA-specific committed reader and
+batch finalizer.
+
+### Adversarial fixes
+
+- The command requires the exact installed Store-reading CUDA authority
+  resolver; a structural lookalike resolver cannot inject a caller-built
+  projection.
+- The resolver pins the protected static operation-policy hash. The producer's
+  closed `pc-cuda-runtime-timed-speech-policy-v1` mapping must echo that hash,
+  the exact Store-derived projection fields, ASR/VAD records/bounds and native
+  adapter identity.
+- CUDA accepts only its v2 loopback evidence route and v2 provenance grammar;
+  the legacy CPU command accepts only v1 provenance. A legacy route, a
+  different policy schema, or a static-policy hash drift produces a durable
+  denial.
+- A lost success acknowledgement remains indeterminate and is reconciled by
+  reading the command slot; it cannot be turned into a denial after commit.
+
+### Validation
+
+- `uv run pytest -q tests/media/test_prepare_runtime_timed_media_evidence_command.py tests/media/test_prepare_timed_media_evidence_command.py tests/authority/test_runtime_timed_speech.py tests/pipeline/test_runtime_timed_speech_request.py tests/pipeline/test_funasr_timed_speech.py tests/pipeline/test_local_media_preflight.py` — 200 passed.
+- Focused Ruff — passed.
+- BasedPyright for the changed CUDA command and installed resolver — 0 errors,
+  0 warnings.
+- `git diff --check` — passed.

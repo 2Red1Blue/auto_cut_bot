@@ -40,9 +40,7 @@ class RuntimeTimedSpeechProjectionError(ValueError):
 
 
 def _fail(detail: str) -> RuntimeTimedSpeechProjectionError:
-    return RuntimeTimedSpeechProjectionError(
-        f"runtime timed-speech projection rejected: {detail}"
-    )
+    return RuntimeTimedSpeechProjectionError(f"runtime timed-speech projection rejected: {detail}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +281,7 @@ class RuntimeTimedSpeechCapabilityAdmission:
                 or binding.calibration_record_sha256 != record_sha256
                 or binding.time_base != self.projection.source_time_base
                 or binding.timing_error_bound_tick != bound_tick
+                or binding.adapter_sha256 != self.projection.native_port_identity_sha256
                 or context.producer_id != producer.producer_id
                 or context.generation_policy_sha256 != producer.generation_policy_sha256
             ):
@@ -449,15 +448,17 @@ def project_runtime_timed_speech(
 
     compatibility = measurement.timing_compatibility
     if (
-        identity.native_port_identity_sha256
-        != compatibility.native_protocol_identity_sha256
-        or identity.timed_speech_policy_sha256
-        != compatibility.word_timestamp_policy_sha256
+        identity.native_port_identity_sha256 != compatibility.native_protocol_identity_sha256
+        or identity.timed_speech_policy_sha256 != compatibility.word_timestamp_policy_sha256
         or identity.vad_merge_policy_sha256 != compatibility.vad_merge_policy_sha256
     ):
         raise _fail("aggregate timing policy differs from the measured compatibility profile")
-    _require_producer_alignment(record.asr.producer_identity, measurement, CalibrationRecordRole.ASR)
-    _require_producer_alignment(record.vad.producer_identity, measurement, CalibrationRecordRole.VAD)
+    _require_producer_alignment(
+        record.asr.producer_identity, measurement, CalibrationRecordRole.ASR
+    )
+    _require_producer_alignment(
+        record.vad.producer_identity, measurement, CalibrationRecordRole.VAD
+    )
 
     return RuntimeTimedSpeechProjection(
         runtime_capability_id=measurement.runtime_capability_id,

@@ -80,14 +80,22 @@ def _runtime_measurement(*, capability_id: str = "pc_cuda") -> RuntimeMeasuremen
                 },
                 "producers": [
                     {
-                        "producer_kind": "asr", "producer_id": "asr", "producer_version": "1",
-                        "model_id": "SenseVoiceSmall", "model_revision": "main",
-                        "model_sha256": _sha(106), "inference_identity_sha256": _sha(107),
+                        "producer_kind": "asr",
+                        "producer_id": "asr",
+                        "producer_version": "1",
+                        "model_id": "SenseVoiceSmall",
+                        "model_revision": "main",
+                        "model_sha256": _sha(106),
+                        "inference_identity_sha256": _sha(107),
                     },
                     {
-                        "producer_kind": "vad", "producer_id": "vad", "producer_version": "1",
-                        "model_id": "fsmn-vad", "model_revision": "main",
-                        "model_sha256": _sha(108), "inference_identity_sha256": _sha(109),
+                        "producer_kind": "vad",
+                        "producer_id": "vad",
+                        "producer_version": "1",
+                        "model_id": "fsmn-vad",
+                        "model_revision": "main",
+                        "model_sha256": _sha(108),
+                        "inference_identity_sha256": _sha(109),
                     },
                 ],
             }
@@ -131,13 +139,19 @@ def _policies(measurement: RuntimeMeasurementIdentity) -> TimingPolicies:
 
 def _policy() -> RuntimeCalibrationPolicySource:
     return RuntimeCalibrationPolicySource(
-        _sha(10), _sha(11), _sha(12), _sha(13),
+        _sha(10),
+        _sha(11),
+        _sha(12),
+        _sha(13),
         (RuntimeCalibrationCapabilityPolicy("pc_cuda", "cuda"),),
     )
 
 
 def _producer(
-    measurement: RuntimeMeasurementIdentity, role: CalibrationRecordRole, *, model_sha256: str | None = None,
+    measurement: RuntimeMeasurementIdentity,
+    role: CalibrationRecordRole,
+    *,
+    model_sha256: str | None = None,
 ) -> CalibrationRecordProducerIdentity:
     compatibility = measurement.timing_compatibility.producers[
         0 if role is CalibrationRecordRole.ASR else 1
@@ -153,9 +167,7 @@ def _producer(
         model_revision=compatibility.model_revision,
         model_sha256=model_sha256 or compatibility.model_sha256,
         inference_kind=(
-            "sensevoice-word-timestamp"
-            if role is CalibrationRecordRole.ASR
-            else "fsmn-vad-direct"
+            "sensevoice-word-timestamp" if role is CalibrationRecordRole.ASR else "fsmn-vad-direct"
         ),
         # This is deliberately a historical/audit value, not an admission check.
         service_sha256=_sha(26),
@@ -196,7 +208,9 @@ def _accepted_record(
         asr=_child(
             CalibrationRecordRole.ASR,
             identity=identity,
-            producer=_producer(measurement, CalibrationRecordRole.ASR, model_sha256=asr_model_sha256),
+            producer=_producer(
+                measurement, CalibrationRecordRole.ASR, model_sha256=asr_model_sha256
+            ),
         ),
         vad=_child(
             CalibrationRecordRole.VAD,
@@ -230,9 +244,14 @@ def _capability(
     def persisted(ordinal: int) -> PersistedCommittedArtifactMember:
         member = record.members[ordinal]
         reference = CommittedArtifactMemberReference(
-            UUID(int=1), UUID(int=2), ordinal,
+            UUID(int=1),
+            UUID(int=2),
+            ordinal,
             ArtifactScope(member.scope.namespace, member.scope.kind, member.scope.key),
-            member.artifact_type, member.logical_id, member.revision, member.content_hash,
+            member.artifact_type,
+            member.logical_id,
+            member.revision,
+            member.content_hash,
         )
         return PersistedCommittedArtifactMember(reference, member.payload_json, UUID(int=3))
 
@@ -255,11 +274,26 @@ def test_projects_closed_pc_cuda_runtime_timed_speech_authority() -> None:
     assert projection.timing_compatibility_sha256 == measurement.timing_compatibility_sha256
     assert projection.funasr_version == measurement.timing_compatibility.funasr_version
     assert projection.torch_version == measurement.timing_compatibility.torch_version
-    assert projection.producers[0].model_sha256 == measurement.timing_compatibility.producers[0].model_sha256
-    assert projection.asr_calibration_record_sha256 == _capability(measurement).anchor.record.asr.content_hash
-    assert projection.vad_calibration_record_sha256 == _capability(measurement).anchor.record.vad.content_hash
-    assert projection.asr_timing_error_bound_tick == _capability(measurement).anchor.record.asr.accepted_bound_tick
-    assert projection.vad_timing_error_bound_tick == _capability(measurement).anchor.record.vad.accepted_bound_tick
+    assert (
+        projection.producers[0].model_sha256
+        == measurement.timing_compatibility.producers[0].model_sha256
+    )
+    assert (
+        projection.asr_calibration_record_sha256
+        == _capability(measurement).anchor.record.asr.content_hash
+    )
+    assert (
+        projection.vad_calibration_record_sha256
+        == _capability(measurement).anchor.record.vad.content_hash
+    )
+    assert (
+        projection.asr_timing_error_bound_tick
+        == _capability(measurement).anchor.record.asr.accepted_bound_tick
+    )
+    assert (
+        projection.vad_timing_error_bound_tick
+        == _capability(measurement).anchor.record.vad.accepted_bound_tick
+    )
     assert projection.canonical_hash != projection.compatibility_hash
     assert projection.to_mapping()["accepted_calibration"] == {
         "record_sha256": projection.record_sha256,
@@ -318,6 +352,7 @@ def test_runtime_capability_admission_closes_root_evidence_to_cuda_projection() 
             projection.source_time_base,
             projection.asr_timing_error_bound_tick,
             True,
+            projection.native_port_identity_sha256,
         ),
         CalibrationBinding(
             producers[1].generation_policy_sha256,
@@ -328,11 +363,15 @@ def test_runtime_capability_admission_closes_root_evidence_to_cuda_projection() 
             projection.source_time_base,
             projection.vad_timing_error_bound_tick,
             True,
+            projection.native_port_identity_sha256,
         ),
     )
     admission = RuntimeTimedSpeechCapabilityAdmission(projection, root, bindings)
 
-    assert admission.to_mapping()["runtime_timed_speech_projection_sha256"] == projection.canonical_hash
+    assert (
+        admission.to_mapping()["runtime_timed_speech_projection_sha256"]
+        == projection.canonical_hash
+    )
     assert admission.to_mapping()["root_evidence_sha256"] == root.canonical_hash
     with pytest.raises(RuntimeTimedSpeechProjectionError, match="binding"):
         RuntimeTimedSpeechCapabilityAdmission(
@@ -347,9 +386,14 @@ def test_rejects_cpu_cuda_cross_binding() -> None:
     cpu = _runtime_measurement(capability_id=MAC_CPU_RUNTIME_CAPABILITY_ID)
 
     with pytest.raises(RuntimeTimedSpeechProjectionError, match="pc_cuda"):
-        _selector(cuda).select(PersistedRuntimeCalibrationCapability(cpu, _capability(cuda).anchor), cpu)
+        _selector(cuda).select(
+            PersistedRuntimeCalibrationCapability(cpu, _capability(cuda).anchor), cpu
+        )
     cpu_only_policy = RuntimeCalibrationPolicySource(
-        _sha(10), _sha(11), _sha(12), _sha(13),
+        _sha(10),
+        _sha(11),
+        _sha(12),
+        _sha(13),
         (RuntimeCalibrationCapabilityPolicy("mac_cpu", "cpu"),),
     )
     with pytest.raises(RuntimeTimedSpeechProjectionError, match="static policy"):
@@ -367,7 +411,9 @@ def test_rejects_cpu_cuda_cross_binding() -> None:
         ({"timed_speech_policy_sha256": _sha(42)}, "static timing policy"),
     ),
 )
-def test_rejects_tampered_runtime_record_closure(record_kwargs: dict[str, object], message: str) -> None:
+def test_rejects_tampered_runtime_record_closure(
+    record_kwargs: dict[str, object], message: str
+) -> None:
     measurement = _runtime_measurement()
 
     with pytest.raises(RuntimeTimedSpeechProjectionError, match=message):
@@ -381,15 +427,26 @@ def test_audit_only_build_change_projects_when_compatibility_is_equal() -> None:
         replace(measured_at_calibration.timing_compatibility, build_audit_sha256=_sha(99)),
     )
     assert rebuilt.build_audit_sha256 != measured_at_calibration.build_audit_sha256
-    assert rebuilt.timing_compatibility_sha256 == measured_at_calibration.timing_compatibility_sha256
+    assert (
+        rebuilt.timing_compatibility_sha256 == measured_at_calibration.timing_compatibility_sha256
+    )
     assert rebuilt.canonical_sha256 == measured_at_calibration.canonical_sha256
 
     projection = _selector(rebuilt).select(_capability(measured_at_calibration), rebuilt)
     assert projection.build_audit_sha256 == rebuilt.build_audit_sha256
-    assert projection.timing_compatibility_sha256 == measured_at_calibration.timing_compatibility_sha256
-    assert projection.compatibility_hash == _selector(measured_at_calibration).select(
-        _capability(measured_at_calibration), measured_at_calibration
-    ).compatibility_hash
-    assert projection.canonical_hash != _selector(measured_at_calibration).select(
-        _capability(measured_at_calibration), measured_at_calibration
-    ).canonical_hash
+    assert (
+        projection.timing_compatibility_sha256
+        == measured_at_calibration.timing_compatibility_sha256
+    )
+    assert (
+        projection.compatibility_hash
+        == _selector(measured_at_calibration)
+        .select(_capability(measured_at_calibration), measured_at_calibration)
+        .compatibility_hash
+    )
+    assert (
+        projection.canonical_hash
+        != _selector(measured_at_calibration)
+        .select(_capability(measured_at_calibration), measured_at_calibration)
+        .canonical_hash
+    )

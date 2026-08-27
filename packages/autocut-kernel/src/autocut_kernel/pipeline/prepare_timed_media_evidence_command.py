@@ -76,6 +76,8 @@ PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
 TIMED_SPEECH_BUSY_RETRY_COUNT = 1
 TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS = 1
+LOCAL_MEDIA_PRODUCER_PROVENANCE_SCHEMA = "local-media-producer-provenance-v1"
+RUNTIME_CUDA_MEDIA_PRODUCER_PROVENANCE_SCHEMA = "runtime-cuda-media-producer-provenance-v2"
 
 
 class TimedMediaEvidenceCommandError(ValueError):
@@ -109,6 +111,10 @@ class ProducedTimedMediaEvidence:
     calibration_bindings: tuple[CalibrationBinding, ...]
     producer_policy_json: str
     producer_provenance_json: str
+    producer_provenance_schema: Literal[
+        "local-media-producer-provenance-v1",
+        "runtime-cuda-media-producer-provenance-v2",
+    ] = LOCAL_MEDIA_PRODUCER_PROVENANCE_SCHEMA
 
     def __post_init__(self) -> None:
         if not _is_sha256(self.producer_policy_sha256):
@@ -128,7 +134,10 @@ class ProducedTimedMediaEvidence:
             self.producer_policy_sha256,
             "producer policy",
         )
-        _validate_producer_provenance_json(self.producer_provenance_json)
+        _validate_producer_provenance_json(
+            self.producer_provenance_json,
+            expected_schema=self.producer_provenance_schema,
+        )
 
     @property
     def producer_provenance_sha256(self) -> str:
@@ -149,11 +158,14 @@ class CommittedMediaInputsStore(Protocol):
     """Read only exact Source/VLM predecessors, without any speech registry."""
 
     def read_committed_semantic_inputs(
-        self, request: CommittedSemanticInputsRequest,
+        self,
+        request: CommittedSemanticInputsRequest,
     ) -> CommittedSemanticInputs: ...
 
     def read_whole_series_source_manifest(
-        self, job: Job, artifact_set_id: UUID,
+        self,
+        job: Job,
+        artifact_set_id: UUID,
     ) -> PersistedWholeSeriesSourceManifest: ...
 
 
@@ -256,7 +268,9 @@ class PrepareTimedMediaEvidenceRequest:
         if type(self.source_manifest_reference) is not WholeSeriesSourceManifestReference:  # noqa: E721
             raise TimedMediaEvidenceCommandError("source manifest reference must be exact")
         if self.source_manifest_reference.scope != canonical_recipe_scope(self.job):
-            raise TimedMediaEvidenceCommandError("source manifest reference has a non-canonical Job scope")
+            raise TimedMediaEvidenceCommandError(
+                "source manifest reference has a non-canonical Job scope"
+            )
         for field_name in (
             "source_manifest_receipt_id",
             "source_manifest_artifact_set_id",
@@ -269,13 +283,22 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("semantic_inputs_request must be exact")
         source = self.source_manifest_reference
         if semantic.job != self.job or semantic.source_manifest != CommittedArtifactMemberReference(
-            self.source_manifest_receipt_id, self.source_manifest_artifact_set_id,
-            0, source.scope, source.artifact_type, source.logical_id,
-            source.revision, source.content_hash,
+            self.source_manifest_receipt_id,
+            self.source_manifest_artifact_set_id,
+            0,
+            source.scope,
+            source.artifact_type,
+            source.logical_id,
+            source.revision,
+            source.content_hash,
         ):
-            raise TimedMediaEvidenceCommandError("semantic inputs must bind the exact Source member and Job")
+            raise TimedMediaEvidenceCommandError(
+                "semantic inputs must bind the exact Source member and Job"
+            )
         if semantic.vlm_semantic_pack_set.scope != canonical_recipe_scope(self.job):
-            raise TimedMediaEvidenceCommandError("semantic VLM aggregate must bind the canonical Job scope")
+            raise TimedMediaEvidenceCommandError(
+                "semantic VLM aggregate must bind the canonical Job scope"
+            )
         manifest = self.window_manifest
         if (
             manifest.source_sha256 != self.source_blob.content_hash
@@ -287,6 +310,7 @@ class PrepareTimedMediaEvidenceRequest:
         audio = self.audio_sample_boundaries.context
         if audio.source_id != manifest.source_id or audio.source_sha256 != manifest.source_sha256:
             raise TimedMediaEvidenceCommandError("audio boundaries do not bind the exact source")
+
     @property
     def source_manifest_sha256(self) -> str:
         return self.source_manifest_reference.content_hash
@@ -333,8 +357,10 @@ class PrepareTimedMediaEvidenceRequest:
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
             "semantic_pack_sha256": self.semantic_pack.canonical_hash,
             "semantic_inputs_request": {
-                "job": {"job_key": self.semantic_inputs_request.job.job_key,
-                        "profile": self.semantic_inputs_request.job.profile},
+                "job": {
+                    "job_key": self.semantic_inputs_request.job.job_key,
+                    "profile": self.semantic_inputs_request.job.profile,
+                },
                 "source_manifest": self.semantic_inputs_request.source_manifest.to_mapping(),
                 "vlm_semantic_pack_set": self.semantic_inputs_request.vlm_semantic_pack_set.to_mapping(),
             },
@@ -382,7 +408,8 @@ class ResolvedPrepareTimedMediaEvidenceRequest:
             if type(self.audio_stream_facts) is not AudioStreamFacts:
                 raise TimedMediaEvidenceCommandError("resolved audio facts must be exact")
             self.audio_stream_facts.assert_matches(
-                self.presentation_timeline_probe, self.request.audio_sample_boundaries,
+                self.presentation_timeline_probe,
+                self.request.audio_sample_boundaries,
             )
 
     @property
@@ -466,6 +493,7 @@ class ResolvedPrepareTimedMediaEvidenceRequest:
             "root_input_manifest_sha256": self.root_input_manifest_sha256,
         }
 
+
 @dataclass(frozen=True, slots=True)
 class PrepareTimedMediaEvidenceResult:
     outcome: CommandOutcome
@@ -500,7 +528,9 @@ class PrepareTimedMediaEvidenceCommand:
                 request.job,
                 request.idempotency_key,
                 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND,
-                timed_media_request_hash(resolved_request, self._authority_profile_resolver.snapshot),
+                timed_media_request_hash(
+                    resolved_request, self._authority_profile_resolver.snapshot
+                ),
                 execution_kind="deterministic",
             )
         )
@@ -662,7 +692,8 @@ class PrepareTimedMediaEvidenceCommand:
             audio_binding = next(
                 item
                 for item in produced.calibration_bindings
-                if item.producer_id == produced.root_bundle.audio_sample_boundaries.context.producer_id
+                if item.producer_id
+                == produced.root_bundle.audio_sample_boundaries.context.producer_id
             )
             probe, certificate = derive_presentation_timeline_facts(
                 produced.root_bundle,
@@ -823,13 +854,17 @@ def resolve_committed_timed_media_request(
             type(semantic) is not CommittedSemanticInputs  # noqa: E721
             or semantic.source_manifest != persisted
             or semantic.source_grant != decoded.census
-            or semantic.vlm_semantic_pack_set != request.semantic_inputs_request.vlm_semantic_pack_set
+            or semantic.vlm_semantic_pack_set
+            != request.semantic_inputs_request.vlm_semantic_pack_set
         ):
             raise TimedMediaEvidenceCommandError("committed semantic Source/VLM aggregate differs")
         semantic.source_grant.require_purpose("semantic_analysis")
         semantic.source_grant.require_purpose("render_source")
-        matches = tuple(item for item in semantic.inputs
-                        if item.source_window.window_manifest_sha256 == episode.manifest.canonical_hash)
+        matches = tuple(
+            item
+            for item in semantic.inputs
+            if item.source_window.window_manifest_sha256 == episode.manifest.canonical_hash
+        )
         if len(matches) != 1:
             raise TimedMediaEvidenceCommandError("committed VLM input lost the exact source window")
         selected = matches[0]
@@ -846,7 +881,8 @@ def resolve_committed_timed_media_request(
             or window.source_clock_id != episode.manifest.source_clock_id
             or window.window_manifest_set_sha256 != episode.manifest_set.canonical_hash
             or window.proxy_blob != request.source_blob
-            or child.source_job != request.job or child.kernel_job_id != persisted.job_id
+            or child.source_job != request.job
+            or child.kernel_job_id != persisted.job_id
             or child.episode_index != request.episode_index
             or child.source_manifest_sha256 != request.source_manifest_sha256
             or child.source_provenance_sha256 != request.source_provenance_sha256
@@ -860,13 +896,25 @@ def resolve_committed_timed_media_request(
             or selected.response_record.receipt_id != child.receipt_id
             or selected.response_record.artifact_set_id != child.artifact_set_id
             or selected.response_record.scope != request.artifact_scope
-            or (selected.response_record.member_ordinal, selected.response_record.artifact_type,
-                selected.response_record.logical_id, selected.response_record.revision)
-            != (1, "vlm_response_record", f"vlm_response_{episode.manifest.canonical_hash[7:31]}",
-                child.reference.revision)
+            or (
+                selected.response_record.member_ordinal,
+                selected.response_record.artifact_type,
+                selected.response_record.logical_id,
+                selected.response_record.revision,
+            )
+            != (
+                1,
+                "vlm_response_record",
+                f"vlm_response_{episode.manifest.canonical_hash[7:31]}",
+                child.reference.revision,
+            )
         ):
-            raise TimedMediaEvidenceCommandError("committed VLM pack does not bind the exact Source/episode/request owner")
-        return ResolvedPrepareTimedMediaEvidenceRequest(request, facts, episode.media_probe.audio_stream_facts)
+            raise TimedMediaEvidenceCommandError(
+                "committed VLM pack does not bind the exact Source/episode/request owner"
+            )
+        return ResolvedPrepareTimedMediaEvidenceRequest(
+            request, facts, episode.media_probe.audio_stream_facts
+        )
     except IndexError as error:
         raise TimedMediaEvidenceCommandError(
             "requested source episode is absent from the committed source manifest"
@@ -884,26 +932,54 @@ def timed_media_request_hash(
     snapshot: AuthorityRegistrySnapshot,
 ) -> str:
     """The actual deterministic Command identity, shared by commit and read."""
-    if type(resolved) is not ResolvedPrepareTimedMediaEvidenceRequest or type(snapshot) is not AuthorityRegistrySnapshot:  # noqa: E721
-        raise TimedMediaEvidenceCommandError("timed media hash requires resolved inputs and exact snapshot")
-    return canonical_sha256({
-        "authority_registry_set_sha256": snapshot.registry_set_sha256,
-        "authority_profile_key": snapshot.enabled_profile.value,
-        "request": resolved.canonical_payload(),
-    })
+    if (
+        type(resolved) is not ResolvedPrepareTimedMediaEvidenceRequest
+        or type(snapshot) is not AuthorityRegistrySnapshot
+    ):  # noqa: E721
+        raise TimedMediaEvidenceCommandError(
+            "timed media hash requires resolved inputs and exact snapshot"
+        )
+    return canonical_sha256(
+        {
+            "authority_registry_set_sha256": snapshot.registry_set_sha256,
+            "authority_profile_key": snapshot.enabled_profile.value,
+            "request": resolved.canonical_payload(),
+        }
+    )
 
 
 def validate_produced_timed_media_evidence(
     request: ResolvedPrepareTimedMediaEvidenceRequest,
     produced: ProducedTimedMediaEvidence,
+    *,
+    expected_provenance_schema: Literal[
+        "local-media-producer-provenance-v1",
+        "runtime-cuda-media-producer-provenance-v2",
+    ] = LOCAL_MEDIA_PRODUCER_PROVENANCE_SCHEMA,
 ) -> None:
     if type(produced) is not ProducedTimedMediaEvidence:  # noqa: E721
         raise TimedMediaEvidenceCommandError("producer returned another result type")
+    if produced.producer_provenance_schema != expected_provenance_schema:
+        raise TimedMediaEvidenceCommandError(
+            "producer provenance schema differs from the command boundary"
+        )
     root = produced.root_bundle
-    validate_calibration_bindings(produced.calibration_bindings, tuple(item.context for item in (
-        root.transcript, root.speech_activity, root.audio_sample_boundaries, root.frame_pts_index,
-        root.shot_boundaries, root.scene_boundaries, root.visual_validity, root.subtitle_cues,
-    )))
+    validate_calibration_bindings(
+        produced.calibration_bindings,
+        tuple(
+            item.context
+            for item in (
+                root.transcript,
+                root.speech_activity,
+                root.audio_sample_boundaries,
+                root.frame_pts_index,
+                root.shot_boundaries,
+                root.scene_boundaries,
+                root.visual_validity,
+                root.subtitle_cues,
+            )
+        ),
+    )
     if produced.producer_policy_sha256 != request.producer_policy_sha256:
         raise TimedMediaEvidenceCommandError("producer policy identity changed")
     provenance = json.loads(produced.producer_provenance_json)
@@ -958,6 +1034,7 @@ def validate_produced_timed_media_evidence(
         raise TimedMediaEvidenceCommandError(
             "producer output does not bind the committed request evidence"
         )
+
 
 def close_timed_media_candidates(
     request: ResolvedPrepareTimedMediaEvidenceRequest,
@@ -1035,12 +1112,8 @@ def _assess_window(
     def interval(record: object, context: object) -> tuple[Fraction, Fraction]:
         time_base = getattr(context, "time_base")
         return (
-            Fraction(
-                getattr(record, "in_tick") * time_base.numerator, time_base.denominator
-            ),
-            Fraction(
-                getattr(record, "out_tick") * time_base.numerator, time_base.denominator
-            ),
+            Fraction(getattr(record, "in_tick") * time_base.numerator, time_base.denominator),
+            Fraction(getattr(record, "out_tick") * time_base.numerator, time_base.denominator),
         )
 
     transcript_intervals = tuple(
@@ -1171,7 +1244,14 @@ def _is_sha256(value: object) -> bool:
     )
 
 
-def _validate_producer_provenance_json(value: object) -> None:
+def _validate_producer_provenance_json(
+    value: object,
+    *,
+    expected_schema: Literal[
+        "local-media-producer-provenance-v1",
+        "runtime-cuda-media-producer-provenance-v2",
+    ],
+) -> None:
     if type(value) is not str:  # noqa: E721
         raise TimedMediaEvidenceCommandError("producer provenance must be canonical JSON")
     try:
@@ -1192,10 +1272,13 @@ def _validate_producer_provenance_json(value: object) -> None:
         "tool_invocations",
         "tool_trace_sha256",
     }
-    if set(payload) != expected or payload["schema_version"] != (
-        "local-media-producer-provenance-v1"
-    ):
+    runtime_schema = expected_schema == RUNTIME_CUDA_MEDIA_PRODUCER_PROVENANCE_SCHEMA
+    if runtime_schema:
+        expected = {*expected, "runtime_timed_speech_authority"}
+    if set(payload) != expected or payload.get("schema_version") != expected_schema:
         raise TimedMediaEvidenceCommandError("producer provenance schema is not closed")
+    if runtime_schema and type(payload["runtime_timed_speech_authority"]) is not dict:  # noqa: E721
+        raise TimedMediaEvidenceCommandError("runtime producer provenance authority is invalid")
     if not _is_sha256(payload["source_provenance_sha256"]) or not _is_sha256(
         payload["tool_trace_sha256"]
     ):
@@ -1275,15 +1358,21 @@ def _validate_producer_provenance_json(value: object) -> None:
             raise TimedMediaEvidenceCommandError("producer identity order is not canonical")
         bound = identity["timing_error_bound_tick"]
         if type(bound) is not int or bound <= 0:  # noqa: E721
-            raise TimedMediaEvidenceCommandError("producer timing bound must be an exact positive integer")
+            raise TimedMediaEvidenceCommandError(
+                "producer timing bound must be an exact positive integer"
+            )
         for field in ("producer_id", "producer_version"):
             text = identity[field]
             if type(text) is not str or not text.strip():  # noqa: E721
-                raise TimedMediaEvidenceCommandError(f"producer identity {field} must be nonempty text")
+                raise TimedMediaEvidenceCommandError(
+                    f"producer identity {field} must be nonempty text"
+                )
             try:
                 text.encode("utf-8", errors="strict")
             except UnicodeEncodeError as error:
-                raise TimedMediaEvidenceCommandError(f"producer identity {field} must be valid UTF-8") from error
+                raise TimedMediaEvidenceCommandError(
+                    f"producer identity {field} must be valid UTF-8"
+                ) from error
         for field in (
             "calibration_policy_sha256",
             "calibration_record_sha256",

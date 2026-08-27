@@ -13,6 +13,8 @@ from .models import (
     ProducerCalibrationIdentity,
     ProducerIdentity,
     ProducerKind,
+    RuntimeMediaPreflightRequest,
+    RuntimeMediaPreflightResult,
     ToolInvocationTrace,
     ToolTrace,
 )
@@ -22,6 +24,8 @@ from .runtime_measurement_http import (
     FunASRRuntimeMeasurementIdentityHttpPort,
     RuntimeMeasurementIdentityPort,
 )
+from .runtime_policy import PcCudaRuntimeTimedSpeechPolicy
+from .runtime_speech import RuntimeTimedSpeechEvidenceRequest
 from .speech_port import (
     TimedSpeechEvidence,
     TimedSpeechEvidencePort,
@@ -53,6 +57,8 @@ __all__ = [
     "TimedSpeechTimingErrorBound",
     "LocalMediaPreflightRequest",
     "LocalMediaPreflightResult",
+    "RuntimeMediaPreflightRequest",
+    "RuntimeMediaPreflightResult",
     "LocalMediaSourceError",
     "LocalMediaToolError",
     "ProducerCalibrationIdentity",
@@ -60,4 +66,6 @@ __all__ = [
     "ProducerKind",
     "ToolInvocationTrace",
     "ToolTrace",
+    "PcCudaRuntimeTimedSpeechPolicy",
+    "RuntimeTimedSpeechEvidenceRequest",
 ]

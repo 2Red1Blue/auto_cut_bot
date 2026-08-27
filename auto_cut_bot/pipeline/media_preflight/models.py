@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlparse
 
 from autocut_kernel.media import (
@@ -17,6 +17,9 @@ from autocut_kernel.media import (
     TimeBase,
 )
 from autocut_kernel.media.types import canonical_sha256, sha256_prefixed
+
+if TYPE_CHECKING:
+    from .runtime_policy import PcCudaRuntimeTimedSpeechPolicy
 
 ProducerKind = Literal["frame", "audio", "asr", "vad", "shot", "scene", "visual", "subtitle"]
 _PRODUCER_KINDS: tuple[ProducerKind, ...] = (
@@ -565,6 +568,43 @@ class LocalMediaPreflightRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeMediaPreflightRequest:
+    """Closed PC-CUDA whole-source request over an existing physical request.
+
+    ``local_request`` remains the authority for the physical detector inputs.
+    Its historical CPU/MPS speech profile is intentionally not CUDA authority:
+    the accepted runtime policy supplies every ASR/VAD identity instead.
+    """
+
+    local_request: LocalMediaPreflightRequest
+    runtime_policy: PcCudaRuntimeTimedSpeechPolicy
+
+    def __post_init__(self) -> None:
+        # Delayed to keep the policy projection's import of this module acyclic.
+        from .runtime_policy import PcCudaRuntimeTimedSpeechPolicy
+
+        if type(self.local_request) is not LocalMediaPreflightRequest:  # noqa: E721
+            raise LocalMediaSourceError("runtime media request requires an exact local physical request")
+        if type(self.runtime_policy) is not PcCudaRuntimeTimedSpeechPolicy:  # noqa: E721
+            raise LocalMediaPolicyError("runtime media request requires exact PC CUDA authority")
+        audio = self.local_request.audio_sample_boundaries.context
+        if (
+            self.local_request.timed_speech_adapter_sha256
+            != self.runtime_policy.native_port_identity_sha256
+        ):
+            raise LocalMediaSourceError(
+                "runtime media adapter identity differs from accepted CUDA native port"
+            )
+        if (
+            self.runtime_policy.runtime_capability_id != "pc_cuda"
+            or self.runtime_policy.device != "cuda"
+            or self.runtime_policy.source_clock_id != audio.clock_id
+            or self.runtime_policy.source_time_base != audio.time_base
+        ):
+            raise LocalMediaPolicyError("runtime CUDA authority does not match source audio clock")
+
+
+@dataclass(frozen=True, slots=True)
 class ToolInvocationTrace:
     producer_kind: str
     executable: str
@@ -672,6 +712,73 @@ class LocalMediaPreflightResult:
         return canonical_sha256(self.provenance_mapping())
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeMediaPreflightResult:
+    """Complete physical plus accepted-PC-CUDA timed-speech evidence closure."""
+
+    evidence: RootMediaEvidenceBundle
+    tool_trace: ToolTrace
+    producer_identities: tuple[ProducerIdentity, ...]
+    calibration_bindings: tuple[CalibrationBinding, ...]
+    source_provenance_sha256: str
+    runtime_policy: PcCudaRuntimeTimedSpeechPolicy
+
+    def __post_init__(self) -> None:
+        from .runtime_policy import PcCudaRuntimeTimedSpeechPolicy
+
+        if tuple(item.producer_kind for item in self.producer_identities) != _PRODUCER_KINDS:
+            raise LocalMediaEvidenceError("runtime producer identities are not closed and canonical")
+        if len(self.calibration_bindings) != len(_PRODUCER_KINDS):
+            raise LocalMediaEvidenceError("runtime calibration bindings are not closed")
+        try:
+            sha256_prefixed(self.source_provenance_sha256, "source_provenance_sha256")
+        except ValueError as error:
+            raise LocalMediaEvidenceError(str(error)) from error
+        if type(self.runtime_policy) is not PcCudaRuntimeTimedSpeechPolicy:  # noqa: E721
+            raise LocalMediaEvidenceError("runtime result requires exact PC CUDA authority")
+
+        identities = self.producer_identities[2:4]
+        bindings = self.calibration_bindings[2:4]
+        for identity, binding, expected in zip(
+            identities, bindings, self.runtime_policy.producers, strict=True
+        ):
+            if (
+                identity.adapter_sha256 != self.runtime_policy.native_port_identity_sha256
+                or binding.adapter_sha256 != self.runtime_policy.native_port_identity_sha256
+                or identity.producer_kind != expected.producer_kind
+                or identity.producer_id != expected.producer_id
+                or identity.producer_version != expected.producer_version
+                or identity.producer_policy_sha256 != expected.generation_policy_sha256
+                or identity.detector_sha256 != expected.detector_sha256
+                or identity.calibration_policy_sha256 != expected.calibration_policy_sha256
+                or identity.calibration_record_sha256 != expected.calibration_record_sha256
+                or identity.timing_error_bound_tick != expected.timing_error_bound_tick
+                or binding.policy_sha256 != expected.generation_policy_sha256
+                or binding.detector_sha256 != expected.detector_sha256
+                or binding.calibration_record_sha256 != expected.calibration_record_sha256
+                or binding.producer_id != expected.producer_id
+                or binding.producer_version != expected.producer_version
+                or binding.timing_error_bound_tick != expected.timing_error_bound_tick
+            ):
+                raise LocalMediaEvidenceError(
+                    "runtime ASR/VAD calibration, bound, or native adapter identity drift"
+                )
+
+    def provenance_mapping(self) -> dict[str, object]:
+        return {
+            "producer_identities": [item.to_mapping() for item in self.producer_identities],
+            "runtime_timed_speech_authority": self.runtime_policy.to_mapping(),
+            "schema_version": "runtime-cuda-media-producer-provenance-v2",
+            "source_provenance_sha256": self.source_provenance_sha256,
+            "tool_invocations": self.tool_trace.to_mapping(),
+            "tool_trace_sha256": self.tool_trace.canonical_hash,
+        }
+
+    @property
+    def provenance_sha256(self) -> str:
+        return canonical_sha256(self.provenance_mapping())
+
+
 __all__ = [
     "LocalMediaEvidenceError",
     "LocalMediaPolicyError",
@@ -684,6 +791,8 @@ __all__ = [
     "ProducerCalibrationIdentity",
     "ProducerIdentity",
     "ProducerKind",
+    "RuntimeMediaPreflightRequest",
+    "RuntimeMediaPreflightResult",
     "ToolInvocationTrace",
     "ToolTrace",
 ]

@@ -64,6 +64,8 @@ from .models import (
     LocalMediaToolError,
     ProducerIdentity,
     ProducerKind,
+    RuntimeMediaPreflightRequest,
+    RuntimeMediaPreflightResult,
     ToolInvocationTrace,
     ToolTrace,
 )
@@ -73,6 +75,7 @@ from .physical_models import (
     PhysicalMediaResult,
 )
 from .process import BoundedSubprocessRunner, CommandOutput, CommandRunner
+from .runtime_speech import RuntimeTimedSpeechEvidenceRequest
 from .speech_port import (
     TimedSpeechEvidence,
     TimedSpeechEvidencePort,
@@ -368,9 +371,12 @@ class LocalMediaPreflightPort:
         visual_validity = self._visual_set(samples, request)
 
         embedded_cues = self._physical_subtitle_cues(streams, request, path, versions, traces)
-        subtitle_cues = self._subtitle_set(samples, embedded_cues, bool(streams and any(
-            item.codec_type == "subtitle" for item in streams
-        )), request)
+        subtitle_cues = self._subtitle_set(
+            samples,
+            embedded_cues,
+            bool(streams and any(item.codec_type == "subtitle" for item in streams)),
+            request,
+        )
         return _ProducedPhysical(
             initial_hash,
             tuple(traces),
@@ -541,6 +547,91 @@ class LocalMediaPreflightPort:
             identities,
             bindings,
             request.source_provenance_sha256,
+        )
+
+    def prepare_runtime_cuda(
+        self,
+        request: RuntimeMediaPreflightRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
+    ) -> RuntimeMediaPreflightResult:
+        """Build physical evidence plus PC-CUDA ASR/VAD through the v2 route.
+
+        This intentionally has no delegation to ``prepare``: that method owns
+        the historical CPU/MPS request grammar and calls ``_speech_request``.
+        CUDA uses the closed runtime request and validates the response against
+        the exact accepted runtime authority before materializing provenance.
+        """
+        if type(request) is not RuntimeMediaPreflightRequest:  # noqa: E721
+            raise LocalMediaPolicyError(
+                "prepare_runtime_cuda requires an exact runtime media request"
+            )
+        local = request.local_request
+        produced = self._produce_physical(
+            local,
+            kernel_max_source_bytes=kernel_max_source_bytes,
+            service_max_request_bytes=service_max_request_bytes,
+        )
+        path = Path(local.source_path)
+        speech_traces: tuple[ToolInvocationTrace, ...] = ()
+
+        if local.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
+            timed: TimedSpeechEvidence | None = None
+            transcript = self._not_applicable_transcript(local)
+            speech_activity = self._not_applicable_speech(local)
+        else:
+            timed = self._speech_client().produce(
+                self._runtime_speech_request(
+                    path,
+                    request,
+                    kernel_max_source_bytes=kernel_max_source_bytes,
+                    service_max_request_bytes=service_max_request_bytes,
+                )
+            )
+            self._validate_runtime_timed_speech_evidence(timed, request)
+            speech_traces = self._timed_speech_traces(timed)
+            transcript, speech_activity = timed.transcript, timed.speech_activity
+
+        final_hash, _ = _sha_file(path)
+        if final_hash != produced.initial_hash:
+            raise LocalMediaSourceError("materialized source changed during evidence production")
+        bundle = RootMediaEvidenceBundle(
+            root_media_evidence_bundle_id=f"{local.episode_id}:root-media-evidence",
+            source_id=local.source_id,
+            source_sha256=local.source_sha256,
+            source_manifest_sha256=local.source_manifest_sha256,
+            root_input_manifest_sha256=local.root_input_manifest_sha256,
+            frame_pts_index=local.frame_pts_index,
+            shot_boundaries=produced.shot_boundaries,
+            scene_boundaries=produced.scene_boundaries,
+            audio_sample_boundaries=local.audio_sample_boundaries,
+            transcript=transcript,
+            speech_activity=speech_activity,
+            visual_validity=produced.visual_validity,
+            subtitle_cues=produced.subtitle_cues,
+        )
+        identities = tuple(
+            self._runtime_producer_identity(kind, request, timed)
+            for kind in (
+                "frame",
+                "audio",
+                "asr",
+                "vad",
+                "shot",
+                "scene",
+                "visual",
+                "subtitle",
+            )
+        )
+        bindings = tuple(self._calibration_binding(item, local) for item in identities)
+        return RuntimeMediaPreflightResult(
+            bundle,
+            ToolTrace(tuple((*produced.traces, *speech_traces))),
+            identities,
+            bindings,
+            local.source_provenance_sha256,
+            request.runtime_policy,
         )
 
     def measure_detector_identity_sha256s(
@@ -744,9 +835,7 @@ class LocalMediaPreflightPort:
         ]
 
     @staticmethod
-    def _validate_probe(
-        payload: dict[str, Any], request: _PhysicalRequest
-    ) -> tuple[_Stream, ...]:
+    def _validate_probe(payload: dict[str, Any], request: _PhysicalRequest) -> tuple[_Stream, ...]:
         format_object = payload.get("format")
         if not isinstance(format_object, dict):
             raise LocalMediaEvidenceError("ffprobe format object is required")
@@ -1518,9 +1607,7 @@ class LocalMediaPreflightPort:
         policy = request.policy
         context = request.audio_sample_boundaries.context
         if policy.word_timing_capability != "required":
-            raise LocalMediaPolicyError(
-                "sensevoice_word_guard_v1 requires real word timestamps"
-            )
+            raise LocalMediaPolicyError("sensevoice_word_guard_v1 requires real word timestamps")
         expected = []
         for kind in cast(tuple[Literal["asr", "vad"], ...], ("asr", "vad")):
             c = policy.calibration(kind)
@@ -1571,14 +1658,40 @@ class LocalMediaPreflightPort:
         )
 
     @staticmethod
+    def _runtime_speech_request(
+        path: Path,
+        request: RuntimeMediaPreflightRequest,
+        *,
+        kernel_max_source_bytes: int,
+        service_max_request_bytes: int,
+    ) -> RuntimeTimedSpeechEvidenceRequest:
+        """Project one full source directly into the dedicated CUDA grammar."""
+        local = request.local_request
+        context = local.audio_sample_boundaries.context
+        effective_max_source_bytes = min(kernel_max_source_bytes, service_max_request_bytes)
+        return RuntimeTimedSpeechEvidenceRequest(
+            path,
+            local.source_id,
+            local.source_sha256,
+            kernel_max_source_bytes,
+            service_max_request_bytes,
+            effective_max_source_bytes,
+            context.clock_id,
+            context.time_base,
+            context.origin_tick,
+            context.duration_tick,
+            context.origin_tick,
+            context.end_tick,
+            request.runtime_policy,
+        )
+
+    @staticmethod
     def _validate_timed_speech_evidence(
         evidence: TimedSpeechEvidence, request: LocalMediaPreflightRequest
     ) -> None:
         context = request.audio_sample_boundaries.context
         if request.policy.word_timing_capability != "required":
-            raise LocalMediaPolicyError(
-                "sensevoice_word_guard_v1 requires real word timestamps"
-            )
+            raise LocalMediaPolicyError("sensevoice_word_guard_v1 requires real word timestamps")
         expected_word = EvidenceCompleteness.COMPLETE
         if (
             evidence.transcript.completeness
@@ -1664,6 +1777,87 @@ class LocalMediaPreflightPort:
                 raise LocalMediaEvidenceError("measured timing error exceeds calibration")
 
     @staticmethod
+    def _validate_runtime_timed_speech_evidence(
+        evidence: TimedSpeechEvidence,
+        request: RuntimeMediaPreflightRequest,
+    ) -> None:
+        """Require the v2 response to retain the accepted CUDA record closure."""
+        local = request.local_request
+        context = local.audio_sample_boundaries.context
+        if (
+            evidence.transcript.completeness
+            != TranscriptCompleteness(
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.COMPLETE,
+                EvidenceCompleteness.NOT_APPLICABLE,
+            )
+            or evidence.transcript.sentences
+            or any(segment.sentence_ids for segment in evidence.transcript.segments)
+        ):
+            raise LocalMediaEvidenceError(
+                "runtime SenseVoice word-gap output cannot claim sentence evidence"
+            )
+        for actual in (evidence.transcript.context, evidence.speech_activity.context):
+            if (
+                actual.source_id,
+                actual.source_sha256,
+                actual.clock_id,
+                actual.time_base,
+                actual.origin_tick,
+                actual.duration_tick,
+            ) != (
+                local.source_id,
+                local.source_sha256,
+                context.clock_id,
+                context.time_base,
+                context.origin_tick,
+                context.duration_tick,
+            ):
+                raise LocalMediaSourceError("runtime timed speech evidence source clock drift")
+        for actual, expected, bound in zip(
+            evidence.producer_identities,
+            request.runtime_policy.producers,
+            evidence.timing_error_bounds,
+            strict=True,
+        ):
+            if (
+                actual.producer_kind,
+                actual.producer_id,
+                actual.producer_version,
+                actual.generation_policy_sha256,
+                actual.detector_sha256,
+                actual.calibration_policy_sha256,
+                actual.calibration_record_sha256,
+                actual.model_id,
+                actual.model_revision,
+                actual.model_sha256,
+                actual.service_sha256,
+                actual.device,
+            ) != (
+                expected.producer_kind,
+                expected.producer_id,
+                expected.producer_version,
+                expected.generation_policy_sha256,
+                expected.detector_sha256,
+                expected.calibration_policy_sha256,
+                expected.calibration_record_sha256,
+                expected.model_id,
+                expected.model_revision,
+                expected.model_sha256,
+                expected.service_sha256,
+                "cuda",
+            ):
+                raise LocalMediaSourceError("runtime timed speech producer identity drift")
+            if (
+                bound.producer_kind != expected.producer_kind
+                or bound.time_base != context.time_base
+                or max(bound.early_tick, bound.late_tick) > expected.timing_error_bound_tick
+            ):
+                raise LocalMediaEvidenceError(
+                    "runtime measured timing error exceeds accepted calibration"
+                )
+
+    @staticmethod
     def _timed_speech_traces(evidence: TimedSpeechEvidence) -> tuple[ToolInvocationTrace, ...]:
         trace = evidence.invocation_trace
         empty_sha256 = _sha_bytes(b"")
@@ -1745,6 +1939,41 @@ class LocalMediaPreflightPort:
             calibration.calibration_record_sha256,
             accepted_bound,
             adapter_sha256,
+        )
+
+    @staticmethod
+    def _runtime_producer_identity(
+        kind: ProducerKind,
+        request: RuntimeMediaPreflightRequest,
+        timed: TimedSpeechEvidence | None,
+    ) -> ProducerIdentity:
+        """Use local policy only for physical identities, never CUDA ASR/VAD."""
+        if kind not in {"asr", "vad"}:
+            return LocalMediaPreflightPort._physical_identity(
+                cast(Literal["frame", "audio", "shot", "scene", "visual", "subtitle"], kind),
+                request.local_request,
+            )
+        if timed is None:
+            raise LocalMediaEvidenceError("runtime CUDA request requires ASR/VAD evidence")
+        position = 0 if kind == "asr" else 1
+        actual = timed.producer_identities[position]
+        expected = request.runtime_policy.producers[position]
+        if (
+            actual.producer_kind != expected.producer_kind
+            or actual.calibration_record_sha256 != expected.calibration_record_sha256
+            or actual.detector_sha256 != expected.detector_sha256
+        ):
+            raise LocalMediaSourceError("runtime timed speech producer identity drift")
+        return ProducerIdentity(
+            kind,
+            expected.producer_id,
+            expected.producer_version,
+            expected.generation_policy_sha256,
+            expected.detector_sha256,
+            expected.calibration_policy_sha256,
+            expected.calibration_record_sha256,
+            expected.timing_error_bound_tick,
+            request.runtime_policy.native_port_identity_sha256,
         )
 
     @staticmethod
