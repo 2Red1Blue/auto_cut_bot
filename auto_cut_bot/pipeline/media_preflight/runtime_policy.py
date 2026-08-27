@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlparse
 
 from autocut_kernel.media.calibration_record import CalibrationRecordProducerIdentity
 from autocut_kernel.media.types import TimeBase, canonical_sha256, sha256_prefixed
@@ -18,6 +19,7 @@ from autocut_kernel.registry.runtime_timed_speech import RuntimeTimedSpeechProje
 from .models import LocalMediaPreflightPolicy
 
 _SCHEMA_VERSION = "pc-cuda-runtime-timed-speech-policy-v1"
+_RUNTIME_TIMED_SPEECH_ROUTE = "/v2/runtime-timed-speech-evidence"
 _SPEECH_KINDS: tuple[Literal["asr", "vad"], Literal["asr", "vad"]] = ("asr", "vad")
 
 
@@ -42,6 +44,30 @@ def _text(value: object, field_name: str) -> str:
     if type(value) is not str or not value or value != value.strip():  # noqa: E721
         raise _fail(f"{field_name} must be canonical non-empty text")
     return value
+
+
+def _cuda_endpoint(legacy_endpoint: object) -> str:
+    """Share only the configured loopback authority, never the CPU route."""
+    endpoint = _text(legacy_endpoint, "endpoint_url")
+    try:
+        parsed = urlparse(endpoint)
+        port = parsed.port
+    except ValueError as error:
+        raise _fail("endpoint_url port is invalid") from error
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != "127.0.0.1"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is None
+        or not 1 <= port <= 65_535
+        or parsed.path != "/v1/timed-speech-evidence"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise _fail("runtime CUDA policy requires the installed CPU loopback origin")
+    return f"http://127.0.0.1:{port}{_RUNTIME_TIMED_SPEECH_ROUTE}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,7 +227,7 @@ class PcCudaRuntimeTimedSpeechPolicy:
                 "vad_merge_gap_milliseconds": self.vad_merge_gap_milliseconds,
             },
             "operation": {
-                "endpoint_url": self.endpoint_url,
+                "endpoint_url": _cuda_endpoint(self.endpoint_url),
                 "provider_id": self.provider_id,
                 "provider_version": self.provider_version,
                 "timeout_seconds": self.timeout_seconds,

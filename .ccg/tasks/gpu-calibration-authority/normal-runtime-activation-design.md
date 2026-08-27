@@ -81,9 +81,12 @@ other's evidence. A successful command uses the shared Store
 and must be reconciled, never overwritten with a rejection.
 
 The CPU reader/finalizer is deliberately not a compatibility adapter. The
-runtime five-member layout has its own exact reader and batch finalizer as a
-required follow-up; until both exist, the CUDA child command must not be wired
-to normal Pipeline completion.
+runtime five-member layout has its own exact reader and batch finalizer; the PC
+Media Preflight stage uses that distinct completion chain. The editorial-input
+join dispatches to the matching reader by exact batch grammar, so a CUDA
+ArtifactSet can never be interpreted as a CPU `local_run` result. The CUDA
+policy mapping and service route are both v2
+`/v2/runtime-timed-speech-evidence`; V1 is CPU-only.
 
 ## Pipeline waiting and recompute states
 

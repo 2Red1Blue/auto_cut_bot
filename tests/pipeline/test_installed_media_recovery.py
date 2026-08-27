@@ -5,11 +5,16 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from autocut_kernel.pipeline.prepare_runtime_timed_media_evidence_command import (
+    PrepareRuntimeTimedMediaEvidenceRequest,
+)
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
     InstalledRuntimeCapabilityResolver,
+    InstalledRuntimeTimedSpeechAuthorityResolver,
     runtime_calibration_policy_for_installed_resource,
 )
+from autocut_kernel.registry.runtime_timed_speech import RuntimeTimedMediaAuthoritySelector
 from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
 from autocut_kernel.store import (
     CommandOutcome,
@@ -22,6 +27,7 @@ from auto_cut_bot.pipeline.media_preflight.installed_policy import InstalledMedi
 from auto_cut_bot.pipeline.runtime import media_preflight_stage
 from auto_cut_bot.pipeline.runtime.media_preflight_stage import MediaPreflightPipelineStage
 from tests.media.test_calibration_record_persistence import _runtime_measurement
+from tests.media.test_prepare_timed_media_evidence_command import _request, _Store
 from tests.pipeline.installed_profile_fixture import (
     synthetic_installed_resource,
     synthetic_media_policy,
@@ -32,12 +38,18 @@ from tests.pipeline.test_pipeline_vlm_stage import _context
 def _matching_context():
     context = _context("media_preflight")
     old = context.execution_profile
-    resource = synthetic_installed_resource(old.to_doubao_policy(), old.to_generation_retry_policy())
+    resource = synthetic_installed_resource(
+        old.to_doubao_policy(), old.to_generation_retry_policy()
+    )
     policy = synthetic_media_policy(resource)
     profile = type(old).from_policies(
-        old.to_doubao_policy(), policy, retry_policy=old.to_generation_retry_policy(),
-        materialization_limits=replace(old.to_materialization_limits(),
-            timed_speech_max_request_bytes=resource.local_run.native_timed_speech.max_request_bytes),
+        old.to_doubao_policy(),
+        policy,
+        retry_policy=old.to_generation_retry_policy(),
+        materialization_limits=replace(
+            old.to_materialization_limits(),
+            timed_speech_max_request_bytes=resource.local_run.native_timed_speech.max_request_bytes,
+        ),
         stage1_policy=resource.narrative.command_policy,
         stage2_policy=old.build_stage2_command_policy(),
         stage3_policy=old.build_stage3_command_policy(),
@@ -46,14 +58,29 @@ def _matching_context():
     return replace(context, execution_profile=profile), resource, policy
 
 
+def _runtime_authority_resolver(resource, policy):
+    runtime_policy = runtime_calibration_policy_for_installed_resource(resource)
+    return InstalledRuntimeTimedSpeechAuthorityResolver(
+        InstalledRuntimeCapabilityResolver(runtime_policy),
+        RuntimeTimedMediaAuthoritySelector(
+            runtime_policy,
+            resource.local_run.source_clock_policy,
+            resource.local_run.timing_policies,
+        ),
+        policy.canonical_hash,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ("execute", "reconcile"))
 async def test_resumed_media_mismatch_stops_before_store_or_native(operation):
     context, resource, policy = _matching_context()
     old = context.execution_profile
     changed = type(old).from_policies(
-        old.to_doubao_policy(), replace(policy, timed_speech_calibration_sha256="sha256:" + "9" * 64),
-        retry_policy=old.to_generation_retry_policy(), materialization_limits=old.to_materialization_limits(),
+        old.to_doubao_policy(),
+        replace(policy, timed_speech_calibration_sha256="sha256:" + "9" * 64),
+        retry_policy=old.to_generation_retry_policy(),
+        materialization_limits=old.to_materialization_limits(),
         stage1_policy=old.build_stage1_command_policy(),
         stage2_policy=old.build_stage2_command_policy(),
         stage3_policy=old.build_stage3_command_policy(),
@@ -69,7 +96,9 @@ async def test_resumed_media_mismatch_stops_before_store_or_native(operation):
         def prepare(self, *args, **kwargs):
             pytest.fail("mismatched media profile reached native inference")
 
-    stage = MediaPreflightPipelineStage(NoStore(), NoNative(), InstalledLocalRunProfileResolver(resource))
+    stage = MediaPreflightPipelineStage(
+        NoStore(), NoNative(), InstalledLocalRunProfileResolver(resource)
+    )
     before = context.execution_profile.canonical_json
     with pytest.raises(InstalledMediaPolicyError, match="aggregate calibration"):
         await getattr(stage, operation)(context)
@@ -90,8 +119,9 @@ async def test_media_batch_requires_accepted_installed_anchor_before_kernel_comm
         pytest.fail("Kernel command constructed before installed anchor verification")
 
     monkeypatch.setattr(media_preflight_stage, "PrepareTimedMediaEvidenceCommand", forbidden)
-    stage = MediaPreflightPipelineStage(MissingCalibrationStore(), object(),
-                                        InstalledLocalRunProfileResolver(resource))
+    stage = MediaPreflightPipelineStage(
+        MissingCalibrationStore(), object(), InstalledLocalRunProfileResolver(resource)
+    )
     with pytest.raises(ValueError, match="missing calibration"):
         await stage._execute_batch(context, object(), (), policy)
     assert events == ["calibration"]
@@ -141,19 +171,19 @@ async def test_media_batch_delegates_same_snapshot_only_after_installed_resolve(
     ],
 )
 async def test_runtime_capability_gate_projects_wait_or_recompute_before_native(
-    monkeypatch, failure, expected,
+    monkeypatch,
+    failure,
+    expected,
 ):
-    context, resource, _ = _matching_context()
-    resolver = InstalledRuntimeCapabilityResolver(
-        runtime_calibration_policy_for_installed_resource(resource)
-    )
+    context, resource, policy = _matching_context()
+    resolver = _runtime_authority_resolver(resource, policy)
 
     class IdentityPort:
         def read_identity(self):
             return _runtime_measurement()
 
     def fail_resolve(self, store, identity):
-        assert self is resolver
+        assert self is resolver.capability_resolver
         assert identity == _runtime_measurement()
         raise failure
 
@@ -161,7 +191,7 @@ async def test_runtime_capability_gate_projects_wait_or_recompute_before_native(
     stage = MediaPreflightPipelineStage(
         object(), object(), InstalledLocalRunProfileResolver(resource), resolver, IdentityPort()
     )
-    result = await stage._runtime_capability_outcome(context)
+    result = await stage._runtime_cuda_authority(context, policy)
     assert result is not None and result.outcome == expected and result.receipt_id is None
 
 
@@ -175,20 +205,21 @@ async def test_runtime_capability_gate_projects_wait_or_recompute_before_native(
     ),
 )
 async def test_runtime_capability_outcome_precedes_pipeline_input_reads(
-    monkeypatch, operation, failure, expected,
+    monkeypatch,
+    operation,
+    failure,
+    expected,
 ):
     """No source/VLM/authority read may happen before live capability admission."""
-    context, resource, _ = _matching_context()
-    resolver = InstalledRuntimeCapabilityResolver(
-        runtime_calibration_policy_for_installed_resource(resource)
-    )
+    context, resource, policy = _matching_context()
+    resolver = _runtime_authority_resolver(resource, policy)
 
     class IdentityPort:
         def read_identity(self):
             return _runtime_measurement()
 
     def missing_capability(self, store, identity):
-        assert self is resolver
+        assert self is resolver.capability_resolver
         assert identity == _runtime_measurement()
         raise failure
 
@@ -205,3 +236,59 @@ async def test_runtime_capability_outcome_precedes_pipeline_input_reads(
     result = await getattr(stage, operation)(context)
     assert result is not None
     assert result.outcome == expected
+
+
+@pytest.mark.asyncio
+async def test_cuda_composition_never_silently_degrades_to_legacy_cpu_chain() -> None:
+    context, resource, policy = _matching_context()
+    resolver = _runtime_authority_resolver(resource, policy)
+
+    class IdentityPort:
+        def read_identity(self):
+            return _runtime_measurement(capability_id="mac_cpu")
+
+    stage = MediaPreflightPipelineStage(
+        object(), object(), InstalledLocalRunProfileResolver(resource), resolver, IdentityPort()
+    )
+
+    result = await stage._runtime_cuda_authority(context, policy)
+    assert result is not None
+    assert result.outcome == "recompute_needed"
+
+
+@pytest.mark.asyncio
+async def test_runtime_cuda_batch_dispatches_only_the_dedicated_v2_command(monkeypatch) -> None:
+    """The pipeline adapter cannot accidentally send a CUDA run to CPU command."""
+    context, resource, policy = _matching_context()
+    resolver = _runtime_authority_resolver(resource, policy)
+    base = replace(_request(_Store()), idempotency_key="runtime-media-preflight:episode:0")
+    captured: list[PrepareRuntimeTimedMediaEvidenceRequest] = []
+    pending = SimpleNamespace(outcome=CommandOutcome(UUID(int=47), "pending"))
+
+    class V2OnlyCommand:
+        def __init__(self, store, producer, actual_resolver):
+            assert actual_resolver is resolver
+
+        def execute(self, request):
+            assert type(request) is PrepareRuntimeTimedMediaEvidenceRequest
+            captured.append(request)
+            return pending
+
+    monkeypatch.setattr(
+        media_preflight_stage, "PrepareRuntimeTimedMediaEvidenceCommand", V2OnlyCommand
+    )
+    stage = MediaPreflightPipelineStage(
+        object(), object(), InstalledLocalRunProfileResolver(resource), resolver, object()
+    )
+    runtime = SimpleNamespace(
+        measurement=_runtime_measurement(),
+        policy=SimpleNamespace(canonical_hash="sha256:" + "a" * 64),
+    )
+
+    result = await stage._execute_runtime_cuda_batch(
+        context, object(), (base,), policy, runtime
+    )
+
+    assert result is pending
+    assert captured[0].timed_media_request is base
+    assert captured[0].runtime_measurement_identity == runtime.measurement

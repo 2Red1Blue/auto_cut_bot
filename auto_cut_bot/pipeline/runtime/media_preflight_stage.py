@@ -9,14 +9,26 @@ import hashlib
 import json
 from typing import Protocol
 
+from autocut_kernel.media.runtime_measurement_identity import (
+    PC_CUDA_RUNTIME_CAPABILITY_ID,
+    RuntimeMeasurementIdentity,
+)
 from autocut_kernel.pipeline import (
+    FinalizeRuntimeTimedMediaEvidenceBatchCommand,
+    FinalizeRuntimeTimedMediaEvidenceBatchRequest,
+    FinalizeRuntimeTimedMediaEvidenceBatchResult,
     FinalizeTimedMediaEvidenceBatchCommand,
     FinalizeTimedMediaEvidenceBatchRequest,
     FinalizeTimedMediaEvidenceBatchResult,
+    PrepareRuntimeTimedMediaEvidenceCommand,
+    PrepareRuntimeTimedMediaEvidenceRequest,
+    PrepareRuntimeTimedMediaEvidenceResult,
     PrepareTimedMediaEvidenceCommand,
     PrepareTimedMediaEvidenceRequest,
     PrepareTimedMediaEvidenceResult,
+    ProducedRuntimeTimedMediaEvidence,
     ProducedTimedMediaEvidence,
+    RuntimeTimedMediaEvidenceBatchChild,
     TimedMediaEvidenceBatchChild,
     TimedMediaEvidenceProducerError,
 )
@@ -30,9 +42,10 @@ from autocut_kernel.registry import (
 from autocut_kernel.registry.calibration_binding import CalibrationBindingError
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
-    InstalledRuntimeCapabilityResolver,
     InstalledRuntimeCapabilityStore,
+    InstalledRuntimeTimedSpeechAuthorityResolver,
 )
+from autocut_kernel.registry.runtime_timed_speech import RuntimeTimedSpeechProjection
 from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
@@ -58,9 +71,14 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightPort,
     LocalMediaPreflightRequest,
     LocalMediaToolError,
+    PcCudaRuntimeTimedSpeechPolicy,
     RuntimeMeasurementIdentityPort,
+    RuntimeMediaPreflightRequest,
 )
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
+from auto_cut_bot.pipeline.media_preflight.runtime_policy import (
+    project_pc_cuda_runtime_timed_speech_policy,
+)
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     SourcePrepStore,
@@ -85,6 +103,7 @@ from .source_prep_stage import (
 from .vlm_stage import vlm_batch_kernel_idempotency_key
 
 MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequential-v1"
+RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-pc-cuda-evidence-sequential-v1"
 _ARTIFACT_REVISION = 1
 
 
@@ -93,22 +112,30 @@ def media_evidence_read_limits(profile: PipelineExecutionProfile) -> TimedMediaR
     budget = profile.to_evidence_read_limits()
     transfer = profile.to_materialization_limits()
     if transfer.copy_chunk_bytes > budget.max_blob_bytes:
-        raise PipelineRunValidationError("evidence blob ceiling is smaller than the staging copy chunk")
+        raise PipelineRunValidationError(
+            "evidence blob ceiling is smaller than the staging copy chunk"
+        )
     # Evidence never goes to the timed-speech service. Reuse the Store's
     # bounded lease mechanism with its own byte ceiling, sharing only the
     # explicitly frozen host copy/quota controls with source staging.
     return TimedMediaReadLimits(
-        budget.max_blob_bytes, budget.max_total_blob_bytes,
+        budget.max_blob_bytes,
+        budget.max_total_blob_bytes,
         profile.to_doubao_policy().parse_policy.max_candidate_hypotheses,
         MaterializationLimits(
-            budget.max_blob_bytes, budget.max_blob_bytes,
-            transfer.copy_chunk_bytes, transfer.staging_quota_bytes,
+            budget.max_blob_bytes,
+            budget.max_blob_bytes,
+            transfer.copy_chunk_bytes,
+            transfer.staging_quota_bytes,
         ),
     )
 
 
 class MediaPreflightPipelineStore(
-    SourcePrepStore, TimedMediaReadStore, InstalledRuntimeCapabilityStore, Protocol,
+    SourcePrepStore,
+    TimedMediaReadStore,
+    InstalledRuntimeCapabilityStore,
+    Protocol,
 ):
     def read_committed_vlm_semantic_pack_set_reference(
         self,
@@ -120,6 +147,20 @@ class MediaPreflightPipelineStore(
         self,
         request: CommittedSemanticInputsRequest,
     ) -> CommittedSemanticInputs: ...
+
+
+class _RuntimeCudaAuthority:
+    """Fresh capability projection held only during one stage invocation."""
+
+    def __init__(
+        self,
+        measurement: RuntimeMeasurementIdentity,
+        projection: RuntimeTimedSpeechProjection,
+        policy: PcCudaRuntimeTimedSpeechPolicy,
+    ) -> None:
+        self.measurement = measurement
+        self.projection = projection
+        self.policy = policy
 
 
 class _ClaimOwnedLocalProducer:
@@ -194,6 +235,82 @@ class _ClaimOwnedLocalProducer:
         )
 
 
+class _ClaimOwnedRuntimeCudaProducer:
+    """Adapt a claim-owned lease to the dedicated CUDA producer grammar."""
+
+    def __init__(
+        self,
+        port: LocalMediaPreflightPort,
+        physical_policy: LocalMediaPreflightPolicy,
+        runtime_policy: PcCudaRuntimeTimedSpeechPolicy,
+    ) -> None:
+        self._port = port
+        self._physical_policy = physical_policy
+        self._runtime_policy = runtime_policy
+
+    def prepare(
+        self,
+        request: ResolvedPrepareTimedMediaEvidenceRequest,
+        source: VerifiedMaterializedBlob,
+        projection: RuntimeTimedSpeechProjection,
+    ) -> ProducedRuntimeTimedMediaEvidence:
+        if source.reference != request.source_blob:
+            raise TimedMediaEvidenceProducerError(
+                "COMMITTED_SOURCE_BLOB_MISMATCH",
+                "Kernel materialization does not match the committed BlobRef",
+            )
+        if projection.canonical_hash != self._runtime_policy.runtime_projection_sha256:
+            raise TimedMediaEvidenceProducerError(
+                "RUNTIME_PROJECTION_DRIFT",
+                "runtime policy differs from command-resolved CUDA projection",
+            )
+        local_request = LocalMediaPreflightRequest(
+            source_path=source.path,
+            episode_id=f"episode-{request.episode_index:04d}",
+            source_id=request.window_manifest.source_id,
+            source_sha256=request.window_manifest.source_sha256,
+            source_provenance_sha256=request.source_provenance_sha256,
+            source_manifest_sha256=request.source_manifest_sha256,
+            root_input_manifest_sha256=request.root_input_manifest_sha256,
+            frame_pts_index=request.frame_pts_index,
+            audio_sample_boundaries=request.audio_sample_boundaries,
+            frame_detector_sha256=request.frame_detector_sha256,
+            audio_detector_sha256=request.audio_detector_sha256,
+            policy=self._physical_policy,
+            timed_speech_adapter_sha256=projection.native_port_identity_sha256,
+        )
+        try:
+            produced = self._port.prepare_runtime_cuda(
+                RuntimeMediaPreflightRequest(local_request, self._runtime_policy),
+                kernel_max_source_bytes=request.materialization_limits.max_source_bytes,
+                service_max_request_bytes=request.materialization_limits.timed_speech_max_request_bytes,
+            )
+        except LocalMediaToolError as error:
+            raise TimedMediaEvidenceProducerError(
+                error.code, str(error), outcome="failed"
+            ) from error
+        except LocalMediaPreflightError as error:
+            raise TimedMediaEvidenceProducerError(error.code, str(error)) from error
+        authority = produced.runtime_policy.to_mapping()
+        return ProducedRuntimeTimedMediaEvidence(
+            ProducedTimedMediaEvidence(
+                produced.runtime_policy.canonical_hash,
+                produced.evidence,
+                produced.calibration_bindings,
+                json.dumps(authority, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                json.dumps(
+                    produced.provenance_mapping(),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                producer_provenance_schema="runtime-cuda-media-producer-provenance-v2",
+            ),
+            projection,
+            authority,
+        )
+
+
 def media_preflight_kernel_idempotency_key(
     *,
     run_id: str,
@@ -222,6 +339,35 @@ def media_preflight_kernel_idempotency_key(
     return "media-preflight:" + hashlib.sha256(encoded).hexdigest()
 
 
+def runtime_media_preflight_kernel_idempotency_key(
+    *,
+    run_id: str,
+    episode_index: int,
+    source_bundle: PersistedPreparedSources,
+    semantic_pack: PersistedVlmSemanticPack,
+    runtime_policy: PcCudaRuntimeTimedSpeechPolicy,
+    adaptive_policy_sha256: str,
+    materialization_policy_sha256: str,
+) -> str:
+    """A CUDA child cannot collide with the historical CPU command slot."""
+    payload = {
+        "adaptive_policy_sha256": adaptive_policy_sha256,
+        "episode_index": episode_index,
+        "materialization_policy_sha256": materialization_policy_sha256,
+        "runtime_policy_sha256": runtime_policy.canonical_hash,
+        "semantic_pack_sha256": semantic_pack.semantic_pack.canonical_hash,
+        "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
+        "source_provenance_sha256": source_bundle.canonical_hash,
+        "strategy_version": RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION,
+    }
+    return (
+        "runtime-media-preflight:"
+        + hashlib.sha256(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    )
+
+
 class MediaPreflightPipelineStage:
     """Prepare every committed episode, then commit one aggregate stage Receipt."""
 
@@ -230,7 +376,7 @@ class MediaPreflightPipelineStage:
         store: MediaPreflightPipelineStore,
         port: LocalMediaPreflightPort,
         authority_profile_resolver: InstalledLocalRunProfileResolver,
-        runtime_capability_resolver: InstalledRuntimeCapabilityResolver | None = None,
+        runtime_authority_resolver: InstalledRuntimeTimedSpeechAuthorityResolver | None = None,
         runtime_measurement_port: RuntimeMeasurementIdentityPort | None = None,
     ) -> None:
         self._store = store
@@ -240,15 +386,18 @@ class MediaPreflightPipelineStage:
                 "media-preflight requires the installed accepted-profile resolver"
             )
         self._authority_profile_resolver = authority_profile_resolver
-        if (runtime_capability_resolver is None) != (runtime_measurement_port is None):
+        if (runtime_authority_resolver is None) != (runtime_measurement_port is None):
             raise PipelineRunValidationError(
                 "media-preflight runtime capability resolver and measurement port must be paired"
             )
-        if runtime_capability_resolver is not None and type(runtime_capability_resolver) is not InstalledRuntimeCapabilityResolver:  # noqa: E721
+        if (
+            runtime_authority_resolver is not None
+            and type(runtime_authority_resolver) is not InstalledRuntimeTimedSpeechAuthorityResolver
+        ):  # noqa: E721
             raise PipelineRunValidationError(
-                "media-preflight requires an exact installed runtime capability resolver"
+                "media-preflight requires an exact installed CUDA authority resolver"
             )
-        self._runtime_capability_resolver = runtime_capability_resolver
+        self._runtime_authority_resolver = runtime_authority_resolver
         self._runtime_measurement_port = runtime_measurement_port
 
     @staticmethod
@@ -266,6 +415,7 @@ class MediaPreflightPipelineStage:
         self,
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
+        runtime: _RuntimeCudaAuthority | None,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
         materialization_limits = self._validate_execution_profile(context, policy)
         job = self._job(context)
@@ -296,11 +446,9 @@ class MediaPreflightPipelineStage:
             execution_profile_hash=context.execution_profile_hash,
         )
         try:
-            vlm_semantic_pack_set = (
-                self._store.read_committed_vlm_semantic_pack_set_reference(
-                    job,
-                    vlm_batch_key,
-                )
+            vlm_semantic_pack_set = self._store.read_committed_vlm_semantic_pack_set_reference(
+                job,
+                vlm_batch_key,
             )
         except SemanticInputUnavailableError as error:
             raise PipelineRunValidationError(
@@ -346,15 +494,28 @@ class MediaPreflightPipelineStage:
                     "VLM evidence does not bind the exact committed source episode"
                 )
             adaptive = policy.adaptive_window_policy(episode.manifest.source_time_base)
-            key = media_preflight_kernel_idempotency_key(
-                run_id=context.run_id,
-                episode_index=episode_index,
-                source_bundle=source_bundle,
-                semantic_pack=persisted,
-                producer_policy_sha256=policy.canonical_hash,
-                adaptive_policy_sha256=adaptive.canonical_hash,
-                materialization_policy_sha256=materialization_limits.policy_sha256,
-            )
+            if runtime is None:
+                key = media_preflight_kernel_idempotency_key(
+                    run_id=context.run_id,
+                    episode_index=episode_index,
+                    source_bundle=source_bundle,
+                    semantic_pack=persisted,
+                    producer_policy_sha256=policy.canonical_hash,
+                    adaptive_policy_sha256=adaptive.canonical_hash,
+                    materialization_policy_sha256=materialization_limits.policy_sha256,
+                )
+                producer_policy_sha256 = policy.canonical_hash
+            else:
+                key = runtime_media_preflight_kernel_idempotency_key(
+                    run_id=context.run_id,
+                    episode_index=episode_index,
+                    source_bundle=source_bundle,
+                    semantic_pack=persisted,
+                    runtime_policy=runtime.policy,
+                    adaptive_policy_sha256=adaptive.canonical_hash,
+                    materialization_policy_sha256=materialization_limits.policy_sha256,
+                )
+                producer_policy_sha256 = runtime.policy.canonical_hash
             requests.append(
                 PrepareTimedMediaEvidenceRequest(
                     job=job,
@@ -376,7 +537,7 @@ class MediaPreflightPipelineStage:
                     frame_detector_sha256=episode.media_probe.frame_detector_sha256,
                     audio_detector_sha256=episode.media_probe.audio_detector_sha256,
                     adaptive_policy=adaptive,
-                    producer_policy_sha256=policy.canonical_hash,
+                    producer_policy_sha256=producer_policy_sha256,
                     materialization_limits=materialization_limits,
                 )
             )
@@ -397,43 +558,48 @@ class MediaPreflightPipelineStage:
         resolver = self._authority_profile_resolver
         validate_installed_media_policy(resolver.resource, policy)
         validate_installed_vlm_policy(
-            resolver.resource.narrative, context.execution_profile.to_doubao_policy(),
+            resolver.resource.narrative,
+            context.execution_profile.to_doubao_policy(),
             context.execution_profile.to_generation_retry_policy(),
         )
         if materialization_limits.timed_speech_max_request_bytes != (
             resolver.resource.local_run.native_timed_speech.max_request_bytes
         ):
-            raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
+            raise PipelineRunValidationError(
+                "persisted timed speech request limit differs from installed service"
+            )
         return materialization_limits
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
         policy = context.execution_profile.to_media_preflight_policy()
         await asyncio.to_thread(self._validate_execution_profile, context, policy)
-        runtime_outcome = await self._runtime_capability_outcome(context)
-        if runtime_outcome is not None:
-            return runtime_outcome
-        prepared = await asyncio.to_thread(self._requests, context, policy)
+        authority = await self._runtime_cuda_authority(context, policy)
+        if isinstance(authority, PipelineStageResult):
+            return authority
+        prepared = await asyncio.to_thread(self._requests, context, policy, authority)
         if prepared is None:
             return PipelineStageResult(context.command.command_id, "indeterminate")
-        result = await self._execute_batch(context, *prepared, policy)
+        result = await self._execute_batch(context, *prepared, policy, authority)
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
         policy = context.execution_profile.to_media_preflight_policy()
         await asyncio.to_thread(self._validate_execution_profile, context, policy)
-        runtime_outcome = await self._runtime_capability_outcome(context)
-        if runtime_outcome is not None:
-            return runtime_outcome
-        prepared = await asyncio.to_thread(self._requests, context, policy)
+        authority = await self._runtime_cuda_authority(context, policy)
+        if isinstance(authority, PipelineStageResult):
+            return authority
+        prepared = await asyncio.to_thread(self._requests, context, policy, authority)
         if prepared is None:
             return None
-        result = await self._execute_batch(context, *prepared, policy)
+        result = await self._execute_batch(context, *prepared, policy, authority)
         projected = self._project(context, result.outcome)
         return None if projected.outcome == "indeterminate" else projected
 
-    async def _runtime_capability_outcome(
-        self, context: PipelineStageContext,
-    ) -> PipelineStageResult | None:
+    async def _runtime_cuda_authority(
+        self,
+        context: PipelineStageContext,
+        policy: LocalMediaPreflightPolicy,
+    ) -> _RuntimeCudaAuthority | PipelineStageResult | None:
         """Bind fresh local measurement before any detector/materialization claim.
 
         The v2 capability is intentionally an extra admission condition while
@@ -442,15 +608,27 @@ class MediaPreflightPipelineStage:
         a changed or malformed identity requires recalibration rather than an
         automatic fallback to the older anchor.
         """
-        resolver = self._runtime_capability_resolver
+        resolver = self._runtime_authority_resolver
         port = self._runtime_measurement_port
         if resolver is None or port is None:
-            raise PipelineRunValidationError(
-                "media-preflight dynamic runtime capability admission is not installed"
-            )
+            # Legacy CPU-only composition stays structurally separate. Normal
+            # configured runtime always injects the CUDA authority resolver.
+            return None
         try:
             identity = await asyncio.to_thread(port.read_identity)
-            await asyncio.to_thread(resolver.resolve, self._store, identity)
+            if identity.runtime_capability_id != PC_CUDA_RUNTIME_CAPABILITY_ID:
+                # A stage composed with the CUDA authority is a CUDA run.  Do
+                # not silently degrade it to the historical CPU chain merely
+                # because a service endpoint points at another machine.  A
+                # CPU run is assembled without this resolver/measurement port
+                # and therefore retains its separate command/reader grammar.
+                return PipelineStageResult(context.command.command_id, "recompute_needed")
+            projection = await asyncio.to_thread(resolver.resolve, self._store, identity)
+            if resolver.static_operation_policy_sha256 != policy.canonical_hash:
+                raise PipelineRunValidationError(
+                    "installed CUDA authority differs from frozen static media policy"
+                )
+            runtime_policy = project_pc_cuda_runtime_timed_speech_policy(policy, projection)
         except MediaEvidenceUnavailableError:
             return PipelineStageResult(context.command.command_id, "awaiting_calibration")
         except (
@@ -468,7 +646,7 @@ class MediaPreflightPipelineStage:
             # A transient unavailable local service is not evidence that the
             # accepted calibration is gone; leave the command recoverable.
             return PipelineStageResult(context.command.command_id, "indeterminate")
-        return None
+        return _RuntimeCudaAuthority(identity, projection, runtime_policy)
 
     async def _execute_batch(
         self,
@@ -476,7 +654,17 @@ class MediaPreflightPipelineStage:
         source_bundle: PersistedPreparedSources,
         requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
         policy: LocalMediaPreflightPolicy,
-    ) -> FinalizeTimedMediaEvidenceBatchResult | PrepareTimedMediaEvidenceResult:
+        runtime: _RuntimeCudaAuthority | None = None,
+    ) -> (
+        FinalizeTimedMediaEvidenceBatchResult
+        | PrepareTimedMediaEvidenceResult
+        | FinalizeRuntimeTimedMediaEvidenceBatchResult
+        | PrepareRuntimeTimedMediaEvidenceResult
+    ):
+        if runtime is not None:
+            return await self._execute_runtime_cuda_batch(
+                context, source_bundle, requests, policy, runtime
+            )
         resolver = self._authority_profile_resolver
         # Check accepted installation before claim-owned detector work. The
         # finalizer independently replays all committed children afterwards.
@@ -484,7 +672,8 @@ class MediaPreflightPipelineStage:
         command = PrepareTimedMediaEvidenceCommand(
             self._store,
             _ClaimOwnedLocalProducer(
-                self._port, policy,
+                self._port,
+                policy,
                 resolver.resource.local_run.native_timed_speech.native_port_identity_sha256,
             ),
             StoreAnchoredTimedSpeechProfileResolver(resolver.snapshot),
@@ -517,10 +706,60 @@ class MediaPreflightPipelineStage:
             tuple(children),
         )
         command_batch = FinalizeTimedMediaEvidenceBatchCommand(
-            self._store, authority_profile_resolver=resolver,
+            self._store,
+            authority_profile_resolver=resolver,
             limits=media_evidence_read_limits(context.execution_profile),
         )
         return await asyncio.to_thread(command_batch.execute, finalizer)
+
+    async def _execute_runtime_cuda_batch(
+        self,
+        context: PipelineStageContext,
+        source_bundle: PersistedPreparedSources,
+        requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        policy: LocalMediaPreflightPolicy,
+        runtime: _RuntimeCudaAuthority,
+    ) -> FinalizeRuntimeTimedMediaEvidenceBatchResult | PrepareRuntimeTimedMediaEvidenceResult:
+        resolver = self._runtime_authority_resolver
+        if resolver is None:
+            raise PipelineRunValidationError("runtime CUDA batch lost its installed authority")
+        command = PrepareRuntimeTimedMediaEvidenceCommand(
+            self._store,
+            _ClaimOwnedRuntimeCudaProducer(self._port, policy, runtime.policy),
+            resolver,
+        )
+        children: list[RuntimeTimedMediaEvidenceBatchChild] = []
+        for base in requests:
+            request = PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
+            result = await asyncio.to_thread(command.execute, request)
+            outcome = result.outcome
+            if outcome.state in ("pending", "running"):
+                return result
+            if outcome.state not in ("succeeded", "denied", "failed"):
+                raise PipelineRunValidationError(
+                    "Kernel returned an unsupported CUDA media-preflight child outcome"
+                )
+            if outcome.receipt_id is None:
+                raise PipelineRunValidationError("terminal CUDA child lost its Receipt")
+            if outcome.state in ("denied", "failed"):
+                return result
+            if outcome.artifact_set_id is None:
+                raise PipelineRunValidationError("succeeded CUDA child lost its ArtifactSet")
+            children.append(RuntimeTimedMediaEvidenceBatchChild(request, outcome))
+        job = Job(context.run_id, context.request.profile)
+        finalizer = FinalizeRuntimeTimedMediaEvidenceBatchRequest(
+            job,
+            self._runtime_batch_idempotency_key(context, source_bundle, runtime.policy),
+            canonical_recipe_scope(job),
+            _ARTIFACT_REVISION,
+            tuple(children),
+        )
+        batch = FinalizeRuntimeTimedMediaEvidenceBatchCommand(
+            self._store,
+            resolver,
+            media_evidence_read_limits(context.execution_profile),
+        )
+        return await asyncio.to_thread(batch.execute, finalizer)
 
     def _batch_idempotency_key(
         self,
@@ -542,6 +781,26 @@ class MediaPreflightPipelineStage:
             sort_keys=True,
         ).encode("utf-8")
         return "media-preflight-batch:" + hashlib.sha256(encoded).hexdigest()
+
+    def _runtime_batch_idempotency_key(
+        self,
+        context: PipelineStageContext,
+        source_bundle: PersistedPreparedSources,
+        policy: PcCudaRuntimeTimedSpeechPolicy,
+    ) -> str:
+        encoded = json.dumps(
+            {
+                "evidence_read_limits": context.execution_profile.to_evidence_read_limits().to_mapping(),
+                "materialization_policy_sha256": context.execution_profile.to_materialization_limits().policy_sha256,
+                "runtime_policy_sha256": policy.canonical_hash,
+                "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
+                "source_provenance_sha256": source_bundle.canonical_hash,
+                "strategy_version": RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return "runtime-media-finalize:" + hashlib.sha256(encoded).hexdigest()
 
     @staticmethod
     def _project(

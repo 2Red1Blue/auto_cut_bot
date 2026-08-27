@@ -198,3 +198,31 @@ batch finalizer.
 - BasedPyright for the changed CUDA command and installed resolver — 0 errors,
   0 warnings.
 - `git diff --check` — passed.
+
+## Runtime completion-chain implementation
+
+The CUDA command is now consumable by the PC Pipeline Media Preflight stage
+without weakening the CPU chain. `committed_runtime_timed_media.py` and
+`FinalizeRuntimeTimedMediaEvidenceBatch@1.0.0` independently reread each
+five-member CUDA child using a fresh Store capability projection, then commit
+one atomic CUDA batch Receipt. Pipeline composition provides the protected
+static media-policy hash to the installed runtime resolver; on a `pc_cuda`
+measurement the stage selects only the CUDA command/producer/finalizer. The
+policy projection and FunASR service now agree on the dedicated v2 endpoint;
+the prior service-side acceptance of a V1 operation endpoint was a real
+contradiction and has been removed. A CUDA-composed worker that observes a
+non-CUDA identity returns `recompute_needed`, not a silent CPU fallback; the
+separate CPU composition omits the CUDA resolver entirely. The downstream
+editorial reader accepts either complete committed grammar only by dispatching
+to its own independent reader.
+
+Focused regression includes the full CUDA command/reader/batch, application
+stage, CPU compatibility and service v2-route test suites; Ruff passed and
+BasedPyright reported 0 errors/0 warnings for the changed Kernel/application
+modules. `deploy/funasr/service.py` is intentionally type-checked in the GPU
+image instead of this Mac environment, which lacks its Torch/FunASR/audio
+dependencies. The remaining proof is environmental: pull this commit on the
+PC, seed/validate the real accepted `pc_cuda` capability, then run a source
+through the HTTP Pipeline. Remote verification is currently paused because the
+configured `laiu-win` SSH host fingerprint changed and requires explicit trust
+renewal before any remote mutation.

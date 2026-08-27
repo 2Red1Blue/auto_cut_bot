@@ -57,6 +57,9 @@ def test_runtime_cuda_request_uses_dedicated_route_and_closed_authority(tmp_path
     assert "profile" not in request.to_mapping()
     assert "expected_producers" not in request.to_mapping()
     assert request.to_mapping()["runtime_authority"] == request.runtime_policy.to_mapping()
+    assert request.runtime_policy.to_mapping()["operation"]["endpoint_url"].endswith(
+        RUNTIME_TIMED_SPEECH_ROUTE
+    )
     assert tuple(item.timing_error_bound_tick for item in request.expected_producers) == tuple(
         item.timing_error_bound_tick for item in request.runtime_policy.producers
     )

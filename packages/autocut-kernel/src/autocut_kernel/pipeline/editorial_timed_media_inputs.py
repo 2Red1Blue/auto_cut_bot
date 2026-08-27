@@ -10,10 +10,13 @@ Constructing these DTOs directly proves neither commitment nor admission.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..media.types import canonical_sha256, sha256_prefixed
-from ..registry.installed_runtime import InstalledLocalRunProfileResolver
+from ..registry.installed_runtime import (
+    InstalledLocalRunProfileResolver,
+    InstalledRuntimeTimedSpeechAuthorityResolver,
+)
 from ..semantic_chain.candidate_catalog import Candidate
 from ..semantic_chain.candidate_projection import decode_candidate_source_context
 from ..semantic_chain.editorial_blueprint import (
@@ -40,19 +43,29 @@ from .editorial_blueprint_inputs import (
     CommittedEditorialBlueprintInputs,
     read_committed_editorial_blueprint_inputs,
 )
+from .finalize_runtime_timed_media_evidence_batch_command import (
+    FinalizeRuntimeTimedMediaEvidenceBatchRequest,
+    FinalizeRuntimeTimedMediaEvidenceBatchResult,
+    RuntimeTimedMediaEvidenceBatchStore,
+    read_committed_runtime_timed_media_evidence_batch,
+)
 from .finalize_timed_media_evidence_batch_command import (
     FinalizeTimedMediaEvidenceBatchRequest,
     FinalizeTimedMediaEvidenceBatchResult,
     TimedMediaEvidenceBatchStore,
     read_committed_timed_media_evidence_batch,
 )
+from .prepare_runtime_timed_media_evidence_command import PrepareRuntimeTimedMediaEvidenceRequest
+from .prepare_timed_media_evidence_command import PrepareTimedMediaEvidenceRequest
 
 
 class EditorialTimedMediaInputError(ValueError):
     """Editorial and timed-media predecessors do not have the same exact owners."""
 
 
-class EditorialTimedMediaStore(NarrativeGraphStore, TimedMediaEvidenceBatchStore, Protocol):
+class EditorialTimedMediaStore(
+    NarrativeGraphStore, TimedMediaEvidenceBatchStore, RuntimeTimedMediaEvidenceBatchStore, Protocol
+):
     """The existing audited semantic and timed-media reader interfaces."""
 
 
@@ -126,15 +139,26 @@ class EditorialTimedAlternativeBinding:
 class CommittedEditorialTimedMediaInputs:
     editorial: PersistedEditorialBlueprintSet
     predecessors: CommittedEditorialBlueprintInputs
-    media_batch_request: FinalizeTimedMediaEvidenceBatchRequest
-    media_batch: FinalizeTimedMediaEvidenceBatchResult
+    media_batch_request: (
+        FinalizeTimedMediaEvidenceBatchRequest | FinalizeRuntimeTimedMediaEvidenceBatchRequest
+    )
+    media_batch: FinalizeTimedMediaEvidenceBatchResult | FinalizeRuntimeTimedMediaEvidenceBatchResult
     alternatives: tuple[EditorialTimedAlternativeBinding, ...]
 
     def __post_init__(self) -> None:
         if (type(self.editorial) is not PersistedEditorialBlueprintSet  # noqa: E721
                 or type(self.predecessors) is not CommittedEditorialBlueprintInputs  # noqa: E721
-                or type(self.media_batch_request) is not FinalizeTimedMediaEvidenceBatchRequest  # noqa: E721
-                or type(self.media_batch) is not FinalizeTimedMediaEvidenceBatchResult  # noqa: E721
+                or not (
+                    (
+                        type(self.media_batch_request) is FinalizeTimedMediaEvidenceBatchRequest  # noqa: E721
+                        and type(self.media_batch) is FinalizeTimedMediaEvidenceBatchResult  # noqa: E721
+                    )
+                    or (
+                        type(self.media_batch_request)
+                        is FinalizeRuntimeTimedMediaEvidenceBatchRequest  # noqa: E721
+                        and type(self.media_batch) is FinalizeRuntimeTimedMediaEvidenceBatchResult  # noqa: E721
+                    )
+                )
                 or type(self.alternatives) is not tuple  # noqa: E721
                 or any(type(item) is not EditorialTimedAlternativeBinding for item in self.alternatives)):  # noqa: E721
             raise EditorialTimedMediaInputError("joined inputs require exact immutable values")
@@ -155,16 +179,26 @@ def _pack_identity(committed: CommittedVlmSemanticInput) -> SemanticMemberIdenti
     return SemanticMemberIdentity(ref.artifact_type, ref.logical_id, ref.revision, ref.scope, ref.content_hash)
 
 
+def _base_timed_media_request(child: object) -> PrepareTimedMediaEvidenceRequest:
+    request = getattr(child, "request", None)
+    if type(request) is PrepareRuntimeTimedMediaEvidenceRequest:  # noqa: E721
+        return request.timed_media_request
+    if type(request) is PrepareTimedMediaEvidenceRequest:  # noqa: E721
+        return request
+    raise EditorialTimedMediaInputError("media batch child request has an unsupported grammar")
+
+
 def _bind_candidate(
     ref: SemanticObjectRef, candidate: Candidate, committed: CommittedVlmSemanticInput,
-    source_identity: SemanticMemberIdentity, batch_request: FinalizeTimedMediaEvidenceBatchRequest,
-    batch: FinalizeTimedMediaEvidenceBatchResult,
+    source_identity: SemanticMemberIdentity,
+    batch_request: FinalizeTimedMediaEvidenceBatchRequest | FinalizeRuntimeTimedMediaEvidenceBatchRequest,
+    batch: FinalizeTimedMediaEvidenceBatchResult | FinalizeRuntimeTimedMediaEvidenceBatchResult,
 ) -> EditorialTimedCandidateBinding:
     window = committed.source_window
     episode_index = window.episode_index
     if not 0 <= episode_index < len(batch_request.children):
         raise EditorialTimedMediaInputError("candidate episode is absent from the complete media batch")
-    child = batch_request.children[episode_index].request
+    child = _base_timed_media_request(batch_request.children[episode_index])
     pack = committed.semantic_pack.semantic_pack
     if (candidate.candidate_ref.member_ref != _pack_identity(committed)
             or candidate.source_ref != SemanticObjectRef(source_identity, "source", window.source_id)
@@ -201,9 +235,13 @@ def _bind_candidate(
 
 def read_committed_editorial_timed_media_inputs(
     store: EditorialTimedMediaStore, *, stage3_request: BuildEditorialBlueprintRequest,
-    stage3_outcome: CommandOutcome, media_batch_request: FinalizeTimedMediaEvidenceBatchRequest,
+    stage3_outcome: CommandOutcome,
+    media_batch_request: FinalizeTimedMediaEvidenceBatchRequest | FinalizeRuntimeTimedMediaEvidenceBatchRequest,
     media_batch_outcome: CommandOutcome,
-    authority_profile_resolver: InstalledLocalRunProfileResolver, limits: TimedMediaReadLimits,
+    authority_profile_resolver: (
+        InstalledLocalRunProfileResolver | InstalledRuntimeTimedSpeechAuthorityResolver
+    ),
+    limits: TimedMediaReadLimits,
 ) -> CommittedEditorialTimedMediaInputs:
     """Audit both predecessors, then join all alternatives without choosing cuts.
 
@@ -211,18 +249,23 @@ def read_committed_editorial_timed_media_inputs(
     actual batch request with read_committed_timed_media_evidence. Neither ASR
     nor VAD is fed back into semantic generation by this seam.
     """
+    cpu_batch = type(media_batch_request) is FinalizeTimedMediaEvidenceBatchRequest  # noqa: E721
+    runtime_batch = type(media_batch_request) is FinalizeRuntimeTimedMediaEvidenceBatchRequest  # noqa: E721
     if (type(stage3_request) is not BuildEditorialBlueprintRequest  # noqa: E721
-            or type(media_batch_request) is not FinalizeTimedMediaEvidenceBatchRequest  # noqa: E721
-            or type(authority_profile_resolver) is not InstalledLocalRunProfileResolver  # noqa: E721
+            or not (cpu_batch or runtime_batch)
             or type(limits) is not TimedMediaReadLimits):  # noqa: E721
         raise EditorialTimedMediaInputError("join requires exact requests, installed resolver and limits")
+    if cpu_batch and type(authority_profile_resolver) is not InstalledLocalRunProfileResolver:  # noqa: E721
+        raise EditorialTimedMediaInputError("CPU batch requires the installed local-run resolver")
+    if runtime_batch and type(authority_profile_resolver) is not InstalledRuntimeTimedSpeechAuthorityResolver:  # noqa: E721
+        raise EditorialTimedMediaInputError("CUDA batch requires the installed runtime resolver")
     succeeded_outcome_mapping(stage3_outcome)
     succeeded_outcome_mapping(media_batch_outcome)
     selector = stage3_request.stage2_request.stage1_request.inputs
     if (stage3_request.job != media_batch_request.job
             or stage3_request.artifact_scope != media_batch_request.artifact_scope
             or stage3_outcome.job_id != media_batch_outcome.job_id
-            or any(child.request.semantic_inputs_request != selector
+            or any(_base_timed_media_request(child).semantic_inputs_request != selector
                    or child.outcome.job_id != stage3_outcome.job_id
                    for child in media_batch_request.children)):
         raise EditorialTimedMediaInputError("editorial/media Job or complete semantic selector differs")
@@ -240,21 +283,31 @@ def read_committed_editorial_timed_media_inputs(
             or semantic.vlm_semantic_pack_set != selector.vlm_semantic_pack_set
             or source.receipt_id != selector.source_manifest.receipt_id
             or source.artifact_set_id != selector.source_manifest.artifact_set_id
-            or any(child.request.source_manifest_receipt_id != source.receipt_id
-                   or child.request.source_manifest_artifact_set_id != source.artifact_set_id
-                   or child.request.source_manifest_command_slot_id != source.command_slot_id
-                   or child.request.source_manifest_reference != source.reference
-                   or child.request.source_provenance_sha256 != source.canonical_hash
+            or any(_base_timed_media_request(child).source_manifest_receipt_id != source.receipt_id
+                   or _base_timed_media_request(child).source_manifest_artifact_set_id != source.artifact_set_id
+                   or _base_timed_media_request(child).source_manifest_command_slot_id != source.command_slot_id
+                   or _base_timed_media_request(child).source_manifest_reference != source.reference
+                   or _base_timed_media_request(child).source_provenance_sha256 != source.canonical_hash
                    for child in media_batch_request.children)):
         raise EditorialTimedMediaInputError("editorial/media committed Source or predecessor Job differs")
     semantic.source_grant.require_purpose("semantic_analysis")
     decoded_source = decode_candidate_source_context(semantic)  # Also requires render_source.
     if len(decoded_source.episodes) != len(media_batch_request.children):
         raise EditorialTimedMediaInputError("media batch does not cover the complete semantic Source")
-    batch = read_committed_timed_media_evidence_batch(
-        store, media_batch_request, media_batch_outcome,
-        authority_profile_resolver=authority_profile_resolver, limits=limits,
-    )
+    if cpu_batch:
+        assert type(authority_profile_resolver) is InstalledLocalRunProfileResolver  # noqa: E721
+        batch = read_committed_timed_media_evidence_batch(
+            store, media_batch_request, media_batch_outcome,
+            authority_profile_resolver=authority_profile_resolver, limits=limits,
+        )
+    else:
+        assert type(authority_profile_resolver) is InstalledRuntimeTimedSpeechAuthorityResolver  # noqa: E721
+        batch = read_committed_runtime_timed_media_evidence_batch(
+            store,
+            cast(FinalizeRuntimeTimedMediaEvidenceBatchRequest, media_batch_request),
+            media_batch_outcome,
+            authority_resolver=authority_profile_resolver, limits=limits,
+        )
     catalog = predecessors.portfolio.values.business.candidate_catalog
     catalog_identity = SemanticMemberIdentity.from_artifact_member(predecessors.portfolio.record.artifacts[0])
     candidates = {SemanticObjectRef(catalog_identity, "candidate", value.candidate_id): value

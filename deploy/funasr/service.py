@@ -1780,7 +1780,7 @@ class Service:
             operation["provider_id"] != PROVIDER_ID
             or operation["provider_version"] != PROVIDER_VERSION
             or not re.fullmatch(
-                r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/v1/timed-speech-evidence",
+                r"http://127\.0\.0\.1:[1-9][0-9]{0,4}/v2/runtime-timed-speech-evidence",
                 cast(str, operation["endpoint_url"]),
             )
         ):

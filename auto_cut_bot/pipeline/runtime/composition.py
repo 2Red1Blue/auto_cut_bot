@@ -16,9 +16,11 @@ import psycopg
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
     InstalledRuntimeCapabilityResolver,
+    InstalledRuntimeTimedSpeechAuthorityResolver,
     load_installed_local_run_resolver,
     runtime_calibration_policy_for_installed_resource,
 )
+from autocut_kernel.registry.runtime_timed_speech import RuntimeTimedMediaAuthoritySelector
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
 from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
 from autocut_kernel.store.models import MaterializationLimits
@@ -387,13 +389,13 @@ def compose_pipeline_runtime_from_environment(
         materialization_limits = _materialization_limits_from_json(
             values[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV].strip()
         )
-        evidence_read_limits = EvidenceReadLimits.from_mapping(json.loads(
-            values[PIPELINE_EVIDENCE_READ_LIMITS_ENV].strip(),
-            object_pairs_hook=_closed_json_object,
-        ))
-        staging_root = _staging_root(
-            values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip()
+        evidence_read_limits = EvidenceReadLimits.from_mapping(
+            json.loads(
+                values[PIPELINE_EVIDENCE_READ_LIMITS_ENV].strip(),
+                object_pairs_hook=_closed_json_object,
+            )
         )
+        staging_root = _staging_root(values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip())
         authority_profile_resolver = load_installed_local_run_resolver()
         stage1_policy = authority_profile_resolver.resource.narrative.command_policy
         stage2_policy = authority_profile_resolver.resource.local_run.stage2_command_policy
@@ -423,10 +425,18 @@ def compose_pipeline_runtime_from_environment(
             timed_speech_endpoint_url=media_policy.timed_speech_endpoint_url,
             shared_token=os.environ.get("FUNASR_SHARED_TOKEN", ""),
         )
-        runtime_capability_resolver = InstalledRuntimeCapabilityResolver(
-            runtime_calibration_policy_for_installed_resource(
-                authority_profile_resolver.resource
-            )
+        runtime_calibration_policy = runtime_calibration_policy_for_installed_resource(
+            authority_profile_resolver.resource
+        )
+        runtime_capability_resolver = InstalledRuntimeCapabilityResolver(runtime_calibration_policy)
+        runtime_authority_resolver = InstalledRuntimeTimedSpeechAuthorityResolver(
+            runtime_capability_resolver,
+            RuntimeTimedMediaAuthoritySelector(
+                runtime_calibration_policy,
+                authority_profile_resolver.resource.local_run.source_clock_policy,
+                authority_profile_resolver.resource.local_run.timing_policies,
+            ),
+            media_policy.canonical_hash,
         )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
@@ -468,23 +478,29 @@ def compose_pipeline_runtime_from_environment(
     provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
     draft_provider = DoubaoDraftProvider(
         ArkResponsesTransportConfig(
-            provider_config.api_key, provider_config.base_url,
-            provider_config.timeout_seconds, stage1_policy.draft_policy.max_response_bytes,
+            provider_config.api_key,
+            provider_config.base_url,
+            provider_config.timeout_seconds,
+            stage1_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     portfolio_provider = DoubaoDraftProvider(
         ArkResponsesTransportConfig(
-            provider_config.api_key, provider_config.base_url,
-            provider_config.timeout_seconds, stage2_policy.draft_policy.max_response_bytes,
+            provider_config.api_key,
+            provider_config.base_url,
+            provider_config.timeout_seconds,
+            stage2_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage2_policy.max_prompt_bytes,
     )
     blueprint_provider = DoubaoDraftProvider(
         ArkResponsesTransportConfig(
-            provider_config.api_key, provider_config.base_url,
-            provider_config.timeout_seconds, stage3_policy.draft_policy.max_response_bytes,
+            provider_config.api_key,
+            provider_config.base_url,
+            provider_config.timeout_seconds,
+            stage3_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage3_policy.max_prompt_bytes,
     )
@@ -497,17 +513,23 @@ def compose_pipeline_runtime_from_environment(
         kernel_store,
         LocalMediaPreflightPort(),
         authority_profile_resolver,
-        runtime_capability_resolver,
+        runtime_authority_resolver,
         runtime_identity_port,
     )
     narrative_stage = Stage1NarrativePipelineStage(
-        kernel_store, draft_provider, installed_profile=authority_profile_resolver.resource,
+        kernel_store,
+        draft_provider,
+        installed_profile=authority_profile_resolver.resource,
     )
     portfolio_stage = Stage2PortfolioPipelineStage(
-        kernel_store, portfolio_provider, installed_profile=authority_profile_resolver.resource,
+        kernel_store,
+        portfolio_provider,
+        installed_profile=authority_profile_resolver.resource,
     )
     blueprint_stage = Stage3BlueprintPipelineStage(
-        kernel_store, blueprint_provider, installed_profile=authority_profile_resolver.resource,
+        kernel_store,
+        blueprint_provider,
+        installed_profile=authority_profile_resolver.resource,
     )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
@@ -584,9 +606,7 @@ def _materialization_limits_from_json(raw: str) -> MaterializationLimits:
     try:
         return MaterializationLimits(
             max_source_bytes=cast(int, mapping["max_source_bytes"]),
-            timed_speech_max_request_bytes=cast(
-                int, mapping["timed_speech_max_request_bytes"]
-            ),
+            timed_speech_max_request_bytes=cast(int, mapping["timed_speech_max_request_bytes"]),
             copy_chunk_bytes=cast(int, mapping["copy_chunk_bytes"]),
             staging_quota_bytes=cast(int, mapping["staging_quota_bytes"]),
         )

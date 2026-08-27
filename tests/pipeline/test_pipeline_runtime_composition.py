@@ -334,7 +334,10 @@ def test_composition_registers_three_semantic_commands_between_vlm_and_media(
     assert blueprint_provider._max_request_bytes == blueprint_policy.max_prompt_bytes
     assert blueprint_provider._transport._config.max_stream_bytes == blueprint_policy.draft_policy.max_response_bytes
     media = registry.require("media_preflight")
-    assert media._runtime_capability_resolver is not None
+    assert media._runtime_authority_resolver is not None
+    assert media._runtime_authority_resolver.static_operation_policy_sha256 == (
+        runtime.execution_profile.to_media_preflight_policy().canonical_hash
+    )
     assert media._runtime_measurement_port is not None
     assert media._runtime_measurement_port.endpoint_url == (
         runtime.execution_profile.to_media_preflight_policy().timed_speech_endpoint_url

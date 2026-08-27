@@ -37,19 +37,31 @@
    configuration files are not used. The v2 manifest intentionally omits a
    duplicate `expected_producers` member so the closed projection fits standard
    HTTP header limits; producers are derived only from `runtime_authority`.
-9. [in progress] The sibling CUDA command now persists the five-member
+9. [done] The sibling CUDA command now persists the five-member
    whole-episode evidence set with `runtime_timed_speech_capability_admission`
    and a normal Store CommandOutcome/Receipt. Its request hash includes the
    full accepted `RuntimeTimedSpeechProjection`; it is a distinct command name
    and cannot use the CPU `local_run` profile or
-   `PrepareTimedMediaEvidence@2.1.3`. Next add its committed reader and batch
-   finalizer, each with an exact CUDA-only member layout and replay contract.
+   `PrepareTimedMediaEvidence@2.1.3`. Its committed reader and batch finalizer
+   now have an exact CUDA-only member layout and replay contract.
    The application producer seam is likewise separate: physical evidence keeps
    the static local policy, while ASR/VAD can enter only through the v2 CUDA
    request carrying the command-resolved runtime authority. Its protected
    static-operation-policy hash is pinned in the installed resolver and must
    match the exact closed v2 provenance/policy mapping; a caller cannot choose
    it or route CUDA back through the CPU v1 endpoint.
-10. [then] Run focused unit/PostgreSQL/integration regressions and an independent
-   adversarial review. Then commit, push, and update the PC checkout before
-   attempting the real PC calibration/run.
+10. [done] The PC composition injects the exact CUDA resolver and Media
+   Preflight chooses only the runtime command/finalizer for a fresh `pc_cuda`
+   measurement. Its wire policy and the FunASR service both use
+   `/v2/runtime-timed-speech-evidence`; a V1 operation route is rejected by
+   producer, Kernel reader, and service. If this CUDA-composed worker reads a
+   non-CUDA identity it returns `recompute_needed` rather than silently using
+   the CPU command. A CPU worker is deliberately composed without the runtime
+   resolver/identity port and keeps its independent historical chain. The
+   downstream editorial-input reader dispatches only to the matching CPU or
+   CUDA committed-batch reader, never adapts one grammar into the other.
+11. [in progress] Apply the migrations to the PC PostgreSQL instance, persist
+   an accepted `pc_cuda` CalibrationRecord/Capability, then run a real source
+   through the HTTP Pipeline. PC SSH trust renewal is the only current remote
+   access prerequisite; do not merge the original checkout's old “force CUDA”
+   edits.
