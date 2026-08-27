@@ -80,6 +80,14 @@ def _execution_profile(value: object, expected_hash: object) -> PipelineExecutio
 
 def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
     states = [state for _stage, state in command_rows]
+    if "recompute_needed" in states:
+        if any(state in ("pending", "running", "indeterminate", "awaiting_calibration") for state in states):
+            return "running"
+        return "recompute_needed"
+    if "awaiting_calibration" in states:
+        if any(state in ("pending", "running", "indeterminate") for state in states):
+            return "running"
+        return "awaiting_calibration"
     terminal_states = {"succeeded", "denied", "failed", "blocked"}
     if not states or any(state not in terminal_states for state in states):
         return "running"
@@ -685,7 +693,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                    SET state = %s, version = version + 1,
                        lease_id = NULL, lease_expires_at = NULL,
                        completed_at = CASE
-                           WHEN %s = 'indeterminate' THEN NULL
+                           WHEN %s IN ('indeterminate', 'awaiting_calibration', 'recompute_needed') THEN NULL
                            ELSE transaction_timestamp()
                        END,
                        updated_at = transaction_timestamp()

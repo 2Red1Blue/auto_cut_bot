@@ -12,9 +12,18 @@ from ..media.calibration_record import (
     CalibrationRecordIdentity,
     verify_calibration_record_artifact_set,
 )
+from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
 from ..media.types import sha256_prefixed
-from ..store.models import CommittedArtifactMemberReference, PersistedCalibrationRecordAnchor
-from .authority_profiles import LocalRunProfileSource, ShadowCalibrationProfileSource
+from ..store.models import (
+    CommittedArtifactMemberReference,
+    PersistedCalibrationRecordAnchor,
+    PersistedRuntimeCalibrationCapability,
+)
+from .authority_profiles import (
+    LocalRunProfileSource,
+    RuntimeCalibrationPolicySource,
+    ShadowCalibrationProfileSource,
+)
 
 
 class CalibrationBindingError(ValueError):
@@ -30,6 +39,47 @@ class CalibrationRecordAnchorReader(Protocol):
         expected_profile_source_sha256: str,
         expected_registry_snapshot_sha256: str,
     ) -> PersistedCalibrationRecordAnchor: ...
+
+
+class RuntimeCalibrationCapabilityReader(Protocol):
+    def read_runtime_calibration_capability(
+        self,
+        *,
+        profile_source_sha256: str,
+        registry_snapshot_sha256: str,
+        measurement_identity: RuntimeMeasurementIdentity,
+    ) -> PersistedRuntimeCalibrationCapability: ...
+
+
+def bind_runtime_calibration_capability(
+    *,
+    policy: RuntimeCalibrationPolicySource,
+    measurement_identity: RuntimeMeasurementIdentity,
+    store: RuntimeCalibrationCapabilityReader,
+) -> PersistedRuntimeCalibrationCapability:
+    """Resolve one exact v2 capability; a v1 record is never an admission fallback."""
+    if type(policy) is not RuntimeCalibrationPolicySource:  # noqa: E721
+        raise CalibrationBindingError("runtime capability requires an exact static policy")
+    if type(measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+        raise CalibrationBindingError("runtime capability requires an exact measured identity")
+    if not policy.accepts(measurement_identity):
+        raise CalibrationBindingError("measured runtime identity is not allowed by static policy")
+    capability = store.read_runtime_calibration_capability(
+        profile_source_sha256=policy.profile_source_sha256,
+        registry_snapshot_sha256=policy.registry_snapshot_sha256,
+        measurement_identity=measurement_identity,
+    )
+    if type(capability) is not PersistedRuntimeCalibrationCapability:  # noqa: E721
+        raise CalibrationBindingError("reader did not return an exact v2 runtime capability")
+    if capability.measurement_identity != measurement_identity:
+        raise CalibrationBindingError("accepted runtime capability differs from live measured identity")
+    record_identity = capability.anchor.record.aggregate.identity
+    if (
+        record_identity.profile_source_sha256 != policy.profile_source_sha256
+        or record_identity.registry_snapshot_sha256 != policy.registry_snapshot_sha256
+    ):
+        raise CalibrationBindingError("accepted runtime capability differs from static profile/registry")
+    return capability
 
 
 def bind_profile_calibration(

@@ -41,6 +41,7 @@ from ..media.shadow_calibration_raw import (
     shadow_calibration_projection_mapping,
 )
 from ..registry.authority_profiles import (
+    RuntimeCalibrationPolicySource,
     ShadowCalibrationProfileSource,
     Stage1NarrativeProfileSource,
     decode_shadow_calibration_profile_source,
@@ -232,6 +233,7 @@ class ValidateCalibrationRecordCommand:
     narrative: Stage1NarrativeProfileSource
     expected_shadow_profile_contract_sha256: str
     limits: CalibrationValidationLimits
+    runtime_calibration_policy: RuntimeCalibrationPolicySource | None = None
 
     def __post_init__(self) -> None:
         if type(self.profile) is not ShadowCalibrationProfileSource:  # noqa: E721
@@ -245,6 +247,8 @@ class ValidateCalibrationRecordCommand:
         )
         if type(self.limits) is not CalibrationValidationLimits:  # noqa: E721
             raise CalibrationValidationError("validator requires explicit deployment byte limits")
+        if self.runtime_calibration_policy is not None and type(self.runtime_calibration_policy) is not RuntimeCalibrationPolicySource:  # noqa: E721
+            raise CalibrationValidationError("validator requires an exact static runtime calibration policy")
         # Recheck grammar even for typed deployment injections. Canonical source
         # identity is checked here; the authority loader still owns Git/raw-byte
         # provenance and the original (possibly formatted) source SHA-256.
@@ -257,6 +261,22 @@ class ValidateCalibrationRecordCommand:
     def execute(self, binding: CalibrationValidationBinding) -> CommandOutcome:
         if type(binding) is not CalibrationValidationBinding:  # noqa: E721
             raise CalibrationValidationError("validator requires an exact immutable input binding")
+        if (binding.runtime_measurement_identity is None) != (self.runtime_calibration_policy is None):
+            raise CalibrationValidationError(
+                "v2 validation requires both static runtime policy and measured runtime identity"
+            )
+        if self.runtime_calibration_policy is not None:
+            policy = self.runtime_calibration_policy
+            identity = binding.runtime_measurement_identity
+            if (
+                identity is None
+                or not policy.accepts(identity)
+                or (binding.profile_source_sha256, binding.registry_snapshot_sha256)
+                != (policy.profile_source_sha256, policy.registry_snapshot_sha256)
+            ):
+                raise CalibrationValidationError(
+                    "v2 validation identity does not match its exact static policy/profile"
+                )
         claimed = self.store.claim_command(binding.claim)
         if not claimed.is_fresh_claim:
             return claimed
@@ -559,6 +579,11 @@ class ValidateCalibrationRecordCommand:
             inputs.vad_merge_policy_sha256,
             inputs.alignment_policy_sha256,
             inputs.acceptance_policy_sha256,
+            (
+                None
+                if binding.runtime_measurement_identity is None
+                else binding.runtime_measurement_identity.canonical_sha256
+            ),
         )
         children: list[CalibrationRecordMemberPayload] = []
         for index, role in enumerate((CalibrationRecordRole.ASR, CalibrationRecordRole.VAD)):
@@ -598,9 +623,14 @@ class ValidateCalibrationRecordCommand:
             measurement_results_sha256=binding.results_reference.content_hash,
             asr=children[0],
             vad=children[1],
+            runtime_capability_id=(
+                None
+                if binding.runtime_measurement_identity is None
+                else binding.runtime_measurement_identity.runtime_capability_id
+            ),
         )
         input_hash = calibration_validation_input_hash(
-            profile_key=self.profile.profile_key,
+            profile_key=candidate.profile_key,
             identity=identity,
             measurement_manifest_sha256=candidate.aggregate.measurement_manifest_sha256,
             measurement_results_sha256=candidate.aggregate.measurement_results_sha256,

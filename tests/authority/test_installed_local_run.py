@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes, sha256_bytes
 from autocut_kernel.registry import installed_local_run as installed
+from autocut_kernel.registry.authority_profiles import decode_runtime_calibration_policy_source
 from autocut_kernel.registry.installed_local_run import (
     LocalRunResourceError,
     compute_local_profile_registry_sha256,
@@ -85,6 +86,22 @@ def test_complete_raw_source_resource_round_trips_without_granting_capability() 
         resource.current_lock_sha256 = _hash("replace")
     reformatted = json.dumps(mapping, indent=4).encode() + b"\n"
     assert decode_local_run_resource(reformatted, expected_sha256=sha256_bytes(reformatted)) == resource
+
+
+def test_runtime_calibration_policy_grammar_is_static_and_device_scoped() -> None:
+    raw = canonical_json_bytes(
+        {
+            "schema_version": "autocut-runtime-calibration-policy-v1",
+            "profile_source_sha256": _hash("runtime-profile"),
+            "registry_snapshot_sha256": _hash("runtime-registry"),
+            "capabilities": [
+                {"runtime_capability_id": "mac_cpu", "device_class": "cpu"},
+                {"runtime_capability_id": "pc_cuda", "device_class": "cuda"},
+            ],
+        }
+    )
+    policy = decode_runtime_calibration_policy_source(raw)
+    assert [item.runtime_capability_id for item in policy.capabilities] == ["mac_cpu", "pc_cuda"]
 
 
 def test_registry_identity_has_independent_manual_role_ordered_hash_oracle() -> None:

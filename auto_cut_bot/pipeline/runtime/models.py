@@ -24,7 +24,15 @@ if TYPE_CHECKING:
     from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 
 PipelineProfile = Literal["test", "shadow"]
-PipelineRunStatus = Literal["accepted", "running", "succeeded", "denied", "failed"]
+PipelineRunStatus = Literal[
+    "accepted",
+    "running",
+    "awaiting_calibration",
+    "recompute_needed",
+    "succeeded",
+    "denied",
+    "failed",
+]
 PipelineCommandStatus = Literal[
     "pending",
     "running",
@@ -32,9 +40,18 @@ PipelineCommandStatus = Literal[
     "denied",
     "failed",
     "indeterminate",
+    "awaiting_calibration",
+    "recompute_needed",
     "blocked",
 ]
-PipelineStageOutcome = Literal["succeeded", "denied", "failed", "indeterminate"]
+PipelineStageOutcome = Literal[
+    "succeeded",
+    "denied",
+    "failed",
+    "indeterminate",
+    "awaiting_calibration",
+    "recompute_needed",
+]
 PipelineExecutionProfileKind = Literal["doubao_vlm", "legacy_unresolved"]
 
 _RUN_ID = re.compile(r"pipeline_run_[0-9a-f]{32}\Z")
@@ -1321,6 +1338,8 @@ class PipelineCommand:
             "denied",
             "failed",
             "indeterminate",
+            "awaiting_calibration",
+            "recompute_needed",
             "blocked",
         ):
             raise PipelineRunValidationError("command status is unsupported")
@@ -1335,7 +1354,14 @@ class PipelineCommand:
         if self.status in ("succeeded", "denied", "failed") and self.receipt_id is None:
             raise PipelineRunValidationError("terminal command requires a Receipt")
         if (
-            self.status in ("pending", "running", "indeterminate", "blocked")
+            self.status in (
+                "pending",
+                "running",
+                "indeterminate",
+                "awaiting_calibration",
+                "recompute_needed",
+                "blocked",
+            )
             and self.receipt_id is not None
         ):
             raise PipelineRunValidationError("nonterminal command cannot claim a Receipt")
@@ -1382,7 +1408,15 @@ class PipelineRunSnapshot:
             raise PipelineRunValidationError("execution_profile must be a PipelineExecutionProfile")
         if self.request_hash != self.request.request_hash:
             raise PipelineRunValidationError("request_hash does not bind the canonical request")
-        if self.status not in ("accepted", "running", "succeeded", "denied", "failed"):
+        if self.status not in (
+            "accepted",
+            "running",
+            "awaiting_calibration",
+            "recompute_needed",
+            "succeeded",
+            "denied",
+            "failed",
+        ):
             raise PipelineRunValidationError("run status is unsupported")
         if type(self.commands) is not tuple or any(  # noqa: E721
             type(command) is not PipelineCommand
@@ -1420,6 +1454,20 @@ class PipelineRunSnapshot:
             ):
                 raise PipelineRunValidationError(
                     "failed run must contain a failed command or a fail-closed incomplete plan"
+                )
+        elif self.status in ("awaiting_calibration", "recompute_needed"):
+            required = (
+                "awaiting_calibration"
+                if self.status == "awaiting_calibration"
+                else "recompute_needed"
+            )
+            if not any(command.status == required for command in self.commands):
+                raise PipelineRunValidationError(
+                    "calibration/recompute run status requires its matching command status"
+                )
+            if any(command.status in ("pending", "running", "indeterminate") for command in self.commands):
+                raise PipelineRunValidationError(
+                    "calibration/recompute run cannot retain executable commands"
                 )
         elif not any(
             command.status in ("pending", "running", "indeterminate") for command in self.commands
@@ -1466,7 +1514,14 @@ class PipelineStageResult:
 
     def __post_init__(self) -> None:
         _required_text(self.command_id, "command_id")
-        if self.outcome not in ("succeeded", "denied", "failed", "indeterminate"):
+        if self.outcome not in (
+            "succeeded",
+            "denied",
+            "failed",
+            "indeterminate",
+            "awaiting_calibration",
+            "recompute_needed",
+        ):
             raise PipelineRunValidationError("stage outcome is unsupported")
         if self.receipt_id is not None and not isinstance(  # pyright: ignore[reportUnnecessaryIsInstance]
             self.receipt_id, UUID
@@ -1474,8 +1529,12 @@ class PipelineStageResult:
             raise PipelineRunValidationError("receipt_id must be a UUID")
         if self.outcome in ("succeeded", "denied", "failed") and self.receipt_id is None:
             raise PipelineRunValidationError("terminal stage result requires a Receipt")
-        if self.outcome == "indeterminate" and self.receipt_id is not None:
-            raise PipelineRunValidationError("indeterminate stage cannot claim a Receipt")
+        if self.outcome in (
+            "indeterminate",
+            "awaiting_calibration",
+            "recompute_needed",
+        ) and self.receipt_id is not None:
+            raise PipelineRunValidationError("nonterminal stage cannot claim a Receipt")
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,3 +18,16 @@ Acceptance requirements:
    raw provider response into local-run authority by itself.
 5. The resulting real Pipeline runs from WSL, not native Windows Python, so
    SourcePrep keeps its POSIX fail-closed filesystem guarantees.
+6. Missing or incompatible local calibration must not prevent the Pipeline
+   control plane from starting, reading a complete historical evidence closure,
+   or running work that does not require new timed-speech evidence.
+7. A model, timing-policy, source/proxy timeline, or semantic-input change must
+   create a new immutable requirement/generation only for the affected evidence.
+   It is not a retry and must never overwrite a historical Artifact or Receipt.
+8. A PC and a Mac may retain distinct accepted calibration capabilities. PC
+   evidence may be imported and reused on Mac only through its complete,
+   exact immutable closure; the PC capability never licenses Mac to generate
+   new timed-speech evidence.
+9. A new whole-episode aggregate may select exact successful child evidence from
+   more than one origin Job, but only when every target episode has one matching
+   requirement fingerprint and the completed aggregate is atomically closed.

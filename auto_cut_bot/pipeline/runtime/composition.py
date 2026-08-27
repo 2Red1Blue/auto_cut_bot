@@ -18,7 +18,7 @@ from autocut_kernel.registry.installed_runtime import (
     load_installed_local_run_resolver,
 )
 from autocut_kernel.source_manifest import SourceOperationPolicy, SourceOperationPurpose
-from autocut_kernel.store import PostgresRuntimeStore, RuntimeStoreError, StoreValidationError
+from autocut_kernel.store import PostgresRuntimeStore, StoreValidationError
 from autocut_kernel.store.models import MaterializationLimits
 from autocut_kernel.store.postgres import DbConnection as KernelDbConnection
 from autocut_kernel.store.postgres import validate_materialization_staging_root
@@ -281,12 +281,13 @@ class PipelineRuntime:
     authority_store: PostgresRuntimeStore
 
     async def startup_reconstruct(self) -> tuple[str, ...]:
-        try:
-            await asyncio.to_thread(self.authority_profile_resolver.resolve, self.authority_store)
-        except (RuntimeStoreError, StoreValidationError, ValueError, TypeError) as error:
-            raise PipelineRuntimeConfigurationError(
-                "pipeline runtime installed calibration/profile anchor is unavailable"
-            ) from error
+        """Recover control-plane work without turning missing calibration into outage.
+
+        Static resource/configuration checks happen while the runtime is
+        composed. Dynamic per-environment calibration is a media-evidence
+        prerequisite and is classified by that stage as ``awaiting_calibration``
+        or ``recompute_needed``; it is not an HTTP startup prerequisite.
+        """
         return await self.worker.startup_reconstruct()
 
     async def run_forever(

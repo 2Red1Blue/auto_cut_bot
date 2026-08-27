@@ -43,6 +43,7 @@ from autocut_kernel.pipeline.measure_shadow_calibration_command import (
     ShadowCalibrationInputs,
 )
 from autocut_kernel.pipeline.validate_calibration_record_command import (
+    CalibrationValidationError,
     CalibrationValidationLimits,
     ValidateCalibrationRecordCommand,
 )
@@ -53,6 +54,8 @@ from autocut_kernel.registry.authority_profiles import (
     CalibrationCorpusMember,
     NativeTimedSpeechProducer,
     NativeTimedSpeechProfile,
+    RuntimeCalibrationCapabilityPolicy,
+    RuntimeCalibrationPolicySource,
     ShadowCalibrationProfileSource,
     SourceClockPolicy,
     TimingPolicies,
@@ -84,6 +87,7 @@ from tests.authority.test_authority_profile_sources import (
     _narrative_mapping,
     synthetic_stage1_command_policy,
 )
+from tests.media.test_calibration_record_persistence import _runtime_measurement
 
 
 def _hash(label: str) -> str:
@@ -506,6 +510,55 @@ def test_synthetic_fixture_binds_decoded_v2_narrative_and_complete_command_polic
     assert decode_stage1_narrative_profile_source(
         canonical_json_bytes(narrative.to_mapping())
     ) == narrative
+
+
+def test_v2_validator_requires_exact_static_policy_and_runtime_measurement_identity() -> None:
+    command, binding, _ = _fixture()
+    identity = _runtime_measurement()
+    policy = RuntimeCalibrationPolicySource(
+        binding.profile_source_sha256,
+        binding.registry_snapshot_sha256,
+        _hash("runtime-policy-source"),
+        _hash("runtime-policy-canonical"),
+        (RuntimeCalibrationCapabilityPolicy("pc_cuda", "cuda"),),
+    )
+    v2_command = replace(command, runtime_calibration_policy=policy)
+    with pytest.raises(CalibrationValidationError, match="requires both"):
+        v2_command.execute(binding)
+    with pytest.raises(CalibrationValidationError, match="requires both"):
+        command.execute(replace(binding, runtime_measurement_identity=identity))
+    assert v2_command.execute(replace(binding, runtime_measurement_identity=identity)).state == "succeeded"
+
+
+def test_pc_and_mac_v2_validation_create_distinct_accepted_record_closures() -> None:
+    pc_command, pc_binding, pc_store = _fixture()
+    mac_command, mac_binding, mac_store = _fixture()
+    pc_identity = _runtime_measurement()
+    mac_identity = _runtime_measurement(capability_id="mac_cpu")
+
+    def configured(command, binding, capability_id: str, device_class: str):
+        return replace(
+            command,
+            runtime_calibration_policy=RuntimeCalibrationPolicySource(
+                binding.profile_source_sha256,
+                binding.registry_snapshot_sha256,
+                _hash(f"{capability_id}-policy-source"),
+                _hash(f"{capability_id}-policy-canonical"),
+                (RuntimeCalibrationCapabilityPolicy(capability_id, device_class),),
+            ),
+        )
+
+    assert configured(pc_command, pc_binding, "pc_cuda", "cuda").execute(
+        replace(pc_binding, runtime_measurement_identity=pc_identity)
+    ).state == "succeeded"
+    assert configured(mac_command, mac_binding, "mac_cpu", "cpu").execute(
+        replace(mac_binding, runtime_measurement_identity=mac_identity)
+    ).state == "succeeded"
+    assert pc_store.accepted is not None and mac_store.accepted is not None
+    assert pc_store.accepted.aggregate.content_hash != mac_store.accepted.aggregate.content_hash
+    assert pc_store.accepted.validation.content_hash != mac_store.accepted.validation.content_hash
+    assert pc_store.accepted.members[0].scope.key == "runtime_calibration@pc_cuda@1"
+    assert mac_store.accepted.members[0].scope.key == "runtime_calibration@mac_cpu@1"
 
 
 def test_acceptance_recomputes_positive_bounds_and_scopes_local_match_ids() -> None:

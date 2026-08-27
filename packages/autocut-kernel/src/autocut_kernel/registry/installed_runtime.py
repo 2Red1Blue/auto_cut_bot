@@ -10,7 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from .calibration_binding import CalibrationRecordAnchorReader, bind_profile_calibration
+from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
+from ..store.models import PersistedRuntimeCalibrationCapability
+from .authority_profiles import RuntimeCalibrationPolicySource
+from .calibration_binding import (
+    CalibrationRecordAnchorReader,
+    RuntimeCalibrationCapabilityReader,
+    bind_profile_calibration,
+    bind_runtime_calibration_capability,
+)
 from .installed_local_run import LocalRunResource, load_installed_local_run_resource
 from .timed_speech import (
     AuthorityRegistrySnapshot,
@@ -27,6 +35,32 @@ class InstalledLocalRunError(ValueError):
 
 class InstalledLocalRunAuthorityStore(CalibrationRecordAnchorReader, AuthorityRegistryStore, Protocol):
     """Only the two authoritative reads needed for installed startup."""
+
+
+class InstalledRuntimeCapabilityStore(RuntimeCalibrationCapabilityReader, Protocol):
+    """The normal-runtime admission read; it has no writer or service credential."""
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledRuntimeCapabilityResolver:
+    """Resolve the static policy against a fresh live measurement at request time."""
+
+    policy: RuntimeCalibrationPolicySource
+
+    def __post_init__(self) -> None:
+        if type(self.policy) is not RuntimeCalibrationPolicySource:  # noqa: E721
+            raise InstalledLocalRunError("runtime resolver requires an exact static calibration policy")
+
+    def resolve(
+        self,
+        store: InstalledRuntimeCapabilityStore,
+        measurement_identity: RuntimeMeasurementIdentity,
+    ) -> PersistedRuntimeCalibrationCapability:
+        return bind_runtime_calibration_capability(
+            policy=self.policy,
+            measurement_identity=measurement_identity,
+            store=store,
+        )
 
 
 @dataclass(frozen=True, slots=True)

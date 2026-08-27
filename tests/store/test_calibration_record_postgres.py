@@ -37,7 +37,12 @@ from autocut_kernel.store import (
 )
 from autocut_kernel.store.models import canonical_payload_hash
 
-from tests.media.test_calibration_record_persistence import _child, _identity, _proof
+from tests.media.test_calibration_record_persistence import (
+    _child,
+    _identity,
+    _proof,
+    _runtime_measurement,
+)
 from tests.pipeline.test_measure_shadow_calibration_command import _member_port, _request
 
 psycopg = pytest.importorskip("psycopg")
@@ -103,6 +108,11 @@ def _record(binding: CalibrationValidationBinding) -> CalibrationRecordArtifactS
     identity = replace(
         _identity(), profile_source_sha256=binding.profile_source_sha256,
         registry_snapshot_sha256=binding.registry_snapshot_sha256,
+        runtime_measurement_identity_sha256=(
+            None
+            if binding.runtime_measurement_identity is None
+            else binding.runtime_measurement_identity.canonical_sha256
+        ),
     )
     candidate = build_calibration_record_candidate(
         profile_version=binding.profile_version, identity=identity,
@@ -110,6 +120,11 @@ def _record(binding: CalibrationValidationBinding) -> CalibrationRecordArtifactS
         measurement_results_sha256=binding.results_reference.content_hash,
         asr=_child(CalibrationRecordRole.ASR, identity=identity),
         vad=_child(CalibrationRecordRole.VAD, identity=identity),
+        runtime_capability_id=(
+            None
+            if binding.runtime_measurement_identity is None
+            else binding.runtime_measurement_identity.runtime_capability_id
+        ),
     )
     return validator_internal_assemble_accepted_artifact_set(_proof(candidate))
 
@@ -363,6 +378,32 @@ def test_success_is_atomic_terminal_and_replay_checks_anchor(store: PostgresRunt
         )
     with pytest.raises(IdempotencyConflictError):
         store.claim_command(replace(binding.claim, request_hash=_hash("different-request")))
+
+
+def test_v2_runtime_capability_is_written_and_read_only_by_exact_live_identity(
+    store: PostgresRuntimeStore,
+) -> None:
+    identity = _runtime_measurement()
+    binding = replace(_binding(store), runtime_measurement_identity=identity)
+    record = _record(binding)
+    claim = store.claim_command(binding.claim)
+    outcome = store.commit_calibration_record_validation_success(
+        _success(claim.command_slot_id, record), binding, record
+    )
+    capability = store.read_runtime_calibration_capability(
+        profile_source_sha256=binding.profile_source_sha256,
+        registry_snapshot_sha256=binding.registry_snapshot_sha256,
+        measurement_identity=identity,
+    )
+    assert capability.measurement_identity == identity
+    assert capability.anchor.record == record
+    assert capability.anchor.aggregate.reference.receipt_id == outcome.receipt_id
+    with pytest.raises(MediaEvidenceUnavailableError):
+        store.read_runtime_calibration_capability(
+            profile_source_sha256=binding.profile_source_sha256,
+            registry_snapshot_sha256=binding.registry_snapshot_sha256,
+            measurement_identity=_runtime_measurement(capability_id="mac_cpu"),
+        )
 
 
 def test_generic_success_cannot_write_fresh_validator_result(store: PostgresRuntimeStore) -> None:

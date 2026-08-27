@@ -24,6 +24,7 @@ from ..contracts.compiler.canonical import (
 )
 from ..contracts.compiler.errors import CanonicalizationError
 from .calibration import CalibrationRecordError
+from .runtime_measurement_identity import RuntimeMeasurementIdentity
 from .types import TickRange, TimeBase, sha256_prefixed
 
 CALIBRATION_RECORD_SCHEMA = "calibration-record-v1"
@@ -38,6 +39,7 @@ CALIBRATION_RECORD_NAMESPACE = "autocut_authority"
 CALIBRATION_RECORD_SCOPE_KIND = "calibration"
 CALIBRATION_RECORD_REVISION = 1
 CALIBRATION_RECORD_VERSION = 1
+RUNTIME_CALIBRATION_CAPABILITY_SCHEMA = "runtime-calibration-capability-v2"
 CALIBRATION_VALIDATOR_COMMAND = "ValidateCalibrationRecord@2.1.3"
 CALIBRATION_VALIDATOR_PRINCIPAL = "autocut-calibration-validator"
 CALIBRATION_VALIDATION_CHECKS = (
@@ -130,6 +132,16 @@ def calibration_profile_key(profile_version: object) -> str:
     return f"shadow_calibration@{version}"
 
 
+def runtime_calibration_profile_key(profile_version: object, runtime_capability_id: object) -> str:
+    """Return the v2 environment-specific accepted-record scope key."""
+    version = _text(profile_version, "profile_version")
+    if _PROFILE_VERSION.fullmatch(version) is None:
+        raise _fail("profile_version must be a canonical positive decimal string")
+    if runtime_capability_id not in {"pc_cuda", "mac_cpu"}:
+        raise _fail("runtime capability id is invalid")
+    return f"runtime_calibration@{runtime_capability_id}@{version}"
+
+
 @dataclass(frozen=True, slots=True)
 class CalibrationRecordScope:
     namespace: str
@@ -141,16 +153,20 @@ class CalibrationRecordScope:
             raise _fail("scope namespace is not autocut_authority")
         if self.kind != CALIBRATION_RECORD_SCOPE_KIND:
             raise _fail("scope kind is not calibration")
-        if not self.key.startswith("shadow_calibration@"):
-            raise _fail("scope key is not a shadow calibration profile key")
-        calibration_profile_key(self.key.removeprefix("shadow_calibration@"))
+        _scope_key(self.key)
 
     @classmethod
-    def for_profile(cls, profile_version: str) -> CalibrationRecordScope:
+    def for_profile(
+        cls, profile_version: str, runtime_capability_id: str | None = None
+    ) -> CalibrationRecordScope:
         return cls(
             CALIBRATION_RECORD_NAMESPACE,
             CALIBRATION_RECORD_SCOPE_KIND,
-            calibration_profile_key(profile_version),
+            (
+                calibration_profile_key(profile_version)
+                if runtime_capability_id is None
+                else runtime_calibration_profile_key(profile_version, runtime_capability_id)
+            ),
         )
 
     def to_mapping(self) -> dict[str, str]:
@@ -172,6 +188,7 @@ class CalibrationRecordIdentity:
     vad_merge_policy_sha256: str
     alignment_policy_sha256: str
     acceptance_policy_sha256: str
+    runtime_measurement_identity_sha256: str | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -189,9 +206,14 @@ class CalibrationRecordIdentity:
         _text(self.source_clock_id, "identity.source_clock_id")
         if type(self.source_time_base) is not TimeBase:  # noqa: E721
             raise _fail("identity.source_time_base must be an exact TimeBase")
+        if self.runtime_measurement_identity_sha256 is not None:
+            _sha(
+                self.runtime_measurement_identity_sha256,
+                "identity.runtime_measurement_identity_sha256",
+            )
 
     def to_mapping(self) -> dict[str, object]:
-        return {
+        mapping: dict[str, object] = {
             "acceptance_policy_sha256": self.acceptance_policy_sha256,
             "alignment_policy_sha256": self.alignment_policy_sha256,
             "bound_algorithm_sha256": CALIBRATION_BOUND_ALGORITHM_SHA256,
@@ -208,6 +230,9 @@ class CalibrationRecordIdentity:
             "vad_merge_policy_sha256": self.vad_merge_policy_sha256,
             "word_gap_policy_sha256": self.word_gap_policy_sha256,
         }
+        if self.runtime_measurement_identity_sha256 is not None:
+            mapping["runtime_measurement_identity_sha256"] = self.runtime_measurement_identity_sha256
+        return mapping
 
     @property
     def bound_algorithm_sha256(self) -> str:
@@ -636,6 +661,65 @@ class CalibrationRecordArtifactSet:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeCalibrationCapability:
+    """The v2 admission identity attached to an immutable accepted v2 record.
+
+    The separate v2 scope keeps historical v1 records readable without
+    allowing them to authorize a normal runtime by themselves.
+    """
+
+    runtime_measurement_identity: RuntimeMeasurementIdentity
+    profile_source_sha256: str
+    registry_snapshot_sha256: str
+    record_sha256: str
+    validation_receipt_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.runtime_measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+            raise _fail("runtime capability requires an exact measurement identity")
+        for field_name in (
+            "profile_source_sha256",
+            "registry_snapshot_sha256",
+            "record_sha256",
+            "validation_receipt_sha256",
+        ):
+            _sha(getattr(self, field_name), f"runtime capability.{field_name}")
+        if self.record_sha256 == self.validation_receipt_sha256:
+            raise _fail("runtime capability record and validation receipt must differ")
+
+    @classmethod
+    def from_record(
+        cls,
+        record: CalibrationRecordArtifactSet,
+        runtime_measurement_identity: RuntimeMeasurementIdentity,
+    ) -> RuntimeCalibrationCapability:
+        if type(record) is not CalibrationRecordArtifactSet:  # noqa: E721
+            raise _fail("runtime capability requires an exact accepted record")
+        identity = record.aggregate.identity
+        return cls(
+            runtime_measurement_identity,
+            identity.profile_source_sha256,
+            identity.registry_snapshot_sha256,
+            record.members[0].content_hash,
+            record.members[3].content_hash,
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": RUNTIME_CALIBRATION_CAPABILITY_SCHEMA,
+            "runtime_measurement_identity": self.runtime_measurement_identity.to_mapping(),
+            "profile_source_sha256": self.profile_source_sha256,
+            "registry_snapshot_sha256": self.registry_snapshot_sha256,
+            "record_sha256": self.record_sha256,
+            "validation_receipt_sha256": self.validation_receipt_sha256,
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_json_hash(self.to_mapping())
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationRecordCandidate:
     """Unaccepted payload closure; only the authority validator may persist it."""
 
@@ -643,10 +727,22 @@ class CalibrationRecordCandidate:
     aggregate: CalibrationRecordPayload
     asr: CalibrationRecordMemberPayload
     vad: CalibrationRecordMemberPayload
+    runtime_capability_id: str | None = None
 
     def __post_init__(self) -> None:
-        calibration_profile_key(self.profile_version)
+        if self.runtime_capability_id is None:
+            calibration_profile_key(self.profile_version)
+        else:
+            runtime_calibration_profile_key(self.profile_version, self.runtime_capability_id)
         verify_calibration_record_candidate(self)
+
+    @property
+    def profile_key(self) -> str:
+        return (
+            calibration_profile_key(self.profile_version)
+            if self.runtime_capability_id is None
+            else runtime_calibration_profile_key(self.profile_version, self.runtime_capability_id)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,7 +771,7 @@ class IndependentlyRecomputedCalibrationResult:
         if self.validator_principal != CALIBRATION_VALIDATOR_PRINCIPAL:
             raise _fail("independent result validator principal is invalid")
         expected_input = calibration_validation_input_hash(
-            profile_key=calibration_profile_key(self.candidate.profile_version),
+            profile_key=self.candidate.profile_key,
             identity=self.candidate.aggregate.identity,
             measurement_manifest_sha256=self.candidate.aggregate.measurement_manifest_sha256,
             measurement_results_sha256=self.candidate.aggregate.measurement_results_sha256,
@@ -747,6 +843,7 @@ def build_calibration_record_candidate(
     measurement_results_sha256: str,
     asr: CalibrationRecordMemberPayload,
     vad: CalibrationRecordMemberPayload,
+    runtime_capability_id: str | None = None,
 ) -> CalibrationRecordCandidate:
     """Build an unaccepted candidate; this function cannot create a receipt or ArtifactSet."""
     if type(identity) is not CalibrationRecordIdentity:  # noqa: E721
@@ -766,7 +863,7 @@ def build_calibration_record_candidate(
         asr.accepted_bound_tick,
         vad.accepted_bound_tick,
     )
-    return CalibrationRecordCandidate(profile_version, aggregate, asr, vad)
+    return CalibrationRecordCandidate(profile_version, aggregate, asr, vad, runtime_capability_id)
 
 
 def verify_calibration_record_candidate(candidate: CalibrationRecordCandidate) -> None:
@@ -807,7 +904,7 @@ def validator_internal_assemble_accepted_artifact_set(
         raise _fail("accepted assembly requires an independently recomputed result")
     candidate = result.candidate
     aggregate, asr, vad = candidate.aggregate, candidate.asr, candidate.vad
-    profile_key = calibration_profile_key(candidate.profile_version)
+    profile_key = candidate.profile_key
     validation = CalibrationValidationReceiptPayload(
         CALIBRATION_BOUND_ALGORITHM_SHA256,
         aggregate.measurement_manifest_sha256,
@@ -818,7 +915,7 @@ def validator_internal_assemble_accepted_artifact_set(
         asr.content_hash,
         vad.content_hash,
     )
-    scope = CalibrationRecordScope.for_profile(candidate.profile_version)
+    scope = CalibrationRecordScope.for_profile(candidate.profile_version, candidate.runtime_capability_id)
     payloads: tuple[tuple[str, str, CalibrationPayload], ...] = (
         (CALIBRATION_RECORD_ARTIFACT_TYPE, f"calibration-record/aggregate/{profile_key}/1", aggregate),
         (CALIBRATION_RECORD_MEMBER_ARTIFACT_TYPE, f"calibration-record/member/asr/{profile_key}/1", asr),
@@ -884,9 +981,15 @@ def verify_calibration_record_artifact_set(
     asr = cast(CalibrationRecordMemberPayload, members[1].payload)
     vad = cast(CalibrationRecordMemberPayload, members[2].payload)
     receipt = cast(CalibrationValidationReceiptPayload, members[3].payload)
-    CalibrationRecordCandidate(
-        scope.key.removeprefix("shadow_calibration@"), aggregate, asr, vad
-    )
+    if scope.key.startswith("shadow_calibration@"):
+        candidate = CalibrationRecordCandidate(
+            scope.key.removeprefix("shadow_calibration@"), aggregate, asr, vad
+        )
+    else:
+        capability_id, _, version = scope.key.removeprefix("runtime_calibration@").partition("@")
+        candidate = CalibrationRecordCandidate(version, aggregate, asr, vad, capability_id)
+    if candidate.profile_key != scope.key:
+        raise _fail("artifact set scope does not close to its candidate identity")
     if (
         receipt.bound_algorithm_sha256 != aggregate.identity.bound_algorithm_sha256
         or receipt.measurement_manifest_sha256 != aggregate.measurement_manifest_sha256
@@ -1019,19 +1122,16 @@ def decode_calibration_validation_receipt_payload(raw: bytes) -> CalibrationVali
 
 
 def _decode_identity(value: object, field_name: str) -> CalibrationRecordIdentity:
-    mapping = _closed(
-        value,
-        frozenset(
-            {
+    fields = {
                 "profile_source_sha256", "registry_snapshot_sha256", "calibration_corpus_set_sha256",
                 "native_port_identity_sha256", "source_clock_id", "source_time_base",
                 "timed_speech_policy_sha256", "word_gap_policy_sha256",
                 "vad_merge_policy_sha256", "alignment_policy_sha256",
                 "acceptance_policy_sha256", "bound_algorithm_sha256",
             }
-        ),
-        field_name,
-    )
+    if type(value) is dict and "runtime_measurement_identity_sha256" in value:  # noqa: E721
+        fields.add("runtime_measurement_identity_sha256")
+    mapping = _closed(value, frozenset(fields), field_name)
     time_base = _closed(
         mapping["source_time_base"], frozenset({"numerator", "denominator"}), f"{field_name}.source_time_base"
     )
@@ -1059,6 +1159,7 @@ def _decode_identity(value: object, field_name: str) -> CalibrationRecordIdentit
         cast(str, mapping["vad_merge_policy_sha256"]),
         cast(str, mapping["alignment_policy_sha256"]),
         cast(str, mapping["acceptance_policy_sha256"]),
+        cast(str | None, mapping.get("runtime_measurement_identity_sha256")),
     )
 
 
@@ -1153,9 +1254,16 @@ def _range_mapping(value: TickRange) -> dict[str, int]:
 
 
 def _scope_key(value: str) -> str:
-    if type(value) is not str or not value.startswith("shadow_calibration@"):  # noqa: E721
+    if type(value) is not str:  # noqa: E721
         raise _fail("profile_key is invalid")
-    return calibration_profile_key(value.removeprefix("shadow_calibration@"))
+    if value.startswith("shadow_calibration@"):
+        return calibration_profile_key(value.removeprefix("shadow_calibration@"))
+    prefix = "runtime_calibration@"
+    if value.startswith(prefix):
+        capability_id, separator, version = value.removeprefix(prefix).partition("@")
+        if separator:
+            return runtime_calibration_profile_key(version, capability_id)
+    raise _fail("profile_key is invalid")
 
 
 __all__ = [
@@ -1177,6 +1285,7 @@ __all__ = [
     "CalibrationRecordRole",
     "build_calibration_record_candidate",
     "calibration_profile_key",
+    "runtime_calibration_profile_key",
     "decode_calibration_record_member_payload",
     "decode_calibration_record_payload",
     "verify_calibration_record_candidate",

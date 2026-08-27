@@ -14,7 +14,9 @@ from ..media.calibration_record import (
     CALIBRATION_VALIDATOR_COMMAND,
     CalibrationRecordArtifactSet,
     calibration_profile_key,
+    runtime_calibration_profile_key,
 )
+from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
 from ..source_manifest import SourceOperationGrant
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from .errors import StoreValidationError
@@ -985,6 +987,7 @@ class CalibrationValidationBinding:
     manifest_reference: CommittedArtifactMemberReference
     results_reference: CommittedArtifactMemberReference
     attempt_idempotency_key: str
+    runtime_measurement_identity: RuntimeMeasurementIdentity | None = None
 
     def __post_init__(self) -> None:
         calibration_profile_key(self.profile_version)
@@ -994,6 +997,8 @@ class CalibrationValidationBinding:
             if value == "sha256:" + "0" * 64:
                 raise StoreValidationError(f"{name} must be non-zero")
         _text(self.attempt_idempotency_key, "validator attempt idempotency key")
+        if self.runtime_measurement_identity is not None and type(self.runtime_measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+            raise StoreValidationError("runtime measurement identity must be exact when present")
         manifest, results = self.manifest_reference, self.results_reference
         if any(type(ref) is not CommittedArtifactMemberReference for ref in (manifest, results)):  # noqa: E721
             raise StoreValidationError("calibration validation requires exact measurement references")
@@ -1018,7 +1023,12 @@ class CalibrationValidationBinding:
 
     @property
     def profile_key(self) -> str:
-        return calibration_profile_key(self.profile_version)
+        if self.runtime_measurement_identity is None:
+            return calibration_profile_key(self.profile_version)
+        return runtime_calibration_profile_key(
+            self.profile_version,
+            self.runtime_measurement_identity.runtime_capability_id,
+        )
 
     @property
     def job(self) -> Job:
@@ -1026,14 +1036,21 @@ class CalibrationValidationBinding:
 
     @property
     def request_hash(self) -> str:
-        return canonical_payload_hash(json.dumps({
+        payload: dict[str, object] = {
             "command": CALIBRATION_VALIDATOR_COMMAND,
             "profile_key": self.profile_key,
             "profile_source_sha256": self.profile_source_sha256,
             "registry_snapshot_sha256": self.registry_snapshot_sha256,
             "measurement_manifest": self.manifest_reference.to_mapping(),
             "measurement_results": self.results_reference.to_mapping(),
-        }, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+        }
+        # Preserve v1 request identities exactly.  A v2 capability binding is
+        # intentionally a different immutable validator command input.
+        if self.runtime_measurement_identity is not None:
+            payload["runtime_measurement_identity"] = self.runtime_measurement_identity.to_mapping()
+        return canonical_payload_hash(json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ))
 
     @property
     def claim(self) -> CommandClaim:
@@ -1088,6 +1105,24 @@ class PersistedCalibrationRecordAnchor:
     @property
     def validation_receipt_sha256(self) -> str:
         return self.validation.reference.content_hash
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedRuntimeCalibrationCapability:
+    """One exact v2 runtime capability anchored to an accepted historical record.
+
+    The enclosing v1 record remains immutable history.  This value is the
+    separate v2 authority proof required before normal timed-speech admission.
+    """
+
+    measurement_identity: RuntimeMeasurementIdentity
+    anchor: PersistedCalibrationRecordAnchor
+
+    def __post_init__(self) -> None:
+        if type(self.measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+            raise StoreValidationError("runtime capability requires an exact measurement identity")
+        if type(self.anchor) is not PersistedCalibrationRecordAnchor:  # noqa: E721
+            raise StoreValidationError("runtime capability requires an exact accepted record anchor")
 
 
 @dataclass(frozen=True, slots=True)

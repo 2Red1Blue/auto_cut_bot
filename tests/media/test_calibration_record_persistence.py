@@ -42,6 +42,14 @@ from autocut_kernel.media.calibration_record import (
     validator_internal_assemble_accepted_artifact_set,
     verify_calibration_record_artifact_set,
 )
+from autocut_kernel.media.runtime_measurement_identity import (
+    MAC_CPU_RUNTIME_CAPABILITY_ID,
+    PC_CUDA_RUNTIME_CAPABILITY_ID,
+    RuntimeMeasurementIdentity,
+    RuntimeMeasurementIdentityError,
+    decode_runtime_measurement_identity,
+)
+from autocut_kernel.media.timing_compatibility import build_timing_compatibility_profile
 
 
 def _sha(number: int) -> str:
@@ -62,6 +70,59 @@ def _identity() -> CalibrationRecordIdentity:
         alignment_policy_sha256=_sha(8),
         acceptance_policy_sha256=_sha(9),
     )
+
+
+def _runtime_measurement(*, capability_id: str = PC_CUDA_RUNTIME_CAPABILITY_ID) -> RuntimeMeasurementIdentity:
+    device: dict[str, str] = {"device_class": "cuda"}
+    if capability_id == MAC_CPU_RUNTIME_CAPABILITY_ID:
+        device = {"device_class": "cpu"}
+    else:
+        device.update(cuda_runtime_version="12.8", gpu_compute_capability="8.9")
+    return RuntimeMeasurementIdentity(
+        capability_id,
+        build_timing_compatibility_profile(
+            {
+                "schema_version": "timing-compatibility-profile-v1",
+                "timing_engine_compatibility_version": "timing-v1",
+                "build_audit_sha256": _sha(101),
+                "runtime": {"funasr_version": "1.0", "torch_version": "2.0", "device": device},
+                "decode": {
+                    "decoder_identity_sha256": _sha(102),
+                    "resampling_identity_sha256": _sha(103),
+                    "native_protocol_identity_sha256": _sha(104),
+                },
+                "policies": {
+                    "word_timestamp_policy_sha256": _sha(105),
+                    "vad_merge_policy_sha256": _sha(106),
+                },
+                "producers": [
+                    {
+                        "producer_kind": "asr", "producer_id": "asr", "producer_version": "1",
+                        "model_id": "SenseVoiceSmall", "model_revision": "main",
+                        "model_sha256": _sha(107), "inference_identity_sha256": _sha(108),
+                    },
+                    {
+                        "producer_kind": "vad", "producer_id": "vad", "producer_version": "1",
+                        "model_id": "fsmn-vad", "model_revision": "main",
+                        "model_sha256": _sha(109), "inference_identity_sha256": _sha(110),
+                    },
+                ],
+            }
+        ),
+    )
+
+
+def test_runtime_measurement_identity_is_closed_and_capability_device_scoped() -> None:
+    pc = _runtime_measurement()
+    mac = _runtime_measurement(capability_id=MAC_CPU_RUNTIME_CAPABILITY_ID)
+    assert pc.timing_compatibility_sha256 != mac.timing_compatibility_sha256
+    assert decode_runtime_measurement_identity(canonical_json_bytes(pc.to_mapping())) == pc
+    assert RuntimeMeasurementIdentity(
+        PC_CUDA_RUNTIME_CAPABILITY_ID,
+        replace(pc.timing_compatibility, build_audit_sha256=_sha(111)),
+    ).canonical_sha256 == pc.canonical_sha256
+    with pytest.raises(RuntimeMeasurementIdentityError, match="device class"):
+        RuntimeMeasurementIdentity(MAC_CPU_RUNTIME_CAPABILITY_ID, pc.timing_compatibility)
 
 
 def _producer(role: CalibrationRecordRole) -> CalibrationRecordProducerIdentity:

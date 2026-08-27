@@ -25,6 +25,7 @@ from ..contracts.compiler.canonical import (
     sha256_bytes,
 )
 from ..contracts.compiler.errors import CanonicalizationError, ContractCompilerError
+from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
 from ..media.stage4_predecessor import (
     TimedSpeechProfileRegistryEntry,
     decode_timed_speech_profile_registry_entry,
@@ -48,6 +49,7 @@ STAGE1_NARRATIVE_SCHEMA_VERSION = "autocut-stage1-narrative-profile-v2"
 SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-shadow-calibration-profile-v2"
 CUDA_SHADOW_CALIBRATION_SCHEMA_VERSION = "autocut-cuda-shadow-calibration-profile-v1"
 LOCAL_RUN_SCHEMA_VERSION = "autocut-local-run-profile-v4"
+RUNTIME_CALIBRATION_POLICY_SCHEMA_VERSION = "autocut-runtime-calibration-policy-v1"
 
 _ZERO_HASH = "sha256:" + "0" * 64
 _PROFILE_VERSION = re.compile(r"^[1-9][0-9]*$")
@@ -612,6 +614,62 @@ class LocalRunCalibration:
             "vad_producer_record_sha256": self.vad_producer_record_sha256,
             "asr_timing_error_bound_tick": self.asr_timing_error_bound_tick,
             "vad_timing_error_bound_tick": self.vad_timing_error_bound_tick,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCalibrationCapabilityPolicy:
+    """One static capability name and its non-negotiable device family."""
+
+    runtime_capability_id: str
+    device_class: str
+
+    def __post_init__(self) -> None:
+        expected = {"pc_cuda": "cuda", "mac_cpu": "cpu"}
+        if expected.get(self.runtime_capability_id) != self.device_class:
+            raise _invalid("runtime calibration capability does not name its fixed device family")
+
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            "runtime_capability_id": self.runtime_capability_id,
+            "device_class": self.device_class,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCalibrationPolicySource:
+    """Static local-run admission policy; it contains no accepted record ref."""
+
+    profile_source_sha256: str
+    registry_snapshot_sha256: str
+    source_sha256: str
+    canonical_sha256: str
+    capabilities: tuple[RuntimeCalibrationCapabilityPolicy, ...]
+
+    def __post_init__(self) -> None:
+        if not self.capabilities or any(
+            type(item) is not RuntimeCalibrationCapabilityPolicy for item in self.capabilities
+        ):
+            raise _invalid("runtime calibration policy requires exact capabilities")
+        identifiers = tuple(item.runtime_capability_id for item in self.capabilities)
+        if identifiers != tuple(sorted(identifiers)) or len(set(identifiers)) != len(identifiers):
+            raise _invalid("runtime calibration capabilities must be unique canonical order")
+
+    def accepts(self, identity: RuntimeMeasurementIdentity) -> bool:
+        if type(identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+            return False
+        return any(
+            item.runtime_capability_id == identity.runtime_capability_id
+            and item.device_class == identity.timing_compatibility.device.device_class
+            for item in self.capabilities
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "schema_version": RUNTIME_CALIBRATION_POLICY_SCHEMA_VERSION,
+            "profile_source_sha256": self.profile_source_sha256,
+            "registry_snapshot_sha256": self.registry_snapshot_sha256,
+            "capabilities": [item.to_mapping() for item in self.capabilities],
         }
 
 
@@ -1640,6 +1698,63 @@ def decode_authority_profile_source_grammar(
     return UnresolvedAuthorityProfileSourceSet(narrative, shadow, local_run)
 
 
+def decode_runtime_calibration_policy_source(raw: bytes) -> RuntimeCalibrationPolicySource:
+    """Decode the narrow static policy used to resolve a v2 runtime capability.
+
+    It intentionally contains no record reference: accepted capability lookup
+    happens immediately before a timed-speech request against the Store.
+    """
+    value, source_sha256, canonical_sha256 = _source_object(raw, "runtime calibration policy source")
+    mapping = _mapping(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "profile_source_sha256",
+                "registry_snapshot_sha256",
+                "capabilities",
+            }
+        ),
+        "runtime calibration policy source",
+    )
+    _const(
+        mapping["schema_version"],
+        RUNTIME_CALIBRATION_POLICY_SCHEMA_VERSION,
+        "runtime calibration policy source.schema_version",
+    )
+    raw_capabilities = _array(
+        mapping["capabilities"], "runtime calibration policy source.capabilities", non_empty=True
+    )
+    capabilities = tuple(
+        RuntimeCalibrationCapabilityPolicy(
+            _text(
+                _mapping(
+                    item,
+                    frozenset({"runtime_capability_id", "device_class"}),
+                    f"runtime calibration policy source.capabilities[{index}]",
+                )["runtime_capability_id"],
+                f"runtime calibration policy source.capabilities[{index}].runtime_capability_id",
+            ),
+            _text(
+                _mapping(
+                    item,
+                    frozenset({"runtime_capability_id", "device_class"}),
+                    f"runtime calibration policy source.capabilities[{index}]",
+                )["device_class"],
+                f"runtime calibration policy source.capabilities[{index}].device_class",
+            ),
+        )
+        for index, item in enumerate(raw_capabilities)
+    )
+    return RuntimeCalibrationPolicySource(
+        _sha(mapping["profile_source_sha256"], "runtime calibration policy source.profile_source_sha256"),
+        _sha(mapping["registry_snapshot_sha256"], "runtime calibration policy source.registry_snapshot_sha256"),
+        source_sha256,
+        canonical_sha256,
+        capabilities,
+    )
+
+
 __all__ = [
     "AUTHORITY_PROFILE_SOURCE_INVALID",
     "AuthorityProfileSourceError",
@@ -1647,12 +1762,15 @@ __all__ = [
     "CudaTimedSpeechProducer",
     "CudaTimedSpeechProfile",
     "LocalRunProfileSource",
+    "RuntimeCalibrationCapabilityPolicy",
+    "RuntimeCalibrationPolicySource",
     "ShadowCalibrationProfileSource",
     "Stage1NarrativeProfileSource",
     "UnresolvedAuthorityProfileSourceSet",
     "decode_authority_profile_source_grammar",
     "decode_cuda_shadow_calibration_profile_source",
     "decode_local_run_profile_source",
+    "decode_runtime_calibration_policy_source",
     "decode_shadow_calibration_profile_source",
     "decode_stage1_narrative_profile_source",
 ]

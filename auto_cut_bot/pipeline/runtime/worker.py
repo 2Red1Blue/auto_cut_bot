@@ -208,7 +208,13 @@ class DurablePipelineWorker:
 
     async def _process_run(self, run_id: str) -> bool:
         snapshot = await self._store.read_run(run_id)
-        if snapshot is None or snapshot.status in ("succeeded", "denied", "failed"):
+        if snapshot is None or snapshot.status in (
+            "awaiting_calibration",
+            "recompute_needed",
+            "succeeded",
+            "denied",
+            "failed",
+        ):
             return True
         running = next((item for item in snapshot.commands if item.status == "running"), None)
         if running is not None:

@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
 
+from ..contracts.compiler.canonical import canonical_json_bytes
 from ..media import (
     CalibrationRecordError,
     Stage4PredecessorError,
@@ -36,6 +37,8 @@ from ..media.calibration_record import (
     decode_calibration_validation_receipt_payload,
     verify_calibration_record_artifact_set,
 )
+from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
+from ..media.timing_compatibility import decode_timing_compatibility_profile
 from ..registry.timed_speech import (
     AUTHORITY_BOOTSTRAP_JOB,
     BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
@@ -115,6 +118,7 @@ from .models import (
     PersistedMediaEvidence,
     PersistedMediaOutputs,
     PersistedRecipe,
+    PersistedRuntimeCalibrationCapability,
     PersistedShadowCalibrationMeasurement,
     PersistedVlmGenerationChild,
     PersistedVlmSemanticPack,
@@ -2555,6 +2559,35 @@ class PostgresRuntimeStore:
                     success.command_slot_id,
                 ),
             )
+            if binding.runtime_measurement_identity is not None:
+                identity = binding.runtime_measurement_identity
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.runtime_calibration_capabilities (
+                        runtime_capability_id, timing_compatibility_sha256,
+                        runtime_measurement_identity_sha256, build_audit_sha256,
+                        measurement_identity_json, profile_source_sha256,
+                        registry_snapshot_sha256, calibration_scope_key,
+                        record_sha256, validation_receipt_sha256, receipt_id,
+                        artifact_set_id, command_slot_id
+                    ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        identity.runtime_capability_id,
+                        identity.timing_compatibility_sha256,
+                        identity.canonical_sha256,
+                        identity.build_audit_sha256,
+                        canonical_json_bytes(identity.to_mapping()).decode("utf-8"),
+                        binding.profile_source_sha256,
+                        binding.registry_snapshot_sha256,
+                        binding.profile_key,
+                        record.members[0].content_hash,
+                        record.members[3].content_hash,
+                        outcome.receipt_id,
+                        outcome.artifact_set_id,
+                        success.command_slot_id,
+                    ),
+                )
             cursor.execute(
                 "UPDATE runtime.jobs SET state = 'succeeded' WHERE job_id = %s AND state = 'running'",
                 (job_id,),
@@ -2562,6 +2595,80 @@ class PostgresRuntimeStore:
             if cursor.rowcount != 1:
                 raise CommandStateError("validator authority Job is not running")
             return outcome
+
+        return self._transaction(operation)
+
+    def read_runtime_calibration_capability(
+        self,
+        *,
+        profile_source_sha256: str,
+        registry_snapshot_sha256: str,
+        measurement_identity: RuntimeMeasurementIdentity,
+    ) -> PersistedRuntimeCalibrationCapability:
+        """Read one exact v2 capability; v1 anchors are never an admission fallback."""
+        self._validate_sha256(profile_source_sha256, "expected profile source hash")
+        self._validate_sha256(registry_snapshot_sha256, "expected registry snapshot hash")
+        if type(measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+            raise StoreValidationError("runtime capability reader requires exact measured identity")
+
+        def operation(cursor: DbCursor) -> PersistedRuntimeCalibrationCapability:
+            cursor.execute(
+                """
+                SELECT calibration_scope_key, record_sha256, validation_receipt_sha256,
+                       receipt_id, artifact_set_id, command_slot_id,
+                       measurement_identity_json::text
+                  FROM runtime.runtime_calibration_capabilities
+                 WHERE runtime_capability_id = %s
+                   AND timing_compatibility_sha256 = %s
+                   AND runtime_measurement_identity_sha256 = %s
+                   AND profile_source_sha256 = %s
+                   AND registry_snapshot_sha256 = %s
+                """,
+                (
+                    measurement_identity.runtime_capability_id,
+                    measurement_identity.timing_compatibility_sha256,
+                    measurement_identity.canonical_sha256,
+                    profile_source_sha256,
+                    registry_snapshot_sha256,
+                ),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if len(rows) != 1:
+                raise MediaEvidenceUnavailableError("exact v2 runtime calibration capability is unavailable")
+            row = rows[0]
+            scope_key = _text(row[0])
+            anchor = self._read_calibration_record_anchor_closure(
+                cursor, scope_key, profile_source_sha256, registry_snapshot_sha256
+            )
+            if (
+                anchor.record_sha256 != _text(row[1])
+                or anchor.validation_receipt_sha256 != _text(row[2])
+                or anchor.aggregate.reference.receipt_id != UUID(str(row[3]))
+                or anchor.aggregate.reference.artifact_set_id != UUID(str(row[4]))
+                or anchor.command_slot_id != UUID(str(row[5]))
+            ):
+                raise StoreValidationError("runtime capability does not close over its exact accepted record")
+            try:
+                identity_payload = json.loads(_text(row[6]))
+                if type(identity_payload) is not dict:  # noqa: E721
+                    raise StoreValidationError("runtime capability identity payload is not an object")
+                persisted_identity = RuntimeMeasurementIdentity(
+                    identity_payload["runtime_capability_id"],
+                    decode_timing_compatibility_profile(identity_payload["timing_compatibility"]),
+                )
+                if (
+                    persisted_identity.runtime_capability_id
+                    != measurement_identity.runtime_capability_id
+                    or persisted_identity.timing_compatibility_sha256
+                    != measurement_identity.timing_compatibility_sha256
+                    or persisted_identity.canonical_sha256 != measurement_identity.canonical_sha256
+                ):
+                    raise StoreValidationError("runtime capability identity payload differs")
+            except (KeyError, TypeError, ValueError) as error:
+                raise StoreValidationError("runtime capability identity payload is invalid") from error
+            return PersistedRuntimeCalibrationCapability(persisted_identity, anchor)
 
         return self._transaction(operation)
 

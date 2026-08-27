@@ -11,6 +11,10 @@ import pytest
 from authority.local_run_resource import emit_locked_local_run_resource
 from autocut_kernel.contracts.compiler.canonical import sha256_bytes
 from autocut_kernel.registry import installed_runtime
+from autocut_kernel.registry.authority_profiles import (
+    RuntimeCalibrationCapabilityPolicy,
+    RuntimeCalibrationPolicySource,
+)
 from autocut_kernel.registry.calibration_binding import CalibrationBindingError
 from autocut_kernel.registry.installed_local_run import (
     LocalRunResourceError,
@@ -19,6 +23,7 @@ from autocut_kernel.registry.installed_local_run import (
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunError,
     InstalledLocalRunProfileResolver,
+    InstalledRuntimeCapabilityResolver,
     load_installed_local_run_resolver,
 )
 from autocut_kernel.registry.timed_speech import (
@@ -29,10 +34,14 @@ from autocut_kernel.registry.timed_speech import (
     TimedSpeechProfileKey,
     TimedSpeechRegistryError,
 )
-from autocut_kernel.store.models import CommittedArtifactMemberReference
+from autocut_kernel.store.models import (
+    CommittedArtifactMemberReference,
+    PersistedRuntimeCalibrationCapability,
+)
 
 from tests.authority.test_local_run_calibration import FakeAcceptedAnchorReader
 from tests.authority.test_local_run_resource import _synthetic_accepted_sources
+from tests.media.test_calibration_record_persistence import _runtime_measurement
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +87,14 @@ class FakeInstalledReadStore(FakeAcceptedAnchorReader):
         return self.profile
 
 
+class FakeRuntimeCapabilityStore:
+    def __init__(self, capability: PersistedRuntimeCalibrationCapability) -> None:
+        self.capability = capability
+
+    def read_runtime_calibration_capability(self, **_kwargs) -> PersistedRuntimeCalibrationCapability:
+        return self.capability
+
+
 def _foreign_anchor(anchor):
     return replace(
         anchor,
@@ -114,6 +131,21 @@ def test_fake_store_startup_reads_calibration_then_exact_profile_without_native(
                             resource.shadow.source_sha256, resource.predecessor_registry_sha256)]
     assert resolver.resolve(store) is profile  # No cached acceptance across startup checks.
     assert store.events[-2:] == ["calibration", "profile"]
+
+
+def test_runtime_capability_resolution_is_separate_from_legacy_startup_anchor(installed_fixture) -> None:
+    resource, anchor = installed_fixture
+    identity = _runtime_measurement()
+    resolver = InstalledRuntimeCapabilityResolver(
+        RuntimeCalibrationPolicySource(
+            resource.shadow.source_sha256,
+            resource.predecessor_registry_sha256,
+            "sha256:" + "a" * 64,
+            "sha256:" + "b" * 64,
+            (RuntimeCalibrationCapabilityPolicy("pc_cuda", "cuda"),),
+        )
+    )
+    assert resolver.resolve(FakeRuntimeCapabilityStore(PersistedRuntimeCalibrationCapability(identity, anchor)), identity).anchor == anchor
 
 
 def test_valid_altered_guard_with_same_key_and_consistent_member_hash_is_rejected(installed_fixture):

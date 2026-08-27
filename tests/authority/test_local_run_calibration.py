@@ -25,21 +25,27 @@ from autocut_kernel.media.calibration_record import (
     validator_internal_assemble_accepted_artifact_set,
 )
 from autocut_kernel.media.types import TimeBase
+from autocut_kernel.registry.authority_profiles import (
+    RuntimeCalibrationCapabilityPolicy,
+    RuntimeCalibrationPolicySource,
+)
 from autocut_kernel.registry.calibration_binding import (
     CalibrationBindingError,
     bind_profile_calibration,
+    bind_runtime_calibration_capability,
 )
 from autocut_kernel.store.models import (
     ArtifactScope,
     CommittedArtifactMemberReference,
     PersistedCalibrationRecordAnchor,
     PersistedCommittedArtifactMember,
+    PersistedRuntimeCalibrationCapability,
 )
 
 from tests.authority.test_authority_profile_sources import _hash
 from tests.authority.test_local_run_context import _local_sources
 from tests.authority.test_shadow_context import Sources
-from tests.media.test_calibration_record_persistence import _child, _proof
+from tests.media.test_calibration_record_persistence import _child, _proof, _runtime_measurement
 
 
 class FakeAcceptedAnchorReader:
@@ -57,6 +63,16 @@ class FakeAcceptedAnchorReader:
         self.calls.append((aggregate_reference, validation_reference,
                            expected_profile_source_sha256, expected_registry_snapshot_sha256))
         return self.anchor
+
+
+class FakeRuntimeCapabilityReader:
+    def __init__(self, capability: PersistedRuntimeCalibrationCapability) -> None:
+        self.capability = capability
+        self.calls: list[tuple[object, ...]] = []
+
+    def read_runtime_calibration_capability(self, **kwargs) -> PersistedRuntimeCalibrationCapability:
+        self.calls.append(tuple(kwargs.values()))
+        return self.capability
 
 
 def _fixture_anchor(record: CalibrationRecordArtifactSet) -> PersistedCalibrationRecordAnchor:
@@ -279,3 +295,30 @@ def test_kernel_binding_requires_typed_sources_before_store_read(accepted_contex
     with pytest.raises(CalibrationBindingError):
         bind_profile_calibration(**arguments)
     assert reader.calls == []
+
+
+def test_v2_runtime_binding_requires_static_device_policy_and_never_falls_back_to_v1(
+    accepted_context,
+) -> None:
+    context, anchor = accepted_context
+    identity = _runtime_measurement()
+    policy = RuntimeCalibrationPolicySource(
+        context.predecessor.profiles.shadow.source_sha256,
+        context.predecessor.compilation.registry_sha256,
+        _hash("runtime-policy-source"),
+        _hash("runtime-policy-canonical"),
+        (RuntimeCalibrationCapabilityPolicy("pc_cuda", "cuda"),),
+    )
+    capability = PersistedRuntimeCalibrationCapability(identity, anchor)
+    reader = FakeRuntimeCapabilityReader(capability)
+    assert bind_runtime_calibration_capability(
+        policy=policy, measurement_identity=identity, store=reader
+    ) == capability
+    assert len(reader.calls) == 1
+    with pytest.raises(CalibrationBindingError, match="not allowed"):
+        bind_runtime_calibration_capability(
+            policy=policy,
+            measurement_identity=_runtime_measurement(capability_id="mac_cpu"),
+            store=reader,
+        )
+    assert len(reader.calls) == 1
