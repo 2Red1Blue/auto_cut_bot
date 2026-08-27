@@ -412,6 +412,49 @@ def serve(
     web.run_app(api_app, host=host, port=port, print=_log_aiohttp)
 
 
+@app.command(name="pipeline-serve")
+def pipeline_serve(
+    port: int = typer.Option(18766, "--port", "-p", help="Pipeline HTTP control-plane port"),
+    host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind address"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show pipeline runtime logs"),
+):
+    """Start only the durable Pipeline HTTP control plane.
+
+    This deliberately does not construct Agent, MCP, chat provider, session, or
+    WebUI components. It is the production entrypoint for the strong Pipeline
+    runtime when its environment has selected an executable run plan.
+    """
+    try:
+        from aiohttp import web
+    except ImportError:
+        console.print("[red]aiohttp is required. Install with: uv sync --extra api[/red]")
+        raise typer.Exit(1)
+
+    from auto_cut_bot.api.server import create_pipeline_app
+    from auto_cut_bot.pipeline.runtime.composition import PipelineRuntimeConfigurationError
+
+    _set_auto_cut_bot_logs(verbose)
+    api_key = os.environ.get("AUTO_CUT_BOT_PIPELINE_API_KEY", "").strip()
+    if not api_key:
+        console.print(
+            "[red]Error: AUTO_CUT_BOT_PIPELINE_API_KEY must be set for pipeline-serve.[/red]"
+        )
+        raise typer.Exit(1)
+    try:
+        pipeline_app = create_pipeline_app(api_key=api_key)
+    except PipelineRuntimeConfigurationError as error:
+        console.print(f"[red]Pipeline configuration error: {error}[/red]")
+        raise typer.Exit(1) from error
+
+    console.print("[green]Starting durable Pipeline HTTP control plane[/green]")
+    console.print(f"  [cyan]Endpoint[/cyan] : http://{host}:{port}/v1/pipeline/run")
+
+    def _log_aiohttp(message: object) -> None:
+        logger.info("{}", message)
+
+    web.run_app(pipeline_app, host=host, port=port, print=_log_aiohttp)
+
+
 # ============================================================================
 # WebUI Launcher
 # ============================================================================

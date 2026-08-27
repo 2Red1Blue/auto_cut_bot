@@ -8,7 +8,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient, TestServer
 
 from auto_cut_bot.api import server as pipeline_server
-from auto_cut_bot.api.server import create_app
+from auto_cut_bot.api.server import create_app, create_pipeline_app
 from auto_cut_bot.pipeline.runtime import DurablePipelineRunService, PipelineRunValidationError
 from tests.pipeline.runtime_profile_fixture import execution_profile
 from tests.pipeline.test_run_service import FakeAuthorizer, FakeRunStore, FakeScheduler
@@ -129,7 +129,7 @@ async def test_run_returns_202_replay_and_409_mismatch(aiohttp_client) -> None:
     assert conflict.status == 409
     assert scheduler.enqueued == [first_body["run_id"], first_body["run_id"]]
     persisted_profile = store.by_run_id[first_body["run_id"]].execution_profile
-    assert persisted_profile.to_mapping()["schema_version"] == "pipeline-execution-profile-v5"
+    assert persisted_profile.to_mapping()["schema_version"] == "pipeline-execution-profile-v9"
     assert persisted_profile == execution_profile()
 
 
@@ -188,6 +188,41 @@ async def test_injected_runtime_reconstructs_polls_and_stops_cleanly() -> None:
     await client.close()
 
     assert runtime.worker_stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_only_app_needs_no_agent_and_exposes_no_chat_route(
+    aiohttp_client,
+) -> None:
+    service, _, _ = _service()
+    runtime = FakePipelineRuntime(service)
+    client = await aiohttp_client(
+        create_pipeline_app(api_key="pipeline-only-secret", pipeline_runtime=runtime)
+    )
+    await asyncio.wait_for(runtime.worker_started.wait(), timeout=1)
+
+    missing = await client.post(
+        "/v1/pipeline/run",
+        headers={"Idempotency-Key": "pipeline-only-1"},
+        json={"profile": "test", "source_root": "/authorized/source"},
+    )
+    accepted = await client.post(
+        "/v1/pipeline/run",
+        headers={
+            "Authorization": "Bearer pipeline-only-secret",
+            "Idempotency-Key": "pipeline-only-1",
+        },
+        json={"profile": "test", "source_root": "/authorized/source"},
+    )
+    chat = await client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": "Bearer pipeline-only-secret"},
+        json={},
+    )
+
+    assert missing.status == 401
+    assert accepted.status == 202
+    assert chat.status == 404
 
 
 @pytest.mark.asyncio

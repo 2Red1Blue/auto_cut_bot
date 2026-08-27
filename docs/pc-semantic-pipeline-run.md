@@ -40,17 +40,17 @@ The closed source catalog must contain exactly one authorized entry for book
 hash of that exact entry; the server rejects a caller-selected path or a count
 that differs from the catalog.
 
-An API key remains required in the private `auto_cut_bot` server configuration
-because the environment-composed pipeline accepts HTTP requests.
+Set `AUTO_CUT_BOT_PIPELINE_API_KEY` in the private environment. It authenticates
+only this Pipeline HTTP control plane; it is not an Agent/chat-model credential.
 
 ## Start and submit
 
 From the PC v2.1.3 worktree in WSL, install the API extra once, load the
-private environment, then start the server on loopback:
+private environment, then start the Pipeline-only server on loopback:
 
 ```bash
 uv sync --extra api
-uv run auto_cut_bot serve --host 127.0.0.1 --port 18766 --config /private/auto_cut_bot.config.json
+uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18766
 ```
 
 Submit one run with a new idempotency key and the source reference from the
