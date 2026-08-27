@@ -89,6 +89,16 @@ def request(tmp_path: Path) -> TimedSpeechEvidenceRequest:
     )
 
 
+def test_legacy_cpu_timed_speech_request_identity_is_frozen(tmp_path: Path) -> None:
+    """The CUDA addition may not change the historical CPU wire bytes."""
+    value = request(tmp_path)
+
+    assert value.to_mapping()["schema_version"] == "timed-speech-evidence-request-v1"
+    assert value.identity_sha256 == (
+        "sha256:d178bd98bc9240a9f0a786f5f942bc9f5a55bb12946bbcb7d134ae1b31c1b3b0"
+    )
+
+
 def namespace(
     monkeypatch: pytest.MonkeyPatch, auto_model: type[object] = object
 ) -> dict[str, object]:
