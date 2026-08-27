@@ -30,6 +30,10 @@ from auto_cut_bot.pipeline.runtime import (
     SourceDeniedError,
     StaleRunVersionError,
 )
+from auto_cut_bot.pipeline.vlm import (
+    DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+)
 from tests.pipeline.runtime_profile_fixture import (
     execution_profile as frozen_execution_profile,
 )
@@ -337,6 +341,21 @@ def test_execution_profile_is_closed_canonical_immutable_and_hash_stable() -> No
 
     with pytest.raises(PipelineRunValidationError, match="canonical JSON"):
         replace(profile, request_parameters_json='{ "temperature": 0 }')
+
+
+def test_persisted_v2_adapter_profile_reconstructs_without_silent_v3_upgrade() -> None:
+    mapping = execution_profile().to_mapping()
+    mapping["adapter_strategy_version"] = DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION
+    mapping["vlm_stage_strategy_version"] = DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION
+    mapping["request_parameters"]["adapter_strategy_version"] = (
+        DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION
+    )
+
+    historical = PipelineExecutionProfile.from_mapping(mapping)
+
+    assert historical.to_doubao_policy().adapter_strategy_version == (
+        DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION
+    )
 
 
 def test_execution_profile_binds_every_closed_materialization_limit() -> None:

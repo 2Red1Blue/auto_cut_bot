@@ -82,7 +82,10 @@ def _snapshot(*commands: PipelineCommand, profile_hash: str = "profile-sha") -> 
     return SimpleNamespace(
         commands=commands,
         request=PipelineRunRequest("test", source_root="/authorized/source"),
-        execution_profile=SimpleNamespace(is_legacy_unresolved=False),
+        execution_profile=SimpleNamespace(
+            is_legacy_unresolved=False,
+            to_doubao_policy=lambda: "fixture-vlm-policy",
+        ),
         execution_profile_hash=profile_hash,
     )
 
@@ -252,7 +255,12 @@ async def test_projects_exact_committed_highlights_with_profile_bound_batch_key(
     ]
     assert source_calls[0]["artifact_scope"] == ArtifactScope("pipeline", "job", RUN_ID)
     assert batch_inputs == [
-        {"run_id": RUN_ID, "source_bundle": bundle, "execution_profile_hash": "profile-hash"}
+        {
+            "run_id": RUN_ID,
+            "source_bundle": bundle,
+            "policy": "fixture-vlm-policy",
+            "execution_profile_hash": "profile-hash",
+        }
     ]
     assert store.batch_calls[0][1] == "vlm-batch:exact-profile-bound-key"
     request = store.semantic_requests[0]

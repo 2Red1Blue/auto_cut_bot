@@ -207,6 +207,7 @@ class PipelineHighlightReadService:
         vlm_batch_key = vlm_batch_kernel_idempotency_key(
             run_id=run_id,
             source_bundle=source_bundle,
+            policy=snapshot.execution_profile.to_doubao_policy(),
             execution_profile_hash=snapshot.execution_profile_hash,
         )
         try:

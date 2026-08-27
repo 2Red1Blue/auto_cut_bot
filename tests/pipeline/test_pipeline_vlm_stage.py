@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -62,6 +64,7 @@ from auto_cut_bot.pipeline.runtime.source_prep_stage import (
     source_prep_kernel_idempotency_key,
 )
 from auto_cut_bot.pipeline.runtime.vlm_stage import (
+    VLM_EPISODE_MAX_CONCURRENCY,
     VLM_EPISODE_SELECTION_STRATEGY_VERSION,
     VlmPipelineStage,
     vlm_batch_kernel_idempotency_key,
@@ -1103,7 +1106,8 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     assert result.outcome == "succeeded"
     assert result.receipt_id is not None
     assert len(provider.dispatch_calls) == 2
-    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == ("all-committed-episodes-sequential-v1")
+    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == "all-committed-episodes-bounded-parallel-v2"
+    assert VLM_EPISODE_MAX_CONCURRENCY == 10
     aggregate = next(
         (claim, outcome)
         for claim, outcome in store.claims.values()
@@ -1113,8 +1117,74 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     assert aggregate[0].idempotency_key == vlm_batch_kernel_idempotency_key(
         run_id=RUN_ID,
         source_bundle=bundle,
+        policy=_context().execution_profile.to_doubao_policy(),
         execution_profile_hash=_context().execution_profile_hash,
     )
+
+
+class _ParallelCommand:
+    """Thread-safe scheduling probe; it never stands in for Kernel correctness."""
+
+    def __init__(self, expected_concurrency: int) -> None:
+        self._expected_concurrency = expected_concurrency
+        self._lock = threading.Lock()
+        self._all_started = threading.Event()
+        self.active = 0
+        self.max_active = 0
+        self.requests: list[object] = []
+
+    def execute(self, request: object) -> object:
+        with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.requests.append(request)
+            if len(self.requests) == self._expected_concurrency:
+                self._all_started.set()
+        assert self._all_started.wait(timeout=2)
+        with self._lock:
+            self.active -= 1
+        return SimpleNamespace(
+            outcome=CommandOutcome(
+                uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+            )
+        )
+
+
+class _ParallelBatchFinalizer:
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+
+    def execute(self, request: object) -> object:
+        self.requests.append(request)
+        return SimpleNamespace(
+            outcome=CommandOutcome(
+                uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_current_policy_dispatches_one_ten_episode_bounded_parallel_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY)
+    stage, _store, _provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+    command = _ParallelCommand(VLM_EPISODE_MAX_CONCURRENCY)
+    finalizer = _ParallelBatchFinalizer()
+    stage._command = command  # type: ignore[assignment,reportPrivateUsage]
+    stage._finalizer = finalizer  # type: ignore[assignment,reportPrivateUsage]
+
+    result = await stage.execute(_context())
+
+    assert result.outcome == "succeeded"
+    assert len(command.requests) == VLM_EPISODE_MAX_CONCURRENCY
+    assert command.max_active == VLM_EPISODE_MAX_CONCURRENCY
+    assert len(finalizer.requests) == 1
 
 
 class CrashAfterAggregateReceipt:
@@ -1178,10 +1248,10 @@ async def test_known_provider_request_id_reconciles_same_attempt_without_redispa
 
 
 @pytest.mark.asyncio
-async def test_rejected_episode_short_circuits_later_dispatch_and_denies_batch(
+async def test_rejected_episode_finishes_its_parallel_batch_but_blocks_later_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bundle, blobs = _bundle(2)
+    bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY + 1)
     stage, store, provider = _stage(
         monkeypatch,
         bundle=bundle,
@@ -1194,7 +1264,9 @@ async def test_rejected_episode_short_circuits_later_dispatch_and_denies_batch(
 
     assert result.outcome == "denied"
     assert result.receipt_id is not None
-    assert len(provider.dispatch_calls) == 1
+    # Requests in the already-issued bounded batch cannot be un-sent, but the
+    # eleventh episode must not be dispatched after a terminal child result.
+    assert len(provider.dispatch_calls) == VLM_EPISODE_MAX_CONCURRENCY
     assert all(
         claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )

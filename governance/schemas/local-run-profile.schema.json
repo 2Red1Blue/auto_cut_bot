@@ -323,7 +323,7 @@
         "profile_version": {"$ref": "#/$defs/profile_version"},
         "source_sha256": {"$ref": "#/$defs/sha256"},
         "provider_id": {"const": "doubao-ark-responses-stream"},
-        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v2"},
+        "adapter_strategy_version": {"const": "doubao-ark-files-responses-stream-v3"},
         "model_id": {"const": "doubao-seed-2-1-pro-260628"},
         "prompt_version": {"const": "vlm-semantic-pack-v3"},
         "prompt_template_sha256": {"$ref": "#/$defs/sha256"},

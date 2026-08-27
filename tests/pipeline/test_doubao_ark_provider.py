@@ -21,6 +21,7 @@ from autocut_kernel.vlm import (
 
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
     ArkFileCacheRecord,
     DoubaoArkVlmProvider,
@@ -33,8 +34,10 @@ class MemoryFileCache:
     def __init__(self) -> None:
         self.record: ArkFileCacheRecord | None = None
         self.lease_acquired_on_replay = False
+        self.claims: list[dict[str, object]] = []
 
     def claim(self, **kwargs: object) -> tuple[ArkFileCacheRecord, bool]:
+        self.claims.append(dict(kwargs))
         if self.record is not None:
             return self.record, self.lease_acquired_on_replay
         now = datetime.now(timezone.utc)
@@ -217,7 +220,7 @@ class FakeClientFactory:
         return self.client
 
 
-def _payload() -> bytes:
+def _payload(*, adapter_strategy_version: str = DOUBAO_ARK_ADAPTER_STRATEGY_VERSION) -> bytes:
     video = b"real-proxy-video"
     retry_policy = {
         "backoff_seconds": [2, 8],
@@ -240,7 +243,7 @@ def _payload() -> bytes:
                 "object_id": "proxy-1",
             },
             "request_parameters": {
-                "adapter_strategy_version": DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+                "adapter_strategy_version": adapter_strategy_version,
                 "max_output_tokens": 4096,
                 "temperature": 0,
                 "video_fps": 1.0,
@@ -274,9 +277,13 @@ def test_legacy_v1_adapter_policy_is_not_reinterpreted_as_the_nested_sdk_contrac
     assert result.failure_code == "INVALID_PROVIDER_REQUEST"
 
 
-def _dispatch(*, created_ids: list[str] | None = None) -> ProviderDispatchRequest:
+def _dispatch(
+    *,
+    created_ids: list[str] | None = None,
+    adapter_strategy_version: str = DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+) -> ProviderDispatchRequest:
     video = b"real-proxy-video"
-    payload = _payload()
+    payload = _payload(adapter_strategy_version=adapter_strategy_version)
     return ProviderDispatchRequest(
         DOUBAO_ARK_PROVIDER_ID,
         "doubao-seed-2-1-pro-260628",
@@ -374,6 +381,30 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
     }
 
 
+def test_historical_v2_upload_replays_its_original_wire_contract_and_cache_key() -> None:
+    legacy_cache = MemoryFileCache()
+    legacy_factory = FakeClientFactory(_completed_stream())
+    legacy_result = DoubaoArkVlmProvider(
+        _config(), file_cache=legacy_cache, client_factory=legacy_factory,
+    ).dispatch(_dispatch(adapter_strategy_version=DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION))
+
+    current_cache = MemoryFileCache()
+    current_factory = FakeClientFactory(_completed_stream())
+    current_result = DoubaoArkVlmProvider(
+        _config(), file_cache=current_cache, client_factory=current_factory,
+    ).dispatch(_dispatch())
+
+    assert isinstance(legacy_result, ProviderCompleted)
+    assert isinstance(current_result, ProviderCompleted)
+    assert legacy_factory.files.create_calls[0]["file"] == ("window.mp4", b"real-proxy-video")
+    assert current_factory.files.create_calls[0]["file"] == (
+        "window.mp4", b"real-proxy-video", "video/mp4",
+    )
+    assert legacy_cache.claims[0]["preprocess_policy_hash"] != (
+        current_cache.claims[0]["preprocess_policy_hash"]
+    )
+
+
 def test_doubao_ark_reuses_validated_file_id_without_uploading_again() -> None:
     cache = MemoryFileCache()
     first = FakeClientFactory(_completed_stream())
@@ -436,10 +467,13 @@ def test_doubao_ark_rejects_partial_output_from_incomplete_stream() -> None:
     assert len(factory.responses.create_calls) == 1
 
 
-def test_doubao_ark_classifies_explicit_create_503_as_retryable_without_using_trace_id() -> None:
+@pytest.mark.parametrize("status_code", (429, 503))
+def test_doubao_ark_classifies_explicit_retryable_create_error_without_using_trace_id(
+    status_code: int,
+) -> None:
     factory = FakeClientFactory(_completed_stream())
     error = RuntimeError("provider overloaded")
-    error.status_code = 503  # type: ignore[attr-defined]
+    error.status_code = status_code  # type: ignore[attr-defined]
     error.request_id = "http-trace-not-response-id"  # type: ignore[attr-defined]
     factory.responses.create_error = error
     provider = DoubaoArkVlmProvider(_config(), file_cache=MemoryFileCache(), client_factory=factory)
@@ -447,12 +481,12 @@ def test_doubao_ark_classifies_explicit_create_503_as_retryable_without_using_tr
     result = provider.dispatch(_dispatch(created_ids=[]))
 
     assert isinstance(result, ProviderFailed)
-    assert result.failure_code == "PROVIDER_HTTP_503"
+    assert result.failure_code == f"PROVIDER_HTTP_{status_code}"
     assert result.disposition is ProviderFailureDisposition.RETRYABLE
     assert result.provider_request_id is None
     assert json.loads(result.failure_detail_json) == {
         "disposition": "retryable",
-        "http_status": 503,
+        "http_status": status_code,
         "provider_trace_id": "http-trace-not-response-id",
         "retryable": True,
     }

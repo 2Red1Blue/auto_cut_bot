@@ -38,7 +38,14 @@ from .ark_responses_transport import (
 )
 
 DOUBAO_ARK_PROVIDER_ID = "doubao-ark-responses-stream"
-DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v2"
+DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v2"
+# v3 binds the MIME-bearing multipart tuple.  It must not share the provider
+# media-cache namespace with v2, whose upload was a different request.
+DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v3"
+DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
+    DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+})
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
 _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
 _EXPECTED_PAYLOAD_FIELDS = frozenset(
@@ -186,6 +193,7 @@ class DoubaoArkVlmProvider:
         file_result = self._get_file_id(
             client=client,
             request=request,
+            adapter_strategy_version=cast(str, parameters["adapter_strategy_version"]),
             video_fps=cast(float, parameters["video_fps"]),
         )
         if not isinstance(file_result, str):
@@ -242,9 +250,10 @@ class DoubaoArkVlmProvider:
         *,
         client: Any,
         request: ProviderDispatchRequest,
+        adapter_strategy_version: str,
         video_fps: float,
     ) -> str | ProviderResult:
-        policy_hash = _preprocess_policy_hash(video_fps)
+        policy_hash = _preprocess_policy_hash(adapter_strategy_version, video_fps)
         record, lease_acquired = self._file_cache.claim(
             provider_id=self.provider_id,
             provider_scope_fingerprint=self._config.provider_scope_fingerprint,
@@ -321,11 +330,11 @@ class DoubaoArkVlmProvider:
 
         try:
             uploaded = client.files.create(
-                # Ark validates the multipart part's declared MIME type.  Do
-                # not let the SDK infer ``application/octet-stream`` for an
-                # immutable MP4 Blob: that is a different provider request and
-                # is rejected before an Ark response can be created.
-                file=("window.mp4", request.proxy_content, request.proxy_blob_ref.media_type),
+                file=_upload_file_argument(
+                    adapter_strategy_version,
+                    request.proxy_content,
+                    request.proxy_blob_ref.media_type,
+                ),
                 purpose="user_data",
                 preprocess_configs={"video": {"fps": video_fps}},
             )
@@ -473,13 +482,17 @@ def _request_payload(raw: bytes) -> dict[str, object]:
     return payload
 
 
-def _request_parameters(value: object) -> dict[str, int | float]:
+def _request_parameters(value: object) -> dict[str, str | int | float]:
     if not isinstance(value, dict):
         raise ValueError("Ark request_parameters must be an object")
     parameters = cast(dict[str, object], value)
     if frozenset(parameters) != _EXPECTED_PARAMETER_FIELDS:
         raise ValueError("Ark request_parameters are not closed")
-    if parameters["adapter_strategy_version"] != DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+    adapter_strategy_version = parameters["adapter_strategy_version"]
+    if (
+        type(adapter_strategy_version) is not str  # noqa: E721
+        or adapter_strategy_version not in DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS
+    ):
         raise ValueError("Ark adapter strategy version is not registered")
     fps = parameters["video_fps"]
     tokens = parameters["max_output_tokens"]
@@ -493,16 +506,33 @@ def _request_parameters(value: object) -> dict[str, int | float]:
     if not 0 <= temperature <= 2:
         raise ValueError("temperature must be between 0 and 2")
     return {
+        "adapter_strategy_version": adapter_strategy_version,
         "video_fps": float(fps),
         "max_output_tokens": tokens,
         "temperature": float(temperature),
     }
 
 
-def _preprocess_policy_hash(video_fps: float) -> str:
+def _upload_file_argument(
+    adapter_strategy_version: str,
+    content: bytes,
+    media_type: str,
+) -> tuple[str, bytes] | tuple[str, bytes, str]:
+    """Reproduce the exact historical upload wire contract for each profile."""
+    if adapter_strategy_version == DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION:
+        return ("window.mp4", content)
+    if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+        # Ark validates the multipart part's declared MIME type.  Without it
+        # the SDK infers application/octet-stream, which is a distinct v2
+        # wire contract and is rejected before a Responses object is created.
+        return ("window.mp4", content, media_type)
+    raise ValueError("Ark adapter strategy version is not registered")
+
+
+def _preprocess_policy_hash(adapter_strategy_version: str, video_fps: float) -> str:
     encoded = json.dumps(
         {
-            "adapter_strategy_version": DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+            "adapter_strategy_version": adapter_strategy_version,
             "purpose": "user_data",
             "video_fps": video_fps,
         },

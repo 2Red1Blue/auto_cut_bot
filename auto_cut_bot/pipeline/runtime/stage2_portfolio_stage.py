@@ -50,6 +50,7 @@ class Stage2PortfolioPipelineStage:
         return read_stage2_pipeline_request(
             self._store, job=job, run_id=context.run_id,
             execution_profile_hash=context.execution_profile_hash,
+            vlm_policy=context.execution_profile.to_doubao_policy(),
             stage1_policy=stage1_policy, stage2_policy=stage2_policy,
         )
 

@@ -130,9 +130,11 @@ async def test_exact_predecessor_and_policy_request_reconstructed_off_event_loop
     # Direct helper reconstructs the same request but never executes Stage1.
     assert read_stage1_pipeline_request(store, job=request.job, run_id=ctx.run_id,
                                        execution_profile_hash=ctx.execution_profile_hash,
+                                       vlm_policy=ctx.execution_profile.to_doubao_policy(),
                                        policy=ctx.execution_profile.build_stage1_command_policy()) == request.stage1_request
     assert read_stage2_pipeline_request(store, job=request.job, run_id=ctx.run_id,
                                        execution_profile_hash=ctx.execution_profile_hash,
+                                       vlm_policy=ctx.execution_profile.to_doubao_policy(),
                                        stage1_policy=ctx.execution_profile.build_stage1_command_policy(),
                                        stage2_policy=ctx.execution_profile.build_stage2_command_policy()) == request
 

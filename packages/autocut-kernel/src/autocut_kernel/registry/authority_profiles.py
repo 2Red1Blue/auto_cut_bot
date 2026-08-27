@@ -196,7 +196,7 @@ class Stage1NarrativeProfileReference:
             "profile_version": self.profile_version,
             "source_sha256": self.source_sha256,
             "provider_id": "doubao-ark-responses-stream",
-            "adapter_strategy_version": "doubao-ark-files-responses-stream-v2",
+            "adapter_strategy_version": "doubao-ark-files-responses-stream-v3",
             "model_id": "doubao-seed-2-1-pro-260628",
             "prompt_version": "vlm-semantic-pack-v3",
             "prompt_template_sha256": self.prompt_template_sha256,
@@ -229,7 +229,7 @@ class Stage1NarrativeProfileSource:
             "profile_state": "stage1_narrative_v1",
             "provider": {
                 "provider_id": "doubao-ark-responses-stream",
-                "adapter_strategy_version": "doubao-ark-files-responses-stream-v2",
+                "adapter_strategy_version": "doubao-ark-files-responses-stream-v3",
                 "transport": "ark_responses_streaming",
             },
             "model": {"model_id": "doubao-seed-2-1-pro-260628"},
@@ -745,7 +745,7 @@ def _decode_narrative_reference(value: object, field_name: str) -> Stage1Narrati
     for name, expected in (
         ("profile_id", "stage1_narrative"),
         ("provider_id", "doubao-ark-responses-stream"),
-        ("adapter_strategy_version", "doubao-ark-files-responses-stream-v2"),
+        ("adapter_strategy_version", "doubao-ark-files-responses-stream-v3"),
         ("model_id", "doubao-seed-2-1-pro-260628"),
         ("prompt_version", "vlm-semantic-pack-v3"),
         ("parser_strategy_version", "strict-semantic-pack-v3"),
@@ -797,7 +797,7 @@ def decode_stage1_narrative_profile_source(raw: bytes) -> Stage1NarrativeProfile
     )
     for name, expected in (
         ("provider_id", "doubao-ark-responses-stream"),
-        ("adapter_strategy_version", "doubao-ark-files-responses-stream-v2"),
+        ("adapter_strategy_version", "doubao-ark-files-responses-stream-v3"),
         ("transport", "ark_responses_streaming"),
     ):
         _const(provider[name], expected, f"stage1 narrative source.provider.{name}")

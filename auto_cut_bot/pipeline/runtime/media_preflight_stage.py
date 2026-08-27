@@ -443,6 +443,7 @@ class MediaPreflightPipelineStage:
         vlm_batch_key = vlm_batch_kernel_idempotency_key(
             run_id=context.run_id,
             source_bundle=source_bundle,
+            policy=context.execution_profile.to_doubao_policy(),
             execution_profile_hash=context.execution_profile_hash,
         )
         try:

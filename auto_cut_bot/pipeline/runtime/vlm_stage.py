@@ -37,7 +37,12 @@ from auto_cut_bot.pipeline.source_prep import (
     SourcePrepStore,
     read_persisted_prepared_sources_bundle,
 )
-from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy, build_doubao_vlm_request
+from auto_cut_bot.pipeline.vlm import (
+    DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+    DOUBAO_VLM_STAGE_STRATEGY_VERSION,
+    DoubaoVlmRequestPolicy,
+    build_doubao_vlm_request,
+)
 from auto_cut_bot.pipeline.vlm.policy_binding import (
     validate_installed_source_sampling,
     validate_installed_vlm_policy,
@@ -50,8 +55,19 @@ from .source_prep_stage import (
     source_prep_kernel_idempotency_key,
 )
 
-VLM_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-sequential-v1"
+VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-sequential-v1"
+VLM_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-bounded-parallel-v2"
+VLM_EPISODE_MAX_CONCURRENCY = 10
 _ARTIFACT_REVISION = 1
+
+
+def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, int]:
+    """Derive scheduling from the persisted policy rather than process config."""
+    if policy.stage_strategy_version == DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION:
+        return VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION, 1
+    if policy.stage_strategy_version == DOUBAO_VLM_STAGE_STRATEGY_VERSION:
+        return VLM_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
+    raise PipelineRunValidationError("VLM profile has no registered episode selection strategy")
 
 
 class VlmPipelineStore(
@@ -83,7 +99,7 @@ def vlm_kernel_idempotency_key(
         "execution_profile_sha256": execution_profile_hash,
         "policy_sha256": policy.canonical_hash,
         "run_id": run_id,
-        "selection_strategy_version": VLM_EPISODE_SELECTION_STRATEGY_VERSION,
+        "selection_strategy_version": _episode_selection_strategy(policy)[0],
         "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
         "source_provenance_sha256": source_bundle.canonical_hash,
     }
@@ -100,6 +116,7 @@ def vlm_batch_kernel_idempotency_key(
     *,
     run_id: str,
     source_bundle: PersistedPreparedSources,
+    policy: DoubaoVlmRequestPolicy,
     execution_profile_hash: str,
 ) -> str:
     """Return the sole durable identity of one complete VLM semantic batch."""
@@ -113,7 +130,7 @@ def vlm_batch_kernel_idempotency_key(
         {
             "execution_profile_sha256": execution_profile_hash,
             "run_id": run_id,
-            "selection_strategy_version": VLM_EPISODE_SELECTION_STRATEGY_VERSION,
+            "selection_strategy_version": _episode_selection_strategy(policy)[0],
             "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
             "source_provenance_sha256": source_bundle.canonical_hash,
         },
@@ -167,7 +184,11 @@ class VlmPipelineStage:
     def _requests(
         self,
         context: PipelineStageContext,
-    ) -> tuple[PersistedPreparedSources, tuple[GenerateVlmEvidenceRequest, ...]] | None:
+    ) -> tuple[
+        PersistedPreparedSources,
+        DoubaoVlmRequestPolicy,
+        tuple[GenerateVlmEvidenceRequest, ...],
+    ] | None:
         job = self._job(context)
         policy = context.execution_profile.to_doubao_policy()
         retry_policy = context.execution_profile.to_generation_retry_policy()
@@ -206,7 +227,8 @@ class VlmPipelineStage:
             )
         if self._installed_profile is not None:
             validate_installed_source_sampling(source_bundle)
-        return source_bundle, tuple(
+        _episode_selection_strategy(policy)
+        return source_bundle, policy, tuple(
             replace(
                 build_doubao_vlm_request(
                     source_bundle=source_bundle,
@@ -250,42 +272,56 @@ class VlmPipelineStage:
         self,
         context: PipelineStageContext,
         source_bundle: PersistedPreparedSources,
+        policy: DoubaoVlmRequestPolicy,
         requests: tuple[GenerateVlmEvidenceRequest, ...],
     ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult:
         children: list[VlmBatchChildOutcome] = []
-        for episode_index, request in enumerate(requests):
-            result = await asyncio.to_thread(self._command.execute, request)
-            outcome = result.outcome
-            if outcome.state in ("pending", "running"):
-                return result
-            if outcome.state not in ("succeeded", "denied", "failed"):
-                raise PipelineRunValidationError("Kernel returned an unsupported VLM child outcome")
-            if outcome.receipt_id is None:
-                raise PipelineRunValidationError("terminal Kernel VLM child lost its Receipt")
-            if outcome.state in ("denied", "failed"):
-                # A causal child Receipt truthfully blocks all-or-nothing batch
-                # success. Rejected Generate commands have no ArtifactSet-backed
-                # request record, so they are never passed to the success-only
-                # aggregate finalizer and later episodes are not dispatched.
-                return result
-            children.append(
-                VlmBatchChildOutcome(
-                    episode_index=episode_index,
-                    idempotency_key=request.idempotency_key,
-                    window_manifest_sha256=request.manifest.canonical_hash,
-                    source_manifest_sha256=source_bundle.artifact_reference.content_hash,
-                    source_provenance_sha256=source_bundle.canonical_hash,
-                    request_hash=request.request_hash,
-                    state=outcome.state,
-                    receipt_id=outcome.receipt_id,
-                    artifact_set_id=outcome.artifact_set_id,
-                )
+        _selection_strategy, max_concurrency = _episode_selection_strategy(policy)
+        for start in range(0, len(requests), max_concurrency):
+            chunk = requests[start:start + max_concurrency]
+            results = await asyncio.gather(
+                *(asyncio.to_thread(self._command.execute, request) for request in chunk),
             )
+            unresolved: GenerateVlmEvidenceResult | None = None
+            terminal: GenerateVlmEvidenceResult | None = None
+            for episode_index, (request, result) in enumerate(zip(chunk, results, strict=True), start):
+                outcome = result.outcome
+                if outcome.state in ("pending", "running"):
+                    unresolved = unresolved or result
+                    continue
+                if outcome.state not in ("succeeded", "denied", "failed"):
+                    raise PipelineRunValidationError("Kernel returned an unsupported VLM child outcome")
+                if outcome.receipt_id is None:
+                    raise PipelineRunValidationError("terminal Kernel VLM child lost its Receipt")
+                if outcome.state in ("denied", "failed"):
+                    terminal = terminal or result
+                    continue
+                children.append(
+                    VlmBatchChildOutcome(
+                        episode_index=episode_index,
+                        idempotency_key=request.idempotency_key,
+                        window_manifest_sha256=request.manifest.canonical_hash,
+                        source_manifest_sha256=source_bundle.artifact_reference.content_hash,
+                        source_provenance_sha256=source_bundle.canonical_hash,
+                        request_hash=request.request_hash,
+                        state=outcome.state,
+                        receipt_id=outcome.receipt_id,
+                        artifact_set_id=outcome.artifact_set_id,
+                    )
+                )
+            # A chunk is intentionally the most work that can already have
+            # escaped to Ark when one child fails.  Never dispatch a later
+            # chunk after a terminal or indeterminate child outcome.
+            if terminal is not None:
+                return terminal
+            if unresolved is not None:
+                return unresolved
         finalizer_request = FinalizeVlmBatchRequest(
             job=Job(context.run_id, context.request.profile),
             idempotency_key=vlm_batch_kernel_idempotency_key(
                 run_id=context.run_id,
                 source_bundle=source_bundle,
+                policy=policy,
                 execution_profile_hash=context.execution_profile_hash,
             ),
             artifact_scope=canonical_recipe_scope(Job(context.run_id, context.request.profile)),
@@ -319,6 +355,8 @@ class VlmPipelineStage:
 
 __all__ = (
     "VLM_EPISODE_SELECTION_STRATEGY_VERSION",
+    "VLM_EPISODE_MAX_CONCURRENCY",
+    "VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION",
     "VlmPipelineStage",
     "VlmPipelineStore",
     "vlm_batch_kernel_idempotency_key",

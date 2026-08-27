@@ -30,6 +30,7 @@ from auto_cut_bot.pipeline.source_prep import (
     SourcePrepStore,
     read_persisted_prepared_sources_bundle,
 )
+from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy
 
 from .errors import PipelineRunValidationError
 from .models import validate_run_id
@@ -39,7 +40,6 @@ from .source_prep_stage import (
 )
 from .vlm_stage import vlm_batch_kernel_idempotency_key
 
-_VLM_SELECTION_STRATEGY_VERSION = "all-committed-episodes-sequential-v1"
 _SOURCE_ARTIFACT_REVISION = 1
 
 
@@ -60,17 +60,20 @@ def stage1_narrative_kernel_idempotency_key(
     return "stage1-narrative:" + hashlib.sha256(
         (
             f"{run_id}\0{execution_profile_hash}\0{source_bundle.artifact_reference.content_hash}"
-            f"\0{source_bundle.canonical_hash}\0{_VLM_SELECTION_STRATEGY_VERSION}"
+            f"\0{source_bundle.canonical_hash}"
         ).encode("utf-8")
     ).hexdigest()
 
 
 def read_stage1_pipeline_request(
     store: Stage1NarrativePipelineStore, *, job: Job, run_id: str,
-    execution_profile_hash: str, policy: Stage1CommandPolicy,
+    execution_profile_hash: str, vlm_policy: DoubaoVlmRequestPolicy,
+    policy: Stage1CommandPolicy,
 ) -> BuildNarrativeGraphRequest | None:
     validate_run_id(run_id)
-    if type(job) is not Job or job.job_key != run_id or type(policy) is not Stage1CommandPolicy:  # noqa: E721
+    if (type(job) is not Job or job.job_key != run_id  # noqa: E721
+            or type(vlm_policy) is not DoubaoVlmRequestPolicy
+            or type(policy) is not Stage1CommandPolicy):
         raise PipelineRunValidationError("semantic predecessor request requires an exact run Job and Stage 1 policy")
     source_outcome = store.read_outcome(job, source_prep_kernel_idempotency_key(run_id))
     if source_outcome is None or source_outcome.state in ("pending", "running"):
@@ -86,7 +89,8 @@ def read_stage1_pipeline_request(
     )
     require_committed_source_operation(source_bundle, "semantic_analysis")
     vlm_key = vlm_batch_kernel_idempotency_key(
-        run_id=run_id, source_bundle=source_bundle, execution_profile_hash=execution_profile_hash,
+        run_id=run_id, source_bundle=source_bundle, policy=vlm_policy,
+        execution_profile_hash=execution_profile_hash,
     )
     vlm_outcome = store.read_outcome(job, vlm_key)
     if vlm_outcome is None or vlm_outcome.state in ("pending", "running"):
@@ -131,12 +135,14 @@ def stage2_portfolio_kernel_idempotency_key(
 
 def read_stage2_pipeline_request(
     store: Stage1NarrativePipelineStore, *, job: Job, run_id: str,
-    execution_profile_hash: str, stage1_policy: Stage1CommandPolicy, stage2_policy: Stage2CommandPolicy,
+    execution_profile_hash: str, vlm_policy: DoubaoVlmRequestPolicy,
+    stage1_policy: Stage1CommandPolicy, stage2_policy: Stage2CommandPolicy,
 ) -> CompileStoryPortfolioRequest | None:
     if type(stage2_policy) is not Stage2CommandPolicy:  # noqa: E721
         raise PipelineRunValidationError("semantic predecessor requires an exact Stage 2 policy")
     predecessor = read_stage1_pipeline_request(
-        store, job=job, run_id=run_id, execution_profile_hash=execution_profile_hash, policy=stage1_policy,
+        store, job=job, run_id=run_id, execution_profile_hash=execution_profile_hash,
+        vlm_policy=vlm_policy, policy=stage1_policy,
     )
     if predecessor is None:
         return None

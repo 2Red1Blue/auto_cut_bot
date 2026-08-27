@@ -676,6 +676,10 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         reconciler=PipelineStageReconciler.from_ports(
             control_store, ("source_prep", source_stage), ("vlm", vlm_stage),
         ),
+        # One semantic run owns the process-level Ark concurrency budget.  The
+        # VLM stage itself dispatches its frozen, bounded ten-episode batch.
+        concurrency=1,
+        max_batch_size=1,
     )
     return PipelineRuntime(service, worker, execution_profile, None, kernel_store)
 

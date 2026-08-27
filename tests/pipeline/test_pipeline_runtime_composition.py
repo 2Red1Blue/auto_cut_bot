@@ -273,6 +273,8 @@ def test_explicit_semantic_only_plan_composes_without_media_authority(
     assert runtime.authority_profile_resolver is None
     assert runtime.execution_profile.is_semantic_only
     assert runtime.worker._runner._registry.stage_names == ("source_prep", "vlm")
+    assert runtime.worker._concurrency == 1
+    assert runtime.worker._max_batch_size == 1
 
 
 def test_semantic_only_plan_rejects_doubao_drift_before_provider_or_store(

@@ -74,7 +74,8 @@ class Stage1NarrativePipelineStage:
                 )
         return read_stage1_pipeline_request(
             self._store, job=job, run_id=context.run_id,
-            execution_profile_hash=context.execution_profile_hash, policy=policy,
+            execution_profile_hash=context.execution_profile_hash,
+            vlm_policy=context.execution_profile.to_doubao_policy(), policy=policy,
         )
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:

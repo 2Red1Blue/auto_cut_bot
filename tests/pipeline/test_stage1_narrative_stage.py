@@ -374,6 +374,7 @@ async def test_execute_reads_exact_predecessors_off_event_loop_and_delegates_onc
         "source-prep-kernel-v1:" + RUN_ID,
         vlm_batch_kernel_idempotency_key(
             run_id=RUN_ID, source_bundle=bundle,
+            policy=context.execution_profile.to_doubao_policy(),
             execution_profile_hash=context.execution_profile_hash,
         ),
     )

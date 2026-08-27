@@ -757,7 +757,7 @@ def test_media_preflight_context_rejects_historical_v3_profile() -> None:
     }
     v3 = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="persisted execution profile v9"):
+    with pytest.raises(PipelineRunValidationError, match="physical/story stages require execution profile v9"):
         PipelineStageContext(
             "pipeline_run_" + "b" * 32,
             PipelineRunRequest("test", source_root="/authorized/source"),

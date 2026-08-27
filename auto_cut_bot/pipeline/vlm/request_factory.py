@@ -31,6 +31,7 @@ from auto_cut_bot.pipeline.source_prep.command import (
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
+    DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS,
 )
 from .prompt import (
     VLM_PROMPT_VERSION,
@@ -39,7 +40,11 @@ from .prompt import (
     vlm_response_schema_json,
 )
 
-DOUBAO_VLM_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-semantic-pack-v3-request-v1"
+DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-semantic-pack-v3-request-v1"
+DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION = (
+    "doubao-generate-vlm-semantic-pack-v3-parallel-10-v2"
+)
+DOUBAO_VLM_STAGE_STRATEGY_VERSION = DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION
 DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION = DOUBAO_VLM_STAGE_STRATEGY_VERSION
 
 
@@ -150,8 +155,8 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("Qwen models are forbidden by the Doubao-only policy")
         if self.provider_id != DOUBAO_ARK_PROVIDER_ID:
             raise ValueError("provider_id must be the registered Doubao provider")
-        if self.adapter_strategy_version != DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
-            raise ValueError("adapter strategy must be the registered Doubao version")
+        if self.adapter_strategy_version not in DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS:
+            raise ValueError("adapter strategy must be a registered Doubao version")
         if self.prompt_version != VLM_PROMPT_VERSION:
             raise ValueError("prompt version must be the registered VLM prompt version")
         schema = _strict_json_object(self.response_schema_json, "response schema JSON")
@@ -165,8 +170,18 @@ class DoubaoVlmRequestPolicy:
             raise TypeError("parse_policy must be an exact VlmParsePolicy")
         if self.parser_strategy_version != VLM_PARSER_STRATEGY_VERSION:
             raise ValueError("parser strategy must be the registered Kernel version")
-        if self.stage_strategy_version != DOUBAO_VLM_STAGE_STRATEGY_VERSION:
-            raise ValueError("stage strategy must be the registered Doubao request version")
+        if self.stage_strategy_version not in {
+            DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+            DOUBAO_VLM_STAGE_STRATEGY_VERSION,
+        }:
+            raise ValueError("stage strategy must be a registered Doubao request version")
+        if (
+            self.adapter_strategy_version != DOUBAO_ARK_ADAPTER_STRATEGY_VERSION
+            and self.stage_strategy_version != DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION
+        ):
+            raise ValueError(
+                "the legacy Ark adapter is only valid with the legacy sequential stage strategy"
+            )
         object.__setattr__(self, "video_fps", float(fps))
         object.__setattr__(self, "temperature", float(temperature))
 

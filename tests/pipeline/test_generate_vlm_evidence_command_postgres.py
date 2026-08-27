@@ -829,15 +829,15 @@ def test_retryable_503_then_429_then_success_commits_three_attempt_chain() -> No
             assert cursor.fetchone()[0] == 3
 
 
-def test_retryable_budget_exhaustion_commits_one_complete_failure_receipt() -> None:
+def test_three_consecutive_429s_exhaust_the_durable_retry_budget_once() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request = _request(store, Job("vlm-retry-exhausted", "test"))
     provider = SequencedProvider(
         tuple(
             ProviderFailed(
-                f"PROVIDER_RETRY_{ordinal}",
-                json.dumps({"ordinal": ordinal}, separators=(",", ":")),
+                "PROVIDER_HTTP_429",
+                json.dumps({"http_status": 429, "ordinal": ordinal}, separators=(",", ":")),
                 f"provider-exhausted-{ordinal}",
                 ProviderFailureDisposition.RETRYABLE,
             )
