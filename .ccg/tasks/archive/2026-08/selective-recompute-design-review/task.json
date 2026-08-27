@@ -1,0 +1,13 @@
+{
+  "id": "selective-recompute-design-review",
+  "title": "阶段与单集选择性重算设计及对抗审查",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "设计审查完成；后续另实施首个选择集重算切片（含最小预算/互斥/CAS测试）",
+  "createdAt": "2026-08-28T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen",
+  "scope": "design-and-review-only; no provider calls, deployment or database mutation"
+}

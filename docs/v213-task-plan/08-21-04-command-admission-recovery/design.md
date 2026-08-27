@@ -110,3 +110,19 @@ fingerprint/profile/evaluator tests may run without it. A migration is
 additive; rollback is application rollback while committed authority facts are
 retained and new writers are stopped. No schema/code path is authorized until
 Task01/03 entry conditions are verified.
+
+## Pipeline selective recompute extension (design only)
+
+[Stage and episode recompute](../../pipeline-selective-recompute-design.md)
+distinguishes replay/reconcile from a new semantic generation. It reuses this
+Kernel's immutable Ledger/Attempt authority and requires explicit producer
+Job/Receipt/ArtifactSet bindings; it does not relax existing same-Job readers.
+The generic RecoveryLedger controller/head is still a design obligation, not
+an operational dependency: current Store generation reservations enforce
+per-command attempts, not lineage-level allowances or overlapping episodes.
+The first slice must implement/test the minimal ledger reservation/CAS and
+overlap gate alongside a VLM selection on an unchanged committed SourcePrep
+set, followed by compatible sibling reuse and a versioned batch finalizer.
+HTTP resume is not a substitute for this extension, and a process-local probe
+flag is not a multi-worker hold. These paths still require implementation and
+PostgreSQL concurrency/crash tests before being called operational.

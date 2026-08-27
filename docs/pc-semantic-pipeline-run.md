@@ -44,7 +44,9 @@ AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR=/mnt/d/code/auto_cut/debug/model-io
 
 每个已执行的阶段都会保存到 `<debug-root>/<run_id>/<stage>/`：固定的 `input.json` 与 `output.json`，阶段未捕获异常时的 `error.json`，以及模型调用的 `model/<provider>/<call>/request.json`、`terminal.json`、`raw-output.bin`（有原始输出时）。这覆盖 source prep、VLM、media preflight 与后续 Narrative/Portfolio/Blueprint 阶段。它们是可删除的调试镜像，不是重跑、准入或发布依据；请求中的 API key、Authorization、Token/Cookie 和视频字节会被排除或脱敏。目录必须在仓库外；未设置时完全关闭，不影响正常运行。
 
-若要在真实流程中先查看首个 VLM 请求与响应，再允许批量剧集继续，启动前额外设置 `AUTO_CUT_BOT_PIPELINE_VLM_STOP_AFTER_PROBE=1`。Pipeline 仍会完成真实 SourcePrep，并用正常的 Kernel idempotency key 调用第 1 集 VLM；成功后会保持 VLM 命令为 `indeterminate`，不生成 Batch Receipt，也不会发起其他剧集。此后每次 worker 轮询只读取持久化结果，不会重复调用模型。查看 `<debug-root>/<run_id>/vlm/model/.../request.json`、`terminal.json` 与 `raw-output.bin` 后，重启服务时移除此变量（或设为 `0`）；启动重建会自动 reconcile 同一 run，首个调用由幂等记录复用，随后才进入并发批处理。
+若要在真实流程中先查看首个 VLM 请求与响应，再允许批量剧集继续，启动前额外设置 `AUTO_CUT_BOT_PIPELINE_VLM_STOP_AFTER_PROBE=1`。Pipeline 仍会完成真实 SourcePrep，并用正常的 Kernel idempotency key 调用第 1 集 VLM；成功后会保持 VLM 命令为 `indeterminate`，不生成 Batch Receipt。**这是当前服务进程的开关，不是持久化的任务暂停许可**：只有全部可能领取该 run 的 worker 都启用它，才能确保其他集不继续执行；同数据库的另一进程若未设置变量，可以继续该 run。不要把此开关用于未经核对的多服务实例暂停。
+
+启用开关的 worker 轮询只读取该探针的持久化结果，不会重复调用模型。查看 `<debug-root>/<run_id>/vlm/model/.../request.json`、`terminal.json` 与 `raw-output.bin`（存在时）后，重启服务时移除此变量（或设为 `0`）；**仅当原 run 仍是可恢复的非终态且探针成功时**，启动重建才会 reconcile 同一 run，复用首个调用后进入并发批处理。探针已失败/拒绝的 run 不会因此重开。
 
 The closed source catalog must contain exactly one authorized entry for book
 `42000021919`, with `expected_source_count: 50` and
@@ -110,9 +112,11 @@ not success authority.
   result, so without that source access it cannot be safely continued.  Do not
   claim that an uncommitted frame scan is portable.
 
-To explicitly wake a nonterminal run after inspecting its status, use the
-current `version` returned by the status endpoint as an optimistic-concurrency
-precondition:
+The current HTTP resume implementation only wakes an eligible nonterminal run
+with a `media_preflight` command in pending/indeterminate/awaiting-calibration
+state. It is **not** a generic VLM or per-episode rerun API; `semantic_only`
+runs have no such command. For the supported media-preflight case, use the
+current `version` returned by the status endpoint as a concurrency precondition:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18766/v1/pipeline/resume \
@@ -125,10 +129,24 @@ This does not overwrite a terminal success, denial, or failure.  A stale
 `expected_version` is rejected, which prevents two hosts from both claiming
 the same recovery transition.
 
+### Planned stage / episode recompute (not implemented)
+
+Repeated submit and restart recovery above keep the original frozen command
+identity. They do not intentionally regenerate a failed episode under changed
+parameters. A new run currently cannot simply consume old source/child Receipts:
+the request factory, Blob access and batch readback enforce producer Job ownership.
+
+The [selective recompute design](pipeline-selective-recompute-design.md) adds
+explicit producer bindings, compatible-result reuse and a durable inspection
+hold. Its proposed `/v1/pipeline/recompute` route is not available yet. Do not
+copy old Receipts, clear terminal rows or change the original run's profile as
+a workaround.
+
 ## Moving to calibrated media evidence
 
 After independent ASR/VAD timing anchors are accepted, create a separate full
 run with the normal plan (leave `AUTO_CUT_BOT_PIPELINE_PLAN` unset).  That run
-is the only plan allowed to enter MediaPreflight; it may explicitly reuse the
-completed semantic closure, but it never converts this semantic result into a
-cut, render, QC pass or publication permission.
+is the only plan allowed to enter MediaPreflight. Cross-run semantic reuse still
+requires the explicit binding/reader changes in the design above; it is not an
+implemented option of the current `/run` endpoint. Semantic success never means
+a cut, render, QC pass or publication permission.
