@@ -23,6 +23,15 @@ _LOGGER = logging.getLogger(__name__)
 _SENSITIVE_KEY_PARTS = frozenset(
     {"authorization", "api_key", "apikey", "cookie", "password", "secret", "token"}
 )
+_TOKEN_COUNT_KEYS = frozenset({
+    "input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens",
+    "cached_tokens", "reasoning_tokens", "audio_tokens", "video_tokens", "text_tokens",
+    "max_output_tokens", "max_completion_tokens", "max_tokens",
+})
+_TOKEN_DETAIL_KEYS = frozenset({
+    "input_tokens_details", "output_tokens_details", "prompt_tokens_details",
+    "completion_tokens_details",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,7 +307,21 @@ def _jsonable(value: object) -> object:
 
 
 def _redact(value: object, *, key: str | None = None) -> object:
-    if key is not None and any(part in key.lower() for part in _SENSITIVE_KEY_PARTS):
+    name = key.lower() if key is not None else None
+    # Preserve only known, nonnegative integer telemetry. A string/dict under a
+    # metric name is not safe: credentials may be echoed under misleading keys.
+    if name in _TOKEN_COUNT_KEYS and type(value) is int and value >= 0:
+        return value
+    if name in _TOKEN_DETAIL_KEYS and isinstance(value, dict):
+        mapping = cast(dict[object, object], value)
+        return {
+            str(item_key): (
+                item if str(item_key).lower() in _TOKEN_COUNT_KEYS
+                and type(item) is int and item >= 0 else "<redacted>"
+            )
+            for item_key, item in mapping.items()
+        }
+    if name is not None and any(part in name for part in _SENSITIVE_KEY_PARTS):
         return "<redacted>"
     if isinstance(value, dict):
         mapping = cast(dict[object, object], value)

@@ -1,0 +1,12 @@
+{
+  "id": "vlm-debug-token-metrics",
+  "title": "保留真实模型 token 用量且不放开凭证脱敏",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "归档并提交；仅保留诊断数值，不影响模型请求/结果",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}
