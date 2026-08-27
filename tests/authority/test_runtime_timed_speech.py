@@ -249,6 +249,8 @@ def test_projects_closed_pc_cuda_runtime_timed_speech_authority() -> None:
     assert projection.device_class == "cuda"
     assert projection.runtime_measurement_identity_sha256 == measurement.canonical_sha256
     assert projection.timing_compatibility_sha256 == measurement.timing_compatibility_sha256
+    assert projection.funasr_version == measurement.timing_compatibility.funasr_version
+    assert projection.torch_version == measurement.timing_compatibility.torch_version
     assert projection.producers[0].model_sha256 == measurement.timing_compatibility.producers[0].model_sha256
     assert projection.asr_calibration_record_sha256 == _capability(measurement).anchor.record.asr.content_hash
     assert projection.vad_calibration_record_sha256 == _capability(measurement).anchor.record.vad.content_hash

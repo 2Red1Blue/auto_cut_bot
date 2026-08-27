@@ -109,6 +109,8 @@ class PcCudaRuntimeTimedSpeechPolicy:
     runtime_projection_compatibility_sha256: str
     build_audit_sha256: str
     runtime_projection_sha256: str
+    funasr_version: str
+    torch_version: str
     profile_source_sha256: str
     registry_snapshot_sha256: str
     accepted_record_sha256: str
@@ -148,7 +150,7 @@ class PcCudaRuntimeTimedSpeechPolicy:
         _text(self.source_clock_id, "source_clock_id")
         if type(self.source_time_base) is not TimeBase:  # noqa: E721
             raise _fail("source_time_base must be an exact TimeBase")
-        for name in ("endpoint_url", "provider_id", "provider_version"):
+        for name in ("endpoint_url", "provider_id", "provider_version", "funasr_version", "torch_version"):
             _text(getattr(self, name), name)
         for name in (
             "timeout_seconds", "max_response_bytes", "utterance_gap_milliseconds", "vad_merge_gap_milliseconds",
@@ -173,6 +175,10 @@ class PcCudaRuntimeTimedSpeechPolicy:
             "runtime_measurement_identity_sha256": self.runtime_measurement_identity_sha256,
             "timing_compatibility_sha256": self.timing_compatibility_sha256,
             "runtime_projection_compatibility_sha256": self.runtime_projection_compatibility_sha256,
+            "runtime": {
+                "funasr_version": self.funasr_version,
+                "torch_version": self.torch_version,
+            },
             "profile_source_sha256": self.profile_source_sha256,
             "registry_snapshot_sha256": self.registry_snapshot_sha256,
             "accepted_record_sha256": self.accepted_record_sha256,
@@ -294,6 +300,7 @@ def project_pc_cuda_runtime_timed_speech_policy(
         static_policy.canonical_hash, projection.runtime_capability_id, "cuda",
         projection.runtime_measurement_identity_sha256, projection.timing_compatibility_sha256,
         projection.compatibility_hash, projection.build_audit_sha256, projection.canonical_hash,
+        projection.funasr_version, projection.torch_version,
         projection.profile_source_sha256,
         projection.registry_snapshot_sha256, projection.record_sha256,
         projection.validation_receipt_sha256, projection.native_port_identity_sha256,

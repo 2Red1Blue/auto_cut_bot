@@ -52,6 +52,8 @@ class RuntimeTimedSpeechProjection:
     runtime_measurement_identity_sha256: str
     timing_compatibility_sha256: str
     build_audit_sha256: str
+    funasr_version: str
+    torch_version: str
     profile_source_sha256: str
     registry_snapshot_sha256: str
     record_sha256: str
@@ -100,6 +102,15 @@ class RuntimeTimedSpeechProjection:
             except ValueError as error:
                 raise _fail(f"{field_name} is not a sha256 digest") from error
         if (
+            type(self.funasr_version) is not str
+            or not self.funasr_version
+            or self.funasr_version != self.funasr_version.strip()
+            or type(self.torch_version) is not str
+            or not self.torch_version
+            or self.torch_version != self.torch_version.strip()
+        ):
+            raise _fail("runtime library versions must be canonical non-empty text")
+        if (
             type(self.asr_timing_error_bound_tick) is not int  # noqa: E721
             or type(self.vad_timing_error_bound_tick) is not int  # noqa: E721
             or self.asr_timing_error_bound_tick < 1
@@ -130,6 +141,11 @@ class RuntimeTimedSpeechProjection:
             "runtime_capability_id": self.runtime_capability_id,
             "runtime_measurement_identity_sha256": self.runtime_measurement_identity_sha256,
             "timing_compatibility_sha256": self.timing_compatibility_sha256,
+            "runtime": {
+                "funasr_version": self.funasr_version,
+                "torch_version": self.torch_version,
+                "device_class": self.device_class,
+            },
             "static_policy": {
                 "profile_source_sha256": self.profile_source_sha256,
                 "registry_snapshot_sha256": self.registry_snapshot_sha256,
@@ -338,6 +354,8 @@ def project_runtime_timed_speech(
         runtime_measurement_identity_sha256=measurement.canonical_sha256,
         timing_compatibility_sha256=measurement.timing_compatibility_sha256,
         build_audit_sha256=measurement.build_audit_sha256,
+        funasr_version=compatibility.funasr_version,
+        torch_version=compatibility.torch_version,
         profile_source_sha256=identity.profile_source_sha256,
         registry_snapshot_sha256=identity.registry_snapshot_sha256,
         record_sha256=anchor.record_sha256,

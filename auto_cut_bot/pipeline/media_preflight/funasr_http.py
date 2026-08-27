@@ -9,7 +9,7 @@ import hashlib
 import json
 import os
 from dataclasses import replace
-from typing import cast
+from typing import Any, cast
 
 from autocut_kernel.media import (
     Coverage,
@@ -39,7 +39,6 @@ from .models import (
 )
 from .speech_port import (
     TimedSpeechEvidence,
-    TimedSpeechEvidenceRequest,
     TimedSpeechInvocationTrace,
     TimedSpeechProducerIdentity,
     TimedSpeechTimingErrorBound,
@@ -99,7 +98,7 @@ class FunASRHttpTimedSpeechEvidencePort:
             raise LocalMediaPolicyError("FUNASR_SHARED_TOKEN must be non-empty")
         self._shared_token = token
 
-    def produce(self, r: TimedSpeechEvidenceRequest) -> TimedSpeechEvidence:
+    def produce(self, r: Any) -> TimedSpeechEvidence:
         try:
             source_size = r.source_path.stat().st_size
         except OSError as error:
@@ -133,24 +132,31 @@ class FunASRHttpTimedSpeechEvidencePort:
         except Exception as e:
             raise LocalMediaEvidenceError("response is not UTF-8 JSON") from e
         try:
+            base_fields = {
+                "schema_version",
+                "request_identity_sha256",
+                "source",
+                "source_byte_limits",
+                "container",
+                "audio_clock",
+                "requested_range",
+                "timed_speech_policy_sha256",
+                "transcript_capability",
+                "producer_identities",
+                "timing_error_bounds",
+                "transcript",
+                "speech_activity",
+            }
+            raw_extras = cast(object, getattr(r, "response_extra_fields", frozenset()))
+            if type(raw_extras) is not frozenset or any(  # noqa: E721
+                type(item) is not str for item in cast(frozenset[object], raw_extras)
+            ):
+                raise LocalMediaPolicyError("timed speech response extension is invalid")
+            extras = cast(frozenset[str], raw_extras)
             return self._parse(
                 _obj(
                     p,
-                    {
-                        "schema_version",
-                        "request_identity_sha256",
-                        "source",
-                        "source_byte_limits",
-                        "container",
-                        "audio_clock",
-                        "requested_range",
-                        "timed_speech_policy_sha256",
-                        "transcript_capability",
-                        "producer_identities",
-                        "timing_error_bounds",
-                        "transcript",
-                        "speech_activity",
-                    },
+                    base_fields | extras,
                     "response",
                 ),
                 r,
@@ -163,13 +169,18 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @classmethod
     def _parse(
-        cls, p: dict[str, object], r: TimedSpeechEvidenceRequest, raw: bytes
+        cls, p: dict[str, object], r: Any, raw: bytes
     ) -> TimedSpeechEvidence:
         if (
-            p["schema_version"] != "timed-speech-evidence-response-v1"
+            p["schema_version"] != getattr(
+                r, "response_schema_version", "timed-speech-evidence-response-v1"
+            )
             or p["request_identity_sha256"] != r.identity_sha256
         ):
             raise LocalMediaSourceError("request identity drift")
+        validator = getattr(r, "validate_response_authority", None)
+        if validator is not None:
+            validator(p.get("runtime_authority"))
         source = _obj(p["source"], {"source_id", "source_sha256"}, "source")
         source_byte_limits = _obj(
             p["source_byte_limits"],
@@ -308,7 +319,7 @@ class FunASRHttpTimedSpeechEvidencePort:
         )
 
     @staticmethod
-    def _coverage(v: object, r: TimedSpeechEvidenceRequest) -> Coverage:
+    def _coverage(v: object, r: Any) -> Coverage:
         raw = _obj(
             v,
             {"source_id", "source_sha256", "clock_id", "time_base", "in_tick", "out_tick", "outcome"},
@@ -355,7 +366,7 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @classmethod
     def _transcript(
-        cls, i: dict[str, object], r: TimedSpeechEvidenceRequest, c: EvidenceContext
+        cls, i: dict[str, object], r: Any, c: EvidenceContext
     ) -> TranscriptSet:
         if _boolean(i["truncated"], "transcript.truncated"):
             raise LocalMediaEvidenceError("truncated transcript")
@@ -465,7 +476,7 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @classmethod
     def _speech(
-        cls, i: dict[str, object], r: TimedSpeechEvidenceRequest, c: EvidenceContext
+        cls, i: dict[str, object], r: Any, c: EvidenceContext
     ) -> SpeechActivitySet:
         seg = []
         for item in _arr(i["segments"], "vad segments"):
@@ -502,7 +513,7 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @staticmethod
     def _identities(
-        v: object, r: TimedSpeechEvidenceRequest
+        v: object, r: Any
     ) -> tuple[TimedSpeechProducerIdentity, TimedSpeechProducerIdentity]:
         items = _arr(v, "identities")
         if len(items) != 2:
@@ -547,7 +558,7 @@ class FunASRHttpTimedSpeechEvidencePort:
 
     @staticmethod
     def _bounds(
-        v: object, r: TimedSpeechEvidenceRequest
+        v: object, r: Any
     ) -> tuple[TimedSpeechTimingErrorBound, TimedSpeechTimingErrorBound]:
         bounds = _obj(v, {"asr", "vad"}, "bounds")
         result = []
