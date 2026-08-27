@@ -14,6 +14,45 @@ target requirement + exact historical closure
 `blocked` remains a publication decision only: it means the selected target
 still lacks a closed required Evidence -> Recipe -> Render -> QC chain.
 
+## Semantic-run activation correction — 2026-08-27
+
+The former activation design made the complete `local-run` authority resource a
+startup prerequisite for every HTTP run.  That is an invalid dependency: the
+resource is intentionally not publishable until ASR/VAD calibration has been
+independently accepted, while SourcePrep and Doubao semantic evidence neither
+consume nor establish that calibration.  Requiring it therefore prevents a
+real source from reaching VLM and makes the calibration bootstrap depend on the
+pipeline it blocks.
+
+The runtime now has two explicit, non-interchangeable plans:
+
+```text
+semantic-run authority
+  -> SourcePrep -> VLM semantic batch -> succeeded
+
+local-run authority + accepted runtime capability
+  -> SourcePrep -> VLM -> Stage 1/2/3 -> MediaPreflight -> later physical stages
+```
+
+`semantic-run` is a tracked, digest-bound package resource.  It fixes only the
+Doubao provider/model/prompt/parser/request/retry/sampling policies and the
+two capabilities `source_prep` and `vlm_semantic_evidence`.  It explicitly
+denies ASR/VAD, Stage 1--3, physical edit, render, publication and authority
+bootstrap.  It never contains credentials, source paths, media identities or a
+calibration record.
+
+A semantic-only run is a real durable HTTP run, with SourcePrep/VLM
+Artifacts, Receipts and an all-or-nothing VLM batch finalizer.  Its terminal
+success means exactly "source and semantic evidence complete"; it is never a
+recipe, rendered output, QC pass, or publish decision.  A later full run may
+reuse its exact committed closure only through the existing explicit readers;
+it must not relabel the semantic run as media evidence.
+
+The media capability remains fail-closed.  A full run with no accepted matching
+runtime capability becomes `awaiting_calibration` at MediaPreflight.  It does
+not stop semantic-only startup, and semantic-only composition does not create a
+hidden route that can call FunASR, render, or publication code.
+
 ## Two independent reuse questions
 
 ```text

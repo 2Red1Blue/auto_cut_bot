@@ -97,6 +97,8 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
         return "denied"
     if "blocked" in states:
         return "failed"
+    if tuple(stage for stage, _state in command_rows) == ("source_prep", "vlm"):
+        return "succeeded"
     if _PIPELINE_SUCCESS_TERMINAL_STAGE is not None and any(
         stage == _PIPELINE_SUCCESS_TERMINAL_STAGE and state == "succeeded"
         for stage, state in command_rows
@@ -201,10 +203,16 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             raise PipelineRunValidationError(
                 "claim_run request_hash does not bind the canonical request"
             )
-        execution_profile.build_stage1_command_policy()
-        execution_profile.build_stage2_command_policy()
-        execution_profile.build_stage3_command_policy()
-        execution_profile.to_evidence_read_limits()
+        if execution_profile.has_media_preflight_policy:
+            execution_profile.build_stage1_command_policy()
+            execution_profile.build_stage2_command_policy()
+            execution_profile.build_stage3_command_policy()
+            execution_profile.to_evidence_read_limits()
+        elif execution_profile.is_semantic_only:
+            execution_profile.to_doubao_policy()
+            execution_profile.to_generation_retry_policy()
+        else:
+            raise PipelineRunValidationError("execution profile has no executable run plan")
         source_kind = "root" if request.source_root is not None else "reference"
         source_value = request.source_root or request.source_reference
         if source_value is None:
@@ -260,24 +268,35 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                         "idempotency key already binds another pipeline request"
                     )
             else:
-                cursor.execute(
-                    """
-                    INSERT INTO runtime.pipeline_commands
-                        (command_id, run_id, ordinal, stage, state, version)
-                    VALUES
-                        (%s, %s, 0, 'source_prep', 'pending', 0),
-                        (%s, %s, 1, 'vlm', 'pending', 0),
-                        (%s, %s, 2, 'stage1_narrative', 'pending', 0),
-                        (%s, %s, 3, 'stage2_portfolio', 'pending', 0),
-                        (%s, %s, 4, 'stage3_blueprint', 'pending', 0),
-                        (%s, %s, 5, 'media_preflight', 'pending', 0)
-                    """,
-                    (
-                        uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
-                        uuid4(), run_id,
-                        uuid4(), run_id, uuid4(), run_id,
-                    ),
-                )
+                if execution_profile.is_semantic_only:
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES
+                            (%s, %s, 0, 'source_prep', 'pending', 0),
+                            (%s, %s, 1, 'vlm', 'pending', 0)
+                        """,
+                        (uuid4(), run_id, uuid4(), run_id),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES
+                            (%s, %s, 0, 'source_prep', 'pending', 0),
+                            (%s, %s, 1, 'vlm', 'pending', 0),
+                            (%s, %s, 2, 'stage1_narrative', 'pending', 0),
+                            (%s, %s, 3, 'stage2_portfolio', 'pending', 0),
+                            (%s, %s, 4, 'stage3_blueprint', 'pending', 0),
+                            (%s, %s, 5, 'media_preflight', 'pending', 0)
+                        """,
+                        (
+                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                        ),
+                    )
                 self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)
 
@@ -552,9 +571,20 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                    AND candidate.version = %s
                    AND (
                        candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')
+                       OR (
+                           candidate.stage = 'vlm'
+                           AND EXISTS (
+                               SELECT 1 FROM runtime.pipeline_runs AS profile_run
+                                WHERE profile_run.run_id = candidate.run_id
+                                  AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
+                                  AND profile_run.execution_profile ->> 'schema_version'
+                                      IN ('pipeline-execution-profile-v9', 'pipeline-execution-profile-v10')
+                           )
+                       )
                        OR EXISTS (
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
+                              AND candidate.stage IN ('stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
                                   ->> 'schema_version' = 'pipeline-execution-profile-v9'

@@ -69,3 +69,15 @@ def test_wait_and_recompute_precede_terminal_projection() -> None:
     assert _terminal_run_state(
         [("media_preflight", "awaiting_calibration"), ("render", "pending")]
     ) == "running"
+
+
+def test_terminal_projection_accepts_only_the_closed_semantic_plan() -> None:
+    assert _terminal_run_state([
+        ("source_prep", "succeeded"),
+        ("vlm", "succeeded"),
+    ]) == "succeeded"
+    assert _terminal_run_state([
+        ("source_prep", "succeeded"),
+        ("vlm", "succeeded"),
+        ("stage1_narrative", "succeeded"),
+    ]) == "failed"

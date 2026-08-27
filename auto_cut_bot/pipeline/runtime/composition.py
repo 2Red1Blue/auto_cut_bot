@@ -54,6 +54,10 @@ from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_r
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
+from .semantic_authority import (
+    SemanticRunAuthorityError,
+    load_installed_semantic_run_authority,
+)
 from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage
 from .stage1_narrative_stage import Stage1NarrativePipelineStage
@@ -78,6 +82,8 @@ PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
     "AUTO_CUT_BOT_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_JSON"
 )
 PIPELINE_EVIDENCE_READ_LIMITS_ENV = "AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON"
+PIPELINE_PLAN_ENV = "AUTO_CUT_BOT_PIPELINE_PLAN"
+SEMANTIC_ONLY_PLAN = "semantic_only"
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -95,6 +101,15 @@ _REQUIRED_ENVIRONMENT = (
     PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
     PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
     PIPELINE_EVIDENCE_READ_LIMITS_ENV,
+)
+_SEMANTIC_REQUIRED_ENVIRONMENT = (
+    PIPELINE_POSTGRES_DSN_ENV,
+    PIPELINE_SOURCE_CATALOG_ENV,
+    PIPELINE_ARK_API_KEY_ENV,
+    PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_ARK_PROJECT_ID_ENV,
+    PIPELINE_ARK_MODEL_ID_ENV,
+    PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV,
 )
 _MATERIALIZATION_LIMIT_FIELDS = frozenset(
     {
@@ -282,7 +297,7 @@ class PipelineRuntime:
     service: DurablePipelineRunService
     worker: DurablePipelineWorker
     execution_profile: PipelineExecutionProfile
-    authority_profile_resolver: InstalledLocalRunProfileResolver
+    authority_profile_resolver: InstalledLocalRunProfileResolver | None
     authority_store: PostgresRuntimeStore
 
     async def startup_reconstruct(self) -> tuple[str, ...]:
@@ -352,6 +367,13 @@ def compose_pipeline_runtime_from_environment(
     from an argument, environment JSON, checkout or Pipeline HTTP request.
     """
     values = os.environ if environ is None else environ
+    plan = values.get(PIPELINE_PLAN_ENV, "").strip()
+    if plan == SEMANTIC_ONLY_PLAN:
+        return _compose_semantic_only_runtime(values)
+    if plan:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_PLAN_ENV} must be empty or {SEMANTIC_ONLY_PLAN}"
+        )
     relevant = _REQUIRED_ENVIRONMENT + (
         PIPELINE_KERNEL_POSTGRES_DSN_ENV,
         PIPELINE_ARK_BASE_URL_ENV,
@@ -578,6 +600,86 @@ def compose_pipeline_run_service_from_environment() -> PipelineRunService | None
     return None if runtime is None else runtime.service
 
 
+def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime | None:
+    """Compose the real HTTP SourcePrep/VLM plan without media authority.
+
+    This is not a fallback from a full plan.  It is selected explicitly and the
+    installed semantic resource binds every paid VLM policy.  No FunASR/media,
+    story, render, or publication port is constructed here.
+    """
+    relevant = _SEMANTIC_REQUIRED_ENVIRONMENT + (PIPELINE_KERNEL_POSTGRES_DSN_ENV, PIPELINE_ARK_BASE_URL_ENV)
+    if not any(values.get(name, "").strip() for name in relevant):
+        return None
+    missing = tuple(name for name in _SEMANTIC_REQUIRED_ENVIRONMENT if not values.get(name, "").strip())
+    if missing:
+        raise PipelineRuntimeConfigurationError(
+            "semantic pipeline runtime configuration is incomplete; missing: " + ", ".join(missing)
+        )
+    control_dsn = values[PIPELINE_POSTGRES_DSN_ENV].strip()
+    kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
+    try:
+        catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
+        raw_max_output_tokens = values[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV].strip()
+        if not raw_max_output_tokens.isdecimal():
+            raise ValueError("Ark max output tokens must be a decimal integer")
+        configured_policy = DoubaoVlmRequestPolicy(
+            model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip(),
+            max_output_tokens=int(raw_max_output_tokens),
+        )
+        semantic_authority = load_installed_semantic_run_authority()
+        if configured_policy != semantic_authority.vlm_policy:
+            raise ValueError("configured Doubao policy differs from installed semantic authority")
+        execution_profile = PipelineExecutionProfile.from_semantic_policies(
+            semantic_authority.vlm_policy,
+            retry_policy=semantic_authority.retry_policy,
+        )
+        api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
+        tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
+        project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
+        configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
+        provider_config = (
+            DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id, base_url=configured_base_url)
+            if configured_base_url
+            else DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id)
+        )
+    except PipelineRuntimeConfigurationError:
+        raise
+    except (SemanticRunAuthorityError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            "semantic pipeline Doubao/authority configuration is invalid"
+        ) from error
+
+    control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
+
+    def kernel_factory() -> psycopg.Connection[tuple[object, ...]]:
+        return psycopg.connect(kernel_dsn)
+
+    control_store = PostgresPipelineRunStore(control_factory)
+    scheduler = PostgresPipelineScheduler(control_factory)
+    kernel_store = PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory))
+    provider = DoubaoArkVlmProvider(
+        provider_config,
+        file_cache=PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory)),
+    )
+    source_stage = SourcePrepPipelineStage(kernel_store, catalog)
+    vlm_stage = VlmPipelineStage(kernel_store, provider)
+    registry = PipelineStageRegistry.from_ports(
+        ("source_prep", source_stage),
+        ("vlm", vlm_stage),
+    )
+    service = DurablePipelineRunService(
+        control_store, scheduler, catalog, execution_profile=execution_profile,
+    )
+    worker = DurablePipelineWorker(
+        worker_id=f"pipeline-http-{os.getpid()}", service=service, scheduler=scheduler,
+        store=control_store, runner=PipelineStageRunner(registry, control_store),
+        reconciler=PipelineStageReconciler.from_ports(
+            control_store, ("source_prep", source_stage), ("vlm", vlm_stage),
+        ),
+    )
+    return PipelineRuntime(service, worker, execution_profile, None, kernel_store)
+
+
 def _catalog_text(value: object, index: int, field_name: str) -> str:
     if type(value) is not str or not value.strip() or value != value.strip():  # noqa: E721
         raise PipelineRuntimeConfigurationError(
@@ -645,6 +747,7 @@ __all__ = (
     "PIPELINE_ARK_BASE_URL_ENV",
     "PIPELINE_ARK_MODEL_ID_ENV",
     "PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV",
+    "PIPELINE_PLAN_ENV",
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",
     "PIPELINE_KERNEL_POSTGRES_DSN_ENV",
@@ -659,6 +762,7 @@ __all__ = (
     "PipelineRuntime",
     "PipelineRuntimeConfigurationError",
     "PipelineRuntimePort",
+    "SEMANTIC_ONLY_PLAN",
     "SourceCatalogEntry",
     "compose_pipeline_run_service_from_environment",
     "compose_pipeline_highlight_read_service_from_environment",

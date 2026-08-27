@@ -47,9 +47,9 @@ class DurablePipelineRunService:
         if type(request) is not PipelineRunRequest:  # noqa: E721
             raise TypeError("submit accepts only PipelineRunRequest")
         validate_idempotency_key(idempotency_key)
-        if not self._execution_profile.has_media_preflight_policy:
+        if not self._execution_profile.has_executable_plan:
             raise PipelineRunValidationError(
-                "new pipeline runs require a frozen media-preflight execution profile"
+                "new pipeline runs require a frozen media-preflight or semantic-only execution profile"
             )
         if not self._source_authority.allows(request):
             raise SourceDeniedError("source is outside the configured authority")
@@ -60,9 +60,9 @@ class DurablePipelineRunService:
             request_hash=request.request_hash,
             execution_profile=self._execution_profile,
         )
-        if not claim.snapshot.execution_profile.has_media_preflight_policy:
+        if not claim.snapshot.execution_profile.has_executable_plan:
             raise PipelineRunValidationError(
-                "persisted pipeline run has no frozen media-preflight execution profile"
+                "persisted pipeline run has no frozen media-preflight or semantic-only execution profile"
             )
         if claim.snapshot.request != request or claim.snapshot.request_hash != request.request_hash:
             raise PipelineRunValidationError(
@@ -88,9 +88,9 @@ class DurablePipelineRunService:
         persisted = await self._store.read_run(run_id)
         if persisted is None:
             raise PipelineRunNotFoundError(run_id)
-        if not persisted.execution_profile.has_media_preflight_policy:
+        if not persisted.execution_profile.has_executable_plan:
             raise PipelineRunValidationError(
-                "persisted pipeline run has no frozen media-preflight execution profile"
+                "persisted pipeline run has no frozen media-preflight or semantic-only execution profile"
             )
         snapshot = await self._store.claim_resume(run_id, expected_version=expected_version)
         if (
@@ -115,9 +115,9 @@ class DurablePipelineRunService:
                 for command in snapshot.commands
             ):
                 continue
-            if not snapshot.execution_profile.has_media_preflight_policy:
+            if not snapshot.execution_profile.has_executable_plan:
                 raise PipelineRunValidationError(
-                    "reconstructible run has no frozen media-preflight execution profile"
+                    "reconstructible run has no frozen media-preflight or semantic-only execution profile"
                 )
             await self._scheduler.enqueue(snapshot.run_id)
             run_ids.append(snapshot.run_id)

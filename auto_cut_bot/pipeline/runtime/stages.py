@@ -90,6 +90,8 @@ class PipelineStageRunner:
             raise PipelineRunValidationError(
                 "legacy-unresolved execution profile cannot execute VLM"
             )
+        if pending.stage == "vlm" and not snapshot.execution_profile.has_executable_plan:
+            raise PipelineRunValidationError("execution profile cannot execute VLM")
         if (
             pending.stage == "media_preflight"
             and not snapshot.execution_profile.has_media_preflight_policy

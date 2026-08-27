@@ -129,6 +129,7 @@ allow-direct-references = true
 [tool.hatch.build]
 include = [
     "auto_cut_bot/**/*.py",
+    "auto_cut_bot/**/*.json",
     "auto_cut_bot/templates/**/*.md",
     "auto_cut_bot/skills/**/*.md",
     "auto_cut_bot/skills/**/*.sh",

@@ -27,6 +27,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
     PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+    PIPELINE_PLAN_ENV,
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
@@ -251,6 +252,53 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime.execution_profile.build_stage3_command_policy() == (
         fake_installed_loader.resource.local_run.stage3_command_policy
     )
+
+
+def test_explicit_semantic_only_plan_composes_without_media_authority(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    environment[PIPELINE_PLAN_ENV] = "semantic_only"
+    for name in (
+        PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV,
+    ):
+        del environment[name]
+
+    runtime = compose_pipeline_runtime_from_environment(environment)
+
+    assert runtime is not None
+    assert runtime.authority_profile_resolver is None
+    assert runtime.execution_profile.is_semantic_only
+    assert runtime.worker._runner._registry.stage_names == ("source_prep", "vlm")
+
+
+def test_semantic_only_plan_rejects_doubao_drift_before_provider_or_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from auto_cut_bot.pipeline.runtime import composition
+
+    environment = _environment(tmp_path)
+    environment[PIPELINE_PLAN_ENV] = "semantic_only"
+    environment[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV] = "1024"
+    for name in (
+        PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV,
+    ):
+        del environment[name]
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("semantic authority drift reached side-effecting composition")
+
+    monkeypatch.setattr(composition, "DoubaoArkVlmProvider", forbidden)
+    monkeypatch.setattr(composition, "PostgresRuntimeStore", forbidden)
+    with pytest.raises(PipelineRuntimeConfigurationError, match="semantic pipeline"):
+        compose_pipeline_runtime_from_environment(environment)
 
 
 def test_composition_registers_three_semantic_commands_between_vlm_and_media(

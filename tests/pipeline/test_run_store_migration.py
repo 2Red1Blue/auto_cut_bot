@@ -23,6 +23,20 @@ STAGE2_PROFILE_MIGRATION = Path(
 STAGE3_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0021_stage3_pipeline_profile.sql"
 )
+SEMANTIC_ONLY_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0028_semantic_only_execution_profile.sql"
+)
+
+
+def test_semantic_only_profile_migration_closes_v10_without_media_fields() -> None:
+    sql = SEMANTIC_ONLY_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "pipeline-execution-profile-v10" in sql
+    assert "execution_profile_semantic_v10_is_valid" in sql
+    assert "SourcePrep/VLM-only plan" in sql
+    assert "media_preflight_policy" not in sql
+    assert "stage1_command_policy" not in sql
+    assert "external_publication" not in sql
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:
@@ -223,7 +237,10 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
         ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
     ):
         assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
-    assert insert.count("uuid4(), run_id") == 6
+    # The full v9 branch retains six ordered commands.  The explicit v10
+    # semantic-only branch adds exactly two, never a partial story/media plan.
+    assert "if execution_profile.is_semantic_only:" in source
+    assert insert.count("uuid4(), run_id") == 8
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
     assert "->> 'schema_version' = 'pipeline-execution-profile-v9'" in source
     assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
