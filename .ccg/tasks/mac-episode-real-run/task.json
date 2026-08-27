@@ -1,0 +1,12 @@
+{
+  "id": "mac-episode-real-run",
+  "title": "Mac第1集真实Pipeline与持久化续跑验证",
+  "status": "in_progress",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "等待v4真实响应，核对解析/Receipt和同键重放；SSH暂不用",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}
