@@ -228,6 +228,7 @@ def _payload() -> bytes:
     return json.dumps(
         {
             "model_id": "doubao-seed-2-1-pro-260628",
+            "parse_policy": {"strategy_version": "vlm-parse-v1"},
             "parser_strategy_version": "strict-v1",
             "prompt": "strict prompt",
             "prompt_version": "prompt-v1",

@@ -44,6 +44,7 @@ _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
 _EXPECTED_PAYLOAD_FIELDS = frozenset(
     {
         "model_id",
+        "parse_policy",
         "parser_strategy_version",
         "prompt",
         "prompt_version",
