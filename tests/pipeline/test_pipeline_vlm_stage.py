@@ -837,7 +837,7 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
     }
     historical = PipelineExecutionProfile.from_mapping(mapping)
 
-    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+    with pytest.raises(PipelineRunValidationError, match="current execution profile"):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="authorized-source"),

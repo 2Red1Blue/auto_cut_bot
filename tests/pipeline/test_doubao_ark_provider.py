@@ -348,6 +348,11 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
     assert created_ids == ["response-doubao-1"]
     assert cache.record is not None and cache.record.state == "available"
     assert len(factory.files.create_calls) == 1
+    assert factory.files.create_calls[0]["file"] == (
+        "window.mp4",
+        b"real-proxy-video",
+        "video/mp4",
+    )
     assert len(factory.responses.create_calls) == 1
     assert factory.calls[0]["max_retries"] == 0
     call = factory.responses.create_calls[0]

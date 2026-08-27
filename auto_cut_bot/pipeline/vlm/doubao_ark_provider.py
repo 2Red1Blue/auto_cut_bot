@@ -321,7 +321,11 @@ class DoubaoArkVlmProvider:
 
         try:
             uploaded = client.files.create(
-                file=("window.mp4", request.proxy_content),
+                # Ark validates the multipart part's declared MIME type.  Do
+                # not let the SDK infer ``application/octet-stream`` for an
+                # immutable MP4 Blob: that is a different provider request and
+                # is rejected before an Ark response can be created.
+                file=("window.mp4", request.proxy_content, request.proxy_blob_ref.media_type),
                 purpose="user_data",
                 preprocess_configs={"video": {"fps": video_fps}},
             )
