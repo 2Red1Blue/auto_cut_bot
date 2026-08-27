@@ -18,6 +18,7 @@ from auto_cut_bot.pipeline.runtime import (
     IdempotencyConflictError,
     PipelineExecutionProfile,
     PipelineRunRequest,
+    PipelineRunSnapshot,
     PipelineRunValidationError,
     PipelineStageContext,
     PipelineStageReconciler,
@@ -95,7 +96,11 @@ def test_0021_sql_guard_rejects_nested_stage3_policy_invalid_leaves(path, value)
         assert cursor.fetchone() == (False,)
 
 
-def _composition(source_root: Path, *additional_source_roots: Path):
+def _composition(
+    source_root: Path,
+    *additional_source_roots: Path,
+    execution_profile: PipelineExecutionProfile | None = None,
+):
     assert DSN is not None
 
     def factory():
@@ -109,7 +114,7 @@ def _composition(source_root: Path, *additional_source_roots: Path):
             store,
             scheduler,
             authority,
-            execution_profile=_execution_profile(),
+            execution_profile=execution_profile or _execution_profile(),
         ),
         store,
         scheduler,
@@ -301,8 +306,10 @@ def test_current_sql_null_cannot_escape_closed_policy_guard() -> None:
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
         cursor.execute("SELECT runtime.stage1_command_policy_shape_is_valid(NULL)")
         assert cursor.fetchone() == (False,)
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v9 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.CheckViolation, match="pipeline_runs_execution_profile_closed_check"):
             _insert_profile_for_guard(cursor, None)
+        cursor.execute("SELECT count(*) FROM runtime.pipeline_runs")
+        assert cursor.fetchone() == (0,)
 
 
 @pytest.mark.parametrize("version", [1, 2, 3, 4, 5, 6, 7, 8])
@@ -315,8 +322,10 @@ def test_current_sql_guard_rejects_new_old_profiles_even_with_valid_old_policy(v
         else _v7_execution_profile() if version == 7 else _v8_execution_profile()
     )
     with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
-        with pytest.raises(psycopg.errors.RaiseException, match="new pre-v9 execution profile rows are forbidden"):
+        with pytest.raises(psycopg.errors.RaiseException, match="new execution profile rows must be v9 or v10"):
             _insert_profile_for_guard(cursor, profile.to_mapping())
+        cursor.execute("SELECT count(*) FROM runtime.pipeline_runs")
+        assert cursor.fetchone() == (0,)
 
 
 def test_current_sql_guard_accepts_v9_but_freezes_complete_policy_and_hash() -> None:
@@ -814,13 +823,18 @@ def test_0022_refuses_active_v8_then_preserves_exact_terminal_history(active_sta
     with pytest.raises(ResumeNotAllowedError):
         store._claim_resume_sync(run_id, history.version)
     for command in history.commands[1:]:
-        with pytest.raises(PipelineRunValidationError, match="profile v9"):
+        expected_error = (
+            "VLM execution requires a persisted current execution profile"
+            if command.stage == "vlm" else "physical/story stages require execution profile v9"
+        )
+        with pytest.raises(PipelineRunValidationError, match=expected_error):
             PipelineStageContext(run_id, history.request, command, profile)
-    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+    with pytest.raises(PipelineRunValidationError, match="execution profile has no executable run plan"):
         store._claim_run_sync(
             f"pipeline_run_{uuid4().hex}", f"forbidden-v8-{uuid4().hex}",
             history.request, history.request_hash, profile,
         )
+    assert store._read_run_sync(run_id) == history
 
 
 def test_0013_postgres_allows_v4_writes_and_rejects_new_historical_rows() -> None:
@@ -1097,7 +1111,7 @@ async def test_postgres_read_recomputes_execution_profile_hash(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: Path) -> None:
     assert DSN is not None
-    service, _store, _scheduler = _composition(tmp_path)
+    service, store, _scheduler = _composition(tmp_path)
     submitted = await service.submit(
         PipelineRunRequest("test", source_root=str(tmp_path / "input")),
         "postgres-profile-v2-downgrade",
@@ -1128,7 +1142,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
             try:
                 with pytest.raises(
                     psycopg.errors.RaiseException,
-                    match="new pre-v9 execution profile rows are forbidden",
+                    match="new execution profile rows must be v9 or v10",
                 ):
                     cursor.execute(
                         """
@@ -1143,6 +1157,7 @@ async def test_postgres_check_rejects_active_profile_downgrade_to_v2(tmp_path: P
                 cursor.execute(
                     "ALTER TABLE runtime.pipeline_runs ENABLE TRIGGER runtime_pipeline_run_transition_guard"
                 )
+    assert await store.read_run(submitted.snapshot.run_id) == submitted.snapshot
 
 
 @pytest.mark.asyncio
@@ -1168,6 +1183,185 @@ async def test_postgres_idempotency_conflict_and_resume_cas(tmp_path: Path) -> N
     with pytest.raises(StaleRunVersionError):
         await service.resume(first.snapshot.run_id, expected_version=0)
     assert await scheduler.pending_run_ids() == (first.snapshot.run_id,)
+
+
+def _semantic_execution_profile() -> PipelineExecutionProfile:
+    full = _execution_profile()
+    return PipelineExecutionProfile.from_semantic_policies(
+        full.to_doubao_policy(), retry_policy=full.to_generation_retry_policy(),
+    )
+
+
+def _resume_frozen_history(run_id: str):
+    """Include full command/Receipt rows, not just their snapshot projection."""
+    assert DSN is not None
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT idempotency_key, request_hash, profile, source_kind, source_value,
+                execution_profile::text, execution_profile_hash,
+                (SELECT jsonb_agg(to_jsonb(command) ORDER BY ordinal)::text
+                   FROM runtime.pipeline_commands command WHERE command.run_id = run.run_id),
+                (SELECT jsonb_agg(to_jsonb(receipt) ORDER BY receipt.receipt_id)::text
+                   FROM runtime.pipeline_run_receipts receipt
+                   JOIN runtime.pipeline_commands command USING (command_id)
+                  WHERE command.run_id = run.run_id)
+                FROM runtime.pipeline_runs run WHERE run_id = %s""",
+            (run_id,),
+        )
+        return cursor.fetchone()
+
+
+async def _complete_semantic_source(store: PostgresPipelineRunStore, run_id: str) -> None:
+    source = await store.claim_next_pending(run_id, expected_version=0, lease_id="source")
+    assert source is not None and source.stage == "source_prep"
+    await store.record_result(
+        run_id,
+        result=PipelineStageResult(source.command_id, "succeeded", uuid4()),
+        expected_version=source.version,
+        lease_id="source",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage_state", ["accepted", "vlm_pending", "vlm_indeterminate"])
+async def test_semantic_resume_only_wakes_existing_commands(
+    tmp_path: Path, stage_state: str,
+) -> None:
+    service, store, scheduler = _composition(
+        tmp_path, execution_profile=_semantic_execution_profile(),
+    )
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")), "semantic-resume",
+    )
+    run_id = submitted.snapshot.run_id
+    assert submitted.snapshot.execution_profile.schema_version == "pipeline-execution-profile-v10"
+    assert tuple(command.stage for command in submitted.snapshot.commands) == ("source_prep", "vlm")
+    if stage_state != "accepted":
+        await _complete_semantic_source(store, run_id)
+    if stage_state == "vlm_indeterminate":
+        vlm = await store.claim_next_pending(run_id, expected_version=0, lease_id="vlm")
+        assert vlm is not None and vlm.stage == "vlm"
+        await store.record_result(
+            run_id, result=PipelineStageResult(vlm.command_id, "indeterminate"),
+            expected_version=vlm.version, lease_id="vlm",
+        )
+    before = await service.status(run_id)
+    history = _resume_frozen_history(run_id)
+    outbox = await scheduler.claim_next(lease_id="before-resume")
+    assert outbox is not None
+    await scheduler.acknowledge(outbox)
+    assert await scheduler.pending_run_ids() == ()
+
+    resumed = await service.resume(run_id, expected_version=before.version)
+
+    assert resumed == replace(before, version=before.version + 1)
+    assert _resume_frozen_history(run_id) == history
+    assert await scheduler.pending_run_ids() == (run_id,)
+    if stage_state == "vlm_indeterminate":
+        # A wake cannot turn an unknown provider result into a fresh execution.
+        assert await store.claim_next_pending(run_id, expected_version=0, lease_id="forbidden") is None
+        assert await store.read_indeterminate(
+            run_id, expected_version=before.commands[1].version,
+        ) == before.commands[1]
+
+
+@pytest.mark.asyncio
+async def test_semantic_resume_concurrent_same_version_has_one_winner(tmp_path: Path) -> None:
+    service, store, scheduler = _composition(
+        tmp_path, execution_profile=_semantic_execution_profile(),
+    )
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")), "semantic-resume-race",
+    )
+    before = submitted.snapshot
+    history = _resume_frozen_history(before.run_id)
+    results = await asyncio.gather(
+        *(store.claim_resume(before.run_id, expected_version=before.version) for _ in range(2)),
+        return_exceptions=True,
+    )
+
+    expected = replace(before, version=before.version + 1)
+    assert [result for result in results if isinstance(result, PipelineRunSnapshot)] == [expected]
+    assert sum(isinstance(result, StaleRunVersionError) for result in results) == 1
+    assert await service.status(before.run_id) == expected
+    assert _resume_frozen_history(before.run_id) == history
+    assert await scheduler.pending_run_ids() == (before.run_id,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "vlm_state", ["running", "succeeded", "failed", "denied", "recompute_needed", "awaiting_calibration"],
+)
+async def test_semantic_resume_denies_terminal_or_non_wakeable_run(
+    tmp_path: Path, vlm_state: str,
+) -> None:
+    service, store, scheduler = _composition(
+        tmp_path, execution_profile=_semantic_execution_profile(),
+    )
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")), "semantic-resume-denied",
+    )
+    run_id = submitted.snapshot.run_id
+    await _complete_semantic_source(store, run_id)
+    vlm = await store.claim_next_pending(run_id, expected_version=0, lease_id="vlm")
+    assert vlm is not None and vlm.stage == "vlm"
+    if vlm_state != "running":
+        receipt_id = uuid4() if vlm_state in ("succeeded", "failed", "denied") else None
+        await store.record_result(
+            run_id, result=PipelineStageResult(vlm.command_id, vlm_state, receipt_id),
+            expected_version=vlm.version, lease_id="vlm",
+        )
+    before = await service.status(run_id)
+    assert before.status == vlm_state
+    history = _resume_frozen_history(run_id)
+    outbox = await scheduler.claim_next(lease_id="before-denied-resume")
+    assert outbox is not None
+    await scheduler.acknowledge(outbox)
+
+    with pytest.raises(ResumeNotAllowedError):
+        await service.resume(run_id, expected_version=before.version)
+
+    assert await service.status(run_id) == before
+    assert _resume_frozen_history(run_id) == history
+    assert await scheduler.pending_run_ids() == ()
+
+
+@pytest.mark.asyncio
+async def test_resume_awaiting_calibration_only_reopens_media_preflight(tmp_path: Path) -> None:
+    service, store, _scheduler = _composition(tmp_path)
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")), "calibration-resume",
+    )
+    run_id = submitted.snapshot.run_id
+    for pending in submitted.snapshot.commands:
+        command = await store.claim_next_pending(
+            run_id, expected_version=pending.version, lease_id=pending.stage,
+        )
+        assert command is not None and command.stage == pending.stage
+        waiting = command.stage == "media_preflight"
+        await store.record_result(
+            run_id,
+            result=PipelineStageResult(
+                command.command_id, "awaiting_calibration" if waiting else "succeeded",
+                None if waiting else uuid4(),
+            ),
+            expected_version=command.version, lease_id=pending.stage,
+        )
+    before = await service.status(run_id)
+    assert before.status == "awaiting_calibration"
+    history = _resume_frozen_history(run_id)
+
+    resumed = await service.resume(run_id, expected_version=before.version)
+
+    assert resumed == replace(
+        before, status="accepted", version=before.version + 1,
+        commands=before.commands[:-1] + (
+            replace(before.commands[-1], status="pending", version=before.commands[-1].version + 1),
+        ),
+    )
+    after_history = _resume_frozen_history(run_id)
+    assert after_history[:7] == history[:7]
+    assert after_history[-1] == history[-1]
 
 
 @pytest.mark.asyncio

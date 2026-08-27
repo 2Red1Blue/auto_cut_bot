@@ -1,6 +1,6 @@
 # Pipeline 阶段与单集重算设计
 
-状态：详细设计；**尚未实现，不是当前 API 使用说明**。证据基线：
+状态：详细设计；**重算 API 尚未实现，不是当前 API 使用说明**。证据基线：
 `17530231`（2026-08-28）。当前可用操作见 [PC 运行说明](pc-semantic-pipeline-run.md)。
 本设计补齐现有架构，不恢复已删除的总契约，不引入旧 pipeline、Agent 强制编排、
 外部发布或新的人工审批系统。Kernel 负责结果与复用校验，Pipeline 负责固定 DAG；
@@ -19,9 +19,14 @@
 | 同一命令的 transport retry/reconcile | 已有 | 确认可重试才增加 Attempt；结果未知时对账同一次调用 |
 | 指定阶段/集数重新生成 | 未闭合 | 新 run、新命令、新结果；通过显式绑定复用旧输入/结果 |
 
-当前 HTTP `/resume` 的数据库谓词只唤醒符合条件的 `media_preflight` 命令。
-它不是任意阶段重跑入口，也不能把已失败/拒绝的 VLM run 恢复为 pending。
+2026-08-28 修复：HTTP `/resume` 可唤醒 accepted/running run 中已有的
+pending/indeterminate 命令，包含 semantic_only 的 VLM；校准等待仍只处理
+media_preflight。它不是终态阶段重跑入口，不能把已失败/拒绝的 VLM run 恢复为 pending。
 完整批次的 VLM finalizer 仍要求同一 Job、完整集序和统一 request policy。
+
+已实现基础：共享 `VlmSemanticPolicyIdentityV1/VlmReuseIdentityV1` 与原始
+SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚未接入付费重算派发**。
+指纹通过不代表已拥有跨 Job 读取权或可跳过成功 Receipt 验证。
 
 首版范围限定为 **VLM + 已提交、完全相同的 SourcePrep 集合**。支持选择一集、多集、
 全部集数；`source_prep`、ASR/VAD、故事阶段的选择性重算未实现前明确返回 unsupported。
@@ -266,7 +271,7 @@ inspect/扩展确认控制必须在任何生成派发前写入。Store 的 Gener
 新增 `POST /v2/pipeline/resume`，封闭请求要求
 `run_id + expected_version + expected_plan_hash`；
 它仅解除该计划持久化 hold，不改变输入、不重开失败命令。新请求形状须版本化并保留
-旧 `/v1/pipeline/resume` 的 media-preflight 精确语义。解除与 outbox 写入同事务；两 worker 竞争只允许
+旧 `/v1/pipeline/resume` 的非终态唤醒与 media-preflight 校准语义。解除与 outbox 写入同事务；两 worker 竞争只允许
 一次 control CAS。选择集失败时先改策略/新重算，不能以 resume 忽略失败继续。
 `selected_only` 不能 resume 成 full_stage；查看后需要另建完整计划，引用兼容生产者。
 

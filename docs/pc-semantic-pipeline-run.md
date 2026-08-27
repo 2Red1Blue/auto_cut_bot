@@ -112,11 +112,12 @@ not success authority.
   result, so without that source access it cannot be safely continued.  Do not
   claim that an uncommitted frame scan is portable.
 
-The current HTTP resume implementation only wakes an eligible nonterminal run
-with a `media_preflight` command in pending/indeterminate/awaiting-calibration
-state. It is **not** a generic VLM or per-episode rerun API; `semantic_only`
-runs have no such command. For the supported media-preflight case, use the
-current `version` returned by the status endpoint as a concurrency precondition:
+HTTP resume wakes an accepted/running run when it already has a pending or
+indeterminate command, including VLM in a `semantic_only` run. It re-enqueues
+the existing work without replacing its request, profile or Receipt. A run
+awaiting calibration still only wakes the media-preflight command. It is
+**not** a terminal-stage or per-episode recompute API. Use the current `version`
+returned by the status endpoint as a concurrency precondition:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18766/v1/pipeline/resume \

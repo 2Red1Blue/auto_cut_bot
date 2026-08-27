@@ -1,0 +1,12 @@
+{
+  "id": "vlm-recompute-kernel",
+  "title": "实现 VLM 兼容身份基础与非终态续跑修复",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "另行完成选择规划、持久化绑定/预算与重算HTTP；本切片不含这些功能",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}

@@ -345,10 +345,11 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             cursor.execute(
                 """
                 SELECT 1 FROM runtime.pipeline_commands
-                 WHERE run_id = %s AND stage = 'media_preflight' AND state = ANY(%s)
+                 WHERE run_id = %s AND state = ANY(%s)
+                   AND (%s OR stage = 'media_preflight')
                  LIMIT 1 FOR UPDATE
                 """,
-                (run_id, list(command_states)),
+                (run_id, list(command_states), state in ("accepted", "running")),
             )
             if cursor.fetchone() is None:
                 raise ResumeNotAllowedError(run_id)
