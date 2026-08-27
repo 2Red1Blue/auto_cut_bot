@@ -180,6 +180,7 @@ def test_every_historical_version_round_trips_but_cannot_execute(version: int) -
         }
     historical = PipelineExecutionProfile.from_mapping(mapping)
     assert historical.to_mapping() == mapping
+    historical_hash = historical.canonical_hash
     with pytest.raises(PipelineRunValidationError, match="read-only"):
         historical.to_doubao_policy()
     if version < 7:
@@ -194,8 +195,14 @@ def test_every_historical_version_round_trips_but_cannot_execute(version: int) -
     else:
         assert historical.build_stage3_command_policy() == execution_profile().build_stage3_command_policy()
     for stage in ("vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight"):
-        with pytest.raises(PipelineRunValidationError, match="profile v9"):
+        expected_error = (
+            "VLM execution requires a persisted current execution profile"
+            if stage == "vlm" else "physical/story stages require execution profile v9"
+        )
+        with pytest.raises(PipelineRunValidationError, match=expected_error):
             PipelineStageContext(
                 RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
                 PipelineCommand("historical-context", stage, "pending"), historical,
             )
+    assert historical.to_mapping() == mapping
+    assert historical.canonical_hash == historical_hash

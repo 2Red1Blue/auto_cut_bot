@@ -125,7 +125,11 @@ def test_v8_retains_exact_wire_hash_and_all_policies_but_cannot_execute_or_claim
     with pytest.raises(PipelineRunValidationError, match="persisted mappings"):
         replace(execution_profile(), schema_version="pipeline-execution-profile-v8")
     for stage in ("vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight"):
-        with pytest.raises(PipelineRunValidationError, match="profile v9"):
+        expected_error = (
+            "VLM execution requires a persisted current execution profile"
+            if stage == "vlm" else "physical/story stages require execution profile v9"
+        )
+        with pytest.raises(PipelineRunValidationError, match=expected_error):
             PipelineStageContext(
                 "pipeline_run_" + "1" * 32,
                 PipelineRunRequest("test", source_reference="synthetic-source"),
@@ -137,8 +141,10 @@ def test_v8_retains_exact_wire_hash_and_all_policies_but_cannot_execute_or_claim
 
     store = PostgresPipelineRunStore(forbidden_connection)
     request = PipelineRunRequest("test", source_reference="synthetic-source")
-    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+    with pytest.raises(PipelineRunValidationError, match="execution profile has no executable run plan"):
         store._claim_run_sync("pipeline_run_" + "1" * 32, "historical", request, request.request_hash, historical)
+    assert historical.to_mapping() == mapping
+    assert historical.canonical_hash == "sha256:" + sha256(expected_raw).hexdigest()
     mapping["evidence_read_limits"] = {"max_blob_bytes": 1, "max_total_blob_bytes": 2}
     with pytest.raises(PipelineRunValidationError, match="unsupported fields"):
         PipelineExecutionProfile.from_mapping(mapping)

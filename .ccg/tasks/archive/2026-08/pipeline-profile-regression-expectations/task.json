@@ -1,0 +1,12 @@
+{
+  "id": "pipeline-profile-regression-expectations",
+  "title": "对齐v10加入后历史profile拒绝测试的精确断言",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "归档提交；旧Agent缓存缺依赖单独说明，不引入legacy",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}
