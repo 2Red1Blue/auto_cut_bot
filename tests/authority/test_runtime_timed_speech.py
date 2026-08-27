@@ -254,6 +254,23 @@ def test_projects_closed_pc_cuda_runtime_timed_speech_authority() -> None:
     assert projection.vad_calibration_record_sha256 == _capability(measurement).anchor.record.vad.content_hash
     assert projection.asr_timing_error_bound_tick == _capability(measurement).anchor.record.asr.accepted_bound_tick
     assert projection.vad_timing_error_bound_tick == _capability(measurement).anchor.record.vad.accepted_bound_tick
+    assert projection.canonical_hash != projection.compatibility_hash
+    assert projection.to_mapping()["accepted_calibration"] == {
+        "record_sha256": projection.record_sha256,
+        "validation_receipt_sha256": projection.validation_receipt_sha256,
+        "producers": [
+            {
+                **projection.producers[0].to_mapping(),
+                "calibration_record_sha256": projection.asr_calibration_record_sha256,
+                "timing_error_bound_tick": projection.asr_timing_error_bound_tick,
+            },
+            {
+                **projection.producers[1].to_mapping(),
+                "calibration_record_sha256": projection.vad_calibration_record_sha256,
+                "timing_error_bound_tick": projection.vad_timing_error_bound_tick,
+            },
+        ],
+    }
 
 
 def test_rejects_cpu_cuda_cross_binding() -> None:
@@ -301,3 +318,9 @@ def test_audit_only_build_change_projects_when_compatibility_is_equal() -> None:
     projection = _selector(rebuilt).select(_capability(measured_at_calibration), rebuilt)
     assert projection.build_audit_sha256 == rebuilt.build_audit_sha256
     assert projection.timing_compatibility_sha256 == measured_at_calibration.timing_compatibility_sha256
+    assert projection.compatibility_hash == _selector(measured_at_calibration).select(
+        _capability(measured_at_calibration), measured_at_calibration
+    ).compatibility_hash
+    assert projection.canonical_hash != _selector(measured_at_calibration).select(
+        _capability(measured_at_calibration), measured_at_calibration
+    ).canonical_hash

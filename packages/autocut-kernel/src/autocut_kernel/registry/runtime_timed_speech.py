@@ -20,7 +20,7 @@ from ..media.runtime_measurement_identity import (
     PC_CUDA_RUNTIME_CAPABILITY_ID,
     RuntimeMeasurementIdentity,
 )
-from ..media.types import TimeBase, sha256_prefixed
+from ..media.types import TimeBase, canonical_sha256, sha256_prefixed
 from ..store.models import PersistedRuntimeCalibrationCapability
 from .authority_profiles import (
     RuntimeCalibrationPolicySource,
@@ -122,6 +122,73 @@ class RuntimeTimedSpeechProjection:
     @property
     def device_class(self) -> str:
         return "cuda"
+
+    def _base_mapping(self) -> dict[str, object]:
+        """Return the exact accepted closure without audit-only provenance."""
+        return {
+            "schema_version": "runtime-timed-speech-projection-v1",
+            "runtime_capability_id": self.runtime_capability_id,
+            "runtime_measurement_identity_sha256": self.runtime_measurement_identity_sha256,
+            "timing_compatibility_sha256": self.timing_compatibility_sha256,
+            "static_policy": {
+                "profile_source_sha256": self.profile_source_sha256,
+                "registry_snapshot_sha256": self.registry_snapshot_sha256,
+            },
+            "accepted_calibration": {
+                "record_sha256": self.record_sha256,
+                "validation_receipt_sha256": self.validation_receipt_sha256,
+                "producers": [
+                    {
+                        **producer.to_mapping(),
+                        "calibration_record_sha256": record_sha256,
+                        "timing_error_bound_tick": bound_tick,
+                    }
+                    for producer, record_sha256, bound_tick in zip(
+                        self.producers,
+                        (
+                            self.asr_calibration_record_sha256,
+                            self.vad_calibration_record_sha256,
+                        ),
+                        (
+                            self.asr_timing_error_bound_tick,
+                            self.vad_timing_error_bound_tick,
+                        ),
+                        strict=True,
+                    )
+                ],
+            },
+            "native_port_identity_sha256": self.native_port_identity_sha256,
+            "source_clock": {
+                "clock_id": self.source_clock_id,
+                "time_base": {
+                    "numerator": self.source_time_base.numerator,
+                    "denominator": self.source_time_base.denominator,
+                },
+            },
+            "timing_policies": {
+                "timed_speech_policy_sha256": self.timed_speech_policy_sha256,
+                "word_gap_policy_sha256": self.word_gap_policy_sha256,
+                "vad_merge_policy_sha256": self.vad_merge_policy_sha256,
+                "alignment_policy_sha256": self.alignment_policy_sha256,
+                "acceptance_policy_sha256": self.acceptance_policy_sha256,
+            },
+        }
+
+    def compatibility_mapping(self) -> dict[str, object]:
+        """The closed acceptance identity; audit-only rebuilds retain it."""
+        return self._base_mapping()
+
+    def to_mapping(self) -> dict[str, object]:
+        """Complete request/Receipt projection, including build provenance."""
+        return {**self._base_mapping(), "build_audit_sha256": self.build_audit_sha256}
+
+    @property
+    def compatibility_hash(self) -> str:
+        return canonical_sha256(self.compatibility_mapping())
+
+    @property
+    def canonical_hash(self) -> str:
+        return canonical_sha256(self.to_mapping())
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,6 +39,8 @@ def test_projects_static_operational_limits_over_exact_cuda_authority() -> None:
     assert policy.runtime_measurement_identity_sha256 == projection.runtime_measurement_identity_sha256
     assert policy.accepted_record_sha256 == projection.record_sha256
     assert policy.validation_receipt_sha256 == projection.validation_receipt_sha256
+    assert policy.runtime_projection_compatibility_sha256 == projection.compatibility_hash
+    assert policy.runtime_projection_sha256 == projection.canonical_hash
     assert tuple(item.calibration_record_sha256 for item in policy.producers) == (
         projection.asr_calibration_record_sha256,
         projection.vad_calibration_record_sha256,

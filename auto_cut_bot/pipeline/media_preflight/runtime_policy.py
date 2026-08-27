@@ -106,7 +106,9 @@ class PcCudaRuntimeTimedSpeechPolicy:
     device: Literal["cuda"]
     runtime_measurement_identity_sha256: str
     timing_compatibility_sha256: str
+    runtime_projection_compatibility_sha256: str
     build_audit_sha256: str
+    runtime_projection_sha256: str
     profile_source_sha256: str
     registry_snapshot_sha256: str
     accepted_record_sha256: str
@@ -133,7 +135,8 @@ class PcCudaRuntimeTimedSpeechPolicy:
             raise _fail("only pc_cuda may establish CUDA runtime timed speech")
         for name in (
             "static_policy_sha256", "runtime_measurement_identity_sha256",
-            "timing_compatibility_sha256", "build_audit_sha256", "profile_source_sha256",
+            "timing_compatibility_sha256", "runtime_projection_compatibility_sha256",
+            "build_audit_sha256", "runtime_projection_sha256", "profile_source_sha256",
             "registry_snapshot_sha256", "accepted_record_sha256", "validation_receipt_sha256",
             "native_port_identity_sha256",
             "timed_speech_policy_sha256", "word_gap_policy_sha256",
@@ -169,6 +172,7 @@ class PcCudaRuntimeTimedSpeechPolicy:
             "device": self.device,
             "runtime_measurement_identity_sha256": self.runtime_measurement_identity_sha256,
             "timing_compatibility_sha256": self.timing_compatibility_sha256,
+            "runtime_projection_compatibility_sha256": self.runtime_projection_compatibility_sha256,
             "profile_source_sha256": self.profile_source_sha256,
             "registry_snapshot_sha256": self.registry_snapshot_sha256,
             "accepted_record_sha256": self.accepted_record_sha256,
@@ -208,7 +212,11 @@ class PcCudaRuntimeTimedSpeechPolicy:
     def to_mapping(self) -> dict[str, object]:
         """Complete canonical audit/provenance closure."""
 
-        return {**self._base_mapping(), "build_audit_sha256": self.build_audit_sha256}
+        return {
+            **self._base_mapping(),
+            "build_audit_sha256": self.build_audit_sha256,
+            "runtime_projection_sha256": self.runtime_projection_sha256,
+        }
 
     @property
     def compatibility_hash(self) -> str:
@@ -285,7 +293,8 @@ def project_pc_cuda_runtime_timed_speech_policy(
     return PcCudaRuntimeTimedSpeechPolicy(
         static_policy.canonical_hash, projection.runtime_capability_id, "cuda",
         projection.runtime_measurement_identity_sha256, projection.timing_compatibility_sha256,
-        projection.build_audit_sha256, projection.profile_source_sha256,
+        projection.compatibility_hash, projection.build_audit_sha256, projection.canonical_hash,
+        projection.profile_source_sha256,
         projection.registry_snapshot_sha256, projection.record_sha256,
         projection.validation_receipt_sha256, projection.native_port_identity_sha256,
         projection.source_clock_id,
