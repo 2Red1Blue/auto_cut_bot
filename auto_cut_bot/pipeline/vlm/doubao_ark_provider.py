@@ -39,11 +39,19 @@ from .ark_responses_transport import (
 
 DOUBAO_ARK_PROVIDER_ID = "doubao-ark-responses-stream"
 DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v2"
-# v3 binds the MIME-bearing multipart tuple.  It must not share the provider
-# media-cache namespace with v2, whose upload was a different request.
-DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v3"
+# v3 binds the MIME-bearing multipart tuple, but preserves the SDK's nested
+# ``text.format.json_schema`` wire shape.  Ark's production endpoint rejects
+# that shape, even though the installed SDK declares it, so it remains only a
+# historical replay contract.
+DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v3"
+# v4 keeps the v3 multipart media contract and changes only the Responses
+# structured-output wire shape to the endpoint-verified direct form.  Request
+# identity is distinct from v3; the byte-identical MIME-bearing Files upload
+# may safely reuse a v3 provider-media cache entry.
+DOUBAO_ARK_ADAPTER_STRATEGY_VERSION = "doubao-ark-files-responses-stream-v4"
 DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
 })
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
@@ -216,16 +224,10 @@ class DoubaoArkVlmProvider:
                     ],
                 }
             ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "vlm_semantic_pack_v3",
-                        "strict": True,
-                        "schema": payload["response_schema"],
-                    },
-                }
-            },
+            text=_response_text_format(
+                cast(str, parameters["adapter_strategy_version"]),
+                cast(dict[str, object], payload["response_schema"]),
+            ),
             max_output_tokens=parameters["max_output_tokens"],
             temperature=parameters["temperature"],
             stream=True,
@@ -521,7 +523,10 @@ def _upload_file_argument(
     """Reproduce the exact historical upload wire contract for each profile."""
     if adapter_strategy_version == DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION:
         return ("window.mp4", content)
-    if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+    if adapter_strategy_version in {
+        DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
+        DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+    }:
         # Ark validates the multipart part's declared MIME type.  Without it
         # the SDK infers application/octet-stream, which is a distinct v2
         # wire contract and is rejected before a Responses object is created.
@@ -529,10 +534,43 @@ def _upload_file_argument(
     raise ValueError("Ark adapter strategy version is not registered")
 
 
+def _response_text_format(
+    adapter_strategy_version: str, response_schema: dict[str, object]
+) -> dict[str, object]:
+    """Return the versioned Ark Responses structured-output wire contract.
+
+    The official SDK's v3 annotations describe a nested ``json_schema``
+    object, while the actual Ark endpoint rejects that field.  The observed
+    endpoint-accepted v4 form is direct under ``text.format``.  A persisted
+    v3 request must still reproduce its original wire contract during replay.
+    """
+    descriptor = {
+        "name": "vlm_semantic_pack_v3",
+        "strict": True,
+        "schema": response_schema,
+    }
+    if adapter_strategy_version in {
+        DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+        DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
+    }:
+        return {"format": {"type": "json_schema", "json_schema": descriptor}}
+    if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION:
+        return {"format": {"type": "json_schema", **descriptor}}
+    raise ValueError("Ark adapter strategy version is not registered")
+
+
 def _preprocess_policy_hash(adapter_strategy_version: str, video_fps: float) -> str:
+    # v3 and v4 differ only in the Responses request after file upload.  Their
+    # completed Files objects are byte/MIME/purpose-equivalent and may be
+    # reused. v2 remains isolated because it omitted the multipart MIME type.
+    media_adapter_strategy_version = (
+        DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION
+        if adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION
+        else adapter_strategy_version
+    )
     encoded = json.dumps(
         {
-            "adapter_strategy_version": adapter_strategy_version,
+            "adapter_strategy_version": media_adapter_strategy_version,
             "purpose": "user_data",
             "video_fps": video_fps,
         },
@@ -582,6 +620,7 @@ def _map_file_error(error: Exception) -> ProviderResult:
 
 __all__ = [
     "DOUBAO_ARK_ADAPTER_STRATEGY_VERSION",
+    "DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION",
     "DOUBAO_ARK_PROVIDER_ID",
     "DoubaoArkVlmProvider",
     "DoubaoArkVlmProviderConfig",

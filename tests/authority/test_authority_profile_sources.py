@@ -141,7 +141,7 @@ def _narrative_mapping() -> dict[str, object]:
         "profile_state": "stage1_narrative_v1",
         "provider": {
             "provider_id": "doubao-ark-responses-stream",
-            "adapter_strategy_version": "doubao-ark-files-responses-stream-v3",
+            "adapter_strategy_version": "doubao-ark-files-responses-stream-v4",
             "transport": "ark_responses_streaming",
         },
         "model": {"model_id": "doubao-seed-2-1-pro-260628"},

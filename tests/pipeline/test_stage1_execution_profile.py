@@ -203,7 +203,10 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
         historical.build_stage2_command_policy()
     with pytest.raises(PipelineRunValidationError, match="read-only"):
         historical.to_doubao_policy()
-    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+    with pytest.raises(
+        PipelineRunValidationError,
+        match="profile v9|persisted current execution profile",
+    ):
         PipelineStageContext(
             RUN_ID,
             PipelineRunRequest("test", source_reference="synthetic-source"),
@@ -216,7 +219,10 @@ def test_historical_v6_stays_read_only_but_decodes_its_complete_stage1_policy():
 @pytest.mark.parametrize("status", ["pending", "indeterminate"])
 def test_historical_v5_cannot_form_execute_or_reconcile_context(stage, status):
     _, historical = _historical_v5()
-    with pytest.raises(PipelineRunValidationError, match="profile v9"):
+    with pytest.raises(
+        PipelineRunValidationError,
+        match="profile v9|persisted current execution profile",
+    ):
         PipelineStageContext(
             RUN_ID, PipelineRunRequest("test", source_reference="synthetic-source"),
             PipelineCommand("command-history", stage, status), historical,

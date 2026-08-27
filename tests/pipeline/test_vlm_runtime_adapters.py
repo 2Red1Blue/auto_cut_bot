@@ -271,7 +271,7 @@ def test_identity_window_builder_binds_real_mp4_bytes_and_exact_pts(tmp_path: Pa
     assert json.loads(vlm_response_schema_json()) == json.loads(vlm_response_schema_json())
 
 
-def test_doubao_v3_structured_output_keeps_streaming_contract(
+def test_doubao_v4_structured_output_keeps_streaming_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model_id = "doubao-seed-2-1-pro-260628"
@@ -284,8 +284,9 @@ def test_doubao_v3_structured_output_keeps_streaming_contract(
     retry_bytes = json.dumps(retry_policy, separators=(",", ":"), sort_keys=True).encode()
     payload = json.dumps(
         {
-            "model_id": model_id,
-            "parser_strategy_version": "strict-v1",
+                "model_id": model_id,
+                "parse_policy": {},
+                "parser_strategy_version": "strict-v1",
             "prompt": "strict semantic pack prompt",
             "prompt_version": "vlm-semantic-pack-v3",
             "provider_id": DOUBAO_ARK_PROVIDER_ID,

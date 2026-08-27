@@ -22,6 +22,7 @@ from autocut_kernel.vlm import (
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
     ArkFileCacheRecord,
     DoubaoArkVlmProvider,
@@ -368,11 +369,9 @@ def test_doubao_ark_uploads_once_and_consumes_a_completed_sse_stream() -> None:
     assert call["text"] == {
         "format": {
             "type": "json_schema",
-            "json_schema": {
-                "name": "vlm_semantic_pack_v3",
-                "strict": True,
-                "schema": {"type": "object"},
-            },
+            "name": "vlm_semantic_pack_v3",
+            "strict": True,
+            "schema": {"type": "object"},
         }
     }
     assert call["input"][0]["content"][0] == {
@@ -400,9 +399,51 @@ def test_historical_v2_upload_replays_its_original_wire_contract_and_cache_key()
     assert current_factory.files.create_calls[0]["file"] == (
         "window.mp4", b"real-proxy-video", "video/mp4",
     )
-    assert legacy_cache.claims[0]["preprocess_policy_hash"] != (
-        current_cache.claims[0]["preprocess_policy_hash"]
+    assert legacy_cache.claims[0]["preprocess_policy_hash"] != current_cache.claims[0][
+        "preprocess_policy_hash"
+    ]
+
+
+def test_historical_v3_replays_nested_schema_wire_contract() -> None:
+    factory = FakeClientFactory(_completed_stream())
+    result = DoubaoArkVlmProvider(
+        _config(), file_cache=MemoryFileCache(), client_factory=factory
+    ).dispatch(_dispatch(adapter_strategy_version=DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION))
+
+    assert isinstance(result, ProviderCompleted)
+    assert factory.responses.create_calls[0]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "vlm_semantic_pack_v3",
+                "strict": True,
+                "schema": {"type": "object"},
+            },
+        }
+    }
+
+
+def test_current_v4_reuses_the_byte_identical_v3_media_cache_namespace() -> None:
+    v3_cache = MemoryFileCache()
+    v4_cache = MemoryFileCache()
+    v3_factory = FakeClientFactory(_completed_stream())
+    v4_factory = FakeClientFactory(_completed_stream())
+
+    assert isinstance(
+        DoubaoArkVlmProvider(_config(), file_cache=v3_cache, client_factory=v3_factory).dispatch(
+            _dispatch(adapter_strategy_version=DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION)
+        ),
+        ProviderCompleted,
     )
+    assert isinstance(
+        DoubaoArkVlmProvider(_config(), file_cache=v4_cache, client_factory=v4_factory).dispatch(
+            _dispatch()
+        ),
+        ProviderCompleted,
+    )
+    assert v3_cache.claims[0]["preprocess_policy_hash"] == v4_cache.claims[0][
+        "preprocess_policy_hash"
+    ]
 
 
 def test_doubao_ark_reuses_validated_file_id_without_uploading_again() -> None:

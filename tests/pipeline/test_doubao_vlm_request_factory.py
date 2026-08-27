@@ -244,7 +244,7 @@ def test_policy_is_closed_immutable_and_canonically_binds_every_strategy_input()
         "max_total_text_characters": 64 * 1024,
     }
     assert first.request_parameters_json == (
-        '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v3",'
+        '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v4",'
         '"max_output_tokens":16384,"temperature":0.0,"video_fps":1.0}'
     )
     assert first.to_mapping() == second.to_mapping()
