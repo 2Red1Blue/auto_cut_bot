@@ -20,7 +20,7 @@ from ..media.runtime_measurement_identity import (
     PC_CUDA_RUNTIME_CAPABILITY_ID,
     RuntimeMeasurementIdentity,
 )
-from ..media.types import TimeBase
+from ..media.types import TimeBase, sha256_prefixed
 from ..store.models import PersistedRuntimeCalibrationCapability
 from .authority_profiles import (
     RuntimeCalibrationPolicySource,
@@ -56,6 +56,10 @@ class RuntimeTimedSpeechProjection:
     registry_snapshot_sha256: str
     record_sha256: str
     validation_receipt_sha256: str
+    asr_calibration_record_sha256: str
+    vad_calibration_record_sha256: str
+    asr_timing_error_bound_tick: int
+    vad_timing_error_bound_tick: int
     native_port_identity_sha256: str
     source_clock_id: str
     source_time_base: TimeBase
@@ -65,6 +69,55 @@ class RuntimeTimedSpeechProjection:
     alignment_policy_sha256: str
     acceptance_policy_sha256: str
     producers: tuple[CalibrationRecordProducerIdentity, CalibrationRecordProducerIdentity]
+
+    def __post_init__(self) -> None:
+        """Keep the physical timing bounds inside the request-facing closure.
+
+        A caller must never recreate these bounds from the static policy.  They
+        are observations accepted by the immutable ASR/VAD children of the
+        selected CUDA CalibrationRecord and must therefore travel with the
+        capability-specific request and its eventual Receipt.
+        """
+        for field_name in (
+            "runtime_measurement_identity_sha256",
+            "timing_compatibility_sha256",
+            "build_audit_sha256",
+            "profile_source_sha256",
+            "registry_snapshot_sha256",
+            "record_sha256",
+            "validation_receipt_sha256",
+            "asr_calibration_record_sha256",
+            "vad_calibration_record_sha256",
+            "native_port_identity_sha256",
+            "timed_speech_policy_sha256",
+            "word_gap_policy_sha256",
+            "vad_merge_policy_sha256",
+            "alignment_policy_sha256",
+            "acceptance_policy_sha256",
+        ):
+            try:
+                sha256_prefixed(getattr(self, field_name), field_name)
+            except ValueError as error:
+                raise _fail(f"{field_name} is not a sha256 digest") from error
+        if (
+            type(self.asr_timing_error_bound_tick) is not int  # noqa: E721
+            or type(self.vad_timing_error_bound_tick) is not int  # noqa: E721
+            or self.asr_timing_error_bound_tick < 1
+            or self.vad_timing_error_bound_tick < 1
+        ):
+            raise _fail("accepted ASR/VAD timing bounds must be positive integers")
+        if (
+            self.asr_calibration_record_sha256 == self.vad_calibration_record_sha256
+            or self.record_sha256 == self.validation_receipt_sha256
+        ):
+            raise _fail("runtime timing evidence references must be distinct")
+        if (
+            type(self.producers) is not tuple  # noqa: E721
+            or len(self.producers) != 2
+            or self.producers[0].role is not CalibrationRecordRole.ASR
+            or self.producers[1].role is not CalibrationRecordRole.VAD
+        ):
+            raise _fail("runtime timing producers must be ordered ASR then VAD")
 
     @property
     def device_class(self) -> str:
@@ -222,6 +275,10 @@ def project_runtime_timed_speech(
         registry_snapshot_sha256=identity.registry_snapshot_sha256,
         record_sha256=anchor.record_sha256,
         validation_receipt_sha256=anchor.validation_receipt_sha256,
+        asr_calibration_record_sha256=record.asr.content_hash,
+        vad_calibration_record_sha256=record.vad.content_hash,
+        asr_timing_error_bound_tick=record.asr.accepted_bound_tick,
+        vad_timing_error_bound_tick=record.vad.accepted_bound_tick,
         native_port_identity_sha256=identity.native_port_identity_sha256,
         source_clock_id=identity.source_clock_id,
         source_time_base=identity.source_time_base,
