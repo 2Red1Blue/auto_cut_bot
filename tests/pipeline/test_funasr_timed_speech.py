@@ -111,6 +111,23 @@ def namespace(
     return runpy.run_path("deploy/funasr/service.py")
 
 
+def test_torch_runtime_version_normalizes_torch_version_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real CUDA wheels expose ``TorchVersion`` instead of an exact ``str``."""
+    ns = namespace(monkeypatch)
+
+    class TorchVersion(str):
+        pass
+
+    ns["torch"].__version__ = TorchVersion("2.11.0+cu128")  # type: ignore[attr-defined]
+
+    value = ns["torch_runtime_version"]()
+
+    assert value == "2.11.0+cu128"
+    assert type(value) is str
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
 def test_main_allows_only_loopback_or_container_bind_hosts(
     monkeypatch: pytest.MonkeyPatch, host: str

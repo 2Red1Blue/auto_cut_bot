@@ -84,6 +84,20 @@ RUNTIME_TIMED_SPEECH_RESPONSE_SCHEMA = "runtime-timed-speech-evidence-response-v
 _InferenceResult = TypeVar("_InferenceResult")
 
 
+def torch_runtime_version() -> str:
+    """Return PyTorch's runtime version as an exact wire scalar.
+
+    Recent PyTorch releases expose ``torch.__version__`` as ``TorchVersion``,
+    a ``str`` subclass.  The Kernel's closed wire contracts intentionally
+    reject subclasses, so convert the measured value before it enters any
+    persisted or hashed identity.
+    """
+    version = str(torch.__version__)
+    if not version or version != version.strip():
+        raise RuntimeError("Torch runtime version is invalid")
+    return version
+
+
 @dataclass(frozen=True)
 class ResourceSnapshot:
     available_bytes: int
@@ -1142,7 +1156,7 @@ class Service:
             "service_sha256": service_hash(),
             "build_audit_sha256": service_hash(),
             "funasr_version": importlib.metadata.version("funasr"),
-            "torch_version": torch.__version__,
+            "torch_version": torch_runtime_version(),
         }
         expected_models = (
             ("asr", ASR_MODEL_ID, asr_path, ASR_INFERENCE_KIND),
@@ -1255,7 +1269,7 @@ class Service:
             raise RuntimeError("shadow bootstrap must not receive a profile")
         audit = service_hash()
         funasr_version = importlib.metadata.version("funasr")
-        torch_version = torch.__version__
+        torch_version = torch_runtime_version()
         timed_policy = self._cuda_shadow_policy_hash(
             "timed-speech",
             {
@@ -1446,7 +1460,7 @@ class Service:
             "provider_version": PROVIDER_VERSION,
             "service_sha256": service_hash(),
             "funasr_version": importlib.metadata.version("funasr"),
-            "torch_version": torch.__version__,
+            "torch_version": torch_runtime_version(),
         }
         if declared_local_profile is not None:
             measured["decoder_identity_sha256"] = await asyncio.to_thread(decoder_identity_sha256)
