@@ -12,10 +12,12 @@ import json
 import logging
 import os
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import ContextManager, Generator, Protocol, cast
 
 _LOGGER = logging.getLogger(__name__)
 _SENSITIVE_KEY_PARTS = frozenset(
@@ -39,6 +41,30 @@ class ModelIoDebugContext:
                 raise ValueError(f"{name} must be bounded non-empty text")
 
 
+@dataclass(frozen=True, slots=True)
+class PipelineStageDebugContext:
+    """Non-authoritative identity of the stage currently executing in this task."""
+
+    run_id: str
+    stage: str
+    command_id: str
+    command_version: int
+    operation: str
+
+    def __post_init__(self) -> None:
+        for name in ("run_id", "stage", "command_id", "operation"):
+            value = getattr(self, name)
+            if type(value) is not str or not value or len(value) > 512:  # noqa: E721
+                raise ValueError(f"{name} must be bounded non-empty text")
+        if type(self.command_version) is not int or self.command_version < 0:  # noqa: E721
+            raise ValueError("command_version must be a non-negative integer")
+
+
+_CURRENT_STAGE_DEBUG_CONTEXT: ContextVar[PipelineStageDebugContext | None] = ContextVar(
+    "pipeline_stage_debug_context", default=None
+)
+
+
 class ModelIoDebugSink(Protocol):
     def capture_request(
         self, context: ModelIoDebugContext, *, operation: str, body: object
@@ -53,6 +79,17 @@ class ModelIoDebugSink(Protocol):
         raw_output: bytes | str | None = None,
     ) -> None: ...
 
+
+class PipelineStageDebugSink(Protocol):
+    """Best-effort stage diagnostics controlled by the runtime runner."""
+
+    def stage_scope(self, context: PipelineStageDebugContext) -> ContextManager[None]: ...
+
+    def capture_stage_input(self, context: PipelineStageDebugContext, *, value: object) -> None: ...
+
+    def capture_stage_output(self, context: PipelineStageDebugContext, *, value: object) -> None: ...
+
+    def capture_stage_error(self, context: PipelineStageDebugContext, error: BaseException) -> None: ...
 
 class FileModelIoDebugSink:
     """Write atomically, redact recursively, and swallow all diagnostic failures."""
@@ -82,6 +119,37 @@ class FileModelIoDebugSink:
                 "operation": operation,
                 "body": _redact(body),
             },
+        )
+
+    @contextmanager
+    def stage_scope(self, context: PipelineStageDebugContext) -> Generator[None, None, None]:
+        """Associate nested provider I/O with one async pipeline stage.
+
+        ``ContextVar`` keeps concurrent runs isolated and is propagated by
+        ``asyncio.to_thread`` used by the VLM adapter.
+        """
+
+        token = _CURRENT_STAGE_DEBUG_CONTEXT.set(context)
+        try:
+            yield
+        finally:
+            _CURRENT_STAGE_DEBUG_CONTEXT.reset(token)
+
+    def capture_stage_input(self, context: PipelineStageDebugContext, *, value: object) -> None:
+        self._capture_stage(context, "input.json", "stage_input", value)
+
+    def capture_stage_output(self, context: PipelineStageDebugContext, *, value: object) -> None:
+        self._capture_stage(context, "output.json", "stage_output", value)
+
+    def capture_stage_error(self, context: PipelineStageDebugContext, error: BaseException) -> None:
+        # Exception text can contain an upstream request/authorization echo.
+        # Keep only a stable class marker; provider terminal snapshots retain
+        # the separately redacted response details.
+        self._capture_stage(
+            context,
+            "error.json",
+            "stage_error",
+            {"error_type": type(error).__name__},
         )
 
     def capture_terminal(
@@ -127,9 +195,37 @@ class FileModelIoDebugSink:
             ).encode("utf-8"),
         )
 
+    def _capture_stage(
+        self,
+        context: PipelineStageDebugContext,
+        name: str,
+        record_type: str,
+        value: object,
+    ) -> None:
+        self._write_stage_bytes(
+            context,
+            name,
+            json.dumps(
+                {
+                    "schema_version": "pipeline-stage-debug-v1",
+                    "record_type": record_type,
+                    "captured_at": datetime.now(UTC).isoformat(),
+                    "run_id": context.run_id,
+                    "stage": context.stage,
+                    "command_id": context.command_id,
+                    "command_version": context.command_version,
+                    "operation": context.operation,
+                    "value": _redact(_jsonable(value)),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+
     def _write_bytes(self, context: ModelIoDebugContext, name: str, value: bytes) -> None:
         try:
-            directory = self._root / _safe_segment(context.provider) / _call_directory(context)
+            directory = self._model_directory(context)
             directory.mkdir(parents=True, exist_ok=True)
             target = directory / name
             with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
@@ -138,6 +234,34 @@ class FileModelIoDebugSink:
             os.replace(temporary, target)
         except Exception:  # diagnostic output must never affect a paid Command
             _LOGGER.warning("model I/O debug artifact was not written", exc_info=True)
+
+    def _write_stage_bytes(
+        self,
+        context: PipelineStageDebugContext,
+        name: str,
+        value: bytes,
+    ) -> None:
+        try:
+            directory = self._stage_directory(context)
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / name
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as handle:
+                handle.write(value)
+                temporary = Path(handle.name)
+            os.replace(temporary, target)
+        except Exception:  # diagnostic output must never affect a paid Command
+            _LOGGER.warning("pipeline stage debug artifact was not written", exc_info=True)
+
+    def _stage_directory(self, context: PipelineStageDebugContext) -> Path:
+        return self._root / _safe_segment(context.run_id) / _safe_segment(context.stage)
+
+    def _model_directory(self, context: ModelIoDebugContext) -> Path:
+        stage_context = _CURRENT_STAGE_DEBUG_CONTEXT.get()
+        if stage_context is None:
+            base = self._root / "_unscoped"
+        else:
+            base = self._stage_directory(stage_context)
+        return base / "model" / _safe_segment(context.provider) / _call_directory(context)
 
 
 def _call_directory(context: ModelIoDebugContext) -> str:

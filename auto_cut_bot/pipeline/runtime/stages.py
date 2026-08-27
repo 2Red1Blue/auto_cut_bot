@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
+
+from auto_cut_bot.pipeline.debug import PipelineStageDebugContext, PipelineStageDebugSink
 
 from .errors import PipelineRunValidationError
 from .models import (
@@ -60,12 +63,14 @@ class PipelineStageRunner:
         command_store: PipelineCommandClaimStore,
         *,
         heartbeat_seconds: float = 30.0,
+        debug_sink: PipelineStageDebugSink | None = None,
     ) -> None:
         if heartbeat_seconds <= 0:
             raise PipelineRunValidationError("heartbeat_seconds must be positive")
         self._registry = registry
         self._command_store = command_store
         self._heartbeat_seconds = heartbeat_seconds
+        self._debug_sink = debug_sink
 
     async def claim_and_execute(
         self,
@@ -143,14 +148,37 @@ class PipelineStageRunner:
                         heartbeat_error.append(error)
                         return
 
-        heartbeat_task = asyncio.create_task(heartbeat())
-        try:
-            result = await self._registry.require(command.stage).execute(context)
-        except Exception:
-            result = PipelineStageResult(command.command_id, "indeterminate")
-        finally:
-            stop.set()
-            await heartbeat_task
+        debug_context = PipelineStageDebugContext(
+            context.run_id,
+            command.stage,
+            command.command_id,
+            command.version,
+            "execute",
+        )
+        stage_scope = (
+            self._debug_sink.stage_scope(debug_context)
+            if self._debug_sink is not None
+            else nullcontext()
+        )
+        with stage_scope:
+            if self._debug_sink is not None:
+                self._debug_sink.capture_stage_input(
+                    debug_context, value=_stage_input_snapshot(context)
+                )
+            heartbeat_task = asyncio.create_task(heartbeat())
+            try:
+                result = await self._registry.require(command.stage).execute(context)
+            except Exception as error:
+                if self._debug_sink is not None:
+                    self._debug_sink.capture_stage_error(debug_context, error)
+                result = PipelineStageResult(command.command_id, "indeterminate")
+            finally:
+                stop.set()
+                await heartbeat_task
+            if self._debug_sink is not None:
+                self._debug_sink.capture_stage_output(
+                    debug_context, value=_stage_output_snapshot(result)
+                )
         if heartbeat_error:
             raise PipelineRunValidationError("stage command lease heartbeat was lost") from heartbeat_error[0]
         if type(result) is not PipelineStageResult or result.command_id != command.command_id:  # noqa: E721
@@ -187,14 +215,18 @@ class PipelineStageReconciler:
             names.add(name)
         self._command_store = command_store
         self._ports = ports
+        self._debug_sink: PipelineStageDebugSink | None = None
 
     @classmethod
     def from_ports(
         cls,
         command_store: PipelineCommandClaimStore,
         *ports: tuple[str, PipelineStageReconcilePort],
+        debug_sink: PipelineStageDebugSink | None = None,
     ) -> PipelineStageReconciler:
-        return cls(command_store, ports)
+        result = cls(command_store, ports)
+        result._debug_sink = debug_sink
+        return result
 
     def _require(self, name: str) -> PipelineStageReconcilePort:
         for registered_name, port in self._ports:
@@ -237,14 +269,39 @@ class PipelineStageReconciler:
             raise PipelineRunValidationError(
                 "media-preflight cannot reconcile without its frozen policy"
             )
-        result = await self._require(command.stage).reconcile(
-            PipelineStageContext(
-                snapshot.run_id,
-                snapshot.request,
-                command,
-                snapshot.execution_profile,
-            )
+        context = PipelineStageContext(
+            snapshot.run_id,
+            snapshot.request,
+            command,
+            snapshot.execution_profile,
         )
+        debug_context = PipelineStageDebugContext(
+            context.run_id,
+            command.stage,
+            command.command_id,
+            command.version,
+            "reconcile",
+        )
+        stage_scope = (
+            self._debug_sink.stage_scope(debug_context)
+            if self._debug_sink is not None
+            else nullcontext()
+        )
+        with stage_scope:
+            if self._debug_sink is not None:
+                self._debug_sink.capture_stage_input(
+                    debug_context, value=_stage_input_snapshot(context)
+                )
+            try:
+                result = await self._require(command.stage).reconcile(context)
+            except Exception as error:
+                if self._debug_sink is not None:
+                    self._debug_sink.capture_stage_error(debug_context, error)
+                raise
+            if self._debug_sink is not None:
+                self._debug_sink.capture_stage_output(
+                    debug_context, value=_stage_output_snapshot(result)
+                )
         if result is None:
             return None
         if (
@@ -261,3 +318,32 @@ class PipelineStageReconciler:
             expected_version=command.version,
         )
         return result
+
+
+def _stage_input_snapshot(context: PipelineStageContext) -> dict[str, object]:
+    """Stable non-authoritative input view, with detailed provider I/O nested below."""
+
+    return {
+        "request": context.request.to_mapping(),
+        "command": context.command.to_mapping(),
+        "execution_profile": {
+            "schema_version": context.execution_profile.schema_version,
+            "canonical_hash": context.execution_profile_hash,
+        },
+    }
+
+
+def _stage_output_snapshot(result: PipelineStageResult | None) -> dict[str, object]:
+    if result is None:
+        return {"result": None}
+    if type(result) is not PipelineStageResult:  # noqa: E721
+        # A diagnostic snapshot must not replace the runner's authoritative
+        # validation error when a malformed third-party stage result appears.
+        return {"result_type": type(result).__name__}
+    return {
+        "result": {
+            "command_id": result.command_id,
+            "outcome": result.outcome,
+            "receipt_id": str(result.receipt_id) if result.receipt_id is not None else None,
+        }
+    }

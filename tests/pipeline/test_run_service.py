@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -9,6 +11,7 @@ from autocut_kernel.store import RuntimeStoreError
 from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION
 from psycopg import OperationalError
 
+from auto_cut_bot.pipeline.debug import FileModelIoDebugSink
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
     DurablePipelineWorker,
@@ -784,6 +787,32 @@ async def test_fake_stage_uses_closed_registry_port_without_inventing_success() 
         PipelineCommand("command-1", "source_prep", "running", None, 1, "lease-1")
     ]
     assert command_store.results == [PipelineStageResult("command-1", "indeterminate")]
+
+
+@pytest.mark.asyncio
+async def test_runner_writes_one_stage_input_and_output_directory(tmp_path: Path) -> None:
+    stage = FakeStage()
+    command_store = FakeCommandClaimStore()
+    snapshot = _snapshot(command_store.command)
+    sink = FileModelIoDebugSink(tmp_path / "stage-debug")
+    runner = PipelineStageRunner(
+        PipelineStageRegistry.from_ports(("source_prep", stage)),
+        command_store,
+        debug_sink=sink,
+    )
+
+    result = await runner.claim_and_execute(snapshot, lease_id="lease-1")
+
+    assert result == PipelineStageResult("command-1", "indeterminate")
+    stage_directory = sink.root / snapshot.run_id / "source_prep"
+    input_value = json.loads((stage_directory / "input.json").read_text(encoding="utf-8"))
+    output_value = json.loads((stage_directory / "output.json").read_text(encoding="utf-8"))
+    assert input_value["value"]["command"]["command_id"] == "command-1"
+    assert output_value["value"]["result"] == {
+        "command_id": "command-1",
+        "outcome": "indeterminate",
+        "receipt_id": None,
+    }
 
 
 @pytest.mark.asyncio

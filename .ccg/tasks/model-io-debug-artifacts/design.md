@@ -1,21 +1,26 @@
-# 设计：旁路 Model I/O Debug Artifact
+# 设计：旁路 Stage Debug Artifact
 
 ## 决定
 
-`PostgresRuntimeStore` 继续是不可变请求/响应 Blob、GenerationAttempt、ArtifactSet 和 Receipt 的唯一权威。新增 `ModelIoDebugSink` 仅在 Runtime provider adapter 边界镜像实际 I/O；它没有 Store 写权限、不会进入 Command 构造函数，也不会改变 idempotency 或错误分类。
+`PostgresRuntimeStore` 继续是不可变请求/响应 Blob、GenerationAttempt、ArtifactSet 和 Receipt 的唯一权威。新增 `FileModelIoDebugSink` 同时实现阶段级旁路镜像：`PipelineStageRunner` 记录阶段输入/输出/异常，并通过 task-local `ContextVar` 将相同 run/stage 归因传递给 Runtime provider adapter。它没有 Store 写权限、不会进入 Command 构造函数，也不会改变 idempotency 或错误分类。
 
 ## 目录和文件
 
 显式环境变量 `AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR` 启用。每个调用创建：
 
 ```text
-<root>/<provider>/<provider-idempotency-key>/
-  request.json
-  terminal.json
-  raw-output.json              # 仅有文本输出时
+<root>/<run_id>/<stage>/
+  input.json                   # 阶段的请求、Command、冻结 profile 指纹
+  output.json                  # 阶段返回的 outcome、Receipt 引用
+  error.json                   # 仅阶段端口抛出未捕获异常时
+  model/
+    <provider>/<call-kind>-<idempotency-key-hash>/
+      request.json
+      terminal.json
+      raw-output.bin            # 仅有原始文本/JSON 输出时
 ```
 
-每个 JSON 都带 schema_version、provider、model、dispatch/reconcile 标记、已脱敏 request/response、时间、响应 ID 和 provider idempotency key；后两者可精确定位 PostgreSQL 中的 Command/Attempt/Receipt。写入临时同目录文件后 `os.replace` 原子落盘；同一键的重复写只能覆盖相同阶段文件，不会影响 provider 调用。
+每个 JSON 都带 schema_version、run/stage、operation、时间与已脱敏内容；模型记录另带 provider、model、响应 ID 和 provider idempotency key。后两者可精确定位 PostgreSQL 中的 Command/Attempt/Receipt。写入临时同目录文件后 `os.replace` 原子落盘；同一阶段重试覆盖该阶段的最新 `input/output/error`，模型调用按 provider idempotency key 独立保留，不会影响 provider 调用。
 
 ## 调用覆盖
 

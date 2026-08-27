@@ -31,7 +31,7 @@ from autocut_kernel.vlm import (
     GenerationRetryPolicy,
 )
 
-from auto_cut_bot.pipeline.debug import FileModelIoDebugSink, ModelIoDebugSink
+from auto_cut_bot.pipeline.debug import FileModelIoDebugSink
 from auto_cut_bot.pipeline.media_preflight import (
     FunASRHttpTimedSpeechEvidencePort,
     FunASRRuntimeMeasurementIdentityHttpPort,
@@ -574,7 +574,7 @@ def compose_pipeline_runtime_from_environment(
         ("stage3_blueprint", blueprint_stage),
         ("media_preflight", media_preflight_stage),
     )
-    runner = PipelineStageRunner(registry, control_store)
+    runner = PipelineStageRunner(registry, control_store, debug_sink=debug_sink)
     reconciler = PipelineStageReconciler.from_ports(
         control_store,
         ("source_prep", source_stage),
@@ -583,6 +583,7 @@ def compose_pipeline_runtime_from_environment(
         ("stage2_portfolio", portfolio_stage),
         ("stage3_blueprint", blueprint_stage),
         ("media_preflight", media_preflight_stage),
+        debug_sink=debug_sink,
     )
     service = DurablePipelineRunService(
         control_store,
@@ -687,9 +688,13 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
     )
     worker = DurablePipelineWorker(
         worker_id=f"pipeline-http-{os.getpid()}", service=service, scheduler=scheduler,
-        store=control_store, runner=PipelineStageRunner(registry, control_store),
+        store=control_store,
+        runner=PipelineStageRunner(registry, control_store, debug_sink=debug_sink),
         reconciler=PipelineStageReconciler.from_ports(
-            control_store, ("source_prep", source_stage), ("vlm", vlm_stage),
+            control_store,
+            ("source_prep", source_stage),
+            ("vlm", vlm_stage),
+            debug_sink=debug_sink,
         ),
         # One semantic run owns the process-level Ark concurrency budget.  The
         # VLM stage itself dispatches its frozen, bounded ten-episode batch.
@@ -737,7 +742,7 @@ def _materialization_limits_from_json(raw: str) -> MaterializationLimits:
         ) from error
 
 
-def _model_io_debug_sink(values: Mapping[str, str]) -> ModelIoDebugSink | None:
+def _model_io_debug_sink(values: Mapping[str, str]) -> FileModelIoDebugSink | None:
     """Create an optional diagnostic mirror without granting it runtime authority."""
 
     raw = values.get(PIPELINE_MODEL_DEBUG_DIR_ENV, "").strip()

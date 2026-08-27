@@ -8,7 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from auto_cut_bot.pipeline.debug import FileModelIoDebugSink, ModelIoDebugContext
+from auto_cut_bot.pipeline.debug import (
+    FileModelIoDebugSink,
+    ModelIoDebugContext,
+    PipelineStageDebugContext,
+)
 from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_MODEL_DEBUG_DIR_ENV,
     PipelineRuntimeConfigurationError,
@@ -60,20 +64,31 @@ def _response(*, status: str, text: str = '{"ok":true}') -> object:
 def test_file_sink_redacts_secrets_and_keeps_raw_output_outside_request(tmp_path: Path) -> None:
     sink = FileModelIoDebugSink(tmp_path / "model-io")
     context = ModelIoDebugContext("ark", "attempt:one", "doubao-test", "vlm")
-
-    sink.capture_request(
-        context,
-        operation="dispatch",
-        body={"Authorization": "Bearer secret", "api_key": "secret", "video": b"bytes"},
-    )
-    sink.capture_terminal(
-        context,
-        operation="dispatch",
-        terminal={"status": "completed"},
-        raw_output='{"semantic":"evidence"}',
+    stage_context = PipelineStageDebugContext(
+        "pipeline_run_" + "a" * 32,
+        "vlm",
+        "command-1",
+        1,
+        "execute",
     )
 
-    request = next((tmp_path / "model-io").rglob("request.json"))
+    with sink.stage_scope(stage_context):
+        sink.capture_stage_input(stage_context, value={"source": "series-ref"})
+        sink.capture_request(
+            context,
+            operation="dispatch",
+            body={"Authorization": "Bearer secret", "api_key": "secret", "video": b"bytes"},
+        )
+        sink.capture_terminal(
+            context,
+            operation="dispatch",
+            terminal={"status": "completed"},
+            raw_output='{"semantic":"evidence"}',
+        )
+        sink.capture_stage_output(stage_context, value={"outcome": "succeeded"})
+
+    stage_directory = sink.root / stage_context.run_id / stage_context.stage
+    request = next((stage_directory / "model").rglob("request.json"))
     terminal = request.with_name("terminal.json")
     raw = request.with_name("raw-output.bin")
     request_text = request.read_text(encoding="utf-8")
@@ -85,6 +100,12 @@ def test_file_sink_redacts_secrets_and_keeps_raw_output_outside_request(tmp_path
     }
     assert json.loads(terminal.read_text(encoding="utf-8"))["terminal"] == {"status": "completed"}
     assert raw.read_bytes() == b'{"semantic":"evidence"}'
+    assert json.loads((stage_directory / "input.json").read_text(encoding="utf-8"))["value"] == {
+        "source": "series-ref"
+    }
+    assert json.loads((stage_directory / "output.json").read_text(encoding="utf-8"))["value"] == {
+        "outcome": "succeeded"
+    }
 
 
 def test_ark_transport_mirrors_actual_body_and_incomplete_terminal(tmp_path: Path) -> None:
@@ -97,16 +118,24 @@ def test_ark_transport_mirrors_actual_body_and_incomplete_terminal(tmp_path: Pat
         debug_sink=sink,
     )
     context = ModelIoDebugContext("ark", "attempt-two", "doubao-test", "vlm_semantic_evidence")
-
-    result = transport.dispatch(
-        {"model": "doubao-test", "stream": True, "store": True, "input": [{"prompt": "x"}]},
-        expected_model="doubao-test",
-        on_provider_request_id=lambda _value: None,
-        debug_context=context,
+    stage_context = PipelineStageDebugContext(
+        "pipeline_run_" + "b" * 32,
+        "vlm",
+        "command-2",
+        1,
+        "execute",
     )
 
+    with sink.stage_scope(stage_context):
+        result = transport.dispatch(
+            {"model": "doubao-test", "stream": True, "store": True, "input": [{"prompt": "x"}]},
+            expected_model="doubao-test",
+            on_provider_request_id=lambda _value: None,
+            debug_context=context,
+        )
+
     assert result.failure_code == "PROVIDER_RESPONSE_INCOMPLETE"
-    request = next((tmp_path / "model-io").rglob("request.json"))
+    request = next((sink.root / stage_context.run_id / stage_context.stage / "model").rglob("request.json"))
     terminal = request.with_name("terminal.json")
     assert json.loads(request.read_text(encoding="utf-8"))["body"]["input"] == [{"prompt": "x"}]
     terminal_value = json.loads(terminal.read_text(encoding="utf-8"))

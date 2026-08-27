@@ -34,15 +34,15 @@ AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID=doubao-seed-2-1-pro-260628
 AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS=32768
 ```
 
-### 模型 I/O 调试文件（建议真实验证时启用）
+### 分阶段调试文件（建议真实验证时启用）
 
-若要逐次查看实际发给模型的输入、供应商终态响应和原始文本输出，额外设置一个**仓库外**的绝对目录：
+若要按运行和阶段查看输入、输出、异常以及实际模型请求/响应，额外设置一个**仓库外**的绝对目录：
 
 ```text
 AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR=/mnt/d/code/auto_cut/debug/model-io
 ```
 
-每次 Doubao VLM、后续 Narrative/Portfolio/Blueprint Draft，以及完整计划中的 SenseVoiceSmall/FSMN 调用都会在该目录保存 `request.json`、`terminal.json` 和（有输出时）`raw-output.bin`。它们是可删除的调试镜像，不是重跑、准入或发布依据；请求中的 API key、Authorization、Token/Cookie 和视频字节会被排除或脱敏。目录必须在仓库外；未设置时完全关闭，不影响正常运行。
+每个已执行的阶段都会保存到 `<debug-root>/<run_id>/<stage>/`：固定的 `input.json` 与 `output.json`，阶段未捕获异常时的 `error.json`，以及模型调用的 `model/<provider>/<call>/request.json`、`terminal.json`、`raw-output.bin`（有原始输出时）。这覆盖 source prep、VLM、media preflight 与后续 Narrative/Portfolio/Blueprint 阶段。它们是可删除的调试镜像，不是重跑、准入或发布依据；请求中的 API key、Authorization、Token/Cookie 和视频字节会被排除或脱敏。目录必须在仓库外；未设置时完全关闭，不影响正常运行。
 
 The closed source catalog must contain exactly one authorized entry for book
 `42000021919`, with `expected_source_count: 50` and

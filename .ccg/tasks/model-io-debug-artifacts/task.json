@@ -1,12 +1,12 @@
 {
   "id": "model-io-debug-artifacts",
-  "title": "将各阶段模型输入输出导出为可安全查看的调试文件",
+  "title": "将 Pipeline 各阶段输入输出导出为可安全查看的调试文件",
   "status": "in_progress",
   "complexity": "L+",
   "risk": "high",
   "domain": "backend",
   "currentPhase": "review",
-  "nextAction": "已完成实现与回归校验；提交后归档任务",
+  "nextAction": "提交分阶段调试功能；PC 拉取后用真实 Pipeline 验证目录内容",
   "createdAt": "2026-08-27T00:00:00Z",
   "branch": "feat/v213-contract-codegen"
 }
