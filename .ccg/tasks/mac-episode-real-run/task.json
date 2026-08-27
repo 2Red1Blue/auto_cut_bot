@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "v4再次length；完成显式thinking参数闭合后启动v5单集新run，核对真实输出与重放；SSH暂不用",
+  "nextAction": "v5完整JSON但时间越界/帧矛盾被拒绝；完成vlm-video-support-v4后再发单集新请求；SSH暂不用",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

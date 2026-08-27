@@ -27,7 +27,7 @@ body10973chars, one line. Representation improvement did not solve reasoning
 budget exhaustion. Code task vlm-explicit-thinking passed independent review and
 162 combined PostgreSQL profile/run-store tests, then committed as70d90288.
 
-3rd run `pipeline_run_00cce9541d5546638ea69f3a9f8f86b9` now running:
+3rd run `pipeline_run_00cce9541d5546638ea69f3a9f8f86b9` now denied:
 - all oldworkers stopped before0029; fullbackup669MiB validated by native
   pg_restore --file=/dev/null (Podman stdin list emitted a disconnect afterTOC,
   so that listing alone was not treated as validation).
@@ -38,4 +38,8 @@ budget exhaustion. Code task vlm-explicit-thinking passed independent review and
 - actualproviderrequest thinking.type=disabled,32768tokens,stream=true;
   same exact uploadedvideo reference as secondcall.
 - provider resp_021787858370633b7d8c272fa1fe35aa5baeadeea4f72cccea670,
-  singleAttempt, stillawaitingterminal; notyetclaimedasVLMsuccess.
+  singleAttempt, providercompletedbutKernelOUT_OF_BOUNDS_INTERVAL;
+  Receiptfdd59f37-a52f-45f6-b5ed-862248277ba8. input34412/output16808/reasoning0.
+  FullJSON39142bytes,79supports:34invalidintervals and60frameintervalmismatches
+  (overlappingcounts). No4thcall: taskvlm-video-support-v4 corrects sparseframe
+  versuswholevideo semanticinterface first. No timestampclamp orfakeframeproof.

@@ -1,0 +1,11 @@
+{
+  "id": "vlm-video-support-v4",
+  "title": "修复VLM视频语义与稀疏帧证据冲突，版本化毫秒wire",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "先实现并审查纯Kernel时间/证据类型，再接新版pack与实际生成路径",
+  "branch": "feat/v213-contract-codegen"
+}
