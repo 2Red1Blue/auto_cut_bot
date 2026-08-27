@@ -29,6 +29,8 @@ from autocut_kernel.media import (
 )
 from autocut_kernel.media.types import canonical_sha256
 
+from auto_cut_bot.pipeline.debug import ModelIoDebugContext, ModelIoDebugSink
+
 from .http_transport import FileHttpTransport, HttpxFileTransport
 from .models import (
     LocalMediaEvidenceError,
@@ -90,15 +92,21 @@ def _sha(v: bytes) -> str:
 
 class FunASRHttpTimedSpeechEvidencePort:
     def __init__(
-        self, *, transport: FileHttpTransport | None = None, shared_token: str | None = None
+        self,
+        *,
+        transport: FileHttpTransport | None = None,
+        shared_token: str | None = None,
+        debug_sink: ModelIoDebugSink | None = None,
     ) -> None:
         self._transport = transport or HttpxFileTransport()
         token = shared_token if shared_token is not None else os.environ.get("FUNASR_SHARED_TOKEN")
         if type(token) is not str or not token:  # noqa: E721
             raise LocalMediaPolicyError("FUNASR_SHARED_TOKEN must be non-empty")
         self._shared_token = token
+        self._debug_sink = debug_sink
 
-    def produce(self, r: Any) -> TimedSpeechEvidence:
+    def produce(self, request: Any) -> TimedSpeechEvidence:
+        r = request
         try:
             source_size = r.source_path.stat().st_size
         except OSError as error:
@@ -112,13 +120,52 @@ class FunASRHttpTimedSpeechEvidencePort:
             "X-Timed-Speech-Request-SHA256": r.identity_sha256,
             "Authorization": f"Bearer {self._shared_token}",
         }
-        status, raw = self._transport.post(
-            r.endpoint_url,
-            headers=headers,
-            body_path=r.source_path,
-            timeout_seconds=r.timeout_seconds,
-            max_response_bytes=r.max_response_bytes,
+        context = ModelIoDebugContext(
+            provider="funasr-fsmn-http",
+            provider_idempotency_key=r.identity_sha256,
+            model="sensevoice-small-fsmn-vad",
+            call_kind="timed_speech_evidence",
         )
+        if self._debug_sink is not None:
+            self._debug_sink.capture_request(
+                context,
+                operation="produce",
+                body={
+                    "endpoint_url": r.endpoint_url,
+                    "headers": headers,
+                    "source_id": r.source_id,
+                    "source_sha256": r.source_sha256,
+                    "source_byte_length": source_size,
+                    "timeout_seconds": r.timeout_seconds,
+                },
+            )
+        try:
+            status, raw = self._transport.post(
+                r.endpoint_url,
+                headers=headers,
+                body_path=r.source_path,
+                timeout_seconds=r.timeout_seconds,
+                max_response_bytes=r.max_response_bytes,
+            )
+        except Exception as error:
+            if self._debug_sink is not None:
+                self._debug_sink.capture_terminal(
+                    context,
+                    operation="produce",
+                    terminal={"error_type": type(error).__name__},
+                )
+            raise
+        if self._debug_sink is not None:
+            self._debug_sink.capture_terminal(
+                context,
+                operation="produce",
+                terminal={
+                    "http_status": status,
+                    "raw_response_sha256": _sha(raw),
+                    "raw_response_byte_length": len(raw),
+                },
+                raw_output=raw,
+            )
         if len(raw) > r.max_response_bytes:
             raise LocalMediaToolError("response exceeded byte bound")
         if status != 200:

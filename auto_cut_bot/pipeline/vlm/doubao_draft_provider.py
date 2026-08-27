@@ -7,12 +7,16 @@ attempts; they are not a claim that Ark supports safe redispatch without an ID.
 
 from __future__ import annotations
 
+from typing import cast
+
 from autocut_kernel.semantic_chain.draft_provider import (
     MAX_DRAFT_REQUEST_BYTES,
     DraftDispatchRequest,
     DraftProviderError,
 )
 from autocut_kernel.vlm.provider_port import ProviderReconcileQuery, ProviderResult
+
+from auto_cut_bot.pipeline.debug import ModelIoDebugContext, ModelIoDebugSink
 
 from .ark_responses_transport import (
     ArkResponsesTransport,
@@ -35,6 +39,7 @@ class DoubaoDraftProvider:
         *,
         max_request_bytes: int,
         client_factory: ClientFactory | None = None,
+        debug_sink: ModelIoDebugSink | None = None,
     ) -> None:
         if (
             type(max_request_bytes) is not int
@@ -42,7 +47,11 @@ class DoubaoDraftProvider:
         ):  # noqa: E721
             raise ValueError("draft request byte budget must be explicit and bounded")
         self._max_request_bytes = max_request_bytes
-        self._transport = ArkResponsesTransport(config, client_factory=client_factory)
+        self._transport = ArkResponsesTransport(
+            config,
+            client_factory=client_factory,
+            debug_sink=debug_sink,
+        )
 
     def dispatch(self, request: DraftDispatchRequest) -> ProviderResult:
         if type(request) is not DraftDispatchRequest:  # noqa: E721
@@ -63,10 +72,20 @@ class DoubaoDraftProvider:
             body = request.to_provider_body()
         except DraftProviderError:
             return provider_failure("INVALID_PROVIDER_REQUEST")
+        text = cast(dict[str, object], body["text"])
+        format_value = cast(dict[str, object], text["format"])
+        schema = cast(dict[str, object], format_value["json_schema"])
+        schema_name = cast(str, schema["name"])
         return self._transport.dispatch(
             body,
             expected_model=request.model_id,
             on_provider_request_id=request.on_provider_request_id,
+            debug_context=ModelIoDebugContext(
+                provider=self.provider_id,
+                provider_idempotency_key=request.provider_idempotency_key,
+                model=request.model_id,
+                call_kind=f"semantic_draft_{schema_name}",
+            ),
         )
 
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:

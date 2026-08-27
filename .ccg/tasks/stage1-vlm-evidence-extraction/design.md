@@ -84,6 +84,12 @@ VLM request identity 绑定完整 prompt/schema/model/provider preprocess/window
 
 `IdentityProxyWindowBuilder` 与 Provider 无关；Doubao 和 Qwen 都必须消费同一个 Kernel `WindowManifest` 与不可变代理 Blob。
 
+### 5.2 真实批量调用的探针准入
+
+一个 Ark 请求仅出现 SSE `response.created` 不足以证明当前模型、提示词、schema、媒体附件和解析器可以共同工作。当前语义执行策略必须先对 episode 0 执行完整的 `GenerateVlmEvidenceCommand`；只有该命令已经生成、严格解析并提交成功的 ArtifactSet/Receipt，后续 episode 才能以每批最多 10 个并发请求执行。首次 50 集真实调用证明 16,384 output token 会在模型 reasoning 阶段耗尽而不产生 JSON，因此权威策略把完整结果预算设为已注册上限 32,768；该数值是请求身份的一部分，不是运行时隐式默认值。
+
+探针结果为 `denied`、`failed`、`pending` 或 `running` 时，禁止派发任一后续 episode；失败以该探针的 Kernel Receipt 作为可诊断终点。探针成功后，批内已经发出的十个请求仍按既有 retry/reconcile 语义收敛；一个批次产生终态或不确定结果时，不派发下一批。策略版本进入 `PipelineExecutionProfile`、每个子命令 idempotency key 和 aggregate batch key，因此旧的 sequential/parallel profile 可只读重放，新行为不会重标旧 Receipt。
+
 ## 6. 语义链落位
 
 受信 adapter 将 committed VlmObservationSet 投影成现有 `SemanticChainInput` 所需的 `RegisteredFact`、`EvidenceRef` 与 `CatalogCandidateRef`。`SemanticChainBuilder` 仍是纯确定性函数，不读取图片、Transcript raw content、provider client、PTS 或路径。

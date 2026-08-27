@@ -31,8 +31,18 @@ AUTO_CUT_BOT_PIPELINE_ARK_API_KEY=...
 AUTO_CUT_BOT_PIPELINE_ARK_TENANT_ID=...
 AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID=...
 AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID=doubao-seed-2-1-pro-260628
-AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS=16384
+AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS=32768
 ```
+
+### 模型 I/O 调试文件（建议真实验证时启用）
+
+若要逐次查看实际发给模型的输入、供应商终态响应和原始文本输出，额外设置一个**仓库外**的绝对目录：
+
+```text
+AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR=/mnt/d/code/auto_cut/debug/model-io
+```
+
+每次 Doubao VLM、后续 Narrative/Portfolio/Blueprint Draft，以及完整计划中的 SenseVoiceSmall/FSMN 调用都会在该目录保存 `request.json`、`terminal.json` 和（有输出时）`raw-output.bin`。它们是可删除的调试镜像，不是重跑、准入或发布依据；请求中的 API key、Authorization、Token/Cookie 和视频字节会被排除或脱敏。目录必须在仓库外；未设置时完全关闭，不影响正常运行。
 
 The closed source catalog must contain exactly one authorized entry for book
 `42000021919`, with `expected_source_count: 50` and

@@ -39,6 +39,7 @@ from auto_cut_bot.pipeline.source_prep import (
 )
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+    DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
     DOUBAO_VLM_STAGE_STRATEGY_VERSION,
     DoubaoVlmRequestPolicy,
     build_doubao_vlm_request,
@@ -56,7 +57,8 @@ from .source_prep_stage import (
 )
 
 VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-sequential-v1"
-VLM_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-bounded-parallel-v2"
+VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-bounded-parallel-v2"
+VLM_EPISODE_SELECTION_STRATEGY_VERSION = "probe-first-then-bounded-parallel-v3"
 VLM_EPISODE_MAX_CONCURRENCY = 10
 _ARTIFACT_REVISION = 1
 
@@ -65,6 +67,8 @@ def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, in
     """Derive scheduling from the persisted policy rather than process config."""
     if policy.stage_strategy_version == DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION:
         return VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION, 1
+    if policy.stage_strategy_version == DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION:
+        return VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
     if policy.stage_strategy_version == DOUBAO_VLM_STAGE_STRATEGY_VERSION:
         return VLM_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
     raise PipelineRunValidationError("VLM profile has no registered episode selection strategy")
@@ -141,7 +145,7 @@ def vlm_batch_kernel_idempotency_key(
 
 
 class VlmPipelineStage:
-    """Process committed episodes sequentially, then project a batch Receipt.
+    """Probe one committed episode, then project bounded parallel batches.
 
     Per-episode Receipts are never presented as aggregate completion evidence.
     The final control-plane result is owned by ``FinalizeVlmBatchCommand``.
@@ -276,15 +280,27 @@ class VlmPipelineStage:
         requests: tuple[GenerateVlmEvidenceRequest, ...],
     ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult:
         children: list[VlmBatchChildOutcome] = []
-        _selection_strategy, max_concurrency = _episode_selection_strategy(policy)
-        for start in range(0, len(requests), max_concurrency):
-            chunk = requests[start:start + max_concurrency]
+        selection_strategy, max_concurrency = _episode_selection_strategy(policy)
+        chunks = (
+            (requests[:1],)
+            + tuple(
+                requests[start:start + max_concurrency]
+                for start in range(1, len(requests), max_concurrency)
+            )
+            if selection_strategy == VLM_EPISODE_SELECTION_STRATEGY_VERSION
+            else tuple(
+                requests[start:start + max_concurrency]
+                for start in range(0, len(requests), max_concurrency)
+            )
+        )
+        for chunk in chunks:
             results = await asyncio.gather(
                 *(asyncio.to_thread(self._command.execute, request) for request in chunk),
             )
             unresolved: GenerateVlmEvidenceResult | None = None
             terminal: GenerateVlmEvidenceResult | None = None
-            for episode_index, (request, result) in enumerate(zip(chunk, results, strict=True), start):
+            for request, result in zip(chunk, results, strict=True):
+                episode_index = request.episode_index
                 outcome = result.outcome
                 if outcome.state in ("pending", "running"):
                     unresolved = unresolved or result
@@ -355,6 +371,7 @@ class VlmPipelineStage:
 
 __all__ = (
     "VLM_EPISODE_SELECTION_STRATEGY_VERSION",
+    "VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION",
     "VLM_EPISODE_MAX_CONCURRENCY",
     "VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION",
     "VlmPipelineStage",

@@ -30,6 +30,8 @@ from auto_cut_bot.pipeline.source_prep.command import (
 
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
     DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS,
 )
@@ -44,7 +46,10 @@ DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION = "doubao-generate-vlm-semantic-pack-v3
 DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION = (
     "doubao-generate-vlm-semantic-pack-v3-parallel-10-v2"
 )
-DOUBAO_VLM_STAGE_STRATEGY_VERSION = DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION
+DOUBAO_VLM_PROBE_THEN_PARALLEL_STAGE_STRATEGY_VERSION = (
+    "doubao-generate-vlm-semantic-pack-v3-probe-then-parallel-10-v3"
+)
+DOUBAO_VLM_STAGE_STRATEGY_VERSION = DOUBAO_VLM_PROBE_THEN_PARALLEL_STAGE_STRATEGY_VERSION
 DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION = DOUBAO_VLM_STAGE_STRATEGY_VERSION
 
 
@@ -143,7 +148,10 @@ class DoubaoVlmRequestPolicy:
     prompt_version: str = VLM_PROMPT_VERSION
     response_schema_json: str = field(default_factory=vlm_response_schema_json)
     video_fps: float = 1.0
-    max_output_tokens: int = 16_384
+    # The verified 50-episode run exhausted 16,384 reasoning tokens before
+    # emitting JSON.  The registered first-run budget leaves the provider's
+    # documented 32,768-token ceiling available for a complete strict result.
+    max_output_tokens: int = 32_768
     temperature: int | float = 0
     parse_policy: VlmParsePolicy = field(default_factory=_default_parse_policy)
     parser_strategy_version: str = VLM_PARSER_STRATEGY_VERSION
@@ -172,15 +180,25 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("parser strategy must be the registered Kernel version")
         if self.stage_strategy_version not in {
             DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+            DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_STAGE_STRATEGY_VERSION,
         }:
             raise ValueError("stage strategy must be a registered Doubao request version")
-        if (
-            self.adapter_strategy_version != DOUBAO_ARK_ADAPTER_STRATEGY_VERSION
-            and self.stage_strategy_version != DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION
-        ):
+        supported_combinations = {
+            (
+                DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
+                DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+            ),
+            (
+                DOUBAO_ARK_NESTED_SCHEMA_ADAPTER_STRATEGY_VERSION,
+                DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
+            ),
+            (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION),
+            (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
+        }
+        if (self.adapter_strategy_version, self.stage_strategy_version) not in supported_combinations:
             raise ValueError(
-                "the legacy Ark adapter is only valid with the legacy sequential stage strategy"
+                "Ark adapter and VLM stage strategy are not a registered replay combination"
             )
         object.__setattr__(self, "video_fps", float(fps))
         object.__setattr__(self, "temperature", float(temperature))

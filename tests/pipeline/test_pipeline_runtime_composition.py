@@ -79,7 +79,7 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_ARK_TENANT_ID_ENV: "tenant-1",
         PIPELINE_ARK_PROJECT_ID_ENV: "project-1",
         PIPELINE_ARK_MODEL_ID_ENV: "doubao-seed-2-1-pro-260628",
-        PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV: "16384",
+        PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV: "32768",
         PIPELINE_ARK_BASE_URL_ENV: "https://ark.example.invalid/api/v3",
         PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV: json.dumps(_media_policy(path)),
         PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV: str(staging_root),
@@ -233,7 +233,7 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     assert runtime.execution_profile.model_id == "doubao-seed-2-1-pro-260628"
     assert (
         json.loads(runtime.execution_profile.request_parameters_json or "{}")["max_output_tokens"]
-        == 16_384
+        == 32_768
     )
     assert runtime.execution_profile.to_media_preflight_policy().to_mapping() == _media_policy(
         tmp_path

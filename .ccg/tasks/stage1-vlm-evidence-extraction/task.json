@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "用升级后的提示词与唯一 SHA-256 前缀规范化策略重跑 45 集真实 HTTP Pipeline，并根据真实 Receipt 闭合 VLM 与 Media Preflight",
+  "nextAction": "用先完成一集完整 VLM Receipt、再每批最多 10 集的策略重跑真实 HTTP Pipeline，并根据真实 Receipt 闭合 VLM 与 Media Preflight",
   "createdAt": "2026-08-23T18:16:03Z",
   "branch": "feat/v213-contract-codegen"
 }

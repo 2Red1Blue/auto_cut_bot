@@ -31,7 +31,9 @@ from autocut_kernel.vlm import (
     GenerationRetryPolicy,
 )
 
+from auto_cut_bot.pipeline.debug import FileModelIoDebugSink, ModelIoDebugSink
 from auto_cut_bot.pipeline.media_preflight import (
+    FunASRHttpTimedSpeechEvidencePort,
     FunASRRuntimeMeasurementIdentityHttpPort,
     LocalMediaPreflightPolicy,
     LocalMediaPreflightPort,
@@ -76,6 +78,7 @@ PIPELINE_ARK_PROJECT_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID"
 PIPELINE_ARK_MODEL_ID_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID"
 PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS"
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
+PIPELINE_MODEL_DEBUG_DIR_ENV = "AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR"
 PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
 PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGING_ROOT"
 PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
@@ -464,6 +467,7 @@ def compose_pipeline_runtime_from_environment(
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
         configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
+        debug_sink = _model_io_debug_sink(values)
         provider_config = (
             DoubaoArkVlmProviderConfig(
                 api_key=api_key,
@@ -497,7 +501,11 @@ def compose_pipeline_runtime_from_environment(
         materialization_staging_root=staging_root,
     )
     file_cache = PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory))
-    provider = DoubaoArkVlmProvider(provider_config, file_cache=file_cache)
+    provider = DoubaoArkVlmProvider(
+        provider_config,
+        file_cache=file_cache,
+        debug_sink=debug_sink,
+    )
     draft_provider = DoubaoDraftProvider(
         ArkResponsesTransportConfig(
             provider_config.api_key,
@@ -506,6 +514,7 @@ def compose_pipeline_runtime_from_environment(
             stage1_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+        debug_sink=debug_sink,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     portfolio_provider = DoubaoDraftProvider(
@@ -516,6 +525,7 @@ def compose_pipeline_runtime_from_environment(
             stage2_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage2_policy.max_prompt_bytes,
+        debug_sink=debug_sink,
     )
     blueprint_provider = DoubaoDraftProvider(
         ArkResponsesTransportConfig(
@@ -525,6 +535,7 @@ def compose_pipeline_runtime_from_environment(
             stage3_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage3_policy.max_prompt_bytes,
+        debug_sink=debug_sink,
     )
     vlm_stage = VlmPipelineStage(
         kernel_store,
@@ -533,7 +544,9 @@ def compose_pipeline_runtime_from_environment(
     )
     media_preflight_stage = MediaPreflightPipelineStage(
         kernel_store,
-        LocalMediaPreflightPort(),
+        LocalMediaPreflightPort(
+            speech_port=FunASRHttpTimedSpeechEvidencePort(debug_sink=debug_sink)
+        ),
         authority_profile_resolver,
         runtime_authority_resolver,
         runtime_identity_port,
@@ -637,6 +650,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
         configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
+        debug_sink = _model_io_debug_sink(values)
         provider_config = (
             DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id, base_url=configured_base_url)
             if configured_base_url
@@ -660,6 +674,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
     provider = DoubaoArkVlmProvider(
         provider_config,
         file_cache=PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory)),
+        debug_sink=debug_sink,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
     vlm_stage = VlmPipelineStage(kernel_store, provider)
@@ -722,6 +737,29 @@ def _materialization_limits_from_json(raw: str) -> MaterializationLimits:
         ) from error
 
 
+def _model_io_debug_sink(values: Mapping[str, str]) -> ModelIoDebugSink | None:
+    """Create an optional diagnostic mirror without granting it runtime authority."""
+
+    raw = values.get(PIPELINE_MODEL_DEBUG_DIR_ENV, "").strip()
+    if not raw:
+        return None
+    root = Path(raw)
+    if not root.is_absolute():
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MODEL_DEBUG_DIR_ENV} must be an absolute path"
+        )
+    try:
+        repository_root = Path(__file__).resolve().parents[3]
+        sink = FileModelIoDebugSink(root)
+        if sink.root == repository_root or repository_root in sink.root.parents:
+            raise ValueError("model debug root must not be inside the repository")
+        return sink
+    except (OSError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_MODEL_DEBUG_DIR_ENV} must name a writable directory outside the repository"
+        ) from error
+
+
 def _staging_root(raw: str) -> Path:
     root = Path(raw)
     if not raw or not root.is_absolute():
@@ -751,6 +789,7 @@ __all__ = (
     "PIPELINE_ARK_BASE_URL_ENV",
     "PIPELINE_ARK_MODEL_ID_ENV",
     "PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV",
+    "PIPELINE_MODEL_DEBUG_DIR_ENV",
     "PIPELINE_PLAN_ENV",
     "PIPELINE_ARK_PROJECT_ID_ENV",
     "PIPELINE_ARK_TENANT_ID_ENV",

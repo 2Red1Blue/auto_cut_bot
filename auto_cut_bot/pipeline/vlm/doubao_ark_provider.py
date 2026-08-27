@@ -25,6 +25,8 @@ from autocut_kernel.vlm import (
     ProviderResult,
 )
 
+from auto_cut_bot.pipeline.debug import ModelIoDebugContext, ModelIoDebugSink
+
 from .ark_file_cache import ArkFileCachePort, ArkFileCacheRecord
 from .ark_responses_transport import (
     ArkResponsesTransport,
@@ -160,6 +162,7 @@ class DoubaoArkVlmProvider:
         *,
         file_cache: ArkFileCachePort,
         client_factory: ClientFactory | None = None,
+        debug_sink: ModelIoDebugSink | None = None,
     ) -> None:
         if type(config) is not DoubaoArkVlmProviderConfig:  # noqa: E721
             raise TypeError("config must be a DoubaoArkVlmProviderConfig")
@@ -170,6 +173,7 @@ class DoubaoArkVlmProvider:
                 config.api_key, config.base_url, config.timeout_seconds, config.max_stream_bytes
             ),
             client_factory=client_factory,
+            debug_sink=debug_sink,
         )
 
     def dispatch(self, request: ProviderDispatchRequest) -> ProviderResult:
@@ -238,6 +242,12 @@ class DoubaoArkVlmProvider:
             expected_model=request.model_id,
             on_provider_request_id=request.on_provider_request_id,
             client=client,
+            debug_context=ModelIoDebugContext(
+                provider=self.provider_id,
+                provider_idempotency_key=request.provider_idempotency_key,
+                model=request.model_id,
+                call_kind="vlm_semantic_evidence",
+            ),
         )
 
     def reconcile(self, query: ProviderReconcileQuery) -> ProviderResult:

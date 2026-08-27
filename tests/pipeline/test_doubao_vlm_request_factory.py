@@ -56,6 +56,7 @@ from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_PROVIDER_ID,
     DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+    DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
     DOUBAO_VLM_STAGE_STRATEGY_VERSION,
     VLM_PROMPT_VERSION,
     VLM_RESPONSE_SCHEMA,
@@ -245,7 +246,7 @@ def test_policy_is_closed_immutable_and_canonically_binds_every_strategy_input()
     }
     assert first.request_parameters_json == (
         '{"adapter_strategy_version":"doubao-ark-files-responses-stream-v4",'
-        '"max_output_tokens":16384,"temperature":0.0,"video_fps":1.0}'
+        '"max_output_tokens":32768,"temperature":0.0,"video_fps":1.0}'
     )
     assert first.to_mapping() == second.to_mapping()
     assert first.canonical_hash == second.canonical_hash
@@ -269,11 +270,20 @@ def test_persisted_v2_policy_is_readable_without_relabeling_it_as_v3() -> None:
     assert json.loads(historical.request_parameters_json)["adapter_strategy_version"] == (
         DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION
     )
-    with pytest.raises(ValueError, match="legacy Ark adapter"):
+    with pytest.raises(ValueError, match="registered replay combination"):
         DoubaoVlmRequestPolicy(
             model_id="doubao-seed-2-1-pro-260628",
             adapter_strategy_version=DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
         )
+
+
+def test_persisted_v4_parallel_policy_remains_readable_after_probe_policy_registration() -> None:
+    historical = _policy(
+        stage_strategy_version=DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
+    )
+
+    assert historical.adapter_strategy_version == DOUBAO_ARK_ADAPTER_STRATEGY_VERSION
+    assert historical.stage_strategy_version == DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION
 
 
 def test_factory_builds_one_exact_manifest_bound_kernel_request() -> None:

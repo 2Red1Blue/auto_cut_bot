@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -1106,7 +1107,7 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     assert result.outcome == "succeeded"
     assert result.receipt_id is not None
     assert len(provider.dispatch_calls) == 2
-    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == "all-committed-episodes-bounded-parallel-v2"
+    assert VLM_EPISODE_SELECTION_STRATEGY_VERSION == "probe-first-then-bounded-parallel-v3"
     assert VLM_EPISODE_MAX_CONCURRENCY == 10
     aggregate = next(
         (claim, outcome)
@@ -1122,25 +1123,41 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
     )
 
 
-class _ParallelCommand:
-    """Thread-safe scheduling probe; it never stands in for Kernel correctness."""
+class _ProbeThenParallelCommand:
+    """Thread-safe probe/parallel scheduling check, not a Kernel substitute."""
 
     def __init__(self, expected_concurrency: int) -> None:
         self._expected_concurrency = expected_concurrency
         self._lock = threading.Lock()
-        self._all_started = threading.Event()
+        self.probe_started = threading.Event()
+        self._release_probe = threading.Event()
+        self._parallel_started = threading.Event()
         self.active = 0
         self.max_active = 0
         self.requests: list[object] = []
 
+    def release_probe(self) -> None:
+        self._release_probe.set()
+
     def execute(self, request: object) -> object:
+        with self._lock:
+            self.requests.append(request)
+            request_count = len(self.requests)
+            if request_count == 1:
+                self.probe_started.set()
+        if request_count == 1:
+            assert self._release_probe.wait(timeout=2)
+            return SimpleNamespace(
+                outcome=CommandOutcome(
+                    uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+                )
+            )
         with self._lock:
             self.active += 1
             self.max_active = max(self.max_active, self.active)
-            self.requests.append(request)
-            if len(self.requests) == self._expected_concurrency:
-                self._all_started.set()
-        assert self._all_started.wait(timeout=2)
+            if request_count == self._expected_concurrency + 1:
+                self._parallel_started.set()
+        assert self._parallel_started.wait(timeout=2)
         with self._lock:
             self.active -= 1
         return SimpleNamespace(
@@ -1164,25 +1181,32 @@ class _ParallelBatchFinalizer:
 
 
 @pytest.mark.asyncio
-async def test_current_policy_dispatches_one_ten_episode_bounded_parallel_batch(
+async def test_current_policy_requires_a_successful_probe_before_ten_episode_parallel_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY)
+    bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY + 1)
     stage, _store, _provider = _stage(
         monkeypatch,
         bundle=bundle,
         blobs=blobs,
         source_outcome=_source_success(),
     )
-    command = _ParallelCommand(VLM_EPISODE_MAX_CONCURRENCY)
+    command = _ProbeThenParallelCommand(VLM_EPISODE_MAX_CONCURRENCY)
     finalizer = _ParallelBatchFinalizer()
     stage._command = command  # type: ignore[assignment,reportPrivateUsage]
     stage._finalizer = finalizer  # type: ignore[assignment,reportPrivateUsage]
 
-    result = await stage.execute(_context())
+    execution = asyncio.create_task(stage.execute(_context()))
+    assert await asyncio.to_thread(command.probe_started.wait, 2)
+    # Until a full terminal success is returned, no sibling provider command
+    # has escaped from the batch adapter.
+    assert len(command.requests) == 1
+    assert command.requests[0].episode_index == 0
+    command.release_probe()
+    result = await execution
 
     assert result.outcome == "succeeded"
-    assert len(command.requests) == VLM_EPISODE_MAX_CONCURRENCY
+    assert len(command.requests) == VLM_EPISODE_MAX_CONCURRENCY + 1
     assert command.max_active == VLM_EPISODE_MAX_CONCURRENCY
     assert len(finalizer.requests) == 1
 
@@ -1264,9 +1288,8 @@ async def test_rejected_episode_finishes_its_parallel_batch_but_blocks_later_bat
 
     assert result.outcome == "denied"
     assert result.receipt_id is not None
-    # Requests in the already-issued bounded batch cannot be un-sent, but the
-    # eleventh episode must not be dispatched after a terminal child result.
-    assert len(provider.dispatch_calls) == VLM_EPISODE_MAX_CONCURRENCY
+    # A probe denial has no escaped sibling calls and blocks all later batches.
+    assert len(provider.dispatch_calls) == 1
     assert all(
         claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )

@@ -28,6 +28,8 @@ from autocut_kernel.vlm import (
     ProviderResult,
 )
 
+from auto_cut_bot.pipeline.debug import ModelIoDebugContext, ModelIoDebugSink
+
 
 class ClientFactory(Protocol):
     def __call__(
@@ -106,12 +108,17 @@ def close_ark_resource(value: object) -> None:
 
 class ArkResponsesTransport:
     def __init__(
-        self, config: ArkResponsesTransportConfig, *, client_factory: ClientFactory | None = None
+        self,
+        config: ArkResponsesTransportConfig,
+        *,
+        client_factory: ClientFactory | None = None,
+        debug_sink: ModelIoDebugSink | None = None,
     ) -> None:
         if type(config) is not ArkResponsesTransportConfig:  # noqa: E721
             raise TypeError("config must be exact ArkResponsesTransportConfig")
         self._config = config
         self._factory = client_factory or create_ark_client
+        self._debug_sink = debug_sink
 
     def create_client(self) -> object:
         return self._factory(
@@ -128,6 +135,7 @@ class ArkResponsesTransport:
         expected_model: str,
         on_provider_request_id: ProviderRequestIdCallback,
         client: object | None = None,
+        debug_context: ModelIoDebugContext | None = None,
     ) -> ProviderResult:
         if (
             body.get("model") != expected_model
@@ -137,11 +145,14 @@ class ArkResponsesTransport:
             return provider_failure("INVALID_PROVIDER_REQUEST")
         if not callable(on_provider_request_id):
             return provider_failure("PROVIDER_REQUEST_ID_CALLBACK_REQUIRED")
+        _capture_request(self._debug_sink, debug_context, "dispatch", body)
         if client is None:
             try:
                 client = self.create_client()
             except Exception as error:
-                return map_ark_client_error(error)
+                result = map_ark_client_error(error)
+                _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result))
+                return result
         stream: object | None = None
         try:
             stream = cast(Any, client).responses.create(**body)
@@ -150,9 +161,13 @@ class ArkResponsesTransport:
                 expected_model=expected_model,
                 max_stream_bytes=self._config.max_stream_bytes,
                 on_provider_request_id=on_provider_request_id,
+                debug_sink=self._debug_sink,
+                debug_context=debug_context,
             )
         except Exception as error:
-            return _map_response_create_error(error)
+            result = _map_response_create_error(error)
+            _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result))
+            return result
         finally:
             if stream is not None:
                 close_ark_resource(stream)
@@ -163,6 +178,18 @@ class ArkResponsesTransport:
             raise TypeError("query must be exact ProviderReconcileQuery")
         if query.provider_request_id is None:
             return ProviderIndeterminate("PROVIDER_REQUEST_ID_UNKNOWN")
+        context = ModelIoDebugContext(
+            provider=query.provider_id,
+            provider_idempotency_key=query.provider_idempotency_key,
+            model=query.model_id,
+            call_kind="reconcile",
+        )
+        _capture_request(
+            self._debug_sink,
+            context,
+            "reconcile",
+            {"provider_response_id": query.provider_request_id},
+        )
         client: object | None = None
         try:
             client = self.create_client()
@@ -170,43 +197,65 @@ class ArkResponsesTransport:
             status = str(getattr(response, "status", "")).lower()
             response_id, response_model = _response_id(response), _response_model(response)
             if response_id != query.provider_request_id or response_model != query.model_id:
-                return provider_failure(
+                result = provider_failure(
                     "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
                     provider_request_id=query.provider_request_id,
                 )
+                _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                return result
             assert response_id is not None
             if status == "completed":
                 text = _authoritative_response_text(response)
                 if text is None:
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_RESPONSE_OUTPUT_INVALID", provider_request_id=response_id
                     )
+                    _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                    return result
                 if len(text.encode("utf-8")) > self._config.max_stream_bytes:
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_STREAM_LIMIT_EXCEEDED", provider_request_id=response_id
                     )
-                return ProviderCompleted(text.encode("utf-8"), response_id)
+                    _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                    return result
+                result = ProviderCompleted(text.encode("utf-8"), response_id)
+                _capture_terminal(
+                    self._debug_sink, context, "reconcile", _response_snapshot(response), raw_output=text
+                )
+                return result
             if status in {"queued", "in_progress", "processing"}:
-                return ProviderPending(response_id)
+                result = ProviderPending(response_id)
+                _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                return result
             if status == "failed":
-                return provider_failure(
+                result = provider_failure(
                     "PROVIDER_RESPONSE_FAILED",
                     provider_request_id=response_id,
                     disposition=_response_failure_disposition(response),
                 )
+                _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                return result
             if status == "incomplete":
-                return provider_failure(
+                result = provider_failure(
                     "PROVIDER_RESPONSE_INCOMPLETE",
                     provider_request_id=response_id,
                     disposition=ProviderFailureDisposition.REPAIRABLE,
                 )
+                _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                return result
             if status == "cancelled":
-                return provider_failure(
+                result = provider_failure(
                     "PROVIDER_RESPONSE_CANCELLED", provider_request_id=response_id
                 )
-            return ProviderIndeterminate("PROVIDER_RESPONSE_STATUS_UNKNOWN", response_id)
+                _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+                return result
+            result = ProviderIndeterminate("PROVIDER_RESPONSE_STATUS_UNKNOWN", response_id)
+            _capture_terminal(self._debug_sink, context, "reconcile", _response_snapshot(response))
+            return result
         except Exception as error:
-            return _map_reconcile_error(error, response_id=query.provider_request_id)
+            result = _map_reconcile_error(error, response_id=query.provider_request_id)
+            _capture_terminal(self._debug_sink, context, "reconcile", _error_snapshot(error, result))
+            return result
         finally:
             if client is not None:
                 close_ark_resource(client)
@@ -218,6 +267,8 @@ def _consume_stream(
     expected_model: str,
     max_stream_bytes: int,
     on_provider_request_id: ProviderRequestIdCallback,
+    debug_sink: ModelIoDebugSink | None,
+    debug_context: ModelIoDebugContext | None,
 ) -> ProviderResult:
     request_id: str | None = None
     # Delta bytes are bounded as transient stream telemetry.  The terminal
@@ -234,12 +285,14 @@ def _consume_stream(
                 if isinstance(telemetry, str):
                     telemetry_bytes += len(telemetry.encode("utf-8"))
                     if telemetry_bytes > max_stream_bytes:
-                        return provider_failure(
+                        result = provider_failure(
                             "PROVIDER_STREAM_LIMIT_EXCEEDED",
                             provider_request_id=request_id,
                             disposition=ProviderFailureDisposition.REPAIRABLE,
                             limit=max_stream_bytes,
                         )
+                        _capture_terminal(debug_sink, debug_context, "dispatch", {"event": "stream_limit"})
+                        return result
             elif event_type == "response.created":
                 created_id = _response_id(response)
                 created_model = _response_model(response)
@@ -248,19 +301,23 @@ def _consume_stream(
                     or created_model != expected_model
                     or (request_id is not None and request_id != created_id)
                 ):
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
                         provider_request_id=request_id,
                     )
+                    _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                    return result
                 if request_id is None:
                     request_id = created_id
                     try:
                         on_provider_request_id(created_id)
                     except Exception:
-                        return ProviderIndeterminate(
+                        result = ProviderIndeterminate(
                             "PROVIDER_REQUEST_ID_PERSIST_FAILED",
                             request_id,
                         )
+                        _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                        return result
             elif event_type == "response.completed":
                 completed_id = _response_id(response)
                 completed_model = _response_model(response)
@@ -270,25 +327,33 @@ def _consume_stream(
                     or completed_model != expected_model
                     or str(getattr(response, "status", "")).lower() != "completed"
                 ):
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_RESPONSE_IDENTITY_MISMATCH",
                         provider_request_id=request_id,
                     )
+                    _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                    return result
                 final_text = _authoritative_response_text(response)
                 if final_text is None:
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_RESPONSE_OUTPUT_INVALID",
                         provider_request_id=request_id,
                         disposition=ProviderFailureDisposition.REPAIRABLE,
                     )
+                    _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                    return result
                 if len(final_text.encode("utf-8")) > max_stream_bytes:
-                    return provider_failure(
+                    result = provider_failure(
                         "PROVIDER_STREAM_LIMIT_EXCEEDED",
                         provider_request_id=request_id,
                         disposition=ProviderFailureDisposition.REPAIRABLE,
                         limit=max_stream_bytes,
                     )
-                return ProviderCompleted(final_text.encode("utf-8"), request_id)
+                    _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                    return result
+                result = ProviderCompleted(final_text.encode("utf-8"), request_id)
+                _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response), raw_output=final_text)
+                return result
             elif event_type in {"response.incomplete", "response.failed"}:
                 expected_status = event_type.removeprefix("response.")
                 if (
@@ -299,19 +364,91 @@ def _consume_stream(
                 ):
                     # A valid SDK event is not proof that it belongs to this
                     # invocation. Never reserve a retry from an unrelated failure.
-                    return ProviderIndeterminate("PROVIDER_TERMINAL_IDENTITY_UNVERIFIED", request_id)
-                return provider_failure(
+                    result = ProviderIndeterminate("PROVIDER_TERMINAL_IDENTITY_UNVERIFIED", request_id)
+                    _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                    return result
+                result = provider_failure(
                     "PROVIDER_RESPONSE_INCOMPLETE" if expected_status == "incomplete"
                     else "PROVIDER_RESPONSE_FAILED",
                     provider_request_id=request_id,
                     disposition=(ProviderFailureDisposition.REPAIRABLE if expected_status == "incomplete"
                                  else _response_failure_disposition(response)),
                 )
+                _capture_terminal(debug_sink, debug_context, "dispatch", _response_snapshot(response))
+                return result
             elif event_type == "error":
-                return ProviderIndeterminate("PROVIDER_STREAM_ERROR_EVENT", request_id)
+                result = ProviderIndeterminate("PROVIDER_STREAM_ERROR_EVENT", request_id)
+                _capture_terminal(debug_sink, debug_context, "dispatch", {"event": "error"})
+                return result
     except Exception:
-        return ProviderIndeterminate("PROVIDER_STREAM_INTERRUPTED", request_id)
-    return ProviderIndeterminate("PROVIDER_STREAM_TERMINAL_EVENT_MISSING", request_id)
+        result = ProviderIndeterminate("PROVIDER_STREAM_INTERRUPTED", request_id)
+        _capture_terminal(debug_sink, debug_context, "dispatch", {"event": "stream_interrupted"})
+        return result
+    result = ProviderIndeterminate("PROVIDER_STREAM_TERMINAL_EVENT_MISSING", request_id)
+    _capture_terminal(debug_sink, debug_context, "dispatch", {"event": "terminal_event_missing"})
+    return result
+
+
+def _capture_request(
+    sink: ModelIoDebugSink | None,
+    context: ModelIoDebugContext | None,
+    operation: str,
+    body: object,
+) -> None:
+    if sink is not None and context is not None:
+        sink.capture_request(context, operation=operation, body=body)
+
+
+def _capture_terminal(
+    sink: ModelIoDebugSink | None,
+    context: ModelIoDebugContext | None,
+    operation: str,
+    terminal: object,
+    *,
+    raw_output: bytes | str | None = None,
+) -> None:
+    if sink is not None and context is not None:
+        sink.capture_terminal(context, operation=operation, terminal=terminal, raw_output=raw_output)
+
+
+def _response_snapshot(response: object) -> dict[str, object]:
+    """Keep a complete provider terminal object for diagnostics only."""
+
+    return {
+        "provider_response": response,
+        "provider_response_id": _response_id(response),
+        "model": _response_model(response),
+        "status": str(getattr(response, "status", "")),
+    }
+
+
+def _provider_result_snapshot(result: ProviderResult) -> dict[str, object]:
+    if isinstance(result, ProviderCompleted):
+        return {"kind": "completed", "provider_request_id": result.provider_request_id}
+    if isinstance(result, ProviderFailed):
+        return {
+            "kind": "failed",
+            "failure_code": result.failure_code,
+            "failure_detail_json": result.failure_detail_json,
+            "provider_request_id": result.provider_request_id,
+            "disposition": result.disposition.value,
+        }
+    if isinstance(result, ProviderPending):
+        return {"kind": "pending", "provider_request_id": result.provider_request_id}
+    return {
+        "kind": "indeterminate",
+        "reason_code": result.reason_code,
+        "provider_request_id": result.provider_request_id,
+    }
+
+
+def _error_snapshot(error: Exception, result: ProviderResult) -> dict[str, object]:
+    return {
+        "error_type": type(error).__name__,
+        "http_status": ark_error_status(error),
+        "provider_trace_id": ark_trace_id(error),
+        "result": _provider_result_snapshot(result),
+    }
 
 
 def _response_id(response: object) -> str | None:
