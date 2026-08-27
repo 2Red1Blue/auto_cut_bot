@@ -71,7 +71,15 @@ def bind_runtime_calibration_capability(
     )
     if type(capability) is not PersistedRuntimeCalibrationCapability:  # noqa: E721
         raise CalibrationBindingError("reader did not return an exact v2 runtime capability")
-    if capability.measurement_identity != measurement_identity:
+    # ``RuntimeMeasurementIdentity`` deliberately excludes the audit-only build
+    # hash from its canonical admission identity.  Requiring dataclass equality
+    # here would silently turn a harmless service rebuild into recalibration.
+    if (
+        capability.measurement_identity.runtime_capability_id
+        != measurement_identity.runtime_capability_id
+        or capability.measurement_identity.canonical_sha256
+        != measurement_identity.canonical_sha256
+    ):
         raise CalibrationBindingError("accepted runtime capability differs from live measured identity")
     record_identity = capability.anchor.record.aggregate.identity
     if (

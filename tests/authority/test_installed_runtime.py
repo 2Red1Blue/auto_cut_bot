@@ -149,6 +149,31 @@ def test_runtime_capability_resolution_is_separate_from_legacy_startup_anchor(in
     assert resolver.resolve(FakeRuntimeCapabilityStore(PersistedRuntimeCalibrationCapability(identity, anchor)), identity).anchor == anchor
 
 
+def test_runtime_capability_keeps_audit_only_rebuild_compatible(installed_fixture) -> None:
+    """The capability identity intentionally excludes a harmless service build audit."""
+    resource, anchor = installed_fixture
+    measured_at_calibration = _runtime_measurement()
+    rebuilt = replace(
+        measured_at_calibration,
+        timing_compatibility=replace(
+            measured_at_calibration.timing_compatibility,
+            build_audit_sha256="sha256:" + "c" * 64,
+        ),
+    )
+    assert rebuilt.canonical_sha256 == measured_at_calibration.canonical_sha256
+    resolver = InstalledRuntimeCapabilityResolver(
+        RuntimeCalibrationPolicySource(
+            resource.shadow.source_sha256,
+            resource.predecessor_registry_sha256,
+            "sha256:" + "c" * 64,
+            "sha256:" + "d" * 64,
+            (RuntimeCalibrationCapabilityPolicy("pc_cuda", "cuda"),),
+        )
+    )
+    capability = PersistedRuntimeCalibrationCapability(measured_at_calibration, anchor)
+    assert resolver.resolve(FakeRuntimeCapabilityStore(capability), rebuilt) is capability
+
+
 def test_installed_resource_derives_closed_runtime_capability_policy(installed_fixture) -> None:
     resource, _ = installed_fixture
     policy = runtime_calibration_policy_for_installed_resource(resource)

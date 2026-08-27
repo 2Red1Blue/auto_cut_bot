@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend/deployment/authority",
-  "currentPhase": "planning",
-  "nextAction": "Complete the missing capability-to-normal-request projection before PC deployment. Do not widen the legacy local-run CPU profile to accept CUDA; derive the selected runtime identity and its accepted calibration record into the exact normal timed-speech request contract, with PC-CUDA/CPU cross-binding tests.",
+  "currentPhase": "implementation",
+  "nextAction": "Integrate the closed pc_cuda RuntimeTimedSpeechProjection into versioned Media Preflight request, Receipt and replay paths; retain the legacy CPU path byte-compatible, then deploy the configured PC service and run an actual source through Media Preflight.",
   "branch": "feat/v213-contract-codegen"
 }
