@@ -11,6 +11,21 @@ Layer 1, current work:
   decisions. Reviewer independently checked B+C versus another prompt-only retry.
 - Read-only impact scout identifies generation/finalizer/reader version dispatch.
 
+Layer 2 ownership (current):
+- semantic_resume_fix: Store models/postgres, new store/vlm_v4.py, Batch finalizer,
+  real disposable PostgreSQL integration and negative tests.
+- vlm_reuse_identity_impl: V4 pack/parser, profile models/reuse identity,
+  incremental migration 0030 and new profile tests.
+- Main: prompt/schema/factory/provider, Generation parser dispatch, Runtime
+  scheduling/version selection, authority activation, docs and real HTTP run.
+- recompute_design_review: read-only independent review, no provider/DB writes.
+
+Checkpoint: V4 support and pack fixtures passed; first real disposable-DB
+SourcePrep→Generation→Batch→fresh-Store/replay test passed. Review found outward
+rounding falsely made adjacent millisecond segments overlap. Fix uses original
+integer milliseconds for semantic relations; coarse PTS remains localization
+only. New authority stays inactive until that regression and Store closure pass.
+
 Next dependent layers (do not call real provider before these close):
 1. New complete-pack parser and persisted decoder; preserve actual raw hash.
 2. Generation parse/replay and versioned Batch ownership/consumer dispatch.

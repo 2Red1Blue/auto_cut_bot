@@ -50,12 +50,17 @@ ProxyTimelineMap得到粗源区间。绝不使用二进制float推导媒体时�
 不据此宣称逐帧覆盖或物理完整性。小于1ms的窗口不支持此wire，不凭空扩展。
 负数、bool、浮点数、倒置、超真实时长、负误差、未知alias均拒绝。
 不clamp、不扩大事件区间、不按最近帧替换错误引用，不把这次失败输出修成成功。
+语义区间的排序、相邻性与交集用原始整数毫秒判断，不用向外取整后的粗PTS：
+例如1/12800时钟下相邻[0,1)ms、[1,2)ms可能共享粗tick，但不是语义重叠。
+同理，取整制造的交集不能满足event/fact或candidate/event的真实相交约束。
 
 ## 4. 兼容与持久化
 
 - 旧`vlm/models.py/parser.py/window.py`及其v3实现bundle hash保持原样；新增模块。
 - 原raw响应、失败Receipt、旧request/profile/hash均不重写。
 - 新parser在request/profile/reuse identity中显式登记，并绑定新实现、时间/alias策略。
+  V4专属`parser_contract_sha256`必须随原请求冻结；读取时只比较，不替换成当前值。
+  修改实际解析规则必须使用相应新契约，不能只更新安装摘要后重解释旧请求。
 - Provider继续用Ark SDK流式、explicitthinkingdisabled与已有视频Files缓存；
   wire/prompt不同只影响语义身份，不导致相同视频重传。
 - Generation解析和已提交重放必须分到同一个新版parser，raw_response hash始终
@@ -65,6 +70,12 @@ ProxyTimelineMap得到粗源区间。绝不使用二进制float推导媒体时�
 - SourcePrep采样不改变时不重写其身份；本修正不声称9帧是密集视觉证明。
 - Store沿用不可变Blob/Artifact/Command/Receipt事务，不新增第二套状态系统。
   是否需要增量DDL由真实SQL闭合约束决定，不为版本号先重建数据库。
+- 新契约仅用于semantic-only execution profile v10；migration0030增加V4
+  parser/prompt/wire/stage组合的SQL约束，不重建库或修改旧run。
+- V4 Store从同一Job的精确SourcePrep Receipt/ArtifactSet、content hash及
+  provenance恢复上下文，并用原始响应Blob重解析比对，不能仅相信pack自报hash。
+  本次不扩展跨Job复用权限。已提交源证据恢复不需要原主机路径存在。
+- Stage1–3旧输入reader明确拒绝V4；此时semantic-only完成不等于全流程完成。
 
 ## 5. 交付顺序和验收
 
