@@ -31,7 +31,7 @@ total66943。已达到当前32768输出上限。
 - 只读获取补充debug：`/Users/liuzx/Downloads/ac-auto-cut-validation/mac-local-run/retrieved-debug/`
 - 数据库升级前备份：`/Users/liuzx/Downloads/ac-auto-cut-validation/mac-local-run/backups/`
 
-启动器读取本机私有凭据并执行正常CLI，不是可移植配置模板。Mac默认端口18768；
+启动器读取本机私有凭据并执行正常CLI，不是可移植配置模板。Mac默认端口18769；
 API token、Ark凭据和数据库密码不可复制到文档/Git。开发测试另用可丢弃数据库。
 
 ## 尚未完成
@@ -158,5 +158,5 @@ hash 纳入重算后的请求身份；不接受缺失、伪造或不匹配的 Pa
 V12 `vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core` 在 V11 的紧凑、时间线和
 封闭词表规则上增加事件因果边的双向引用要求，解决了此前“因果只写一端”的真实拒绝。
 它仍是新 Prompt/Profile/Request hash，未修改任何历史失败结果。原始 request、terminal
-状态和响应只保存在私有 debug 目录的该 run 下；默认 HTTP 端口改为 `18768`，避开本机已有
-服务的 `18767` 冲突。
+状态和响应只保存在私有 debug 目录的该 run 下；默认 HTTP 端口为 `18769`，避开本机已有
+服务的 `18767` 和 `18768` 冲突。

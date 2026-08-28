@@ -125,14 +125,14 @@ private environment, then start the Pipeline-only server on loopback:
 
 ```bash
 uv sync --extra api
-uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18768
+uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18769
 ```
 
 Submit one run with a new idempotency key and the source reference from the
 catalog:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18768/v1/pipeline/run \
+curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/run \
   -H "Authorization: Bearer <server-api-key>" \
   -H "Idempotency-Key: semantic-42000021919-001" \
   -H "Content-Type: application/json" \
@@ -182,7 +182,7 @@ awaiting calibration still only wakes the media-preflight command. It is
 returned by the status endpoint as a concurrency precondition:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18768/v1/pipeline/resume \
+curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/resume \
   -H "Authorization: Bearer <server-api-key>" \
   -H "Content-Type: application/json" \
   --data '{"run_id":"pipeline_run_...","expected_version":<status-version>}'

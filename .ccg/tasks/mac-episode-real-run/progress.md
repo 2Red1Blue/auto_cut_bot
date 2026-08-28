@@ -1,7 +1,7 @@
 # Real execution, no synthetic success
 
-Current code 70d90288. mac-local-run private launch uses normal pipeline-serve,
-loopback18767, actual Podman ac_postgres/autocut. Only authorized episode1 is in
+Current code is tracked on feat/v213-contract-codegen. mac-local-run private launch uses normal
+pipeline-serve on loopback18769, actual Podman ac_postgres/autocut. Only authorized episode1 is in
 this semantic_only dataset; no claim for all50, ASR, story, render or publication.
 
 1. Original v3 run `pipeline_run_1af0f6ea9de849e5ad4ecda470de300a`:
@@ -24,8 +24,8 @@ Cross-Job selective recompute API and actual cross-machine handoff remain pendin
 
 ## 2026-08-28 V12 实际成功与可迁移读取验证
 
-- 私有启动器端口改为 18768；项目 `pipeline-serve` 默认端口也改为 18768，避免旧 18766/18767
-  环境冲突。代码提交 25ba9cce。
+- 私有启动器和项目 `pipeline-serve` 默认端口改为 18769，避开已占用的 18767/18768；所有
+  启动和 HTTP 示例必须使用同一端口。
 - `pipeline_run_11815ba2eac4489f8cd40066e361764a` 的 SourcePrep、ContextPrepare（video_only
   Pack）和真实 Ark VLM 已成功，VLM Receipt 为 6f6d5b5d-d882-4c8f-94fc-5ab085151dd2。
   首次调用只有一个 committed GenerationAttempt；恢复仅聚合已提交结果，未再次调用 provider。
