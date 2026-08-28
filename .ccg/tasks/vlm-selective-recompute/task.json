@@ -1,0 +1,12 @@
+{
+  "id": "vlm-selective-recompute",
+  "title": "VLM 选择集显式重跑与跨主机续跑",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "analysis",
+  "nextAction": "核对现有 Run/Blob 权限与 VlmReuseIdentity，确定首个不破坏旧 Receipt 的最小持久化切片",
+  "branch": "feat/v213-contract-codegen",
+  "createdAt": "2026-08-28T00:00:00+08:00"
+}
