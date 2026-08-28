@@ -5,8 +5,8 @@
   "complexity": "M",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "v5完整JSON但时间越界/帧矛盾被拒绝；完成vlm-video-support-v4后再发单集新请求；SSH暂不用",
+  "currentPhase": "verification",
+  "nextAction": "V12 单集 SourcePrep→ContextPrepare→VLM 已成功；验证同一持久化结果的跨主机读取与显式阶段重跑设计/实现，PC SSH 主机指纹待用户核验",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

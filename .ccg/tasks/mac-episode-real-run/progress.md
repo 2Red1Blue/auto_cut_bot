@@ -22,6 +22,19 @@ and database state first. Private debug and launch paths in docs/mac-semantic-ru
 No SSH, video or credentials in Git. New DB tests must never use real autocut.
 Cross-Job selective recompute API and actual cross-machine handoff remain pending.
 
+## 2026-08-28 V12 实际成功与可迁移读取验证
+
+- 私有启动器端口改为 18768；项目 `pipeline-serve` 默认端口也改为 18768，避免旧 18766/18767
+  环境冲突。代码提交 25ba9cce。
+- `pipeline_run_11815ba2eac4489f8cd40066e361764a` 的 SourcePrep、ContextPrepare（video_only
+  Pack）和真实 Ark VLM 已成功，VLM Receipt 为 6f6d5b5d-d882-4c8f-94fc-5ab085151dd2。
+  首次调用只有一个 committed GenerationAttempt；恢复仅聚合已提交结果，未再次调用 provider。
+- 真实 PostgreSQL 测试删除原始 source 目录后，用新的 Store 实例仅从持久化 Blob/Artifact
+  读取相同 Pack-bound VLM child，NoProvider replay 与 batch finalization 均成功。它证明
+  SourcePrep 成功后 VLM 续跑不依赖原本机路径；不替代真实 PC 交接。
+- `laiu-win` 当前返回变化后的 SSH ED25519 主机指纹，严格校验正确拒绝连接；未覆盖
+  known_hosts。PC 实机读取验证需要用户核验该指纹后才能继续。
+
 Second call metrics:input34413/output32768/reasoning26780/total67181; compact
 body10973chars, one line. Representation improvement did not solve reasoning
 budget exhaustion. Code task vlm-explicit-thinking passed independent review and
