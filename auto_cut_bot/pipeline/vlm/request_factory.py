@@ -34,6 +34,7 @@ from .bounded_video_prompt import (
     VLM_BOUNDED_VIDEO_PROMPT_VERSION,
     vlm_bounded_video_response_schema_json,
     vlm_core_video_response_schema_json,
+    vlm_validated_reciprocal_core_video_response_schema_json,
 )
 from .contextual_video_prompt import (
     VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
@@ -41,6 +42,7 @@ from .contextual_video_prompt import (
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -72,6 +74,9 @@ DOUBAO_VLM_REQUEST_FACTORY_STRATEGY_VERSION = DOUBAO_VLM_STAGE_STRATEGY_VERSION
 DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION = (
     "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-10-v1"
 )
+DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION = (
+    "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-3-v2"
+)
 
 
 def registered_response_schema_json(
@@ -81,6 +86,8 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
+        if prompt_version == VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION:
+            return vlm_validated_reciprocal_core_video_response_schema_json()
         if prompt_version in {
             VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
@@ -239,10 +246,14 @@ class DoubaoVlmRequestPolicy:
                 VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
             }
         ):
             raise ValueError("V4 video prompt and parser must be selected together")
-        if video_contract != (self.stage_strategy_version == DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION):
+        if video_contract != (
+            self.stage_strategy_version
+            in {DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION, DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION}
+        ):
             raise ValueError("V4 video parser requires its registered stage strategy")
         fps = _finite_number(self.video_fps, "video_fps", minimum=0.1, maximum=10)
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 32_768:  # noqa: E721
@@ -255,6 +266,7 @@ class DoubaoVlmRequestPolicy:
             DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION,
+            DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
         }:
             raise ValueError("stage strategy must be a registered Doubao request version")
         supported_combinations = {
@@ -270,6 +282,7 @@ class DoubaoVlmRequestPolicy:
             (DOUBAO_ARK_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION),
+            (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION),
         }
         if (self.adapter_strategy_version, self.stage_strategy_version) not in supported_combinations:
             raise ValueError(
@@ -366,6 +379,7 @@ def build_doubao_vlm_request(
         VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     }
     if contextual_prompt != (context_pack is not None):
         raise ValueError("contextual video prompt requires exactly one WindowContextPack")

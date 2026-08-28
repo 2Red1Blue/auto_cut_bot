@@ -19,13 +19,19 @@ story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
 The installed semantic-only policy now selects
-`vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core`: the VLM receives the attached video,
+`vlm-semantic-pack-v13-context-assisted-validated-reciprocal-causal-core`: the VLM receives the attached video,
 the closed semantic-output contract, and only a bounded, immutable
 `WindowContextPack` produced by the immediately preceding Context Prepare
 stage. It still never receives ASR/VAD/subtitle text, API shot/highlight lists,
-frame tables or physical-cut endpoints. V12 retains the V8 core-observation
-schema and adds model-side reciprocal causal-edge validation; the parser and
-32768 output-token budget are unchanged.
+frame tables or physical-cut endpoints. V13 retains the V8 core-observation
+shape and V4 parser, but binds a stricter response schema (`uncertainty_ms <=
+5000`) and a final model-side check for required fact fields, closed event
+enums, fact/event support overlap, complete JSON, and reciprocal causal edges.
+It also uses a probe-first, bounded-parallel-3 batch policy. The earlier
+parallel-10 policy was deliberately exercised against Ark and produced real
+429 responses; its historical request/profile bytes remain replayable, but it
+is not used for new V13 runs. The parser and 32768 output-token budget remain
+unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
 [Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
@@ -44,10 +50,11 @@ different thinking modes are not interchangeable.
 > behavior in a local environment file: the current runtime has not yet
 > implemented `ArkRequestScope/v1`.
 
-Before enabling v5, stop all older Pipeline workers and apply every pending
-Kernel migration in numeric order. The v10 profile has a closed five-field
-parameter variant for v5; later VLM prompt registrations (`0030` onward) are
-also required for their corresponding authority profile. Full-pipeline is not widened.
+Before enabling V13, stop all older Pipeline workers and apply every pending
+Kernel migration in numeric order, including `0038`. The v10 profile has a
+closed five-field parameter variant for v5; later VLM prompt registrations
+(`0030` onward) are also required for their corresponding authority profile.
+Full-pipeline is not widened.
 The outbox does not yet partition workers by supported adapter version, so do
 not run pre-v5 workers against new v5 work. No historical rows are rewritten.
 

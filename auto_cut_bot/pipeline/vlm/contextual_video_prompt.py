@@ -28,6 +28,9 @@ VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core"
 )
+VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v13-context-assisted-validated-reciprocal-causal-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -79,6 +82,16 @@ VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "同一因果边只能各写一次、不得自指。不能同时保证两端引用时，两个数组都保持空数组 []。"
     "输出前逐一核对每条 cause_event_refs 与对应 effect_event_refs 的反向引用完全一致。\n"
 )
+VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "这是严格验证版本。输出前逐项执行如下机械自检：每一个 fact 必须同时拥有 subject_ref 和 "
+    "object_ref，缺少受词时 object_ref 写 JSON null，绝不省略字段；event_kind 只能是 "
+    "action、interaction、state_change、reaction、reveal、transition；每条 event.fact_refs "
+    "的 support 均须和该 event.support 的 interval_ms 有非空交集；uncertainty_ms 必须是 "
+    "0 到 5000 的普通整数。每一个 B.cause_event_refs 中的 A，必须有且只有 A.effect_event_refs "
+    "包含 B；禁止自指、未知 ID、重复 ID 或只写单侧。无法同时证明因果和互反关系时，两侧均写 []。"
+    "最后确认所有对象字段、数组和字符串都闭合为一个完整 JSON 后再输出。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -105,6 +118,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)

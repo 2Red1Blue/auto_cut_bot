@@ -152,6 +152,26 @@ def vlm_core_video_response_schema() -> dict[str, object]:
     return schema
 
 
+def vlm_validated_reciprocal_core_video_response_schema() -> dict[str, object]:
+    """Return V13's tighter wire schema without altering V4/V12 bytes."""
+
+    schema = vlm_core_video_response_schema()
+    properties = _object(schema["properties"])
+    for group in ("entities", "facts", "events"):
+        member = _object(_object(properties[group])["items"])
+        support = _object(_object(member["properties"])["support"])
+        interval = _object(_object(support["properties"])["interval_ms"])
+        uncertainty = _object(_object(interval["properties"])["uncertainty_ms"])
+        uncertainty["maximum"] = 5_000
+    continuity = _object(_object(properties["continuity"])["properties"])
+    segment = _object(_object(continuity["temporal_segments"])["items"])
+    support = _object(_object(segment["properties"])["support"])
+    interval = _object(_object(support["properties"])["interval_ms"])
+    uncertainty = _object(_object(interval["properties"])["uncertainty_ms"])
+    uncertainty["maximum"] = 5_000
+    return schema
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -165,6 +185,12 @@ def vlm_core_video_response_schema_json() -> str:
     """Return canonical JSON for the registered V8 core-observation schema."""
 
     return _canonical_json(vlm_core_video_response_schema())
+
+
+def vlm_validated_reciprocal_core_video_response_schema_json() -> str:
+    """Return canonical V13 schema bytes for request identity binding."""
+
+    return _canonical_json(vlm_validated_reciprocal_core_video_response_schema())
 
 
 def ordered_bounded_video_schema(schema: object) -> dict[str, object]:
