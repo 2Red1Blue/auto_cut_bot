@@ -28,10 +28,13 @@ media_preflight。它不是终态阶段重跑入口，不能把已失败/拒绝�
 SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚未接入付费重算派发**。
 指纹通过不代表已拥有跨 Job 读取权或可跳过成功 Receipt 验证。
 
-首版范围限定为 **VLM + 已提交、完全相同的 SourcePrep 集合**。支持选择一集、多集、
-全部集数；`source_prep`、ASR/VAD、故事阶段的选择性重算未实现前明确返回 unsupported。
-换源文件、改集序或改素材授权集合，首版走新的完整 SourcePrep，不声称已经支持增量换源。
-以后可按实际 DAG 逐阶段扩展，不能用通用 `force=true` 直接放开所有阶段。
+首版范围限定为 **VLM + 已提交、完全相同的 SourcePrep 集合**。已经实现的第一条
+路径只接受 `completion_scope=full_stage`：它为完整 VLM 阶段创建一个新的 Run，先以
+`BindWholeSeriesSourcesCommand` 把原 Run 的精确 SourcePrep 证据绑定到新 Job，再由
+既有 Context/VLM 阶段正常执行。它只在 `semantic_only`、`video_only` Context Pack 且
+安装 execution profile 与父 Run 完全一致时启用。`source_prep`、ASR/VAD、故事阶段及
+逐集选择性重算仍未实现，必须明确返回 unsupported；不能以 `force=true` 放开任何阶段。
+换源文件、改集序或改素材授权集合仍走新的完整 SourcePrep，不声称已经支持增量换源。
 
 ## 2. 不可破坏的规则
 
@@ -48,21 +51,23 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 
 ## 3. 首版接口与执行快照
 
-拟新增 `POST /v1/pipeline/recompute`；**当前未注册此路由**。沿用 Pipeline 的
-Bearer 认证、source authorization 和 `Idempotency-Key`，不是 Agent/chat API。
-封闭请求示例（所有所示字段必填，无任意 provider 参数、路径或 Python 类名）：
+`POST /v1/pipeline/recompute` 已注册。它沿用 Pipeline 的 Bearer 认证与
+`Idempotency-Key`，不是 Agent/chat API。当前已接纳的请求比完整设计窄：没有
+`episode_numbers`、`target_profile_ref` 或 `continuation`，服务端只允许当前安装的精确
+profile 和完整重跑。封闭请求如下（所有字段必填，无任意 provider 参数、路径或 Python
+类名）：
 
 ```json
 {
   "base_run_id": "pipeline_run_00000000000000000000000000000000",
   "expected_version": 3,
   "stage": "vlm",
-  "episode_numbers": [1],
-  "target_profile_ref": "installed-semantic-profile:revision-id",
-  "completion_scope": "selected_only",
-  "continuation": "inspect"
+  "completion_scope": "full_stage"
 }
 ```
+
+上面的其余 `selected_only` 规划字段是后续设计，而非现行 API 契约。服务不能接受它们，
+也不能把单集结果伪装成完整 VLM Batch。
 
 - `episode_numbers` 是用户集号，严格升序、无重复、从 1 开始，必须属于源集合；
   内部 `episode_index` 从 0 开始，只在 API 边界转换一次。全阶段重算显式列全体集号。

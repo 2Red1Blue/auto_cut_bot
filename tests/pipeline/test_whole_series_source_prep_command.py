@@ -43,6 +43,18 @@ from autocut_kernel.vlm import (
     WindowFrameSample,
 )
 
+from auto_cut_bot.pipeline.runtime import (
+    DurablePipelineRunService,
+    FullStageVlmRecomputeBinder,
+    PipelineExecutionProfile,
+    PipelineRunRequest,
+    PipelineStageContext,
+    PipelineStageResult,
+    PostgresPipelineRunStore,
+    SourcePrepPipelineStage,
+    VlmFullStageRecomputeRequest,
+)
+from auto_cut_bot.pipeline.runtime.source_prep_stage import source_prep_kernel_idempotency_key
 from auto_cut_bot.pipeline.source_prep import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
     IDENTITY_FRAME_GENERATION_POLICY_SHA256,
@@ -67,6 +79,7 @@ from auto_cut_bot.pipeline.source_prep.command import (
 )
 from auto_cut_bot.pipeline.source_prep.models import SeriesCensusError, SeriesSource
 from auto_cut_bot.pipeline.source_prep.probe import SourceMediaEvidenceError
+from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy
 
 try:
     import psycopg
@@ -1348,6 +1361,133 @@ def test_postgres_source_reuse_is_atomic_and_survives_origin_path_removal(tmp_pa
         assert cursor.fetchone() == (2,)
         cursor.execute("SELECT count(*) FROM storage.blob_claims WHERE object_id = %s", (proxy.object_id,))
         assert cursor.fetchone() == (2,)
+
+
+@pytest.mark.skipif(
+    psycopg is None
+    or not os.environ.get("AUTOCUT_TEST_POSTGRES_DSN", "").endswith(
+        "/autocut_test_source_reuse"
+    ),
+    reason="set AUTOCUT_TEST_POSTGRES_DSN to the dedicated autocut_test_source_reuse database",
+)
+@pytest.mark.asyncio
+async def test_full_vlm_recompute_reuses_bound_sources_after_origin_host_removal(tmp_path):
+    dsn = os.environ["AUTOCUT_TEST_POSTGRES_DSN"]
+    with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+        migrations = Path("packages/autocut-kernel/migrations")
+        for migration in sorted(migrations.glob("*.sql")):
+            cursor.execute(migration.read_text())
+
+    class Scheduler:
+        def __init__(self) -> None:
+            self.run_ids: list[str] = []
+
+        async def enqueue(self, run_id: str) -> None:
+            self.run_ids.append(run_id)
+
+    class NoFilesystemAuthorization:
+        def allows(self, _request) -> bool:
+            raise AssertionError("recompute must not reauthorize the unavailable origin filesystem")
+
+    class RejectingRootResolver:
+        def resolve(self, _context):
+            raise AssertionError("bound target SourcePrep must not resolve the removed origin root")
+
+    source_root = tmp_path / "origin-host"
+    source_root.mkdir()
+    (source_root / "episode.mp4").write_bytes(b"cross-host full recompute source")
+    policy = _source_policy(
+        authorization_id="recompute-authority", series_id="recompute-series"
+    )
+    retry_policy = GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (1, 2))
+    profile = PipelineExecutionProfile.from_semantic_policies(
+        DoubaoVlmRequestPolicy("doubao-seed-2-1-pro-260628"), retry_policy=retry_policy
+    )
+    base_run_id = "pipeline_run_" + "a" * 32
+    request = PipelineRunRequest("test", source_root=str(source_root))
+    control = PostgresPipelineRunStore(lambda: psycopg.connect(dsn))
+    base_claim = control._claim_run_sync(
+        base_run_id, "base-run", request, request.request_hash, profile
+    )
+    kernel = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
+    origin = PrepareWholeSeriesSourcesCommand(
+        kernel, builder=SyntheticSampleBuilder(SyntheticLayoutProbe())
+    ).execute(
+        PrepareWholeSeriesSourcesRequest(
+            Job(base_run_id, "test"),
+            source_prep_kernel_idempotency_key(base_run_id),
+            ArtifactScope("pipeline", "job", base_run_id),
+            1,
+            AuthorizedSeriesSourceRoot(source_root, policy),
+        )
+    )
+    assert origin.outcome.state == "succeeded" and origin.outcome.receipt_id is not None
+    _complete_control_run_for_recompute(control, base_claim.snapshot, origin.outcome.receipt_id)
+    base = control._read_run_sync(base_run_id)
+    assert base is not None and base.status == "succeeded"
+
+    shutil.rmtree(source_root)
+    scheduler = Scheduler()
+    service = DurablePipelineRunService(
+        control,
+        scheduler,
+        NoFilesystemAuthorization(),
+        execution_profile=profile,
+        full_stage_vlm_recompute_binder=FullStageVlmRecomputeBinder(kernel),
+    )
+    recompute = await service.recompute_full_vlm_stage(
+        VlmFullStageRecomputeRequest(base_run_id, base.version), "full-recompute-1"
+    )
+    assert recompute.replayed is False
+    assert scheduler.run_ids == [recompute.snapshot.run_id]
+    assert recompute.snapshot.request.source_root == str(source_root)
+
+    source_command = next(
+        command for command in recompute.snapshot.commands if command.stage == "source_prep"
+    )
+    target_context = PipelineStageContext(
+        recompute.snapshot.run_id,
+        recompute.snapshot.request,
+        source_command,
+        recompute.snapshot.execution_profile,
+    )
+    projected = await SourcePrepPipelineStage(kernel, RejectingRootResolver()).execute(target_context)
+    assert projected.outcome == "succeeded"
+    assert projected.receipt_id is not None
+    target_outcome = kernel.read_outcome(
+        Job(recompute.snapshot.run_id, "test"),
+        source_prep_kernel_idempotency_key(recompute.snapshot.run_id),
+    )
+    assert target_outcome is not None
+    assert kernel.is_source_reuse_binding(Job(recompute.snapshot.run_id, "test"), target_outcome)
+
+
+def _complete_control_run_for_recompute(
+    store: PostgresPipelineRunStore,
+    snapshot,
+    source_receipt_id: UUID,
+) -> None:
+    """Drive the control projection only; VLM data is not faked as Kernel output."""
+
+    current = snapshot
+    for position, command in enumerate(snapshot.commands):
+        claimed = store._claim_next_pending_sync(
+            snapshot.run_id,
+            command.version,
+            f"control-{position}",
+        )
+        assert claimed is not None and claimed.stage == command.stage
+        receipt = source_receipt_id if command.stage == "source_prep" else uuid4()
+        store._record_result_sync(
+            snapshot.run_id,
+            PipelineStageResult(claimed.command_id, "succeeded", receipt),
+            claimed.version,
+            f"control-{position}",
+        )
+        current = store._read_run_sync(snapshot.run_id)
+        assert current is not None
 
 
 def test_synthetic_old_absent_audio_leaf_keeps_original_payload_and_hash(tmp_path):

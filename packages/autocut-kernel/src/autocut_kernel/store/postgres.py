@@ -2993,12 +2993,24 @@ class PostgresRuntimeStore:
             ):
                 raise StoreValidationError("runtime capability does not close over its exact accepted record")
             try:
-                identity_payload = json.loads(_text(row[6]))
-                if type(identity_payload) is not dict:  # noqa: E721
+                decoded_identity_payload: object = json.loads(_text(row[6]))
+                if type(decoded_identity_payload) is not dict:  # noqa: E721
                     raise StoreValidationError("runtime capability identity payload is not an object")
+                identity_payload = cast(dict[str, object], decoded_identity_payload)
+                runtime_capability_id = identity_payload.get("runtime_capability_id")
+                timing_compatibility = identity_payload.get("timing_compatibility")
+                if type(runtime_capability_id) is not str:  # noqa: E721
+                    raise StoreValidationError(
+                        "runtime capability identity runtime_capability_id is invalid"
+                    )
+                if type(timing_compatibility) is not dict:  # noqa: E721
+                    raise StoreValidationError(
+                        "runtime capability identity timing_compatibility is invalid"
+                    )
+                typed_timing_compatibility = cast(dict[str, object], timing_compatibility)
                 persisted_identity = RuntimeMeasurementIdentity(
-                    identity_payload["runtime_capability_id"],
-                    decode_timing_compatibility_profile(identity_payload["timing_compatibility"]),
+                    runtime_capability_id,
+                    decode_timing_compatibility_profile(typed_timing_compatibility),
                 )
                 if (
                     persisted_identity.runtime_capability_id
@@ -6495,6 +6507,55 @@ class PostgresRuntimeStore:
             else:
                 CommandSuccess(slot_id, _text(set_hash), (artifact,))
             return persisted
+
+        return self._transaction(operation)
+
+    def is_source_reuse_binding(self, job: Job, outcome: CommandOutcome) -> bool:
+        """Return whether one exact terminal outcome is a protected source binding.
+
+        The Pipeline uses this narrow query only to decide whether its
+        ``source_prep`` projection can be replayed without resolving the
+        original host path.  It is not a generic provenance lookup.
+        """
+
+        if type(job) is not Job or type(outcome) is not CommandOutcome:  # noqa: E721
+            raise StoreValidationError("source reuse binding lookup requires exact values")
+        if (
+            outcome.state != "succeeded"
+            or outcome.receipt_id is None
+            or outcome.artifact_set_id is None
+        ):
+            return False
+
+        def operation(cursor: DbCursor) -> bool:
+            cursor.execute(
+                """
+                SELECT 1
+                  FROM runtime.jobs AS job
+                  JOIN runtime.command_slots AS slot
+                    ON slot.job_id = job.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.command_slot_id = slot.command_slot_id
+                 WHERE job.job_key = %s
+                   AND job.profile = %s
+                   AND slot.command_slot_id = %s
+                   AND slot.command_name = %s
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                   AND receipt.receipt_id = %s
+                   AND receipt.result_artifact_set_id = %s
+                """,
+                (
+                    job.job_key,
+                    job.profile,
+                    outcome.command_slot_id,
+                    SOURCE_REUSE_COMMAND_NAME,
+                    outcome.receipt_id,
+                    outcome.artifact_set_id,
+                ),
+            )
+            row = cursor.fetchone()
+            return row is not None and cursor.fetchone() is None
 
         return self._transaction(operation)
 

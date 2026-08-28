@@ -28,6 +28,7 @@ from auto_cut_bot.pipeline.runtime import (
     ResumeNotAllowedError,
     SourceDeniedError,
     StaleRunVersionError,
+    VlmFullStageRecomputeRequest,
     validate_idempotency_key,
     validate_run_id,
 )
@@ -59,6 +60,7 @@ __all__ = (
     "create_pipeline_app",
     "handle_chat_completions",
     "handle_pipeline_run",
+    "handle_pipeline_recompute",
     "handle_pipeline_resume",
     "handle_pipeline_status",
 )
@@ -77,7 +79,7 @@ _PIPELINE_AUTH_REQUIRED_KEY = web.AppKey[bool]("pipeline_auth_required")
 _PIPELINE_WORKER_ERROR_KEY = web.AppKey[list[str]]("pipeline_worker_error")
 _MISSING = object()
 _PIPELINE_PATHS = frozenset(
-    {"/v1/pipeline/run", "/v1/pipeline/resume", "/v1/pipeline/status"}
+    {"/v1/pipeline/run", "/v1/pipeline/recompute", "/v1/pipeline/resume", "/v1/pipeline/status"}
 )
 
 
@@ -591,6 +593,7 @@ def _configure_pipeline_control_plane(
 
     app.middlewares.append(auth_middleware)
     app.router.add_post("/v1/pipeline/run", handle_pipeline_run)
+    app.router.add_post("/v1/pipeline/recompute", handle_pipeline_recompute)
     app.router.add_post("/v1/pipeline/resume", handle_pipeline_resume)
     app.router.add_get("/v1/pipeline/status", handle_pipeline_status)
     app.router.add_get("/health", handle_health)
@@ -720,6 +723,45 @@ async def handle_pipeline_run(request: web.Request) -> web.Response:
             "run_id": claim.snapshot.run_id,
             "status": claim.snapshot.status,
             "replayed": claim.replayed,
+        },
+        status=202,
+    )
+
+
+async def handle_pipeline_recompute(request: web.Request) -> web.Response:
+    """Create a new full VLM Run from a terminal run's immutable sources."""
+
+    service = _pipeline_run_service(request)
+    if service is None:
+        return _error_json(503, "Pipeline run service is not configured", "server_error")
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_json(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        return _error_json(400, "JSON body must be an object")
+    idempotency_key = request.headers.get("Idempotency-Key", "")
+    try:
+        recompute_request = VlmFullStageRecomputeRequest.from_mapping(cast(dict[str, object], body))
+        validate_idempotency_key(idempotency_key)
+    except PipelineRunValidationError as error:
+        return _error_json(400, str(error))
+    try:
+        claim = await service.recompute_full_vlm_stage(recompute_request, idempotency_key)
+    except PipelineRunNotFoundError as error:
+        return _error_json(404, f"Pipeline run not found: {error}")
+    except (IdempotencyConflictError, StaleRunVersionError) as error:
+        return _error_json(409, str(error), "conflict_error")
+    except PipelineRunValidationError as error:
+        return _error_json(422, str(error), "unprocessable_entity")
+    return web.json_response(
+        {
+            "base_run_id": recompute_request.base_run_id,
+            "completion_scope": recompute_request.completion_scope,
+            "run_id": claim.snapshot.run_id,
+            "status": claim.snapshot.status,
+            "replayed": claim.replayed,
+            "stage": recompute_request.stage,
         },
         status=202,
     )

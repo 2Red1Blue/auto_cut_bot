@@ -21,15 +21,31 @@ was changed to select by the stable stage name.
 ## Evidence
 
 - Ruff and BasedPyright pass for changed code.
-- 81 focused pipeline tests pass (8 environment-gated skips).
+- 76 focused run-service/API/SourcePrep stage tests pass; the SourcePrep command
+  suite passes 54 tests with 4 PostgreSQL-gated skips while the local Podman VM
+  is stopped.
 - A real PostgreSQL integration test proves that the target cannot read the
   origin Blob before binding, can read the exact same immutable object after
   binding, survives origin-path deletion and Store re-instantiation, and emits
   exactly one origin plus one target Receipt.
-- Wheel build contains the new Kernel modules.
+- The Kernel wheel build contains the source-reuse and PostgreSQL store modules.
 
-## Remaining work
+## Current environment limitation
 
-The HTTP `POST /v1/pipeline/recompute` control-plane Run, selected-episode VLM
-dispatch and lineage budget/hold controls remain unimplemented. This binding is
-only the secure input-reuse primitive those steps will call.
+The local Podman VM is currently stopped, so the disposable PostgreSQL database
+at `127.0.0.1:5433` cannot be reset or queried. The full real-PostgreSQL
+recompute regression was already passed before the VM stopped, but it must be
+rerun after the VM is deliberately restarted; a stopped database is never
+reported as a passing portability check.
+
+## Follow-up scope
+
+`POST /v1/pipeline/recompute` now implements the deliberately narrow,
+full-stage path: it creates a distinct semantic-only Run, binds the exact
+successful SourcePrep evidence before enqueueing it, and then uses the normal
+Context/VLM stages. It has focused API/service tests and a real PostgreSQL test
+that deletes the origin host path before the target SourcePrep projection.
+
+Selected-episode VLM dispatch, policy-changing plans, partial-result
+Aggregates, durable inspection hold and lineage budget controls remain
+unimplemented. They must not be inferred from the full-stage endpoint.

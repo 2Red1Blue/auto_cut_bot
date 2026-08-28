@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from autocut_kernel.store import RuntimeStoreError
-from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION
+from autocut_kernel.vlm import GENERATION_RETRY_STRATEGY_VERSION, GenerationRetryPolicy
 from psycopg import OperationalError
 
 from auto_cut_bot.pipeline.debug import FileModelIoDebugSink
@@ -32,10 +32,12 @@ from auto_cut_bot.pipeline.runtime import (
     RunClaim,
     SourceDeniedError,
     StaleRunVersionError,
+    VlmFullStageRecomputeRequest,
 )
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
+    DoubaoVlmRequestPolicy,
 )
 from tests.pipeline.runtime_profile_fixture import (
     execution_profile as frozen_execution_profile,
@@ -65,7 +67,9 @@ class FakeRunStore:
             return RunClaim(existing, replayed=True)
         # These are control-plane test plans, not semantic acceptance evidence.
         stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
-        if execution_profile.schema_version == "pipeline-execution-profile-v2":
+        if execution_profile.is_semantic_only:
+            stages = ("source_prep", "context_prepare", "vlm")
+        elif execution_profile.schema_version == "pipeline-execution-profile-v2":
             stages = ("source_prep", "vlm")
         elif execution_profile.schema_version == "pipeline-execution-profile-v5":
             stages = ("source_prep", "vlm", "media_preflight")
@@ -146,12 +150,27 @@ class FakeAuthorizer:
         return self.allowed
 
 
+class FakeFullStageBinder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[PipelineRunSnapshot, str]] = []
+
+    async def bind(self, *, base: PipelineRunSnapshot, target_run_id: str) -> None:
+        self.calls.append((base, target_run_id))
+
+
 def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
     return PipelineRunRequest.from_mapping({"profile": "test", "source_root": source_root})
 
 
 def execution_profile(*, model_id: str = "doubao-seed-2-1-pro-260628") -> PipelineExecutionProfile:
     return frozen_execution_profile(model_id=model_id)
+
+
+def semantic_execution_profile() -> PipelineExecutionProfile:
+    return PipelineExecutionProfile.from_semantic_policies(
+        DoubaoVlmRequestPolicy("doubao-seed-2-1-pro-260628"),
+        retry_policy=GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (1, 2)),
+    )
 
 
 def _v2_execution_profile() -> PipelineExecutionProfile:
@@ -260,6 +279,82 @@ async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
     assert tuple(command.stage for command in first.snapshot.commands) == (
         "source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight",
     )
+
+
+@pytest.mark.asyncio
+async def test_full_vlm_recompute_creates_distinct_semantic_run_after_source_binding() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = semantic_execution_profile()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "b" * 32,
+        request(),
+        request().request_hash,
+        "succeeded",
+        (
+            PipelineCommand("source", "source_prep", "succeeded", uuid4()),
+            PipelineCommand("context", "context_prepare", "succeeded", uuid4()),
+            PipelineCommand("vlm", "vlm", "succeeded", uuid4()),
+        ),
+        7,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FakeFullStageBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        full_stage_vlm_recompute_binder=binder,
+    )
+    recompute = VlmFullStageRecomputeRequest(base.run_id, 7)
+
+    first = await service.recompute_full_vlm_stage(recompute, "recompute-1")
+    replay = await service.recompute_full_vlm_stage(recompute, "recompute-1")
+
+    assert first.replayed is False and replay.replayed is True
+    assert first.snapshot.run_id != base.run_id
+    assert tuple(command.stage for command in first.snapshot.commands) == (
+        "source_prep", "context_prepare", "vlm",
+    )
+    assert [target for _base, target in binder.calls] == [
+        first.snapshot.run_id,
+        first.snapshot.run_id,
+    ]
+    # Recompute authorization is the exact successful source binding, not a
+    # filesystem catalog lookup on the old host.
+    assert scheduler.enqueued == [first.snapshot.run_id, first.snapshot.run_id]
+
+
+@pytest.mark.asyncio
+async def test_full_vlm_recompute_rejects_base_profile_drift_before_binding() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    base_profile = semantic_execution_profile()
+    installed_profile = PipelineExecutionProfile.from_semantic_policies(
+        DoubaoVlmRequestPolicy("doubao-seed-2-1-pro-260629"),
+        retry_policy=GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (1, 2)),
+    )
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "c" * 32,
+        request(),
+        request().request_hash,
+        "succeeded",
+        (PipelineCommand("source", "source_prep", "succeeded", uuid4()),),
+        1,
+        base_profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FakeFullStageBinder()
+    service = DurablePipelineRunService(
+        store, scheduler, FakeAuthorizer(), execution_profile=installed_profile,
+        full_stage_vlm_recompute_binder=binder,
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="installed execution profile differs"):
+        await service.recompute_full_vlm_stage(VlmFullStageRecomputeRequest(base.run_id, 1), "recompute-2")
+    assert binder.calls == [] and scheduler.enqueued == []
 
 
 @pytest.mark.asyncio

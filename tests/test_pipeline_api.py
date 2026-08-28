@@ -162,6 +162,37 @@ async def test_status_and_resume_address_run_id(aiohttp_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_recompute_is_closed_and_reports_when_runtime_capability_is_disabled(
+    aiohttp_client,
+) -> None:
+    service, _, _ = _service()
+    client = await aiohttp_client(create_app(_agent(), pipeline_run_service=service))
+    run_id = "pipeline_run_" + "a" * 32
+
+    malformed = await client.post(
+        "/v1/pipeline/recompute",
+        headers={"Idempotency-Key": "recompute-1"},
+        json={"base_run_id": run_id},
+    )
+    unavailable = await client.post(
+        "/v1/pipeline/recompute",
+        headers={"Idempotency-Key": "recompute-1"},
+        json={
+            "base_run_id": run_id,
+            "expected_version": 0,
+            "stage": "vlm",
+            "completion_scope": "full_stage",
+        },
+    )
+
+    assert malformed.status == 400
+    assert unavailable.status == 422
+    assert (await unavailable.json())["error"]["message"] == (
+        "full VLM recompute is not enabled for this runtime"
+    )
+
+
+@pytest.mark.asyncio
 async def test_pipeline_endpoints_fail_closed_without_service(aiohttp_client) -> None:
     client = await aiohttp_client(create_app(_agent()))
 

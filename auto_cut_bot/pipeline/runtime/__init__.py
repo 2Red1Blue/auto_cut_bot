@@ -32,6 +32,7 @@ from .models import (
     PipelineStageOutcome,
     PipelineStageResult,
     RunClaim,
+    VlmFullStageRecomputeRequest,
     validate_idempotency_key,
     validate_run_id,
 )
@@ -46,6 +47,7 @@ from .ports import (
     SourceAuthorizationPort,
 )
 from .postgres import PostgresPipelineRunStore, PostgresPipelineScheduler
+from .recompute import FullStageVlmRecomputeBinder
 from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage, SourcePrepRootResolver
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
@@ -88,6 +90,8 @@ __all__ = (
     "PostgresPipelineScheduler",
     "ResumeNotAllowedError",
     "RunClaim",
+    "VlmFullStageRecomputeRequest",
+    "FullStageVlmRecomputeBinder",
     "SourceAuthorizationPort",
     "SourceCatalogEntry",
     "SourceDeniedError",

@@ -62,6 +62,7 @@ from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_r
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
+from .recompute import FullStageVlmRecomputeBinder
 from .semantic_authority import (
     SemanticRunAuthorityError,
     load_installed_semantic_run_authority,
@@ -788,6 +789,9 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
     )
     service = DurablePipelineRunService(
         control_store, scheduler, catalog, execution_profile=execution_profile,
+        full_stage_vlm_recompute_binder=(
+            FullStageVlmRecomputeBinder(kernel_store) if owner_maps is None else None
+        ),
     )
     worker = DurablePipelineWorker(
         worker_id=f"pipeline-http-{os.getpid()}", service=service, scheduler=scheduler,

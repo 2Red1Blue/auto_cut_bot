@@ -13,6 +13,7 @@ from .models import (
     PipelineStageContext,
     PipelineStageResult,
     RunClaim,
+    VlmFullStageRecomputeRequest,
 )
 
 
@@ -73,6 +74,12 @@ class PipelineRunService(Protocol):
     async def status(self, run_id: str) -> PipelineRunSnapshot: ...
 
     async def resume(self, run_id: str, *, expected_version: int) -> PipelineRunSnapshot: ...
+
+    async def recompute_full_vlm_stage(
+        self,
+        request: VlmFullStageRecomputeRequest,
+        idempotency_key: str,
+    ) -> RunClaim: ...
 
     async def reconstruct(self) -> tuple[str, ...]: ...
 

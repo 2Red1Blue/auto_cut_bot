@@ -26,8 +26,9 @@ manifest hash，供独立读者审计。
    Blob bytes；仅基于已持久化 origin manifest 和显式等价的 `SourceOperationPolicy`。
 3. 用真实 PostgreSQL 测试 origin/target 两 Job：目标可读相同 Blob；无 binding、策略不等、
    origin Receipt 伪造、目标 claim 缺失均拒绝；重复执行不创建新 Receipt。
-4. 其后再接 Pipeline 的显式 `recompute` HTTP Run：新 control-plane run 只调该 binding，
-   再调 context/VLM。旧 run 与 Receipt 不可写。
+4. 已接入 Pipeline 的显式 `recompute` HTTP Run（第一切片只支持完整 `full_stage`）：新
+   control-plane run 先调该 binding，再调 context/VLM；父 Run 与 Receipt 不可写。
+   逐集 `selected_only`、预算/hold 和策略变更计划仍留待下一切片。
 
 ## 不在本切片中
 

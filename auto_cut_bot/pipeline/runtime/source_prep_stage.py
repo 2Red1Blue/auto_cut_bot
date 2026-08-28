@@ -17,6 +17,7 @@ from auto_cut_bot.pipeline.source_prep import (
     SourceOperationPurpose,
     SourcePrepStore,
     SourcePurposeDeniedError,
+    read_persisted_prepared_sources_bundle,
 )
 
 from .errors import PipelineRunValidationError
@@ -104,7 +105,45 @@ class SourcePrepPipelineStage:
             source_root=self._root_resolver.resolve(context),
         )
 
+    def _reused_binding_outcome(
+        self,
+        context: PipelineStageContext,
+        outcome: CommandOutcome | None = None,
+    ) -> CommandOutcome | None:
+        """Replay an already-bound SourcePrep result without host filesystem I/O.
+
+        This intentionally applies only to the dedicated Kernel source-reuse
+        writer. Ordinary SourcePrep still resolves its current configured root
+        and uses the normal command replay path.
+        """
+
+        job = self._job(context)
+        if outcome is None:
+            outcome = self._store.read_outcome(
+                job, source_prep_kernel_idempotency_key(context.run_id)
+            )
+        if outcome is None or outcome.state in ("pending", "running"):
+            return None
+        checker = getattr(self._store, "is_source_reuse_binding", None)
+        if not callable(checker) or not checker(job, outcome):
+            return None
+        if outcome.state == "succeeded":
+            # Decode the exact persisted manifest before projecting success.
+            # This proves the target Job claim and strict binding pair remain
+            # intact; it never resolves the origin root or reads a local path.
+            read_persisted_prepared_sources_bundle(
+                self._store,
+                job=job,
+                outcome=outcome,
+                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                artifact_revision=1,
+            )
+        return outcome
+
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
+        bound = await asyncio.to_thread(self._reused_binding_outcome, context)
+        if bound is not None:
+            return self._project(context, bound)
         request = self._request(context)
         result = await asyncio.to_thread(self._command.execute, request)
         return self._project(context, result.outcome)
@@ -117,6 +156,9 @@ class SourcePrepPipelineStage:
             job,
             idempotency_key,
         )
+        bound = await asyncio.to_thread(self._reused_binding_outcome, context, existing)
+        if bound is not None:
+            return self._project(context, bound)
         if existing is not None and existing.state in ("denied", "failed"):
             # A terminal rejection Receipt is sufficient recovery authority. In
             # particular, do not make an already-terminal failure depend on the

@@ -1452,6 +1452,59 @@ class PipelineRunRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class VlmFullStageRecomputeRequest:
+    """Closed request for a new full VLM Run based on frozen source evidence.
+
+    This first public recompute slice deliberately has no episode selection:
+    its result is a complete new VLM batch, never a partial batch labelled as
+    a full series.  A future selected-only API needs its own result aggregate.
+    """
+
+    base_run_id: str
+    expected_version: int
+    stage: Literal["vlm"] = "vlm"
+    completion_scope: Literal["full_stage"] = "full_stage"
+
+    def __post_init__(self) -> None:
+        validate_run_id(self.base_run_id)
+        if type(self.expected_version) is not int or self.expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if self.stage != "vlm":
+            raise PipelineRunValidationError("recompute stage must be 'vlm'")
+        if self.completion_scope != "full_stage":
+            raise PipelineRunValidationError("recompute completion_scope must be 'full_stage'")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> VlmFullStageRecomputeRequest:
+        expected = {"base_run_id", "expected_version", "stage", "completion_scope"}
+        if set(value) != expected:
+            raise PipelineRunValidationError(
+                "recompute body must contain only base_run_id, expected_version, stage and completion_scope"
+            )
+        return cls(
+            cast(str, value["base_run_id"]),
+            cast(int, value["expected_version"]),
+            cast(Literal["vlm"], value["stage"]),
+            cast(Literal["full_stage"], value["completion_scope"]),
+        )
+
+    def to_mapping(self) -> dict[str, str | int]:
+        return {
+            "base_run_id": self.base_run_id,
+            "completion_scope": self.completion_scope,
+            "expected_version": self.expected_version,
+            "stage": self.stage,
+        }
+
+    @property
+    def request_hash(self) -> str:
+        encoded = json.dumps(
+            self.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineCommand:
     """Persisted command status and optional durable Receipt identity."""
 
