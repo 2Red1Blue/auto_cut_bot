@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,7 @@ class Prepared:
     store: PostgresRuntimeStore
     request: GenerateVlmEvidenceRequest
     source_reference: CommittedArtifactMemberReference
+    source_root: Path
 
 
 @pytest.fixture
@@ -130,11 +132,21 @@ def prepared(tmp_path: Path) -> Prepared:
         source_manifest_sha256=source.reference.content_hash,
         source_provenance_sha256=source.canonical_hash,
     )
-    return Prepared(store, request, CommittedArtifactMemberReference(
-        source.receipt_id, source.artifact_set_id, 0, source.reference.scope,
-        source.reference.artifact_type, source.reference.logical_id,
-        source.reference.revision, source.reference.content_hash,
-    ))
+    return Prepared(
+        store,
+        request,
+        CommittedArtifactMemberReference(
+            source.receipt_id,
+            source.artifact_set_id,
+            0,
+            source.reference.scope,
+            source.reference.artifact_type,
+            source.reference.logical_id,
+            source.reference.revision,
+            source.reference.content_hash,
+        ),
+        root,
+    )
 
 
 def _raw() -> bytes:
@@ -203,7 +215,7 @@ def test_source_v4_generation_batch_reopen_and_zero_provider_replay(prepared: Pr
 
 
 def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> None:
-    """The aggregate verifier must accept the exact persisted V7+ Pack shape."""
+    """A fresh consumer finalizes a Pack-bound child after the source path vanishes."""
 
     request = replace(
         prepared.request,
@@ -212,14 +224,23 @@ def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> Non
             ContextSelectionPolicy(), "metadata_unconfigured"
         ),
     )
-    result = GenerateVlmEvidenceCommand(prepared.store, FixtureProvider(_raw())).execute(request)
+    provider = FixtureProvider(_raw())
+    result = GenerateVlmEvidenceCommand(prepared.store, provider).execute(request)
     assert result.outcome.state == "succeeded"
     contextual = replace(prepared, request=request)
-    batch = FinalizeVlmBatchCommand(prepared.store).execute(_batch(contextual))
-    assert batch.outcome.state == "succeeded" and batch.artifact is not None
+    before = _history(request.job)
+    # A different machine need not mount the original video path after SourcePrep
+    # committed the proxy and source-manifest blobs.  Replay must remain a pure
+    # durable read and must not obtain another provider result.
+    shutil.rmtree(prepared.source_root)
     restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    replay = GenerateVlmEvidenceCommand(restarted, NoProvider()).execute(request)
+    assert replay.outcome.receipt_id == result.outcome.receipt_id
+    batch = FinalizeVlmBatchCommand(restarted).execute(_batch(replace(contextual, store=restarted)))
+    assert batch.outcome.state == "succeeded" and batch.artifact is not None
     reopened = restarted.read_committed_vlm_generation_child(request.job, request.idempotency_key)
     assert reopened.request_hash == request.request_hash
+    assert provider.calls == 1 and _history(request.job) != before
 
 
 class ForgedPackStore(PostgresRuntimeStore):

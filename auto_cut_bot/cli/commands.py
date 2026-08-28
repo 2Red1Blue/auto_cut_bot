@@ -414,7 +414,7 @@ def serve(
 
 @app.command(name="pipeline-serve")
 def pipeline_serve(
-    port: int = typer.Option(18766, "--port", "-p", help="Pipeline HTTP control-plane port"),
+    port: int = typer.Option(18768, "--port", "-p", help="Pipeline HTTP control-plane port"),
     host: str = typer.Option("127.0.0.1", "--host", "-H", help="Bind address"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show pipeline runtime logs"),
 ):

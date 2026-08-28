@@ -19,12 +19,13 @@ story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
 The installed semantic-only policy now selects
-`vlm-semantic-pack-v7-context-assisted`: the VLM receives the attached video,
+`vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core`: the VLM receives the attached video,
 the closed semantic-output contract, and only a bounded, immutable
 `WindowContextPack` produced by the immediately preceding Context Prepare
 stage. It still never receives ASR/VAD/subtitle text, API shot/highlight lists,
-frame tables or physical-cut endpoints. The parser and 32768 output-token budget
-are unchanged.
+frame tables or physical-cut endpoints. V12 retains the V8 core-observation
+schema and adds model-side reciprocal causal-edge validation; the parser and
+32768 output-token budget are unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
 [Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
@@ -43,9 +44,10 @@ different thinking modes are not interchangeable.
 > behavior in a local environment file: the current runtime has not yet
 > implemented `ArkRequestScope/v1`.
 
-Before enabling v5, stop all older Pipeline workers and apply migration
-`0029_vlm_explicit_thinking.sql` after the existing migrations. The v10 profile
-has a closed five-field parameter variant for v5; v9/full-pipeline is not widened.
+Before enabling v5, stop all older Pipeline workers and apply every pending
+Kernel migration in numeric order. The v10 profile has a closed five-field
+parameter variant for v5; later VLM prompt registrations (`0030` onward) are
+also required for their corresponding authority profile. Full-pipeline is not widened.
 The outbox does not yet partition workers by supported adapter version, so do
 not run pre-v5 workers against new v5 work. No historical rows are rewritten.
 
@@ -123,14 +125,14 @@ private environment, then start the Pipeline-only server on loopback:
 
 ```bash
 uv sync --extra api
-uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18766
+uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18768
 ```
 
 Submit one run with a new idempotency key and the source reference from the
 catalog:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18766/v1/pipeline/run \
+curl -sS -X POST http://127.0.0.1:18768/v1/pipeline/run \
   -H "Authorization: Bearer <server-api-key>" \
   -H "Idempotency-Key: semantic-42000021919-001" \
   -H "Content-Type: application/json" \
@@ -180,7 +182,7 @@ awaiting calibration still only wakes the media-preflight command. It is
 returned by the status endpoint as a concurrency precondition:
 
 ```bash
-curl -sS -X POST http://127.0.0.1:18766/v1/pipeline/resume \
+curl -sS -X POST http://127.0.0.1:18768/v1/pipeline/resume \
   -H "Authorization: Bearer <server-api-key>" \
   -H "Content-Type: application/json" \
   --data '{"run_id":"pipeline_run_...","expected_version":<status-version>}'
