@@ -171,6 +171,11 @@ V7 的 response schema 必须沿用 V6 的 `video_observation` 单一 support �
 只改变解释辅助，不能重新开放 `supporting_frame_ids` 或 PTS 分支。否则模型会得到与
 V7 输入边界矛盾的可选字段，而 Kernel 必然拒绝其伪造或越界的物理式引用。
 
+当真实提供方在候选的编辑性枚举字段上连续失配时，必须以新 prompt/schema 版本拆分
+“核心观察”与“候选假设”，而不是放宽 parser。V8 `context-assisted-core-observations`
+保留完整实体/事实/事件图并把 `candidate_hypotheses` 约束为空数组；后续候选阶段从已经
+Admission 通过的图生成高光和钩子。V7 历史请求保持原字节和原结果。
+
 `GenerateVlmEvidenceRequest` 的新 v7 变体必须额外绑定：
 
 ```text

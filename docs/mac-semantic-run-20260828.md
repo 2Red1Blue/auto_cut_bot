@@ -100,3 +100,16 @@ frame-anchor Schema；模型因此合法地产生了该分支，而 parser 正�
 同次修复还将“完成但不合约的结构化 VLM 响应”接入已有的三次 Generation retry
 预算：每次重试拥有新的 provider idempotency key，保留同一不可变输入和失败的结构化
 原因；耗尽才写终态失败 Receipt。不会修改或掩盖本次被拒绝的历史 run。
+
+## V8 后续运行策略：核心观察与候选生成分离
+
+该 run 的三个真实 Attempt 均已保留。前两次模型已成功返回主语义图，但分别在
+`candidate_hypotheses` 的 `tags` canonical 顺序和未注册 `narrative_functions` 上失败；
+第三次不是严格 JSON。它们证明候选的编辑性枚举会拖累核心观察采集，而不证明视频事实
+本身不可用。
+
+因此新增 immutable prompt/schema `v8-context-assisted-core-observations`：仍输出实体、
+事实、事件、连续性和摘要，但 Schema 强制 `candidate_hypotheses=[]`。它不是“丢弃高光”，
+而是把高光/钩子假设交给后续只读取已验证语义图的候选阶段。V8 是新 profile、请求 hash
+和新 run；V7 及所有历史 Receipt 均不修改。迁移 `0033` 已在本机 PostgreSQL 应用，升级
+前后 pipeline run/command 的计数和校验值相同。

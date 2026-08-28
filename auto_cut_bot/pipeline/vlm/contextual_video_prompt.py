@@ -13,6 +13,9 @@ from autocut_kernel.vlm import WindowManifest
 from .bounded_video_prompt import build_vlm_bounded_video_prompt
 
 VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION = "vlm-semantic-pack-v7-context-assisted"
+VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v8-context-assisted-core-observations"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -22,19 +25,33 @@ VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "ASR、VAD、字幕、shot/highlight 或任何物理剪辑端点。\n"
     "剧情辅助：\n"
 )
+VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE
+    + "本轮只采集可由视频支持的核心观察图。candidate_hypotheses 必须严格输出空数组 []；"
+    "不要尝试评分、命名或提出高光/钩子。后续阶段会仅依据已通过校验的事实和事件生成候选。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
     manifest: WindowManifest,
     context_pack: WindowContextPack,
+    *,
+    prompt_version: str = VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
 ) -> str:
     if type(manifest) is not WindowManifest:  # noqa: E721
         raise TypeError("contextual prompt requires an exact WindowManifest")
     if type(context_pack) is not WindowContextPack:  # noqa: E721
         raise TypeError("contextual prompt requires an exact WindowContextPack")
+    templates = {
+        VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION: VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE,
+        VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION: VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_TEMPLATE,
+    }
+    template = templates.get(prompt_version)
+    if template is None:
+        raise ValueError("prompt version is not a registered contextual video prompt")
     return (
         build_vlm_bounded_video_prompt(manifest)
         + "\n"
-        + VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE
+        + template
         + context_pack.rendered_context
     )

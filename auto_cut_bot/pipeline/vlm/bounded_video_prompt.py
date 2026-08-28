@@ -137,6 +137,21 @@ def vlm_bounded_video_response_schema() -> dict[str, object]:
     return schema
 
 
+def vlm_core_video_response_schema() -> dict[str, object]:
+    """Return the V8 core-observation schema without proposal generation.
+
+    Candidate hypotheses mix editorial judgement with the factual graph.  They
+    are deferred until the graph passes admission; a closed zero-length array
+    keeps the v4 wire shape while excluding proposal-only enum fields here.
+    """
+
+    schema = vlm_bounded_video_response_schema()
+    properties = _object(schema["properties"])
+    candidates = _object(properties["candidate_hypotheses"])
+    candidates["maxItems"] = 0
+    return schema
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -144,6 +159,12 @@ def _canonical_json(value: object) -> str:
 def vlm_bounded_video_response_schema_json() -> str:
     """Return canonical schema identity text; API ordering is a separate view."""
     return _canonical_json(vlm_bounded_video_response_schema())
+
+
+def vlm_core_video_response_schema_json() -> str:
+    """Return canonical JSON for the registered V8 core-observation schema."""
+
+    return _canonical_json(vlm_core_video_response_schema())
 
 
 def ordered_bounded_video_schema(schema: object) -> dict[str, object]:

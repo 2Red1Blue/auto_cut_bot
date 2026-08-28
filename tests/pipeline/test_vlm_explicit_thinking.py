@@ -205,7 +205,7 @@ def test_semantic_authority_explicitly_disables_thinking_without_changing_budget
     policy = load_installed_semantic_run_authority().vlm_policy
     assert policy.adapter_strategy_version == _V5
     assert policy.thinking_type == "disabled"
-    assert policy.prompt_version == "vlm-semantic-pack-v7-context-assisted"
+    assert policy.prompt_version == "vlm-semantic-pack-v8-context-assisted-core-observations"
     assert policy.max_output_tokens == factory_fixture._policy().max_output_tokens == 32768
     assert factory_fixture._policy().thinking_type is None
 

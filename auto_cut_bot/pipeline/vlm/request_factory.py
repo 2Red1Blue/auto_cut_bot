@@ -33,8 +33,10 @@ from auto_cut_bot.pipeline.source_prep.command import (
 from .bounded_video_prompt import (
     VLM_BOUNDED_VIDEO_PROMPT_VERSION,
     vlm_bounded_video_response_schema_json,
+    vlm_core_video_response_schema_json,
 )
 from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -75,6 +77,8 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
+        if prompt_version == VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION:
+            return vlm_core_video_response_schema_json()
         # V7 only adds an immutable narrative-context projection to the V6
         # video-observation contract.  It must retain the V6 response schema:
         # accepting the older frame-anchor branch contradicts the prompt and
@@ -220,6 +224,7 @@ class DoubaoVlmRequestPolicy:
                 VLM_VIDEO_PROMPT_VERSION,
                 VLM_BOUNDED_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
             }
         ):
             raise ValueError("V4 video prompt and parser must be selected together")
@@ -340,9 +345,12 @@ def build_doubao_vlm_request(
         raise TypeError("retry_policy must be an exact GenerationRetryPolicy")
     if context_pack is not None and type(context_pack) is not WindowContextPack:  # noqa: E721
         raise TypeError("context_pack must be an exact WindowContextPack when present")
-    contextual_prompt = policy.prompt_version == VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION
+    contextual_prompt = policy.prompt_version in {
+        VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    }
     if contextual_prompt != (context_pack is not None):
-        raise ValueError("prompt v7 requires exactly one WindowContextPack; v6 and earlier forbid it")
+        raise ValueError("contextual video prompt requires exactly one WindowContextPack")
     if type(episode_index) is not int or not 0 <= episode_index < len(  # noqa: E721
         source_bundle.prepared.episodes
     ):
@@ -361,7 +369,11 @@ def build_doubao_vlm_request(
         manifest_set=prepared_episode.manifest_set,
         proxy_blob=prepared_episode.proxy_blob,
         prompt_template=(
-            build_vlm_contextual_video_prompt(prepared_episode.manifest, context_pack)
+            build_vlm_contextual_video_prompt(
+                prepared_episode.manifest,
+                context_pack,
+                prompt_version=policy.prompt_version,
+            )
             if contextual_prompt and context_pack is not None
             else build_vlm_prompt(prepared_episode.manifest, prompt_version=policy.prompt_version)
         ),

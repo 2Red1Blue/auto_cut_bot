@@ -64,8 +64,8 @@ DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
 })
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
 _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
-_CONTEXT_PACK_PAYLOAD_FIELDS = frozenset({"context_pack", "context_pack_sha256"})
-_EXPECTED_PAYLOAD_FIELDS = frozenset(
+_CONTEXT_PACK_PAYLOAD_FIELDS: frozenset[str] = frozenset({"context_pack", "context_pack_sha256"})
+_EXPECTED_PAYLOAD_FIELDS: frozenset[str] = frozenset(
     {
         "model_id",
         "parse_policy",
@@ -483,11 +483,15 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         raise ValueError("request payload must be an object")
     payload = cast(dict[str, object], value)
     is_video = payload.get("parser_strategy_version") == VLM_PARSER_V4
-    contextual = _CONTEXT_PACK_PAYLOAD_FIELDS <= frozenset(payload)
-    expected_fields = _EXPECTED_PAYLOAD_FIELDS | (
-        _CONTEXT_PACK_PAYLOAD_FIELDS if contextual else frozenset()
-    ) | ({"parser_contract_sha256"} if is_video else frozenset())
-    if frozenset(payload) != expected_fields:
+    payload_keys = frozenset(payload)
+    contextual = _CONTEXT_PACK_PAYLOAD_FIELDS <= payload_keys
+    expected_field_set: set[str] = set(_EXPECTED_PAYLOAD_FIELDS)
+    if contextual:
+        expected_field_set.update(_CONTEXT_PACK_PAYLOAD_FIELDS)
+    if is_video:
+        expected_field_set.add("parser_contract_sha256")
+    expected_fields = frozenset(expected_field_set)
+    if payload_keys != expected_fields:
         raise ValueError("request payload does not match the closed Ark adapter contract")
     if is_video:
         require_parser_contract(VLM_PARSER_V4, cast(str | None, payload["parser_contract_sha256"]))
@@ -497,7 +501,11 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         raise ValueError("request payload provider_id mismatch")
     if contextual:
         context_pack = payload["context_pack"]
-        if type(context_pack) is not dict or payload["context_pack_sha256"] != canonical_sha256(context_pack):  # noqa: E721
+        if (
+            type(context_pack) is not dict  # noqa: E721
+            or payload["context_pack_sha256"]
+            != canonical_sha256(cast(dict[str, object], context_pack))
+        ):
             raise ValueError("context pack must be an exact hash-bound mapping")
     if not isinstance(payload["response_schema"], dict):
         raise ValueError("response_schema must be an object")
@@ -521,22 +529,36 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
     from .bounded_video_prompt import (
         VLM_BOUNDED_VIDEO_PROMPT_VERSION,
         vlm_bounded_video_response_schema_json,
+        vlm_core_video_response_schema_json,
     )
     from .video_prompt import VLM_VIDEO_PROMPT_VERSION
 
     prompt_version = payload["prompt_version"]
-    from .contextual_video_prompt import VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION
+    from .contextual_video_prompt import (
+        VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+    )
 
     contextual = _CONTEXT_PACK_PAYLOAD_FIELDS <= frozenset(payload)
     if is_video and prompt_version not in {
         VLM_VIDEO_PROMPT_VERSION,
         VLM_BOUNDED_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     }:
         raise ValueError("unregistered video prompt version")
-    if (prompt_version == VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION) != contextual:
-        raise ValueError("prompt v7 requires exactly one hash-bound context pack")
-    if prompt_version != VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+    if (
+        prompt_version in {
+            VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+        }
+    ) != contextual:
+        raise ValueError("contextual video prompt requires exactly one hash-bound context pack")
+    if prompt_version not in {
+        VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    }:
         return
     if not is_video:
         raise ValueError("bounded video prompt requires the frozen V4 parser")
@@ -544,8 +566,13 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
     if parameters["adapter_strategy_version"] != DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION:
         raise ValueError("bounded video prompt requires the explicit-thinking adapter")
     schema_json = json.dumps(payload["response_schema"], ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    if schema_json != vlm_bounded_video_response_schema_json():
-        raise ValueError("bounded video prompt requires its exact registered schema")
+    expected_schema = (
+        vlm_core_video_response_schema_json()
+        if prompt_version == VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION
+        else vlm_bounded_video_response_schema_json()
+    )
+    if schema_json != expected_schema:
+        raise ValueError("video prompt requires its exact registered schema")
 
 
 def _request_parameters(value: object) -> dict[str, str | int | float]:

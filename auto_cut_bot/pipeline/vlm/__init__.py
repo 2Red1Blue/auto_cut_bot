@@ -7,6 +7,7 @@ from .ark_file_cache import (
     PostgresArkFileCache,
 )
 from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "QwenVlmProvider",
     "QwenVlmProviderConfig",
     "VLM_PROMPT_VERSION",
+    "VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION",
     "VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION",
     "VLM_RESPONSE_SCHEMA",
     "build_vlm_prompt",

@@ -11,8 +11,12 @@ from autocut_kernel.context_pack import (
     normalize_narrative_context,
 )
 
-from auto_cut_bot.pipeline.vlm.bounded_video_prompt import vlm_bounded_video_response_schema
+from auto_cut_bot.pipeline.vlm.bounded_video_prompt import (
+    vlm_bounded_video_response_schema,
+    vlm_core_video_response_schema,
+)
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -70,7 +74,7 @@ def test_v7_request_binds_exact_context_pack_and_v6_refuses_it() -> None:
     assert payload["context_pack_sha256"] == pack.canonical_hash
     assert request.context_pack == pack
     assert "Alice arrives." in request.prompt_template
-    with pytest.raises(ValueError, match="prompt v7 requires"):
+    with pytest.raises(ValueError, match="contextual video prompt requires"):
         build_doubao_vlm_request(
             source_bundle=bundle,
             episode_index=0,
@@ -80,7 +84,7 @@ def test_v7_request_binds_exact_context_pack_and_v6_refuses_it() -> None:
             policy=v7,
             retry_policy=factory_fixture._retry_policy(),
         )
-    with pytest.raises(ValueError, match="prompt v7 requires"):
+    with pytest.raises(ValueError, match="contextual video prompt requires"):
         build_doubao_vlm_request(
             source_bundle=bundle,
             episode_index=0,
@@ -106,3 +110,21 @@ def test_v7_contextual_prompt_keeps_v6_video_only_schema() -> None:
     support = schema["properties"]["entities"]["items"]["properties"]["support"]
     assert support["properties"]["support_kind"]["const"] == "video_observation"
     assert "supporting_frame_ids" not in support["properties"]
+
+
+def test_v8_contextual_core_prompt_forbids_candidate_generation() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "candidate_hypotheses 必须严格输出空数组 []" in prompt
+    assert schema == vlm_core_video_response_schema()
+    assert schema["properties"]["candidate_hypotheses"]["maxItems"] == 0
