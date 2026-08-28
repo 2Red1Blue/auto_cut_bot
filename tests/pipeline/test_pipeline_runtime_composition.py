@@ -323,6 +323,32 @@ def test_explicit_semantic_only_plan_composes_without_media_authority(
     assert runtime.worker._max_batch_size == 1
 
 
+def test_semantic_only_replay_composes_without_metadata_credentials(
+    tmp_path: Path,
+) -> None:
+    """A host resuming a committed PackSet must not need the fetch secrets."""
+    environment = _environment(tmp_path)
+    environment[PIPELINE_PLAN_ENV] = "semantic_only"
+    for name in (
+        PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV,
+        PIPELINE_METADATA_API_BASE_URL_ENV,
+        PIPELINE_METADATA_API_KEY_ENV,
+        PIPELINE_CONTEXT_OWNER_MAPS_ENV,
+    ):
+        del environment[name]
+
+    runtime = compose_pipeline_runtime_from_environment(environment)
+
+    assert runtime is not None
+    context_stage = runtime.worker._runner._registry.require("context_prepare")
+    vlm_stage = runtime.worker._runner._registry.require("vlm")
+    assert context_stage._client is None  # pyright: ignore[reportPrivateUsage]
+    assert vlm_stage._context_owner_maps is None  # pyright: ignore[reportPrivateUsage]
+
+
 def test_semantic_only_plan_rejects_doubao_drift_before_provider_or_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

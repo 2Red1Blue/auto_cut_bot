@@ -41,6 +41,7 @@ from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4
 from auto_cut_bot.pipeline.context_prepare import (
     ContextPrepareStore,
     PrepareWindowContextRequest,
+    find_committed_window_context_packs,
     read_committed_window_context_packs,
 )
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
@@ -296,6 +297,23 @@ class VlmPipelineStage:
             context_packs = read_committed_window_context_packs(
                 self._store, context_request, context_outcome
             )
+        elif context.execution_profile.is_semantic_only:
+            # A resumed run must use the exact PackSet it already committed.
+            # No API endpoint, credential, or owner-map is needed (or allowed)
+            # on this path.  The Store verifies the producer, scope and immutable
+            # artifact member before the Pack can influence a V7 request.
+            committed_context = find_committed_window_context_packs(
+                self._store,
+                job=job,
+                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                artifact_revision=_ARTIFACT_REVISION,
+                source_bundle=source_bundle,
+            )
+            if committed_context is None:
+                raise PipelineRunValidationError(
+                    "no committed WindowContextPack is available; a new context preparation requires explicit API configuration"
+                )
+            context_packs = committed_context.packs
         selection_strategy, _max_concurrency = _episode_selection_strategy(policy)
         if (
             self._stop_after_probe

@@ -74,6 +74,14 @@ class ContextPrepareStore(Protocol):
         expected_execution_kind: str,
     ) -> PersistedCommittedArtifactSet: ...
 
+    def find_committed_context_pack_set(
+        self,
+        job: Job,
+        *,
+        artifact_scope: ArtifactScope,
+        artifact_revision: int,
+    ) -> PersistedCommittedArtifactSet | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class PrepareWindowContextRequest:
@@ -159,6 +167,14 @@ class PrepareWindowContextResult:
     prepared: PreparedWindowContextSet | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CommittedWindowContextPacks:
+    """The exact already-committed PackSet for one durable pipeline run."""
+
+    receipt_id: UUID
+    packs: tuple[WindowContextPack, ...]
+
+
 def read_committed_window_context_packs(
     store: ContextPrepareStore,
     request: PrepareWindowContextRequest,
@@ -181,14 +197,61 @@ def read_committed_window_context_packs(
         expected_command_name=COMMAND_NAME,
         expected_execution_kind="deterministic",
     )
+    return _decode_committed_window_context_packs(
+        record,
+        artifact_scope=request.artifact_scope,
+        artifact_revision=request.artifact_revision,
+        source_bundle=request.source_bundle,
+        expected_owner_maps_sha256=request.owner_maps.canonical_hash,
+    ).packs
+
+
+def find_committed_window_context_packs(
+    store: ContextPrepareStore,
+    *,
+    job: Job,
+    artifact_scope: ArtifactScope,
+    artifact_revision: int,
+    source_bundle: PersistedPreparedSources,
+) -> CommittedWindowContextPacks | None:
+    """Find an exact durable PackSet for replay without refetching an API.
+
+    The Store query is deliberately constrained by Job, scope, producer and
+    immutable artifact identity.  This is the cross-host resume path: it does
+    not consult an environment owner-map, endpoint, or credential.
+    """
+    record = store.find_committed_context_pack_set(
+        job,
+        artifact_scope=artifact_scope,
+        artifact_revision=artifact_revision,
+    )
+    if record is None:
+        return None
+    return _decode_committed_window_context_packs(
+        record,
+        artifact_scope=artifact_scope,
+        artifact_revision=artifact_revision,
+        source_bundle=source_bundle,
+        expected_owner_maps_sha256=None,
+    )
+
+
+def _decode_committed_window_context_packs(
+    record: PersistedCommittedArtifactSet,
+    *,
+    artifact_scope: ArtifactScope,
+    artifact_revision: int,
+    source_bundle: PersistedPreparedSources,
+    expected_owner_maps_sha256: str | None,
+) -> CommittedWindowContextPacks:
     members = record.artifacts
     matching = tuple(
         member for member in members
         if (
             member.artifact_type == CONTEXT_PACK_SET_ARTIFACT_TYPE
             and member.logical_id == CONTEXT_PACK_SET_LOGICAL_ID
-            and member.scope == request.artifact_scope
-            and member.revision == request.artifact_revision
+            and member.scope == artifact_scope
+            and member.revision == artifact_revision
         )
     )
     if len(matching) != 1:
@@ -200,18 +263,18 @@ def read_committed_window_context_packs(
     if type(decoded) is not dict:  # noqa: E721
         raise ValueError("committed context pack set must be an object")
     payload = cast(dict[str, object], decoded)
-    if type(payload) is not dict or payload.get("source_provenance_sha256") != request.source_bundle.canonical_hash:
+    if type(payload) is not dict or payload.get("source_provenance_sha256") != source_bundle.canonical_hash:
         raise ValueError("committed context pack provenance does not match source preparation")
-    if payload.get("owner_maps_sha256") != request.owner_maps.canonical_hash:
+    if expected_owner_maps_sha256 is not None and payload.get("owner_maps_sha256") != expected_owner_maps_sha256:
         raise ValueError("committed context pack owner map differs")
     values = payload.get("packs")
     if type(values) is not list:  # noqa: E721
         raise ValueError("committed context pack membership differs from source episodes")
     pack_values = cast(list[object], values)
-    if len(pack_values) != len(request.source_bundle.prepared.episodes):
+    if len(pack_values) != len(source_bundle.prepared.episodes):
         raise ValueError("committed context pack membership differs from source episodes")
     packs = tuple(WindowContextPack.from_mapping(item) for item in pack_values)
-    return packs
+    return CommittedWindowContextPacks(record.receipt_id, packs)
 
 
 class PrepareWindowContextCommand:
@@ -347,6 +410,7 @@ def _diagnostic_code(error: Exception) -> str:
 
 __all__ = [
     "COMMAND_NAME",
+    "CommittedWindowContextPacks",
     "CONTEXT_PACK_SET_ARTIFACT_TYPE",
     "CONTEXT_PACK_SET_LOGICAL_ID",
     "ContextPrepareStore",
@@ -354,5 +418,6 @@ __all__ = [
     "PrepareWindowContextRequest",
     "PrepareWindowContextResult",
     "PreparedWindowContextSet",
+    "find_committed_window_context_packs",
     "read_committed_window_context_packs",
 ]

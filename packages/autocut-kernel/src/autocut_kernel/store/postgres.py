@@ -4688,6 +4688,106 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    def find_committed_context_pack_set(
+        self,
+        job: Job,
+        *,
+        artifact_scope: ArtifactScope,
+        artifact_revision: int,
+    ) -> PersistedCommittedArtifactSet | None:
+        """Locate the sole committed Context Prepare output for durable replay.
+
+        This intentionally does *not* read a logical head.  The lookup is
+        bound to the exact job scope, registered producer and immutable member
+        identity, so a new host can resume a run without an API credential or
+        a process-local episode-map configuration.
+        """
+        if type(job) is not Job or type(artifact_scope) is not ArtifactScope:  # noqa: E721
+            raise StoreValidationError("context replay lookup requires exact Job and ArtifactScope")
+        if type(artifact_revision) is not int or artifact_revision < 1:  # noqa: E721
+            raise StoreValidationError("context replay lookup requires a positive revision")
+
+        def operation(cursor: DbCursor) -> PersistedCommittedArtifactSet | None:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                return None
+            job_id, profile = job_row
+            if _text(profile) != job.profile:
+                raise JobProfileMismatchError("job_key belongs to a different profile")
+            cursor.execute(
+                """
+                SELECT receipt.receipt_id, receipt.result_artifact_set_id
+                  FROM runtime.command_receipts AS receipt
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = receipt.command_slot_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = receipt.result_artifact_set_id
+                   AND artifact_set.command_slot_id = slot.command_slot_id
+                   AND artifact_set.job_id = slot.job_id
+                  JOIN runtime.artifact_set_members AS member
+                    ON member.artifact_set_id = artifact_set.artifact_set_id
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = member.artifact_set_id
+                   AND artifact.job_id = slot.job_id
+                 WHERE slot.job_id = %s
+                   AND slot.command_name = 'PrepareWindowContextCommand'
+                   AND slot.execution_kind = 'deterministic'
+                   AND slot.state = 'succeeded'
+                   AND receipt.outcome = 'succeeded'
+                   AND artifact.namespace = %s
+                   AND artifact.scope_kind = %s
+                   AND artifact.scope_key = %s
+                   AND artifact.artifact_type = 'window_context_pack_set'
+                   AND artifact.logical_id = 'window_context_pack_set'
+                   AND artifact.revision = %s
+                 ORDER BY receipt.receipt_id
+                """,
+                (
+                    UUID(str(job_id)), artifact_scope.namespace, artifact_scope.kind,
+                    artifact_scope.key, artifact_revision,
+                ),
+            )
+            rows: list[tuple[object, ...]] = []
+            while (row := cursor.fetchone()) is not None:
+                rows.append(row)
+            if not rows:
+                return None
+            if len(rows) != 1:
+                raise SemanticInputIntegrityError("context replay lookup is ambiguous")
+            receipt_id, artifact_set_id = rows[0]
+            committed = self._read_exact_committed_set_by_ids(
+                cursor,
+                job,
+                receipt_id=UUID(str(receipt_id)),
+                artifact_set_id=UUID(str(artifact_set_id)),
+            )
+            if committed.command_name != "PrepareWindowContextCommand" or committed.execution_kind != "deterministic":
+                raise SemanticInputIntegrityError("context replay producer identity differs")
+            return PersistedCommittedArtifactSet(
+                job, committed.job_id, committed.command_slot_id, UUID(str(receipt_id)),
+                UUID(str(artifact_set_id)), committed.request_hash, committed.command_name,
+                committed.execution_kind, committed.set_hash,
+                tuple(
+                    PersistedCommittedArtifactMember(
+                        CommittedArtifactMemberReference(
+                            UUID(str(receipt_id)), UUID(str(artifact_set_id)), ordinal,
+                            member.scope, member.artifact_type, member.logical_id,
+                            member.revision, member.content_hash,
+                        ),
+                        member.payload_json,
+                        committed.command_slot_id,
+                    )
+                    for ordinal, member in committed.members
+                ),
+            )
+
+        return self._transaction(operation)
+
     def read_committed_artifact_member(
         self,
         reference: CommittedArtifactMemberReference,

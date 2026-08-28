@@ -124,6 +124,8 @@ _SEMANTIC_REQUIRED_ENVIRONMENT = (
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV,
+)
+_SEMANTIC_CONTEXT_ENVIRONMENT = (
     PIPELINE_METADATA_API_BASE_URL_ENV,
     PIPELINE_METADATA_API_KEY_ENV,
     PIPELINE_CONTEXT_OWNER_MAPS_ENV,
@@ -727,16 +729,26 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
             if configured_base_url
             else DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id)
         )
-        owner_maps = _owner_episode_maps_from_json(values[PIPELINE_CONTEXT_OWNER_MAPS_ENV].strip())
-        context_client = ExternalNarrativeApiClient(
-            ExternalNarrativeApiConfig(
-                base_url=values[PIPELINE_METADATA_API_BASE_URL_ENV].strip(),
-                api_key=values[PIPELINE_METADATA_API_KEY_ENV].strip(),
-                credential_scope_id=(
-                    values.get(PIPELINE_METADATA_CREDENTIAL_SCOPE_ENV, "").strip() or "default"
-                ),
-            )
+        configured_context = tuple(
+            name for name in _SEMANTIC_CONTEXT_ENVIRONMENT if values.get(name, "").strip()
         )
+        if configured_context and len(configured_context) != len(_SEMANTIC_CONTEXT_ENVIRONMENT):
+            raise PipelineRuntimeConfigurationError(
+                "metadata context configuration must provide base URL, credential and explicit owner map together"
+            )
+        owner_maps: OwnerEpisodeMapSet | None = None
+        context_client: ExternalNarrativeApiClient | None = None
+        if configured_context:
+            owner_maps = _owner_episode_maps_from_json(values[PIPELINE_CONTEXT_OWNER_MAPS_ENV].strip())
+            context_client = ExternalNarrativeApiClient(
+                ExternalNarrativeApiConfig(
+                    base_url=values[PIPELINE_METADATA_API_BASE_URL_ENV].strip(),
+                    api_key=values[PIPELINE_METADATA_API_KEY_ENV].strip(),
+                    credential_scope_id=(
+                        values.get(PIPELINE_METADATA_CREDENTIAL_SCOPE_ENV, "").strip() or "default"
+                    ),
+                )
+            )
     except PipelineRuntimeConfigurationError:
         raise
     except (SemanticRunAuthorityError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -766,7 +778,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         kernel_store,
         provider,
         context_owner_maps=owner_maps,
-        context_selection_policy=context_policy,
+        context_selection_policy=None if owner_maps is None else context_policy,
         stop_after_probe=stop_after_probe,
     )
     registry = PipelineStageRegistry.from_ports(

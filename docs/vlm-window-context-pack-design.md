@@ -1,7 +1,8 @@
 # VLM WindowContextPack — 外部剧情资产的受控投影设计
 
-**状态：P0 契约、Normalizer、映射集校验、Pack 和 VLM v7 请求绑定已实现；
-运行时 `context_prepare` Command/ArtifactSet 尚待接线。**
+**状态：P0 契约、Normalizer、映射集校验、Pack、运行时 `context_prepare`
+Command/ArtifactSet 和 VLM v7 请求绑定已实现。已提交 Pack 的跨主机续跑只读
+PostgreSQL/Blob，不重新请求外部 API。**
 **适用范围：** 当前 `source_prep -> context_prepare -> vlm` 语义路径。
 **不适用范围：** ASR/VAD/字幕输入、镜头/高光时间点、Stage 4 物理剪辑与旧
 `global_context`。
@@ -222,6 +223,18 @@ API response accepted
 historical replay
   -> read original Pack Blob, never refetch API
 ```
+
+### 8.1 跨机器续跑的配置边界
+
+第一次创建 API-assisted Pack 时，运行环境需要私有 API endpoint、credential 和显式
+episode map；它们只用于取得一次 Snapshot。成功提交后，后续同一 `run_id` 的
+VLM 重跑、进程重启或换主机续跑只按 `Job + scope + Context Prepare producer + receipt`
+读取已提交的 `window_context_pack_set`。它**不得**再次读取 endpoint、credential 或
+owner map，也不得重新抓取 API。
+
+因此跨平台的前提是目标机器能访问同一 PostgreSQL 与 Blob 存储；若 VLM 调用尚未完成，
+还需能读取已提交 proxy Blob 并拥有 Ark 凭据。只有创建新 run 或显式刷新 context
+version 才需要重新提供 API 配置；密钥永不持久化。
 
 同一 run 内禁止“半新半旧”：不能用旧人物表配新章节摘要，也不能在 fetch 失败时从未绑定的
 缓存拼接上下文。Snapshot 的所有 API 响应必须属于一次 `context_snapshot_id`；任一必需

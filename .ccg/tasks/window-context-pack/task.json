@@ -6,6 +6,6 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "已完成 source_prep -> context_prepare -> VLM v7 的代码与定向验证；等待私有 Metadata API endpoint/key/显式映射和可访问媒体后，执行一次真实单窗口运行。",
+  "nextAction": "已完成 source_prep -> context_prepare -> VLM v7，并修正跨主机重跑：已有 committed PackSet 只读数据库/Blob，不再要求 Metadata API 配置；首次 API-assisted run 仍需私有 endpoint/key/显式映射。等待可访问媒体与首次上下文配置后执行真实单窗口运行。",
   "branch": "feat/v213-contract-codegen"
 }

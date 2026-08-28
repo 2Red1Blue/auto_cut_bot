@@ -15,6 +15,7 @@ from auto_cut_bot.pipeline.context_prepare import (
     ExternalNarrativeApiClient,
     PrepareWindowContextCommand,
     PrepareWindowContextRequest,
+    find_committed_window_context_packs,
 )
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
@@ -56,17 +57,21 @@ class ContextPreparePipelineStage:
     def __init__(
         self,
         store: ContextPreparePipelineStore,
-        client: ExternalNarrativeApiClient,
-        owner_maps: OwnerEpisodeMapSet,
+        client: ExternalNarrativeApiClient | None,
+        owner_maps: OwnerEpisodeMapSet | None,
         *,
         selection_policy: ContextSelectionPolicy | None = None,
         command: PrepareWindowContextCommand | None = None,
     ) -> None:
         self._store = store
+        if (client is None) != (owner_maps is None):
+            raise PipelineRunValidationError("context client and owner maps must be configured together")
         self._client = client
         self._owner_maps = owner_maps
         self._policy = selection_policy or ContextSelectionPolicy()
-        self._command = command or PrepareWindowContextCommand(store, client)
+        self._command = command if command is not None else (
+            None if client is None else PrepareWindowContextCommand(store, client)
+        )
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -75,7 +80,7 @@ class ContextPreparePipelineStage:
         validate_run_id(context.run_id)
         return Job(context.run_id, context.request.profile)
 
-    def _request(self, context: PipelineStageContext) -> PrepareWindowContextRequest | None:
+    def _source_bundle(self, context: PipelineStageContext) -> tuple[Job, PersistedPreparedSources] | None:
         job = self._job(context)
         source_outcome = self._store.read_outcome(job, source_prep_kernel_idempotency_key(context.run_id))
         if source_outcome is None or source_outcome.state in ("pending", "running", "denied", "failed"):
@@ -87,6 +92,13 @@ class ContextPreparePipelineStage:
             artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
             artifact_revision=_ARTIFACT_REVISION,
         )
+        return job, source_bundle
+
+    def _request(self, context: PipelineStageContext) -> PrepareWindowContextRequest | None:
+        resolved = self._source_bundle(context)
+        if resolved is None or self._owner_maps is None:
+            return None
+        job, source_bundle = resolved
         return PrepareWindowContextRequest(
             job=job,
             idempotency_key=context_prepare_kernel_idempotency_key(
@@ -106,14 +118,43 @@ class ContextPreparePipelineStage:
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
         request = await asyncio.to_thread(self._request, context)
         if request is None:
+            resolved = await asyncio.to_thread(self._source_bundle, context)
+            if resolved is not None:
+                job, source_bundle = resolved
+                committed = await asyncio.to_thread(
+                    find_committed_window_context_packs,
+                    self._store,
+                    job=job,
+                    artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                    artifact_revision=_ARTIFACT_REVISION,
+                    source_bundle=source_bundle,
+                )
+                if committed is not None:
+                    return PipelineStageResult(context.command.command_id, "succeeded", committed.receipt_id)
             return PipelineStageResult(context.command.command_id, "indeterminate")
+        if self._command is None:
+            raise PipelineRunValidationError("context preparation client is unavailable")
         result = await asyncio.to_thread(self._command.execute, request)
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
         request = await asyncio.to_thread(self._request, context)
         if request is None:
-            return None
+            resolved = await asyncio.to_thread(self._source_bundle, context)
+            if resolved is None:
+                return None
+            job, source_bundle = resolved
+            committed = await asyncio.to_thread(
+                find_committed_window_context_packs,
+                self._store,
+                job=job,
+                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                artifact_revision=_ARTIFACT_REVISION,
+                source_bundle=source_bundle,
+            )
+            return None if committed is None else PipelineStageResult(
+                context.command.command_id, "succeeded", committed.receipt_id
+            )
         outcome = self._store.read_outcome(request.job, request.idempotency_key)
         if outcome is None or outcome.state in ("pending", "running"):
             return None

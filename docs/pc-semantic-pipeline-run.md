@@ -68,6 +68,11 @@ AUTO_CUT_BOT_PIPELINE_METADATA_API_KEY=...
 AUTO_CUT_BOT_PIPELINE_CONTEXT_OWNER_MAPS_JSON={"series_external_id":"42000021919","mappings":[...]}
 ```
 
+这三项 Metadata 配置仅用于**第一次创建** API-assisted Context Pack。对已存在、且
+`context_prepare` 已成功提交的 `run_id`，在另一台机器或本机重启时可以不设置它们：
+运行时只从 PostgreSQL/Blob 读取相同 Pack，绝不再次请求 Metadata API。不要在“续跑”
+机器上为了凑配置而填写新的 API key 或猜测 episode map。
+
 `AUTO_CUT_BOT_PIPELINE_CONTEXT_OWNER_MAPS_JSON` is not a filename/order
 matcher. Each entry must explicitly declare `local_relative_path`,
 `local_episode_index`, `external_episode_id`, `external_chapter_id` (or null),
@@ -154,10 +159,11 @@ not success authority.
   from the durable outbox.  A stale command lease becomes indeterminate and is
   reconciled from the existing Command/Provider identity rather than blindly
   submitting a second VLM request.
-- **Move after SourcePrep succeeds:** another machine can start the same Git
+- **Move after Context Prepare succeeds:** another machine can start the same Git
   revision with the same semantic authority resource, PostgreSQL DSN, and Ark
-  credentials.  The VLM stage re-reads the committed source ArtifactSet and
-  proxy Blobs from PostgreSQL; it does not need the PC's original video path.
+  credentials.  The VLM stage re-reads the committed source ArtifactSet,
+  Context PackSet and proxy Blobs from PostgreSQL; it does not need the PC's
+  original video path, Metadata credential or episode map.
   The persisted execution-profile hash and request hashes must match.  A code
   or policy mismatch is rejected instead of silently changing the request.
 - **Move while SourcePrep is unfinished:** the new host must have the same
