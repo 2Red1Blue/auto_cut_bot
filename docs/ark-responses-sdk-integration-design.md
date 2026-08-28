@@ -8,7 +8,7 @@
 
 当前语义 Pipeline 使用火山官方 `volcenginesdkarkruntime`（发行包
 `volcengine-python-sdk[ark]`）调用 Ark Files API 与 Responses API。它不是
-LiteLLM 路径。当前项目的 `.venv` 与 `uv.lock` 实际解析为 `5.0.46`；系统 Python 的
+LiteLLM 路径。当前项目的 `.venv` 与 `uv.lock` 实际解析为 `5.0.47`；系统 Python 的
 `5.0.45` 安装缺少可导入的 Ark runtime，不能作为 Pipeline 运行依据。生产契约以锁定
 环境的请求形状、流事件和 Files 状态为依据。
 
@@ -213,8 +213,8 @@ Model I/O debug 以及 Attempt 诊断；它们不是 VLM Artifact 通过 admissi
 ## 7. 版本与发布规则
 
 项目可以维持 `>=5.0.45,<6.0.0` 的声明，但生产/CI 必须使用已提交的 `uv.lock` 并以
-`uv sync --frozen` 安装。2026-08-28 的审计中 lock 为 `5.0.46`，而 PyPI 已有
-`5.0.47`；后者尚未通过本项目的 Ark wire suite，因此当前不升级。升级 SDK 的最小变更集为：
+`uv sync --frozen` 安装。2026-08-28 已将 lock 升级到 `5.0.47`，并通过 Ark
+adapter/stream/debug 定向 suite；后续新版本仍必须走同一升级验证流程。升级 SDK 的最小变更集为：
 
 1. 更新 lock；
 2. 运行 Ark wire contract tests；
@@ -222,7 +222,7 @@ Model I/O debug 以及 Attempt 诊断；它们不是 VLM Artifact 通过 admissi
    小视频验证；
 4. 若 wire 变化，注册新的 adapter strategy version，不能改写历史版本语义。
 
-若不能保证 frozen lock，则将生产依赖临时精确锁为 `==5.0.46`。
+若不能保证 frozen lock，则将生产依赖临时精确锁为 `==5.0.47`。
 
 ## 8. 实施拆分与验收
 
@@ -242,7 +242,7 @@ Model I/O debug 以及 Attempt 诊断；它们不是 VLM Artifact 通过 admissi
 
 ### Wave 2 — SDK 锁与真实 wire 验证（P0）
 
-验收：冻结安装解析 5.0.46；真实小视频完成 `upload -> active -> Responses completed`；
+验收：冻结安装解析 5.0.47；真实小视频完成 `upload -> active -> Responses completed`；
 429、普通 4xx、流中断分别命中既定 Attempt 状态，不产生未知重复调用。
 
 ### Wave 3 — 流式 Blob 端口（P1）
