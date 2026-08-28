@@ -94,6 +94,13 @@ from .models import (
     VlmSemanticPackSetChild,
     WholeSeriesSourceManifestReference,
 )
+from .source_reuse import (
+    SOURCE_REUSE_BINDING_ARTIFACT_TYPE,
+    SOURCE_REUSE_BINDING_LOGICAL_ID,
+    SOURCE_REUSE_BINDING_SCHEMA_VERSION,
+    SOURCE_REUSE_COMMAND_NAME,
+    SourceReuseBinding,
+)
 
 if TYPE_CHECKING:
     from .postgres import PostgresRuntimeStore
@@ -197,5 +204,10 @@ __all__ = [
     "VlmSemanticPackSetChild",
     "VlmSemanticPackReference",
     "WholeSeriesSourceManifestReference",
+    "SOURCE_REUSE_BINDING_ARTIFACT_TYPE",
+    "SOURCE_REUSE_BINDING_LOGICAL_ID",
+    "SOURCE_REUSE_BINDING_SCHEMA_VERSION",
+    "SOURCE_REUSE_COMMAND_NAME",
+    "SourceReuseBinding",
     "VlmRequestRecordReference",
 ]

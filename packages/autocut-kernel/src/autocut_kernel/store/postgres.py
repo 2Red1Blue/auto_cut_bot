@@ -163,6 +163,13 @@ from .shadow_local_measurement_artifacts import (
     compile_shadow_local_measurement_artifacts,
     validate_shadow_local_measurement_artifact_metadata,
 )
+from .source_reuse import (
+    SOURCE_REUSE_BINDING_ARTIFACT_TYPE,
+    SOURCE_REUSE_BINDING_LOGICAL_ID,
+    SOURCE_REUSE_BINDING_SCHEMA_VERSION,
+    SOURCE_REUSE_COMMAND_NAME,
+    SourceReuseBinding,
+)
 from .terminal_receipts import PersistedTerminalCommandReceipt
 from .vlm_v4 import (
     VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4,
@@ -1278,6 +1285,218 @@ class PostgresRuntimeStore:
             )
 
         return self._transaction(operation)
+
+    def _read_source_reuse_origin(
+        self,
+        cursor: DbCursor,
+        binding: SourceReuseBinding,
+    ) -> PersistedWholeSeriesSourceManifest:
+        """Independently reconstruct the immutable origin named by a binding."""
+
+        declared = binding.origin
+        origin_job = declared.source_job
+        if origin_job is None:
+            raise StoreValidationError("source reuse origin has no source Job")
+        cursor.execute(
+            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+            (origin_job.job_key,),
+        )
+        job_row = cursor.fetchone()
+        if job_row is None or (
+            UUID(str(job_row[0])) != declared.job_id
+            or _text(job_row[1]) != origin_job.profile
+        ):
+            raise StoreValidationError("source reuse origin Job is unavailable or changed")
+        cursor.execute(
+            """
+            SELECT artifact.artifact_type, artifact.logical_id, artifact.revision, artifact.namespace,
+                   artifact.scope_kind, artifact.scope_key, artifact.content_hash,
+                   artifact.payload_json::text, artifact_set.set_hash,
+                   artifact_set.member_count, receipt.receipt_id, slot.command_slot_id
+              FROM runtime.artifact_sets AS artifact_set
+              JOIN runtime.command_slots AS slot
+                ON slot.command_slot_id = artifact_set.command_slot_id
+               AND slot.job_id = artifact_set.job_id
+              JOIN runtime.command_receipts AS receipt
+                ON receipt.command_slot_id = slot.command_slot_id
+               AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+              JOIN runtime.artifact_set_members AS member
+                ON member.artifact_set_id = artifact_set.artifact_set_id
+               AND member.ordinal = 0
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = artifact_set.artifact_set_id
+               AND artifact.job_id = artifact_set.job_id
+             WHERE artifact_set.artifact_set_id = %s
+               AND artifact_set.job_id = %s
+               AND receipt.receipt_id = %s
+               AND slot.command_slot_id = %s
+               AND slot.command_name = 'PrepareWholeSeriesSourcesCommand'
+               AND slot.state = 'succeeded'
+               AND receipt.outcome = 'succeeded'
+               AND artifact_set.member_count = 1
+               AND artifact.artifact_type = 'whole_series_source_manifest'
+               AND artifact.logical_id = 'whole_series_source_manifest'
+            """,
+            (
+                declared.artifact_set_id,
+                declared.job_id,
+                declared.receipt_id,
+                declared.command_slot_id,
+            ),
+        )
+        rows: list[tuple[object, ...]] = []
+        while (row := cursor.fetchone()) is not None:
+            rows.append(row)
+        if len(rows) != 1:
+            raise StoreValidationError("source reuse origin is not an exact SourcePrep result")
+        (
+            artifact_type,
+            logical_id,
+            revision,
+            namespace,
+            scope_kind,
+            scope_key,
+            content_hash,
+            payload_json,
+            set_hash,
+            member_count,
+            receipt_id,
+            command_slot_id,
+        ) = rows[0]
+        if int(_text(member_count)) != 1:
+            raise StoreValidationError("source reuse origin set is not singleton")
+        scope = ArtifactScope(_text(namespace), _text(scope_kind), _text(scope_key))
+        if scope != canonical_recipe_scope(origin_job):
+            raise StoreValidationError("source reuse origin scope is not canonical")
+        reference = WholeSeriesSourceManifestReference(
+            scope, _text(logical_id), int(_text(revision)), _text(content_hash)
+        )
+        serialized = _text(payload_json)
+        artifact = ArtifactMember(
+            _text(artifact_type),
+            reference.logical_id,
+            reference.revision,
+            reference.scope,
+            reference.content_hash,
+            serialized,
+        )
+        if artifact.artifact_type != "whole_series_source_manifest":
+            raise StoreValidationError("source reuse origin artifact type is invalid")
+        CommandSuccess(UUID(str(command_slot_id)), _text(set_hash), (artifact,))
+        blobs = tuple(
+            self._claimed_blob_ref(
+                cursor,
+                declared.job_id,
+                blob,
+                field_name=f"source reuse origin proxy[{position}]",
+            )
+            for position, blob in enumerate(_source_manifest_blob_refs(serialized))
+        )
+        actual = PersistedWholeSeriesSourceManifest(
+            reference,
+            serialized,
+            blobs,
+            declared.job_id,
+            UUID(str(receipt_id)),
+            declared.artifact_set_id,
+            UUID(str(command_slot_id)),
+            origin_job,
+        )
+        _strict_source_windows(actual)
+        if (
+            actual.provenance_mapping() != declared.provenance_mapping()
+            or actual.canonical_hash != declared.canonical_hash
+        ):
+            raise StoreValidationError("source reuse origin provenance differs from its binding")
+        return actual
+
+    def _validate_source_reuse_binding_member(
+        self,
+        cursor: DbCursor,
+        artifact_set_id: UUID,
+        target_job: Job,
+        source: PersistedWholeSeriesSourceManifest,
+    ) -> ArtifactMember:
+        """Verify a target-scoped binding before exposing the reused source."""
+
+        cursor.execute(
+            """
+            SELECT artifact.artifact_type, artifact.logical_id, artifact.revision, artifact.namespace,
+                   artifact.scope_kind, artifact.scope_key, artifact.content_hash,
+                   artifact.payload_json::text
+              FROM runtime.artifact_set_members AS member
+              JOIN runtime.artifacts AS artifact
+                ON artifact.artifact_id = member.artifact_id
+               AND artifact.artifact_set_id = member.artifact_set_id
+             WHERE member.artifact_set_id = %s AND member.ordinal = 1
+            """,
+            (artifact_set_id,),
+        )
+        row = cursor.fetchone()
+        if row is None or cursor.fetchone() is not None:
+            raise StoreValidationError("source reuse binding member is unavailable")
+        (
+            artifact_type,
+            logical_id,
+            revision,
+            namespace,
+            scope_kind,
+            scope_key,
+            content_hash,
+            payload_json,
+        ) = row
+        artifact = ArtifactMember(
+            _text(artifact_type),
+            _text(logical_id),
+            int(_text(revision)),
+            ArtifactScope(_text(namespace), _text(scope_kind), _text(scope_key)),
+            _text(content_hash),
+            _text(payload_json),
+        )
+        if (
+            artifact.artifact_type != SOURCE_REUSE_BINDING_ARTIFACT_TYPE
+            or artifact.logical_id != SOURCE_REUSE_BINDING_LOGICAL_ID
+            or artifact.scope != canonical_recipe_scope(target_job)
+            or canonical_payload_hash(artifact.payload_json) != artifact.content_hash
+        ):
+            raise StoreValidationError("source reuse binding member identity is invalid")
+        try:
+            raw_value = json.loads(artifact.payload_json)
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError("source reuse binding payload is invalid JSON") from error
+        if type(raw_value) is not dict:  # noqa: E721
+            raise StoreValidationError("source reuse binding payload is not closed")
+        raw: dict[str, object] = {}
+        for key, value in cast(dict[object, object], raw_value).items():
+            if type(key) is not str:  # noqa: E721
+                raise StoreValidationError("source reuse binding payload keys are invalid")
+            raw[key] = value
+        if set(raw) != {
+            "origin",
+            "origin_source_manifest_sha256",
+            "origin_source_provenance_sha256",
+            "schema_version",
+            "target_job",
+            "target_policy",
+            "target_policy_sha256",
+        }:
+            raise StoreValidationError("source reuse binding payload is not closed")
+        if raw["schema_version"] != SOURCE_REUSE_BINDING_SCHEMA_VERSION:
+            raise StoreValidationError("source reuse binding schema version is unsupported")
+        if raw["target_job"] != {"job_key": target_job.job_key, "profile": target_job.profile}:
+            raise StoreValidationError("source reuse binding target Job is invalid")
+        if raw["origin_source_manifest_sha256"] != source.reference.content_hash:
+            raise StoreValidationError("source reuse binding source hash is invalid")
+        try:
+            decoded = decode_source_manifest(source.payload_json, source.proxy_blobs)
+        except SourceManifestDecodeError as error:
+            raise StoreValidationError("source reuse source manifest is invalid") from error
+        if raw["target_policy"] != decoded.census.policy.to_mapping():
+            raise StoreValidationError("source reuse binding policy differs from source manifest")
+        if raw["target_policy_sha256"] != decoded.census.policy.policy_sha256:
+            raise StoreValidationError("source reuse binding policy hash is invalid")
+        return artifact
 
     # ------------------------------------------------------------------
     # shadow calibration measurement recovery owner
@@ -2484,6 +2703,10 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "FinalizeVlmBatchCommand success requires the explicit VLM batch owner API"
                 )
+            if command_name == SOURCE_REUSE_COMMAND_NAME:
+                raise CommandStateError(
+                    "BindWholeSeriesSourcesCommand requires the explicit source reuse writer"
+                )
             if command_name == SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
                 raise CommandStateError(
                     "MeasureShadowCalibrationCommand@2.1.3 success requires the shadow owner API"
@@ -2498,6 +2721,86 @@ class PostgresRuntimeStore:
                     cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
                 )
             return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def commit_source_reuse_success(
+        self,
+        success: CommandSuccess,
+        *,
+        binding: SourceReuseBinding,
+    ) -> CommandOutcome:
+        """Atomically grant target-Job claims for one exact SourcePrep result.
+
+        Generic successful commands may not grant a Job access to immutable
+        objects claimed by another Job. This dedicated writer is the only
+        capability bridge and leaves the origin claim intact.
+        """
+
+        if type(binding) is not SourceReuseBinding:  # noqa: E721
+            raise StoreValidationError("source reuse success requires an exact binding")
+        if len(success.artifacts) != 2:
+            raise StoreValidationError("source reuse success requires source and binding members")
+        source, binding_member = success.artifacts
+        expected_binding = binding.artifact(binding_member.revision)
+        if (
+            source.artifact_type != "whole_series_source_manifest"
+            or source.logical_id != "whole_series_source_manifest"
+            or source.scope != binding.target_scope
+            or binding_member != expected_binding
+        ):
+            raise StoreValidationError("source reuse success members do not match its binding")
+        if (
+            source.payload_json != binding.origin.payload_json
+            or source.content_hash != binding.origin.reference.content_hash
+        ):
+            raise StoreValidationError("source reuse cannot alter the origin source manifest")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            target_job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            if command_name != SOURCE_REUSE_COMMAND_NAME:
+                raise CommandStateError(
+                    "only BindWholeSeriesSourcesCommand may grant source Blob claims"
+                )
+            cursor.execute(
+                "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+                (target_job_id,),
+            )
+            target_row = cursor.fetchone()
+            if target_row is None or (
+                _text(target_row[0]) != binding.target_job.job_key
+                or _text(target_row[1]) != binding.target_job.profile
+            ):
+                raise StoreValidationError("source reuse target Job does not own the command")
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor, success.command_slot_id, target_job_id, "succeeded", success.set_hash
+                )
+            origin = self._read_source_reuse_origin(cursor, binding)
+            try:
+                decoded = decode_source_manifest(origin.payload_json, origin.proxy_blobs)
+            except SourceManifestDecodeError as error:
+                raise StoreValidationError("source reuse origin manifest is invalid") from error
+            if decoded.census.policy != binding.target_policy:
+                raise StoreValidationError("source reuse target policy differs from origin policy")
+            for position, blob in enumerate(origin.proxy_blobs):
+                self._claimed_blob_ref(
+                    cursor,
+                    origin.job_id,
+                    blob,
+                    field_name=f"source reuse origin proxy[{position}]",
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO storage.blob_claims (blob_claim_id, object_id, job_id)
+                    VALUES (%s, %s, %s) ON CONFLICT (job_id, object_id) DO NOTHING
+                    """,
+                    (uuid4(), blob.object_id, target_job_id),
+                )
+            return self._write_success(cursor, success, target_job_id)
 
         return self._transaction(operation)
 
@@ -6084,7 +6387,7 @@ class PostgresRuntimeStore:
                 raise JobProfileMismatchError("job_key belongs to a different profile")
             cursor.execute(
                 """
-                SELECT artifact.logical_id, artifact.revision, artifact.namespace,
+                SELECT slot.command_name, artifact.logical_id, artifact.revision, artifact.namespace,
                        artifact.scope_kind, artifact.scope_key, artifact.content_hash,
                        artifact.payload_json::text, artifact_set.set_hash,
                        artifact_set.member_count, receipt.receipt_id, slot.command_slot_id
@@ -6104,10 +6407,12 @@ class PostgresRuntimeStore:
                    AND artifact.job_id = artifact_set.job_id
                  WHERE artifact_set.artifact_set_id = %s
                    AND artifact_set.job_id = %s
-                   AND slot.command_name = 'PrepareWholeSeriesSourcesCommand'
+                   AND slot.command_name IN (
+                       'PrepareWholeSeriesSourcesCommand',
+                       'BindWholeSeriesSourcesCommand'
+                   )
                    AND slot.state = 'succeeded'
                    AND receipt.outcome = 'succeeded'
-                   AND artifact_set.member_count = 1
                    AND artifact.artifact_type = 'whole_series_source_manifest'
                    AND artifact.logical_id = 'whole_series_source_manifest'
                 """,
@@ -6121,6 +6426,7 @@ class PostgresRuntimeStore:
                     "exact succeeded whole-series source manifest is unavailable"
                 )
             (
+                command_name,
                 logical_id,
                 revision,
                 namespace,
@@ -6133,8 +6439,14 @@ class PostgresRuntimeStore:
                 receipt_id,
                 command_slot_id,
             ) = rows[0]
-            if int(_text(member_count)) != 1:
-                raise StoreValidationError("source manifest ArtifactSet is not singleton")
+            command = _text(command_name)
+            count = int(_text(member_count))
+            if command == "PrepareWholeSeriesSourcesCommand" and count != 1:
+                raise StoreValidationError("SourcePrep manifest ArtifactSet is not singleton")
+            if command == SOURCE_REUSE_COMMAND_NAME and count != 2:
+                raise StoreValidationError("source reuse ArtifactSet must contain source and binding")
+            if command not in ("PrepareWholeSeriesSourcesCommand", SOURCE_REUSE_COMMAND_NAME):
+                raise StoreValidationError("source manifest command is not registered")
             scope = ArtifactScope(_text(namespace), _text(scope_kind), _text(scope_key))
             if scope != canonical_recipe_scope(job):
                 raise StoreValidationError("source manifest has a non-canonical Job scope")
@@ -6154,7 +6466,6 @@ class PostgresRuntimeStore:
                 serialized,
             )
             slot_id = UUID(str(command_slot_id))
-            CommandSuccess(slot_id, _text(set_hash), (artifact,))
             declared_blobs = _source_manifest_blob_refs(serialized)
             durable_blobs = tuple(
                 self._claimed_blob_ref(
@@ -6176,6 +6487,13 @@ class PostgresRuntimeStore:
                 job,
             )
             _strict_source_windows(persisted)
+            if command == SOURCE_REUSE_COMMAND_NAME:
+                binding_member = self._validate_source_reuse_binding_member(
+                    cursor, artifact_set_id, job, persisted
+                )
+                CommandSuccess(slot_id, _text(set_hash), (artifact, binding_member))
+            else:
+                CommandSuccess(slot_id, _text(set_hash), (artifact,))
             return persisted
 
         return self._transaction(operation)

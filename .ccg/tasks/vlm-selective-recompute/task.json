@@ -5,8 +5,8 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "analysis",
-  "nextAction": "核对现有 Run/Blob 权限与 VlmReuseIdentity，确定首个不破坏旧 Receipt 的最小持久化切片",
+  "currentPhase": "implementation",
+  "nextAction": "实现显式 VLM recompute Run 接纳与 selected_only 控制；复用已完成的受审计 SourcePrep 绑定",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

@@ -23,6 +23,7 @@ from autocut_kernel.media.types import (
 from autocut_kernel.pipeline import GenerateVlmEvidenceRequest
 from autocut_kernel.store import (
     ArtifactScope,
+    BlobIntegrityError,
     BlobRef,
     CommandClaim,
     CommandOutcome,
@@ -46,6 +47,8 @@ from auto_cut_bot.pipeline.source_prep import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
     IDENTITY_FRAME_GENERATION_POLICY_SHA256,
     AuthorizedSeriesSourceRoot,
+    BindWholeSeriesSourcesCommand,
+    BindWholeSeriesSourcesRequest,
     FFprobeSourceMediaPort,
     IdentitySourceWindowBuilder,
     PrepareWholeSeriesSourcesCommand,
@@ -138,6 +141,36 @@ class Store:
             ),
             member.payload_json,
             proxy_blobs,
+            uuid4(),
+            outcome.receipt_id,
+            outcome.artifact_set_id,
+            outcome.command_slot_id,
+        )
+        self._replace(success.command_slot_id, outcome)
+        return outcome
+
+    def commit_source_reuse_success(self, success: CommandSuccess, *, binding) -> CommandOutcome:
+        assert len(success.artifacts) == 2
+        assert success.artifacts[0].payload_json == binding.origin.payload_json
+        outcome = CommandOutcome(
+            success.command_slot_id,
+            "succeeded",
+            receipt_id=uuid4(),
+            artifact_set_id=uuid4(),
+        )
+        assert outcome.artifact_set_id is not None
+        assert outcome.receipt_id is not None
+        source = success.artifacts[0]
+        self.successes.append(success)
+        self.manifests[outcome.artifact_set_id] = PersistedWholeSeriesSourceManifest(
+            WholeSeriesSourceManifestReference(
+                source.scope,
+                source.logical_id,
+                source.revision,
+                source.content_hash,
+            ),
+            source.payload_json,
+            binding.origin.proxy_blobs,
             uuid4(),
             outcome.receipt_id,
             outcome.artifact_set_id,
@@ -1202,6 +1235,119 @@ def test_synthetic_native_audio_layout_survives_exact_command_replay(tmp_path):
     assert facts.sample_rate == 48000 and facts.channels == 2
     assert facts.time_base == TimeBase(1, 1000) and facts.origin_tick == -10
     assert len(store.successes) == 1
+
+
+def test_source_reuse_binds_persisted_manifest_without_origin_source_io(tmp_path):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    origin = command.execute(request)
+    assert origin.outcome.state == "succeeded"
+    source_calls = probe.calls
+    target = Job("native-layout-synthetic-recompute", "test")
+    bind_request = BindWholeSeriesSourcesRequest(
+        target, "bind-source-v1", ArtifactScope("pipeline", "job", target.job_key), 1,
+        request.job, origin.outcome, request.source_root.policy,
+    )
+
+    shutil.rmtree(request.source_root.root)
+    first = BindWholeSeriesSourcesCommand(store).execute(bind_request)
+    replay = BindWholeSeriesSourcesCommand(store).execute(bind_request)
+
+    assert first.outcome.state == replay.outcome.state == "succeeded"
+    assert first.outcome.receipt_id == replay.outcome.receipt_id
+    assert first.sources is not None and replay.sources == first.sources
+    assert first.sources.prepared == origin.prepared
+    assert first.sources.source_job == target
+    assert probe.calls == source_calls
+    assert len(store.successes) == 2
+
+
+def test_source_reuse_rejects_changed_policy_without_probe(tmp_path):
+    store, probe, request, command = _synthetic_layout_command(tmp_path)
+    origin = command.execute(request)
+    assert origin.outcome.state == "succeeded"
+    source_calls = probe.calls
+    target = Job("native-layout-synthetic-policy-denial", "test")
+    mismatched = _source_policy(
+        authorization_id="other-authority", series_id=request.source_root.policy.series_id,
+    )
+
+    result = BindWholeSeriesSourcesCommand(store).execute(BindWholeSeriesSourcesRequest(
+        target, "bind-source-v1", ArtifactScope("pipeline", "job", target.job_key), 1,
+        request.job, origin.outcome, mismatched,
+    ))
+
+    assert result.outcome.state == "denied"
+    assert result.outcome.failure_code == "SOURCE_REUSE_POLICY_MISMATCH"
+    assert probe.calls == source_calls
+
+
+@pytest.mark.skipif(
+    psycopg is None
+    or not os.environ.get("AUTOCUT_TEST_POSTGRES_DSN", "").endswith(
+        "/autocut_test_source_reuse"
+    ),
+    reason="set AUTOCUT_TEST_POSTGRES_DSN to the dedicated autocut_test_source_reuse database",
+)
+def test_postgres_source_reuse_is_atomic_and_survives_origin_path_removal(tmp_path):
+    dsn = os.environ["AUTOCUT_TEST_POSTGRES_DSN"]
+    with psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
+        cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
+        migrations = Path("packages/autocut-kernel/migrations")
+        for migration in sorted(migrations.glob("*.sql")):
+            cursor.execute(migration.read_text())
+
+    root = tmp_path / "source-preparation-host"
+    root.mkdir()
+    source_path = root / "episode.mp4"
+    source_bytes = b"immutable synthetic source for source-reuse postgres test"
+    source_path.write_bytes(source_bytes)
+    origin_job = Job("source-reuse-origin", "test")
+    origin_request = PrepareWholeSeriesSourcesRequest(
+        origin_job, "source-prep-v1", ArtifactScope("pipeline", "job", origin_job.job_key),
+        1, _source_root(root.resolve(), "source-reuse-authority", "source-reuse-series"),
+    )
+    store = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
+    origin = PrepareWholeSeriesSourcesCommand(
+        store, builder=SyntheticSampleBuilder(SyntheticLayoutProbe())
+    ).execute(origin_request)
+    assert origin.outcome.state == "succeeded"
+    assert origin.prepared is not None
+    target_job = Job("source-reuse-target", "test")
+    bind_request = BindWholeSeriesSourcesRequest(
+        target_job, "bind-source-v1", ArtifactScope("pipeline", "job", target_job.job_key),
+        1, origin_job, origin.outcome, origin_request.source_root.policy,
+    )
+
+    shutil.rmtree(root)
+    origin_proxy = origin.prepared.episodes[0].proxy_blob
+    store.claim_command(
+        CommandClaim(
+            target_job,
+            "pre-binding-read-check",
+            "TestTargetJobInitialization",
+            canonical_sha256({"target_job": target_job.job_key}),
+            execution_kind="deterministic",
+        )
+    )
+    with pytest.raises(BlobIntegrityError):
+        store.read_immutable_blob(target_job, origin_proxy)
+    first = BindWholeSeriesSourcesCommand(store).execute(bind_request)
+    replay = BindWholeSeriesSourcesCommand(store).execute(bind_request)
+
+    assert first.outcome.state == replay.outcome.state == "succeeded"
+    assert first.outcome.receipt_id == replay.outcome.receipt_id
+    assert first.sources is not None
+    proxy = first.sources.prepared.episodes[0].proxy_blob
+    assert store.read_immutable_blob(target_job, proxy) == source_bytes
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(dsn))
+    restored = BindWholeSeriesSourcesCommand(restarted).execute(bind_request)
+    assert restored.sources == first.sources
+    with psycopg.connect(dsn) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM runtime.command_receipts")
+        assert cursor.fetchone() == (2,)
+        cursor.execute("SELECT count(*) FROM storage.blob_claims WHERE object_id = %s", (proxy.object_id,))
+        assert cursor.fetchone() == (2,)
 
 
 def test_synthetic_old_absent_audio_leaf_keeps_original_payload_and_hash(tmp_path):

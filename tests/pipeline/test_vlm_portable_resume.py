@@ -112,7 +112,8 @@ def prepared_run(tmp_path: Path) -> _PreparedRun:
     )
     snapshot = run_store._read_run_sync(RUN_ID)
     assert snapshot is not None
-    context = PipelineStageContext(RUN_ID, snapshot.request, snapshot.commands[1], snapshot.execution_profile)
+    vlm_command = next(command for command in snapshot.commands if command.stage == "vlm")
+    context = PipelineStageContext(RUN_ID, snapshot.request, vlm_command, snapshot.execution_profile)
     return _PreparedRun(root, context, source.outcome.command_slot_id)
 
 
@@ -249,7 +250,7 @@ def test_replay_never_relabels_old_run_with_current_semantic_policy(
     )
     assert replay.replayed and replay.snapshot.run_id == original.run_id
     assert replay.snapshot.request == original.request
-    assert replay.snapshot.commands[1] == original.command
+    assert next(command for command in replay.snapshot.commands if command.stage == "vlm") == original.command
     assert replay.snapshot.execution_profile == original.execution_profile
     restored = replace(original, execution_profile=replay.snapshot.execution_profile)
     assert stage._requests(restored) == baseline

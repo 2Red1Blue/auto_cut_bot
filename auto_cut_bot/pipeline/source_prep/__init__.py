@@ -33,6 +33,12 @@ from .probe import (
     FFprobeSourceMediaPort,
     SourceMediaProbe,
 )
+from .reuse import (
+    BindWholeSeriesSourcesCommand,
+    BindWholeSeriesSourcesRequest,
+    BindWholeSeriesSourcesResult,
+    SourceReuseStore,
+)
 
 if TYPE_CHECKING:
     from .identity import PreparedWholeSeries, WholeSeriesIdentityPreparer
@@ -47,6 +53,7 @@ def __getattr__(name: str) -> object:
             "WholeSeriesIdentityPreparer": WholeSeriesIdentityPreparer,
         }[name]
     raise AttributeError(name)
+
 
 __all__ = [
     "AuthorizedSeriesSourceRoot",
@@ -76,4 +83,8 @@ __all__ = [
     "snapshot_series_sources",
     "read_persisted_prepared_sources",
     "read_persisted_prepared_sources_bundle",
+    "BindWholeSeriesSourcesCommand",
+    "BindWholeSeriesSourcesRequest",
+    "BindWholeSeriesSourcesResult",
+    "SourceReuseStore",
 ]

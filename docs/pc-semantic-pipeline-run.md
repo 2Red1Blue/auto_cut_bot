@@ -125,8 +125,14 @@ private environment, then start the Pipeline-only server on loopback:
 
 ```bash
 uv sync --extra api
+export PYTHONPATH="$PWD/packages/autocut-kernel/src${PYTHONPATH:+:$PYTHONPATH}"
 uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18769
 ```
+
+The root wheel bundles `autocut_kernel` for deployment.  A worktree development
+run must prepend its authoritative Kernel source as above, otherwise an older
+bundled copy in an existing virtual environment can shadow the checked-out
+Kernel code.  A built wheel does not need this override.
 
 Submit one run with a new idempotency key and the source reference from the
 catalog:

@@ -156,16 +156,19 @@ plan、源集合、生产者 Receipt 的存在性/归属/状态在提交前由 K
 ### 4.3 复用绑定与 Blob 读取
 
 旧 Store 按生产 Job 校验 Blob claim；**给新 run 一个旧 BlobRef 并不足够**。
-新增 `BoundVlmInputs/v1`：目标 run/plan exact ref + 原生产者 exact refs；
-Kernel 验证同一授权 namespace/principal、源集合、用途、目标策略后，产生只读的
-`ResolvedVlmInputs`。它通过**原生产者 Job 的已验证 claim**读取原 Blob 字节，
-而新 GenerationAttempt 和新输出归目标 Job。首版不复制 Blob、不转移 owner、
-不放宽现有 `read_immutable_blob(job, ref)` 的权限检查。
+新增 `BoundVlmInputs/v1`：目标 run/plan exact ref + 原生产者 exact refs。首版由专用的
+`BindWholeSeriesSourcesCommand` 将此授权投影为目标 Job 的**只读 source binding**：它在一个
+事务中验证 origin 成功 Receipt、源集合与当前授权策略，给同一个 immutable Blob object 增加
+目标 Job claim，并写入目标 scope 的等价 SourceManifest 与 `source_reuse_binding/v1`。
+不会复制字节、不会转移 origin owner，也不会放宽现有
+`read_immutable_blob(job, ref)` 的 Job 边界。
 
-request factory 增加一个明确的 bound-input 入口；旧同 Job 入口保持原校验。
-finalizer 和下游读取器通过目标 plan 验证每个 origin，不得只给 finalizer 特判。
-普通 Runtime/HTTP 不能凭 producer_job_id 获取跨 Job 原始读取权限。
-接纳和真正读取时都重新验证当前源授权；过期/撤回的授权不能凭旧 Receipt 继续使用。
+所以 request factory、finalizer 与下游读取器继续只读取目标 Job；不增加可由普通
+Runtime/HTTP 调用的 `read_blob_as(producer_job)` 后门。`source_reuse_binding/v1` 保留 origin
+Job/Receipt/ArtifactSet/slot/reference：**专用写入事务**独立重读并闭合该 origin；目标 Job
+读取 SourceManifest 时则验证严格双成员集、目标 scope、binding target/policy/hash，不能把
+任意两成员集解释为 source reuse。接纳和真正绑定时均验证当前源授权；过期/撤回的授权不能凭
+旧 Receipt 创建新 binding。
 
 ## 5. 兼容性、范围扩展与下游失效
 
