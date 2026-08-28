@@ -31,7 +31,7 @@ total66943。已达到当前32768输出上限。
 - 只读获取补充debug：`/Users/liuzx/Downloads/ac-auto-cut-validation/mac-local-run/retrieved-debug/`
 - 数据库升级前备份：`/Users/liuzx/Downloads/ac-auto-cut-validation/mac-local-run/backups/`
 
-启动器读取本机私有凭据并执行正常CLI，不是可移植配置模板。Mac端口18767；
+启动器读取本机私有凭据并执行正常CLI，不是可移植配置模板。Mac默认端口18768；
 API token、Ark凭据和数据库密码不可复制到文档/Git。开发测试另用可丢弃数据库。
 
 ## 尚未完成
@@ -113,3 +113,31 @@ frame-anchor Schema；模型因此合法地产生了该分支，而 parser 正�
 而是把高光/钩子假设交给后续只读取已验证语义图的候选阶段。V8 是新 profile、请求 hash
 和新 run；V7 及所有历史 Receipt 均不修改。迁移 `0033` 已在本机 PostgreSQL 应用，升级
 前后 pipeline run/command 的计数和校验值相同。
+
+## V9 后续运行策略：保留严格校验，强化时间线自检
+
+V8 的三个真实 Attempt 均完成并留下原始输出，但分别因跨时段 `event.fact_refs`、未知引用、
+再次跨时段引用被拒绝。拒绝是正确的：模型不能把同一人物在远处时间发生的事实接到当前事件，
+也不能凭空引用未声明的事实。没有通过删除这些引用、裁剪结果或放松 Kernel 校验来“修复”。
+
+V9 `v9-context-assisted-timeline-core-observations` 保持 V8 的核心观察 Schema、
+`candidate_hypotheses=[]` 与所有 parser 不变量，仅增加明确的生成顺序：先确定事件区间，
+再只写入和该区间严格相交的事实；跨不连续动作拆为多个事件，无法满足时只保留事实不输出事件。
+它有独立 Prompt/Profile/Request hash 和迁移 `0034`；V8 run、失败原因与 Receipt 均不改写。
+
+## V10 后续运行策略：对抗 Ark 的枚举漂移
+
+V9 的前两次真实输出仍把 `visible_reaction` 作为 `fact_kind`。这不是已注册的值，且 Ark 在
+本次实际调用中没有完全执行它已收到的 JSON Schema enum；Kernel 继续以
+`UNKNOWN_ENUM_VALUE` 拒绝。V10 因而在保持完全相同的 Schema 和 parser 的前提下，向模型
+显式列出所有 entity/fact/event/time 枚举，并说明表情类反应必须归入 `visible_action` 或
+`visible_state`。这是新的不可变 Prompt/Profile/Request hash 与迁移 `0035`，不是把未知值
+自动映射为合法值。
+
+## V11 后续运行策略：一次性约束紧凑且规范的 JSON
+
+V10 的真实返回还显示 Schema 可能被部分忽略：`object_ref:p012` 缺少 JSON 字符串引号，
+因而不能解析。V11 仍不宽容解析，而是合并此前全部模型侧约束，并限制每窗口的核心观察
+规模（12实体、18事实、10事件、4时间段）。它显式要求所有本地 ID 与引用是带双引号的
+JSON 字符串、必填字段恰好一次、空值为 `null`、引用数组排序且不重复。该紧凑限制仅影响
+新 V11 请求；之后可用更多小窗口补充覆盖，不能拿未验证的大 JSON 冒充完整语义图。
