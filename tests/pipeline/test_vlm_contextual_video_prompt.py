@@ -11,11 +11,15 @@ from autocut_kernel.context_pack import (
     normalize_narrative_context,
 )
 
+from auto_cut_bot.pipeline.vlm.bounded_video_prompt import vlm_bounded_video_response_schema
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
-from auto_cut_bot.pipeline.vlm.request_factory import build_doubao_vlm_request
+from auto_cut_bot.pipeline.vlm.request_factory import (
+    build_doubao_vlm_request,
+    registered_response_schema_json,
+)
 from tests.pipeline import test_doubao_vlm_request_factory as factory_fixture
 from tests.pipeline.test_vlm_video_integration import _policy
 
@@ -43,7 +47,14 @@ def test_contextual_prompt_binds_only_pack_text_and_retains_video_evidence_bound
 def test_v7_request_binds_exact_context_pack_and_v6_refuses_it() -> None:
     bundle = factory_fixture._source_bundle()
     pack = _pack()
-    v7 = replace(_policy(), prompt_version=VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION)
+    v7 = replace(
+        _policy(),
+        prompt_version=VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        response_schema_json=registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        ),
+    )
     request = build_doubao_vlm_request(
         source_bundle=bundle,
         episode_index=0,
@@ -80,3 +91,18 @@ def test_v7_request_binds_exact_context_pack_and_v6_refuses_it() -> None:
             retry_policy=factory_fixture._retry_policy(),
             context_pack=pack,
         )
+
+
+def test_v7_contextual_prompt_keeps_v6_video_only_schema() -> None:
+    """Narrative context may enrich interpretation, never widen media evidence."""
+
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert schema == vlm_bounded_video_response_schema()
+    support = schema["properties"]["entities"]["items"]["properties"]["support"]
+    assert support["properties"]["support_kind"]["const"] == "video_observation"
+    assert "supporting_frame_ids" not in support["properties"]

@@ -149,3 +149,26 @@ def test_context_command_degrades_to_video_only_when_api_fetch_fails() -> None:
     assert result.outcome.state == "succeeded"
     assert result.prepared is not None
     assert result.prepared.pack_for_episode(0).video_only_reason_code == "EXTERNAL_CONTEXT_UNAVAILABLE"
+
+
+def test_context_command_commits_video_only_pack_without_api_configuration() -> None:
+    """A local semantic run remains executable when external narrative data is absent."""
+    bundle, _blobs = _bundle()
+    request = PrepareWindowContextRequest(
+        bundle.source_job,
+        "context-video-only",
+        canonical_recipe_scope(bundle.source_job),
+        1,
+        bundle,
+        None,
+        ContextSelectionPolicy(),
+    )
+    store = _Store()
+    result = PrepareWindowContextCommand(store, None).execute(request)
+
+    assert result.outcome.state == "succeeded"
+    assert result.prepared is not None
+    assert result.prepared.pack_for_episode(0).mode == "video_only"
+    assert result.prepared.pack_for_episode(0).video_only_reason_code == "EXTERNAL_CONTEXT_NOT_CONFIGURED"
+    assert result.prepared.snapshot is None
+    assert store.blobs == []

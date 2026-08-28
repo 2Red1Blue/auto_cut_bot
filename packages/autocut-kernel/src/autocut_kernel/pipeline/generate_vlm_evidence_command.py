@@ -646,22 +646,24 @@ class GenerateVlmEvidenceCommand:
             )
         except (VlmResponseRejected, VlmResponseIndeterminate) as error:
             code = getattr(error, "code", "VLM_RESPONSE_DENIED")
-            detail = _json_bytes({"reason_code": code}).decode("utf-8")
+            # A completed provider call can still violate the closed semantic
+            # wire contract.  It is not admissible, but it is often a fresh
+            # generation opportunity rather than a permanent command error:
+            # every retry receives a distinct provider idempotency key while
+            # retaining the same immutable input request.  Persist the
+            # structural reason so the final Receipt is actionable after the
+            # bounded retry budget is exhausted.
+            detail = _json_bytes(
+                {"reason_code": code, "parser_message": str(error)}
+            ).decode("utf-8")
             failed = self._store.fail_generation_attempt(
                 attempt.attempt_id,
                 expected_version=attempt.version,
                 failure_code=code,
                 failure_detail_json=detail,
-                failure_disposition=ProviderFailureDisposition.REPAIRABLE.value,
+                failure_disposition=ProviderFailureDisposition.RETRYABLE.value,
             )
-            rejection = self._commit_terminal_failure(
-                request,
-                outcome,
-                failed,
-                terminal_code=code,
-                terminal_outcome="denied",
-            )
-            return GenerateVlmEvidenceResult(rejection, failed)
+            return self._recover_failed_attempt(request, outcome, failed)
 
         artifacts = _artifacts(request, attempt, semantic_pack)
         success = CommandSuccess(

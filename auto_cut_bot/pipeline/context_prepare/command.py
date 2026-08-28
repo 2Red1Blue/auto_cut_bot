@@ -23,6 +23,7 @@ from autocut_kernel.context_pack import (
     normalize_narrative_context,
     video_only_window_context_pack,
 )
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.store import (
     ArtifactMember,
     ArtifactScope,
@@ -47,6 +48,7 @@ COMMAND_NAME = "PrepareWindowContextCommand"
 CONTEXT_PACK_SET_ARTIFACT_TYPE = "window_context_pack_set"
 CONTEXT_PACK_SET_LOGICAL_ID = "window_context_pack_set"
 _JSON_MEDIA_TYPE = "application/json"
+VIDEO_ONLY_OWNER_MAPS_SHA256 = canonical_sha256({"schema_version": "no-owner-maps-v1"})
 
 
 class ContextPrepareStore(Protocol):
@@ -90,7 +92,7 @@ class PrepareWindowContextRequest:
     artifact_scope: ArtifactScope
     artifact_revision: int
     source_bundle: PersistedPreparedSources
-    owner_maps: OwnerEpisodeMapSet
+    owner_maps: OwnerEpisodeMapSet | None
     selection_policy: ContextSelectionPolicy
 
     def __post_init__(self) -> None:
@@ -102,21 +104,24 @@ class PrepareWindowContextRequest:
             raise ValueError("context artifact revision must be positive")
         if type(self.source_bundle) is not PersistedPreparedSources:  # noqa: E721
             raise TypeError("context request requires exact persisted sources")
-        if type(self.owner_maps) is not OwnerEpisodeMapSet:  # noqa: E721
-            raise TypeError("context request requires exact owner episode maps")
+        if self.owner_maps is not None and type(self.owner_maps) is not OwnerEpisodeMapSet:  # noqa: E721
+            raise TypeError("context request owner maps must be exact when configured")
         if type(self.selection_policy) is not ContextSelectionPolicy:  # noqa: E721
             raise TypeError("context request requires exact selection policy")
 
     @property
     def request_hash(self) -> str:
-        from autocut_kernel.media.types import canonical_sha256
-
         return canonical_sha256({
             "artifact_revision": self.artifact_revision,
             "artifact_scope": _scope_mapping(self.artifact_scope),
             "command": COMMAND_NAME,
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
-            "owner_maps_sha256": self.owner_maps.canonical_hash,
+            "context_mode": "api_assisted" if self.owner_maps is not None else "video_only",
+            "owner_maps_sha256": (
+                VIDEO_ONLY_OWNER_MAPS_SHA256
+                if self.owner_maps is None
+                else self.owner_maps.canonical_hash
+            ),
             "selection_policy_sha256": self.selection_policy.canonical_hash,
             "source_provenance_sha256": self.source_bundle.canonical_hash,
         })
@@ -202,7 +207,11 @@ def read_committed_window_context_packs(
         artifact_scope=request.artifact_scope,
         artifact_revision=request.artifact_revision,
         source_bundle=request.source_bundle,
-        expected_owner_maps_sha256=request.owner_maps.canonical_hash,
+        expected_owner_maps_sha256=(
+            VIDEO_ONLY_OWNER_MAPS_SHA256
+            if request.owner_maps is None
+            else request.owner_maps.canonical_hash
+        ),
     ).packs
 
 
@@ -278,7 +287,7 @@ def _decode_committed_window_context_packs(
 
 
 class PrepareWindowContextCommand:
-    def __init__(self, store: ContextPrepareStore, client: ExternalNarrativeApiClient) -> None:
+    def __init__(self, store: ContextPrepareStore, client: ExternalNarrativeApiClient | None) -> None:
         self._store = store
         self._client = client
 
@@ -295,6 +304,15 @@ class PrepareWindowContextCommand:
         if claimed.state not in ("pending", "running"):
             return PrepareWindowContextResult(claimed)
         try:
+            if request.owner_maps is None:
+                prepared = _video_only_prepared(request, "EXTERNAL_CONTEXT_NOT_CONFIGURED")
+                artifacts = (_artifact(request, prepared),)
+                outcome = self._store.commit_command_success(CommandSuccess(
+                    claimed.command_slot_id, artifact_set_hash(artifacts), artifacts,
+                ))
+                return PrepareWindowContextResult(outcome, prepared)
+            if self._client is None:
+                raise ValueError("external context client is unavailable")
             fetched = self._client.fetch(request.owner_maps.series_external_id)
             raw_blob = self._store.put_immutable_blob(
                 request.job,
@@ -355,16 +373,9 @@ class PrepareWindowContextCommand:
                 diagnostic_code=None,
             )
         except Exception as error:
-            prepared = PreparedWindowContextSet(
-                packs=tuple(video_only_window_context_pack(
-                    request.selection_policy, "EXTERNAL_CONTEXT_UNAVAILABLE"
-                ) for _episode in request.source_bundle.prepared.episodes),
-                source_provenance_sha256=request.source_bundle.canonical_hash,
-                owner_maps_sha256=request.owner_maps.canonical_hash,
-                snapshot=None,
-                raw_snapshot_blob=None,
-                normalized_context=None,
-                binding_set=None,
+            prepared = _video_only_prepared(
+                request,
+                "EXTERNAL_CONTEXT_UNAVAILABLE",
                 diagnostic_code=_diagnostic_code(error),
             )
         artifacts = (_artifact(request, prepared),)
@@ -383,6 +394,30 @@ def _artifact(request: PrepareWindowContextRequest, prepared: PreparedWindowCont
         request.artifact_scope,
         canonical_payload_hash(payload_json),
         payload_json,
+    )
+
+
+def _video_only_prepared(
+    request: PrepareWindowContextRequest,
+    reason_code: str,
+    *,
+    diagnostic_code: str | None = None,
+) -> PreparedWindowContextSet:
+    return PreparedWindowContextSet(
+        packs=tuple(video_only_window_context_pack(
+            request.selection_policy, reason_code
+        ) for _episode in request.source_bundle.prepared.episodes),
+        source_provenance_sha256=request.source_bundle.canonical_hash,
+        owner_maps_sha256=(
+            VIDEO_ONLY_OWNER_MAPS_SHA256
+            if request.owner_maps is None
+            else request.owner_maps.canonical_hash
+        ),
+        snapshot=None,
+        raw_snapshot_blob=None,
+        normalized_context=None,
+        binding_set=None,
+        diagnostic_code=reason_code if diagnostic_code is None else diagnostic_code,
     )
 
 
@@ -418,6 +453,7 @@ __all__ = [
     "PrepareWindowContextRequest",
     "PrepareWindowContextResult",
     "PreparedWindowContextSet",
+    "VIDEO_ONLY_OWNER_MAPS_SHA256",
     "find_committed_window_context_packs",
     "read_committed_window_context_packs",
 ]

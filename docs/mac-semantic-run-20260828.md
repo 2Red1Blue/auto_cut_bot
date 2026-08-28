@@ -82,3 +82,21 @@ total51220。已实际确认thinkingdisabled与上传文件缓存复用生效；
 当前还需修正模型时间表达与稀疏帧证据之间的接口设计；下一次调用前先离线验证。
 恢复回归另有5项真实PostgreSQL测试通过，覆盖不可达旧Windows路径时读取持久化
 Blob/精确请求及缺claim/bytes拒绝，不等于真正PC/Mac迁移验证。
+
+## 第四次真实调用：V7 ContextPack 已持久化，发现 Schema/Prompt 绑定缺陷
+
+`pipeline_run_051c83ec84de4c30a90b2f7529301c2d` 通过本机正常 HTTP
+`pipeline-serve` 提交真实第1集。该运行没有配置外部剧情 API；`context_prepare`
+仍成功提交了不可变 `video_only` `WindowContextPack`（原因
+`EXTERNAL_CONTEXT_NOT_CONFIGURED`），随后真实 Ark 流式调用完成。由此已验证：
+本机首次运行不需要外部 API 才能进入 VLM，已提交 Pack 也可成为重跑/换机读取的输入。
+
+该 VLM Attempt 没有被伪装为成功。完整响应被 Kernel 拒绝，原因是 V7 指令要求
+`video_observation`（不含 frame/PTS 引用），但请求工厂错误地为 V7 选择了旧的
+frame-anchor Schema；模型因此合法地产生了该分支，而 parser 正确拒绝其不满足
+毫秒区间的帧引用。该问题是 Schema 与 prompt 的绑定错误，不是 API、数据库或模型服务
+故障。修复为：V7 与 V6 共用仅视频观察的 Schema，且更新受保护 authority digest。
+
+同次修复还将“完成但不合约的结构化 VLM 响应”接入已有的三次 Generation retry
+预算：每次重试拥有新的 provider idempotency key，保留同一不可变输入和失败的结构化
+原因；耗尽才写终态失败 Receipt。不会修改或掩盖本次被拒绝的历史 run。

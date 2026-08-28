@@ -57,6 +57,9 @@ from auto_cut_bot.pipeline.vlm import (
     DoubaoVlmRequestPolicy,
     build_doubao_vlm_request,
 )
+from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+)
 from auto_cut_bot.pipeline.vlm.policy_binding import (
     validate_installed_source_sampling,
     validate_installed_vlm_policy,
@@ -76,6 +79,12 @@ VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION = "all-committed-episodes-bounde
 VLM_EPISODE_SELECTION_STRATEGY_VERSION = "probe-first-then-bounded-parallel-v3"
 VLM_EPISODE_MAX_CONCURRENCY = 10
 _ARTIFACT_REVISION = 1
+
+
+def _requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
+    """Only V7 has a ContextPack input contract; older runs stay replayable."""
+
+    return policy.prompt_version == VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION
 
 
 def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, int]:
@@ -273,7 +282,22 @@ class VlmPipelineStage:
         if self._installed_profile is not None:
             validate_installed_source_sampling(source_bundle)
         context_packs: tuple[WindowContextPack, ...] | None = None
-        if self._context_owner_maps is not None and self._context_selection_policy is not None:
+        committed_context = (
+            find_committed_window_context_packs(
+                self._store,
+                job=job,
+                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                artifact_revision=_ARTIFACT_REVISION,
+                source_bundle=source_bundle,
+            )
+            if _requires_window_context_pack(policy)
+            else None
+        )
+        if committed_context is not None:
+            # An already committed PackSet is the sole historic input.  Ignore
+            # whatever API configuration happens to be installed on this host.
+            context_packs = committed_context.packs
+        elif self._context_owner_maps is not None and self._context_selection_policy is not None:
             context_request = PrepareWindowContextRequest(
                 job=job,
                 idempotency_key=context_prepare_kernel_idempotency_key(
@@ -297,23 +321,10 @@ class VlmPipelineStage:
             context_packs = read_committed_window_context_packs(
                 self._store, context_request, context_outcome
             )
-        elif context.execution_profile.is_semantic_only:
-            # A resumed run must use the exact PackSet it already committed.
-            # No API endpoint, credential, or owner-map is needed (or allowed)
-            # on this path.  The Store verifies the producer, scope and immutable
-            # artifact member before the Pack can influence a V7 request.
-            committed_context = find_committed_window_context_packs(
-                self._store,
-                job=job,
-                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
-                artifact_revision=_ARTIFACT_REVISION,
-                source_bundle=source_bundle,
+        elif _requires_window_context_pack(policy):
+            raise PipelineRunValidationError(
+                "no committed WindowContextPack is available; context_prepare must complete first"
             )
-            if committed_context is None:
-                raise PipelineRunValidationError(
-                    "no committed WindowContextPack is available; a new context preparation requires explicit API configuration"
-                )
-            context_packs = committed_context.packs
         selection_strategy, _max_concurrency = _episode_selection_strategy(policy)
         if (
             self._stop_after_probe

@@ -75,7 +75,15 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
-        if prompt_version == VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+        # V7 only adds an immutable narrative-context projection to the V6
+        # video-observation contract.  It must retain the V6 response schema:
+        # accepting the older frame-anchor branch contradicts the prompt and
+        # lets a provider manufacture physical-looking evidence that V7 never
+        # supplied an allowlist for.
+        if prompt_version in {
+            VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        }:
             return vlm_bounded_video_response_schema_json()
         return vlm_video_response_schema_json()
     raise ValueError("parser strategy must be a registered Kernel version")

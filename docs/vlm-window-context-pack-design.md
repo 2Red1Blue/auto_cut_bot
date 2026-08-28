@@ -167,6 +167,10 @@ ID、名字或关系谓词。选择结果必须列出 `selected_refs` 和 `suppr
 它仍不输入 ASR、VAD、字幕、帧表、PTS、镜头或剪辑候选。prompt 必须明确：Context 是
 叙事辅助，视频观察只能由视频支撑；冲突时保留不确定性，不得用 Context 覆盖视频。
 
+V7 的 response schema 必须沿用 V6 的 `video_observation` 单一 support 分支；Context
+只改变解释辅助，不能重新开放 `supporting_frame_ids` 或 PTS 分支。否则模型会得到与
+V7 输入边界矛盾的可选字段，而 Kernel 必然拒绝其伪造或越界的物理式引用。
+
 `GenerateVlmEvidenceRequest` 的新 v7 变体必须额外绑定：
 
 ```text

@@ -1314,7 +1314,7 @@ async def test_known_provider_request_id_reconciles_same_attempt_without_redispa
 
 
 @pytest.mark.asyncio
-async def test_rejected_episode_finishes_its_parallel_batch_but_blocks_later_batches(
+async def test_invalid_episode_starts_bounded_retry_and_blocks_later_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY + 1)
@@ -1328,9 +1328,10 @@ async def test_rejected_episode_finishes_its_parallel_batch_but_blocks_later_bat
 
     result = await stage.execute(_context())
 
-    assert result.outcome == "denied"
-    assert result.receipt_id is not None
-    # A probe denial has no escaped sibling calls and blocks all later batches.
+    assert result.outcome == "indeterminate"
+    assert result.receipt_id is None
+    # A failed probe reserves the bounded retry path; no sibling or later
+    # batch has escaped before its durable retry is reconciled.
     assert len(provider.dispatch_calls) == 1
     assert all(
         claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()

@@ -647,16 +647,26 @@ def test_callback_failure_fallback_persists_id_and_replay_only_reconciles() -> N
     )
 
 
-def test_invalid_response_is_denied_without_semantic_pack_artifact() -> None:
+def test_invalid_response_retries_then_exhausts_without_semantic_pack_artifact() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request = _request(store, Job("vlm-invalid", "test"))
     raw = b'{"schema_version":2,"observations":[]}'
-    provider = FakeProvider(ProviderCompleted(raw, "provider-request-invalid"))
+    provider = SequencedProvider(
+        tuple(
+            ProviderCompleted(raw, f"provider-request-invalid-{ordinal}")
+            for ordinal in range(1, 4)
+        )
+    )
 
-    result = GenerateVlmEvidenceCommand(store, provider).execute(request)
+    command = GenerateVlmEvidenceCommand(store, provider)
+    first = command.execute(request)
+    second = command.execute(request)
+    result = command.execute(request)
 
-    assert result.outcome.state == "denied"
+    assert first.outcome.state == second.outcome.state == "running"
+    assert result.outcome.state == "failed"
+    assert result.outcome.failure_code == "RETRY_BUDGET_EXHAUSTED"
     assert result.attempt is not None and result.attempt.state == "failed"
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
@@ -671,7 +681,7 @@ def test_invalid_response_is_denied_without_semantic_pack_artifact() -> None:
             assert cursor.fetchone()[0] == 1
 
 
-def test_event_fact_support_invariant_denial_persists_terminal_receipt() -> None:
+def test_event_fact_support_invariant_retries_with_diagnostic_before_terminal_receipt() -> None:
     assert DSN is not None
     store = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     request = _request(store, Job("vlm-support-mismatch", "test"))
@@ -706,24 +716,24 @@ def test_event_fact_support_invariant_denial_persists_terminal_receipt() -> None
         FakeProvider(ProviderCompleted(raw, "provider-support-mismatch")),
     ).execute(request)
 
-    assert result.outcome.state == "denied"
-    assert result.outcome.receipt_id is not None
-    assert result.attempt is not None and result.attempt.state == "failed"
-    assert result.attempt.failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
+    assert result.outcome.state == "running"
+    assert result.outcome.receipt_id is None
+    assert result.attempt is not None and result.attempt.state == "reserved"
+    chain = store.read_generation_attempt_chain(request.job, result.outcome.command_slot_id)
+    assert len(chain) == 2
+    assert chain[0].state == "failed"
+    assert chain[0].failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
+    assert json.loads(chain[0].failure_detail_json or "{}") == {
+        "reason_code": "SEMANTIC_PACK_INVARIANT_VIOLATION",
+        "parser_message": "SEMANTIC_PACK_INVARIANT_VIOLATION: event support must overlap every directly referenced fact support",
+    }
     with psycopg.connect(DSN) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """
-                SELECT outcome, failure_code
-                  FROM runtime.command_receipts
-                 WHERE receipt_id = %s
-                """,
-                (result.outcome.receipt_id,),
+                "SELECT count(*) FROM runtime.command_receipts WHERE command_slot_id = %s",
+                (result.outcome.command_slot_id,),
             )
-            assert cursor.fetchone() == (
-                "denied",
-                "SEMANTIC_PACK_INVARIANT_VIOLATION",
-            )
+            assert cursor.fetchone() == (0,)
 
 
 def test_continuity_invariant_denial_persists_terminal_receipt() -> None:
@@ -739,10 +749,11 @@ def test_continuity_invariant_denial_persists_terminal_receipt() -> None:
         FakeProvider(ProviderCompleted(raw, "provider-continuity-mismatch")),
     ).execute(request)
 
-    assert result.outcome.state == "denied"
-    assert result.outcome.receipt_id is not None
-    assert result.attempt is not None and result.attempt.state == "failed"
-    assert result.attempt.failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
+    assert result.outcome.state == "running"
+    assert result.outcome.receipt_id is None
+    assert result.attempt is not None and result.attempt.state == "reserved"
+    chain = store.read_generation_attempt_chain(request.job, result.outcome.command_slot_id)
+    assert chain[0].failure_code == "SEMANTIC_PACK_INVARIANT_VIOLATION"
 
 
 def test_provider_terminal_failure_closes_attempt_and_command_without_artifacts() -> None:
