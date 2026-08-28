@@ -1,0 +1,11 @@
+{
+  "id": "window-context-pack",
+  "title": "设计并实现外部剧情资产到可重跑 WindowContextPack 的投影",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "review",
+  "nextAction": "P0/P1 设计已完成，待独立复审后实施纯契约、映射、规范化与选择器；外部 API adapter 等端点与响应 schema 冻结。",
+  "branch": "feat/v213-contract-codegen"
+}

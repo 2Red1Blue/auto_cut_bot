@@ -1,0 +1,11 @@
+{
+  "id": "ark-responses-sdk-integration",
+  "title": "设计当前 Pipeline 的 Ark SDK 调用作用域、Files 轮询与缓存迁移",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "review",
+  "nextAction": "设计与反向审查已落档；确认 Ark tenant/project 的真实端点语义后，实施 Wave 1（作用域和手动 Files 轮询）并运行 wire/integration 验收。",
+  "branch": "feat/v213-contract-codegen"
+}

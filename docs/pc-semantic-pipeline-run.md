@@ -18,11 +18,11 @@ immutable Artifact/Receipt closure.  The plan cannot instantiate FunASR/VAD,
 story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
-The installed semantic-only policy now selects `vlm-semantic-pack-v4-compact`:
-compact JSON, concise nonduplicate descriptions, and an explicit proxy time
-base. The schema, parser and 32768 output-token budget are unchanged. Existing
-v3 requests retain their original prompt bytes and hashes on replay; the normal
-full-pipeline default remains v3 until its separate installed policy is updated.
+The installed semantic-only policy now selects
+`vlm-semantic-pack-v6-bounded-references`: the VLM receives only the attached
+video, duration and closed semantic-output contract, rather than a frame table
+or ASR/subtitle payload. The parser and 32768 output-token budget are unchanged.
+Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
 [Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
 
@@ -33,6 +33,12 @@ identity, not injected from an environment default. v2/v3/v4 request bytes and
 their replay behavior remain unchanged. Files uploads can still reuse v4 cache
 entries because upload bytes/MIME/purpose are identical; semantic outputs from
 different thinking modes are not interchangeable.
+
+> Ark Files/Responses API integration changes are governed by
+> [Ark Responses SDK 调用设计](ark-responses-sdk-integration-design.md). In
+> particular, do not add guessed tenant/project headers or change SDK polling
+> behavior in a local environment file: the current runtime has not yet
+> implemented `ArkRequestScope/v1`.
 
 Before enabling v5, stop all older Pipeline workers and apply migration
 `0029_vlm_explicit_thinking.sql` after the existing migrations. The v10 profile

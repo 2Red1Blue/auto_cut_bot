@@ -352,3 +352,6 @@ thinking=disabled，输出预算仍为32768；ASR/VAD/物理剪辑职责及双Ru
 3. 单集仍失败时按真实失败原因改进，不能删引用、扩大区间或把frame失败改成video成功。
 4. V4 Stage1–3消费接线及其输入局部ID映射、轻量wire的重复字段消除仍是后续任务；
    本轮不宣称故事生成、ASR/VAD、渲染或整条pipeline已跑通。
+5. 外部剧集资产只能经[WindowContextPack 设计](vlm-window-context-pack-design.md)的
+   不可变快照、显式 episode binding 和反剧透选择器进入后续 prompt v7；不能恢复旧
+   `global_context` 注入，也不能向当前 prompt6 追加字段。
