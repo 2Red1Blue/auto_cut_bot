@@ -143,12 +143,14 @@ same-named local module incorrectly in Git Bash):
 ```
 
 This is intentionally limited to semantic SourcePrep/Context/VLM execution.
-Physical media materialization uses a cross-process POSIX advisory-lock ledger;
-native Windows rejects that later stage with a clear infrastructure failure
-rather than replacing it with an unsafe process-local quota lock. Run calibrated
-ASR/VAD and media-preflight materialization in the verified Linux/WSL/container
-runtime until an equivalent cross-process Windows ledger is separately designed
-and verified.
+Physical media materialization uses a cross-process POSIX advisory-lock ledger,
+and local rendered-output promotion additionally depends on descriptor-relative
+no-follow filesystem operations. Native Windows rejects either later physical
+operation with a clear infrastructure failure rather than replacing it with an
+unsafe process-local lock or path-based promotion. Run calibrated ASR/VAD,
+media-preflight materialization and local output promotion in the verified
+Linux/WSL/container runtime until equivalent Windows mechanisms are separately
+designed and verified.
 
 Submit one run with a new idempotency key and the source reference from the
 catalog:

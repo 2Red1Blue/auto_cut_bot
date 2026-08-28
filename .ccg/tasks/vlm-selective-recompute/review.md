@@ -48,6 +48,13 @@ a POSIX advisory lock: a process-local fallback would silently break the quota
 invariant across worker processes. A focused test covers that fail-closed path;
 Ruff, BasedPyright and 70 focused tests pass.
 
+The next native-Windows import check exposed the same category of defect in
+local output promotion: its POSIX-only no-follow directory flags were evaluated
+at module import time, even though semantic-only execution never promotes a
+render. The flags are now resolved only at physical-promotion admission. This
+keeps native Windows semantic imports available while rejecting output promotion
+without secure descriptor-relative APIs; no unsafe flag fallback is introduced.
+
 ## Follow-up scope
 
 `POST /v1/pipeline/recompute` now implements the deliberately narrow,

@@ -22,7 +22,6 @@ from ..store.models import canonical_recipe_scope
 _CHUNK_SIZE = 1024 * 1024
 _SHA256_PREFIX = "sha256:"
 _NAMESPACE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
-_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 class LocalPromotionError(Exception):
@@ -226,12 +225,25 @@ def _require_secure_os_apis() -> None:
         raise LocalPromotionError("secure descriptor-relative filesystem APIs are unavailable")
 
 
+def _directory_flags() -> int:
+    """Return the required no-follow directory flags after platform admission.
+
+    These flags intentionally have no Windows fallback.  Local promotion is a
+    POSIX-only visibility boundary, but the semantic Pipeline imports its
+    package on native Windows.  Keeping the lookup lazy lets the semantic
+    runtime start while an actual promotion still fails closed.
+    """
+    _require_secure_os_apis()
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
 def _open_output_root(root: Path) -> int:
     """Create/open a lexical absolute root without following any symlink."""
     absolute = root.absolute()
     if not absolute.is_absolute() or any(part in {"", ".", ".."} for part in absolute.parts[1:]):
         raise LocalPromotionError("output_root must be an absolute-safe directory path")
-    fd = os.open("/", _DIRECTORY_FLAGS)
+    directory_flags = _directory_flags()
+    fd = os.open("/", directory_flags)
     try:
         for part in absolute.parts[1:]:
             try:
@@ -240,7 +252,7 @@ def _open_output_root(root: Path) -> int:
             except FileExistsError:
                 pass
             try:
-                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                child = os.open(part, directory_flags, dir_fd=fd)
             except OSError as error:
                 raise LocalPromotionError("output_root must be a real directory") from error
             os.close(fd)
@@ -252,6 +264,7 @@ def _open_output_root(root: Path) -> int:
 
 
 def _open_or_create_directory(root_fd: int, components: Sequence[str]) -> int:
+    directory_flags = _directory_flags()
     fd = os.dup(root_fd)
     try:
         for part in components:
@@ -263,7 +276,7 @@ def _open_or_create_directory(root_fd: int, components: Sequence[str]) -> int:
             except FileExistsError:
                 pass
             try:
-                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                child = os.open(part, directory_flags, dir_fd=fd)
             except OSError as error:
                 raise LocalPromotionError(
                     "generated directory component must be a real directory"

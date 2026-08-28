@@ -11,7 +11,7 @@ from uuid import uuid4
 import pytest
 from autocut_kernel.media.types import TimeBase
 from autocut_kernel.output import LocalPromotionError, LocalPromotionRequest, promote_local_output
-from autocut_kernel.output.local_promotion import LocalPromotionService
+from autocut_kernel.output.local_promotion import LocalPromotionService, _directory_flags
 from autocut_kernel.rendering import H264_MP4_VIDEO_PROFILE, Recipe
 from autocut_kernel.rendering.ffmpeg_renderer import RenderAttempt
 from autocut_kernel.rendering.qc import QCCheck, QCReport
@@ -125,6 +125,16 @@ def test_service_rejects_a_postgres_store_subclass() -> None:
 
     with pytest.raises(LocalPromotionError, match="exact PostgresRuntimeStore"):
         LocalPromotionService(SubstituteStore(lambda: None))  # type: ignore[arg-type]
+
+
+def test_windows_without_secure_descriptor_apis_rejects_promotion_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Semantic imports remain usable; physical local promotion stays denied."""
+    monkeypatch.delattr("autocut_kernel.output.local_promotion.os.O_DIRECTORY", raising=False)
+    monkeypatch.delattr("autocut_kernel.output.local_promotion.os.O_NOFOLLOW", raising=False)
+    with pytest.raises(LocalPromotionError, match="secure descriptor-relative"):
+        _directory_flags()
 
 
 def test_atomic_idempotent_install_and_namespace_isolation(
