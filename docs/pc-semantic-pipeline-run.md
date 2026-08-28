@@ -55,7 +55,7 @@ different thinking modes are not interchangeable.
 > implemented `ArkRequestScope/v1`.
 
 Before enabling V14, stop all older Pipeline workers and apply every pending
-Kernel migration in numeric order, including `0038`. The v10 profile has a
+Kernel migration in numeric order, including `0039`. The v10 profile has a
 closed five-field parameter variant for v5; later VLM prompt registrations
 (`0030` onward) are also required for their corresponding authority profile.
 Full-pipeline is not widened.
