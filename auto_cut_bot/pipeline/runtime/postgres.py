@@ -97,7 +97,10 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
         return "denied"
     if "blocked" in states:
         return "failed"
-    if tuple(stage for stage, _state in command_rows) == ("source_prep", "vlm"):
+    if tuple(stage for stage, _state in command_rows) in {
+        ("source_prep", "vlm"),
+        ("source_prep", "context_prepare", "vlm"),
+    }:
         return "succeeded"
     if _PIPELINE_SUCCESS_TERMINAL_STAGE is not None and any(
         stage == _PIPELINE_SUCCESS_TERMINAL_STAGE and state == "succeeded"
@@ -275,9 +278,10 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             (command_id, run_id, ordinal, stage, state, version)
                         VALUES
                             (%s, %s, 0, 'source_prep', 'pending', 0),
-                            (%s, %s, 1, 'vlm', 'pending', 0)
+                            (%s, %s, 1, 'context_prepare', 'pending', 0),
+                            (%s, %s, 2, 'vlm', 'pending', 0)
                         """,
-                        (uuid4(), run_id, uuid4(), run_id),
+                        (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
                     )
                 else:
                     cursor.execute(

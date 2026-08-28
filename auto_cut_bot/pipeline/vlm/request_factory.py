@@ -15,6 +15,7 @@ import math
 from dataclasses import dataclass, field
 from typing import cast
 
+from autocut_kernel.context_pack import WindowContextPack
 from autocut_kernel.pipeline import (
     VLM_PARSER_STRATEGY_VERSION,
     GenerateVlmEvidenceRequest,
@@ -32,6 +33,10 @@ from auto_cut_bot.pipeline.source_prep.command import (
 from .bounded_video_prompt import (
     VLM_BOUNDED_VIDEO_PROMPT_VERSION,
     vlm_bounded_video_response_schema_json,
+)
+from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+    build_vlm_contextual_video_prompt,
 )
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
@@ -201,7 +206,14 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("response schema JSON must be the exact registered canonical schema")
         video_contract = self.parser_strategy_version == VLM_PARSER_V4
         require_parser_contract(self.parser_strategy_version, self.parser_contract_sha256)
-        if video_contract != (self.prompt_version in {VLM_VIDEO_PROMPT_VERSION, VLM_BOUNDED_VIDEO_PROMPT_VERSION}):
+        if video_contract != (
+            self.prompt_version
+            in {
+                VLM_VIDEO_PROMPT_VERSION,
+                VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+            }
+        ):
             raise ValueError("V4 video prompt and parser must be selected together")
         if video_contract != (self.stage_strategy_version == DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION):
             raise ValueError("V4 video parser requires its registered stage strategy")
@@ -304,6 +316,7 @@ def build_doubao_vlm_request(
     idempotency_key: str,
     policy: DoubaoVlmRequestPolicy,
     retry_policy: GenerationRetryPolicy,
+    context_pack: WindowContextPack | None = None,
 ) -> GenerateVlmEvidenceRequest:
     """Build one request from a provenance-bearing committed source episode."""
 
@@ -317,6 +330,11 @@ def build_doubao_vlm_request(
         raise TypeError("policy must be an exact DoubaoVlmRequestPolicy")
     if type(retry_policy) is not GenerationRetryPolicy:  # noqa: E721
         raise TypeError("retry_policy must be an exact GenerationRetryPolicy")
+    if context_pack is not None and type(context_pack) is not WindowContextPack:  # noqa: E721
+        raise TypeError("context_pack must be an exact WindowContextPack when present")
+    contextual_prompt = policy.prompt_version == VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION
+    if contextual_prompt != (context_pack is not None):
+        raise ValueError("prompt v7 requires exactly one WindowContextPack; v6 and earlier forbid it")
     if type(episode_index) is not int or not 0 <= episode_index < len(  # noqa: E721
         source_bundle.prepared.episodes
     ):
@@ -334,7 +352,11 @@ def build_doubao_vlm_request(
         manifest=prepared_episode.manifest,
         manifest_set=prepared_episode.manifest_set,
         proxy_blob=prepared_episode.proxy_blob,
-        prompt_template=build_vlm_prompt(prepared_episode.manifest, prompt_version=policy.prompt_version),
+        prompt_template=(
+            build_vlm_contextual_video_prompt(prepared_episode.manifest, context_pack)
+            if contextual_prompt and context_pack is not None
+            else build_vlm_prompt(prepared_episode.manifest, prompt_version=policy.prompt_version)
+        ),
         prompt_version=policy.prompt_version,
         response_schema_json=policy.response_schema_json,
         request_parameters_json=policy.request_parameters_json,
@@ -345,6 +367,7 @@ def build_doubao_vlm_request(
         parser_strategy_version=policy.parser_strategy_version,
         parser_contract_sha256=policy.parser_contract_sha256,
         source_provenance_sha256=source_bundle.canonical_hash,
+        context_pack=context_pack,
     )
 
 
@@ -369,6 +392,7 @@ class DoubaoVlmRequestFactory:
         job: Job,
         artifact_revision: int,
         idempotency_key: str,
+        context_pack: WindowContextPack | None = None,
     ) -> GenerateVlmEvidenceRequest:
         return build_doubao_vlm_request(
             source_bundle=source_bundle,
@@ -378,6 +402,7 @@ class DoubaoVlmRequestFactory:
             idempotency_key=idempotency_key,
             policy=self.policy,
             retry_policy=self.retry_policy,
+            context_pack=context_pack,
         )
 
 

@@ -10,6 +10,11 @@ import json
 from dataclasses import replace
 from typing import Protocol
 
+from autocut_kernel.context_pack import (
+    ContextSelectionPolicy,
+    OwnerEpisodeMapSet,
+    WindowContextPack,
+)
 from autocut_kernel.pipeline import (
     FinalizeVlmBatchCommand,
     FinalizeVlmBatchRequest,
@@ -33,6 +38,11 @@ from autocut_kernel.store.vlm_v4 import VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4
 from autocut_kernel.vlm import VlmProviderPort
 from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4
 
+from auto_cut_bot.pipeline.context_prepare import (
+    ContextPrepareStore,
+    PrepareWindowContextRequest,
+    read_committed_window_context_packs,
+)
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
@@ -52,6 +62,7 @@ from auto_cut_bot.pipeline.vlm.policy_binding import (
 )
 from auto_cut_bot.pipeline.vlm.request_factory import DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION
 
+from .context_prepare_stage import context_prepare_kernel_idempotency_key
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
 from .source_prep_stage import (
@@ -79,6 +90,7 @@ def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, in
 
 class VlmPipelineStore(
     SourcePrepStore,
+    ContextPrepareStore,
     GenerationStore,
     VlmBatchFinalizerStore,
     Protocol,
@@ -93,6 +105,7 @@ def vlm_kernel_idempotency_key(
     source_bundle: PersistedPreparedSources,
     policy: DoubaoVlmRequestPolicy,
     execution_profile_hash: str,
+    context_pack: WindowContextPack | None = None,
 ) -> str:
     validate_run_id(run_id)
     if type(episode_index) is not int or episode_index < 0:  # noqa: E721
@@ -110,6 +123,8 @@ def vlm_kernel_idempotency_key(
         "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
         "source_provenance_sha256": source_bundle.canonical_hash,
     }
+    if context_pack is not None:
+        payload["context_pack_sha256"] = context_pack.canonical_hash
     encoded = json.dumps(
         payload,
         ensure_ascii=False,
@@ -125,6 +140,7 @@ def vlm_batch_kernel_idempotency_key(
     source_bundle: PersistedPreparedSources,
     policy: DoubaoVlmRequestPolicy,
     execution_profile_hash: str,
+    context_packs: tuple[WindowContextPack, ...] | None = None,
 ) -> str:
     """Return the sole durable identity of one complete VLM semantic batch."""
 
@@ -133,14 +149,17 @@ def vlm_batch_kernel_idempotency_key(
         raise PipelineRunValidationError(
             "VLM batch identity requires exact persisted source provenance"
         )
-    encoded = json.dumps(
-        {
+    payload: dict[str, object] = {
             "execution_profile_sha256": execution_profile_hash,
             "run_id": run_id,
             "selection_strategy_version": _episode_selection_strategy(policy)[0],
             "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
             "source_provenance_sha256": source_bundle.canonical_hash,
-        },
+        }
+    if context_packs is not None:
+        payload["context_pack_hashes"] = [item.canonical_hash for item in context_packs]
+    encoded = json.dumps(
+        payload,
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
@@ -162,6 +181,8 @@ class VlmPipelineStage:
         command: GenerateVlmEvidenceCommand | None = None,
         finalizer: FinalizeVlmBatchCommand | None = None,
         installed_profile: LocalRunResource | None = None,
+        context_owner_maps: OwnerEpisodeMapSet | None = None,
+        context_selection_policy: ContextSelectionPolicy | None = None,
         stop_after_probe: bool = False,
     ) -> None:
         if not callable(getattr(provider, "dispatch", None)) or not callable(
@@ -177,6 +198,14 @@ class VlmPipelineStage:
         if type(stop_after_probe) is not bool:  # noqa: E721
             raise PipelineRunValidationError("VLM probe inspection control must be a bool")
         self._installed_profile = installed_profile
+        if context_owner_maps is not None and type(context_owner_maps) is not OwnerEpisodeMapSet:  # noqa: E721
+            raise PipelineRunValidationError("VLM context owner maps must be exact")
+        if context_selection_policy is not None and type(context_selection_policy) is not ContextSelectionPolicy:  # noqa: E721
+            raise PipelineRunValidationError("VLM context policy must be exact")
+        if (context_owner_maps is None) != (context_selection_policy is None):
+            raise PipelineRunValidationError("VLM context maps and policy must be supplied together")
+        self._context_owner_maps = context_owner_maps
+        self._context_selection_policy = context_selection_policy
         # This is an operational inspection hold only. It is deliberately not
         # part of the persisted execution profile: it cannot change the VLM
         # request, idempotency key, or semantic result being inspected.
@@ -202,6 +231,7 @@ class VlmPipelineStage:
         PersistedPreparedSources,
         DoubaoVlmRequestPolicy,
         tuple[GenerateVlmEvidenceRequest, ...],
+        tuple[WindowContextPack, ...] | None,
     ] | None:
         job = self._job(context)
         policy = context.execution_profile.to_doubao_policy()
@@ -241,6 +271,31 @@ class VlmPipelineStage:
             )
         if self._installed_profile is not None:
             validate_installed_source_sampling(source_bundle)
+        context_packs: tuple[WindowContextPack, ...] | None = None
+        if self._context_owner_maps is not None and self._context_selection_policy is not None:
+            context_request = PrepareWindowContextRequest(
+                job=job,
+                idempotency_key=context_prepare_kernel_idempotency_key(
+                    run_id=context.run_id,
+                    source_bundle=source_bundle,
+                    owner_maps=self._context_owner_maps,
+                    policy=self._context_selection_policy,
+                    execution_profile_hash=context.execution_profile_hash,
+                ),
+                artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                artifact_revision=_ARTIFACT_REVISION,
+                source_bundle=source_bundle,
+                owner_maps=self._context_owner_maps,
+                selection_policy=self._context_selection_policy,
+            )
+            context_outcome = self._store.read_outcome(job, context_request.idempotency_key)
+            if context_outcome is None or context_outcome.state in ("pending", "running"):
+                return None
+            if context_outcome.state != "succeeded":
+                raise PipelineRunValidationError("context prepare did not produce a committed PackSet")
+            context_packs = read_committed_window_context_packs(
+                self._store, context_request, context_outcome
+            )
         selection_strategy, _max_concurrency = _episode_selection_strategy(policy)
         if (
             self._stop_after_probe
@@ -262,15 +317,17 @@ class VlmPipelineStage:
                         source_bundle=source_bundle,
                         policy=policy,
                         execution_profile_hash=context.execution_profile_hash,
+                        context_pack=None if context_packs is None else context_packs[episode_index],
                     ),
                     policy=policy,
                     retry_policy=retry_policy,
+                    context_pack=None if context_packs is None else context_packs[episode_index],
                 ),
                 episode_index=episode_index,
                 source_manifest_sha256=source_bundle.artifact_reference.content_hash,
             )
             for episode_index in range(len(source_bundle.prepared.episodes))
-        )
+        ), context_packs
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
         prepared = await asyncio.to_thread(self._requests, context)
@@ -307,6 +364,7 @@ class VlmPipelineStage:
         source_bundle: PersistedPreparedSources,
         policy: DoubaoVlmRequestPolicy,
         requests: tuple[GenerateVlmEvidenceRequest, ...],
+        context_packs: tuple[WindowContextPack, ...] | None,
     ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult | None:
         children: list[VlmBatchChildOutcome] = []
         selection_strategy, max_concurrency = _episode_selection_strategy(policy)
@@ -381,6 +439,7 @@ class VlmPipelineStage:
                 source_bundle=source_bundle,
                 policy=policy,
                 execution_profile_hash=context.execution_profile_hash,
+                context_packs=context_packs,
             ),
             artifact_scope=canonical_recipe_scope(Job(context.run_id, context.request.profile)),
             artifact_revision=_ARTIFACT_REVISION,

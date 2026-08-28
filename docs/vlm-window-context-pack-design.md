@@ -1,6 +1,7 @@
 # VLM WindowContextPack — 外部剧情资产的受控投影设计
 
-**状态：P0/P1 设计完成，尚未接入运行时。**
+**状态：P0 契约、Normalizer、映射集校验、Pack 和 VLM v7 请求绑定已实现；
+运行时 `context_prepare` Command/ArtifactSet 尚待接线。**
 **适用范围：** 当前 `source_prep -> context_prepare -> vlm` 语义路径。
 **不适用范围：** ASR/VAD/字幕输入、镜头/高光时间点、Stage 4 物理剪辑与旧
 `global_context`。
@@ -44,6 +45,7 @@ P0 需要新增的明确投影边界。
 | --- | --- | --- |
 | `ExternalContextSnapshot/v1` | 否 | 保存一次 API 原始响应和请求身份，供审计与重建。 |
 | `NormalizedNarrativeContext/v1` | 否 | 以稳定 ID、语言和可见性字段规范化原始资产。 |
+| `EpisodeContextBindingSet/v1` | 否 | 校验整套显式映射，不允许一个本地或外部集被重复绑定。 |
 | `EpisodeContextBinding/v1` | 否 | 唯一地把本地 source episode 映射到外部 episode/chapter。 |
 | `WindowContextPack/v1` | 是 | 依据 policy 选择的紧凑剧情辅助文本，且有精确 hash。 |
 
@@ -65,12 +67,14 @@ API 字幕、ASR、VAD、shots、highlight、镜头时间点从上述所有“�
 
 ## 4. EpisodeContextBinding/v1：先证明“是哪一集”
 
-Context prepare 只能接受 owner/API 明确提供的映射：
+Context prepare 只能接受 owner/API 明确提供的映射。请求配置保存的是非推断的
+`OwnerEpisodeMap`；SourcePrep 成功后，系统将其与实际 source ID 和 SHA-256 结合，形成
+不可变 `EpisodeContextBinding`，并放入 `EpisodeContextBindingSet`：
 
 ```json
 {
   "kind": "EpisodeContextBinding/v1",
-  "local_source_id": "source-001",
+  "local_relative_path": "episode-012.mp4",
   "local_episode_index": 11,
   "local_source_sha256": "sha256:...",
   "series_external_id": "book-42",
@@ -88,6 +92,7 @@ Context prepare 产出显式 `video_only` Pack：
 
 - 本地 source、episode index 或 source hash 不匹配；
 - 外部 episode/chapter 缺失、重复、跨 series，或与另一 local source 冲突；
+- API 返回的 `external_episode_ordinal` 与显式 binding 不一致；
 - 映射不是 `owner_explicit`；
 - API 返回的主体语言/系列信息违反已配置的 source binding。
 

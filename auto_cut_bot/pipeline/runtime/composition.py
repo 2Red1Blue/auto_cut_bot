@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 import psycopg
+from autocut_kernel.context_pack import ContextSelectionPolicy, OwnerEpisodeMap, OwnerEpisodeMapSet
 from autocut_kernel.registry.installed_runtime import (
     InstalledLocalRunProfileResolver,
     InstalledRuntimeCapabilityResolver,
@@ -31,6 +32,10 @@ from autocut_kernel.vlm import (
     GenerationRetryPolicy,
 )
 
+from auto_cut_bot.pipeline.context_prepare import (
+    ExternalNarrativeApiClient,
+    ExternalNarrativeApiConfig,
+)
 from auto_cut_bot.pipeline.debug import FileModelIoDebugSink
 from auto_cut_bot.pipeline.media_preflight import (
     FunASRHttpTimedSpeechEvidencePort,
@@ -51,6 +56,7 @@ from auto_cut_bot.pipeline.vlm.ark_responses_transport import ArkResponsesTransp
 from auto_cut_bot.pipeline.vlm.doubao_draft_provider import DoubaoDraftProvider
 from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_policy
 
+from .context_prepare_stage import ContextPreparePipelineStage
 from .highlight_projection import PipelineHighlightReadService
 from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_read_limits
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
@@ -80,6 +86,10 @@ PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKEN
 PIPELINE_ARK_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_ARK_BASE_URL"
 PIPELINE_MODEL_DEBUG_DIR_ENV = "AUTO_CUT_BOT_PIPELINE_MODEL_DEBUG_DIR"
 PIPELINE_VLM_STOP_AFTER_PROBE_ENV = "AUTO_CUT_BOT_PIPELINE_VLM_STOP_AFTER_PROBE"
+PIPELINE_METADATA_API_BASE_URL_ENV = "AUTO_CUT_BOT_PIPELINE_METADATA_API_BASE_URL"
+PIPELINE_METADATA_API_KEY_ENV = "AUTO_CUT_BOT_PIPELINE_METADATA_API_KEY"
+PIPELINE_METADATA_CREDENTIAL_SCOPE_ENV = "AUTO_CUT_BOT_PIPELINE_METADATA_CREDENTIAL_SCOPE"
+PIPELINE_CONTEXT_OWNER_MAPS_ENV = "AUTO_CUT_BOT_PIPELINE_CONTEXT_OWNER_MAPS_JSON"
 PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_POLICY_JSON"
 PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV = "AUTO_CUT_BOT_MEDIA_PREFLIGHT_STAGING_ROOT"
 PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
@@ -114,6 +124,9 @@ _SEMANTIC_REQUIRED_ENVIRONMENT = (
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV,
+    PIPELINE_METADATA_API_BASE_URL_ENV,
+    PIPELINE_METADATA_API_KEY_ENV,
+    PIPELINE_CONTEXT_OWNER_MAPS_ENV,
 )
 _MATERIALIZATION_LIMIT_FIELDS = frozenset(
     {
@@ -143,6 +156,58 @@ DOUBAO_GENERATION_RETRY_POLICY = GenerationRetryPolicy(
 
 class PipelineRuntimeConfigurationError(ValueError):
     """Raised when an enabled paid runtime has incomplete or invalid config."""
+
+
+def _owner_episode_maps_from_json(raw: str) -> OwnerEpisodeMapSet:
+    """Decode only an explicit local-source-to-external-episode mapping.
+
+    This configuration intentionally has no filename/title/order matcher.  The
+    SourcePrep stage later derives source hashes from actual immutable media.
+    """
+    try:
+        decoded = cast(object, json.loads(raw, object_pairs_hook=_closed_json_object))
+    except (json.JSONDecodeError, UnicodeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_CONTEXT_OWNER_MAPS_ENV} must be valid closed JSON"
+        ) from error
+    if type(decoded) is not dict:  # noqa: E721
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_CONTEXT_OWNER_MAPS_ENV} must be an object"
+        )
+    mapping = cast(dict[str, object], decoded)
+    if set(mapping) != {"series_external_id", "mappings"} or type(mapping["mappings"]) is not list:  # noqa: E721
+        raise PipelineRuntimeConfigurationError(
+            f"{PIPELINE_CONTEXT_OWNER_MAPS_ENV} has unsupported fields"
+        )
+    values: list[OwnerEpisodeMap] = []
+    for item in cast(list[object], mapping["mappings"]):
+        if type(item) is not dict:  # noqa: E721
+            raise PipelineRuntimeConfigurationError("context owner map entry must be an object")
+        entry = cast(dict[str, object], item)
+        expected = {
+            "local_relative_path", "local_episode_index", "series_external_id",
+            "external_episode_id", "external_chapter_id", "external_episode_ordinal",
+        }
+        if set(entry) != expected:
+            raise PipelineRuntimeConfigurationError("context owner map entry fields are invalid")
+        try:
+            values.append(OwnerEpisodeMap(
+                local_relative_path=cast(str, entry["local_relative_path"]),
+                local_episode_index=cast(int, entry["local_episode_index"]),
+                series_external_id=cast(str, entry["series_external_id"]),
+                external_episode_id=cast(str, entry["external_episode_id"]),
+                external_chapter_id=cast(str | None, entry["external_chapter_id"]),
+                external_episode_ordinal=cast(int, entry["external_episode_ordinal"]),
+            ))
+        except (TypeError, ValueError) as error:
+            raise PipelineRuntimeConfigurationError("context owner map entry is invalid") from error
+    try:
+        return OwnerEpisodeMapSet(
+            cast(str, mapping["series_external_id"]),
+            tuple(sorted(values, key=lambda item: item.canonical_hash)),
+        )
+    except (TypeError, ValueError) as error:
+        raise PipelineRuntimeConfigurationError("context owner map set is invalid") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -662,6 +727,16 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
             if configured_base_url
             else DoubaoArkVlmProviderConfig(api_key=api_key, tenant_id=tenant_id, project_id=project_id)
         )
+        owner_maps = _owner_episode_maps_from_json(values[PIPELINE_CONTEXT_OWNER_MAPS_ENV].strip())
+        context_client = ExternalNarrativeApiClient(
+            ExternalNarrativeApiConfig(
+                base_url=values[PIPELINE_METADATA_API_BASE_URL_ENV].strip(),
+                api_key=values[PIPELINE_METADATA_API_KEY_ENV].strip(),
+                credential_scope_id=(
+                    values.get(PIPELINE_METADATA_CREDENTIAL_SCOPE_ENV, "").strip() or "default"
+                ),
+            )
+        )
     except PipelineRuntimeConfigurationError:
         raise
     except (SemanticRunAuthorityError, json.JSONDecodeError, TypeError, ValueError) as error:
@@ -683,13 +758,20 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         debug_sink=debug_sink,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
+    context_policy = ContextSelectionPolicy()
+    context_stage = ContextPreparePipelineStage(
+        kernel_store, context_client, owner_maps, selection_policy=context_policy
+    )
     vlm_stage = VlmPipelineStage(
         kernel_store,
         provider,
+        context_owner_maps=owner_maps,
+        context_selection_policy=context_policy,
         stop_after_probe=stop_after_probe,
     )
     registry = PipelineStageRegistry.from_ports(
         ("source_prep", source_stage),
+        ("context_prepare", context_stage),
         ("vlm", vlm_stage),
     )
     service = DurablePipelineRunService(
@@ -702,6 +784,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         reconciler=PipelineStageReconciler.from_ports(
             control_store,
             ("source_prep", source_stage),
+            ("context_prepare", context_stage),
             ("vlm", vlm_stage),
             debug_sink=debug_sink,
         ),

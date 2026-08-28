@@ -10,7 +10,7 @@ call.
 The explicit plan is `semantic_only`:
 
 ```text
-authorized 50-episode source -> SourcePrep -> Doubao VLM semantic batch -> durable success
+authorized 50-episode source -> SourcePrep -> Context Prepare -> Doubao VLM semantic batch -> durable success
 ```
 
 Every episode VLM request and the whole-batch finalizer write their normal
@@ -19,9 +19,12 @@ story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
 The installed semantic-only policy now selects
-`vlm-semantic-pack-v6-bounded-references`: the VLM receives only the attached
-video, duration and closed semantic-output contract, rather than a frame table
-or ASR/subtitle payload. The parser and 32768 output-token budget are unchanged.
+`vlm-semantic-pack-v7-context-assisted`: the VLM receives the attached video,
+the closed semantic-output contract, and only a bounded, immutable
+`WindowContextPack` produced by the immediately preceding Context Prepare
+stage. It still never receives ASR/VAD/subtitle text, API shot/highlight lists,
+frame tables or physical-cut endpoints. The parser and 32768 output-token budget
+are unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
 [Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
@@ -60,7 +63,30 @@ AUTO_CUT_BOT_PIPELINE_ARK_TENANT_ID=...
 AUTO_CUT_BOT_PIPELINE_ARK_PROJECT_ID=...
 AUTO_CUT_BOT_PIPELINE_ARK_MODEL_ID=doubao-seed-2-1-pro-260628
 AUTO_CUT_BOT_PIPELINE_ARK_MAX_OUTPUT_TOKENS=32768
+AUTO_CUT_BOT_PIPELINE_METADATA_API_BASE_URL=https://<metadata-api-origin>
+AUTO_CUT_BOT_PIPELINE_METADATA_API_KEY=...
+AUTO_CUT_BOT_PIPELINE_CONTEXT_OWNER_MAPS_JSON={"series_external_id":"42000021919","mappings":[...]}
 ```
+
+`AUTO_CUT_BOT_PIPELINE_CONTEXT_OWNER_MAPS_JSON` is not a filename/order
+matcher. Each entry must explicitly declare `local_relative_path`,
+`local_episode_index`, `external_episode_id`, `external_chapter_id` (or null),
+and `external_episode_ordinal`. SourcePrep derives the actual source ID and SHA-256;
+the next stage writes a verified binding from that identity. The configuration
+and API credential stay private and are never placed in the HTTP `/run` body.
+
+### Context Prepare 的实际产物
+
+For every run the stage persists one committed `window_context_pack_set`, which
+contains one hash-bound Pack per local source episode. A successful API-assisted
+Pack records: Snapshot identity, raw immutable JSON Blob reference and hash,
+normalized narrative-context hash, verified explicit binding hash, selection
+policy hash, selected non-spoiler refs, and the final compact `rendered_context`.
+The raw API body, API key, Authorization header, subtitles, shots and highlights
+are not in the Pack or prompt. If fetch/normalization/mapping cannot close, the
+same stage still commits a `video_only` Pack with a reason code; VLM can run but
+has no external narrative text. Historical VLM replay reads this committed Pack,
+never refetches the API.
 
 ### 分阶段调试文件（建议真实验证时启用）
 

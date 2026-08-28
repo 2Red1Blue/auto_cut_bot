@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 from uuid import UUID
 
+from ..context_pack import WindowContextPack
 from ..media.types import canonical_sha256, sha256_prefixed
 from ..store import (
     ArtifactMember,
@@ -239,6 +240,7 @@ class GenerateVlmEvidenceRequest:
     source_provenance_sha256: str | None = None
     source_manifest_sha256: str | None = None
     parser_contract_sha256: str | None = None
+    context_pack: WindowContextPack | None = None
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:  # noqa: E721
@@ -304,6 +306,8 @@ class GenerateVlmEvidenceRequest:
             raise ValueError("parse_policy must be a VlmParsePolicy")
         if type(self.retry_policy) is not GenerationRetryPolicy:  # noqa: E721
             raise ValueError("retry_policy must be a GenerationRetryPolicy")
+        if self.context_pack is not None and type(self.context_pack) is not WindowContextPack:  # noqa: E721
+            raise ValueError("context_pack must be an exact WindowContextPack when present")
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
             raise ValueError("episode_index must be non-negative")
 
@@ -332,6 +336,14 @@ class GenerateVlmEvidenceRequest:
                 ),
                 "window_manifest_sha256": self.manifest.canonical_hash,
                 "window_manifest_set_sha256": self.manifest_set.canonical_hash,
+                **(
+                    {
+                        "context_pack": self.context_pack.to_mapping(),
+                        "context_pack_sha256": self.context_pack.canonical_hash,
+                    }
+                    if self.context_pack is not None
+                    else {}
+                ),
             }
         )
 
@@ -374,6 +386,11 @@ class GenerateVlmEvidenceRequest:
                 "proxy_blob": _blob_mapping(self.proxy_blob),
                 "source_provenance_sha256": self.source_provenance_sha256,
                 "source_manifest_sha256": self.source_manifest_sha256,
+                **(
+                    {"context_pack_sha256": self.context_pack.canonical_hash}
+                    if self.context_pack is not None
+                    else {}
+                ),
             }
         )
 

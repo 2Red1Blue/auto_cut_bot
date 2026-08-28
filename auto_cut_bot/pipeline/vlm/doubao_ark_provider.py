@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from urllib.parse import urlsplit
 
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.vlm import (
     GENERATION_PROVIDER_LEASE_SECONDS,
     ProviderDispatchRequest,
@@ -63,6 +64,7 @@ DOUBAO_ARK_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
 })
 _READY_FILE_STATUSES = frozenset({"active", "processed"})
 _ERROR_FILE_STATUSES = frozenset({"error", "failed", "expired", "deleted"})
+_CONTEXT_PACK_PAYLOAD_FIELDS = frozenset({"context_pack", "context_pack_sha256"})
 _EXPECTED_PAYLOAD_FIELDS = frozenset(
     {
         "model_id",
@@ -481,7 +483,10 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         raise ValueError("request payload must be an object")
     payload = cast(dict[str, object], value)
     is_video = payload.get("parser_strategy_version") == VLM_PARSER_V4
-    expected_fields = _EXPECTED_PAYLOAD_FIELDS | {"parser_contract_sha256"} if is_video else _EXPECTED_PAYLOAD_FIELDS
+    contextual = _CONTEXT_PACK_PAYLOAD_FIELDS <= frozenset(payload)
+    expected_fields = _EXPECTED_PAYLOAD_FIELDS | (
+        _CONTEXT_PACK_PAYLOAD_FIELDS if contextual else frozenset()
+    ) | ({"parser_contract_sha256"} if is_video else frozenset())
     if frozenset(payload) != expected_fields:
         raise ValueError("request payload does not match the closed Ark adapter contract")
     if is_video:
@@ -490,6 +495,10 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         _required_text(payload[field], field)
     if payload["provider_id"] != DOUBAO_ARK_PROVIDER_ID:
         raise ValueError("request payload provider_id mismatch")
+    if contextual:
+        context_pack = payload["context_pack"]
+        if type(context_pack) is not dict or payload["context_pack_sha256"] != canonical_sha256(context_pack):  # noqa: E721
+            raise ValueError("context pack must be an exact hash-bound mapping")
     if not isinstance(payload["response_schema"], dict):
         raise ValueError("response_schema must be an object")
     _validate_video_generation_schema(payload, is_video=is_video)
@@ -516,8 +525,17 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
     from .video_prompt import VLM_VIDEO_PROMPT_VERSION
 
     prompt_version = payload["prompt_version"]
-    if is_video and prompt_version not in {VLM_VIDEO_PROMPT_VERSION, VLM_BOUNDED_VIDEO_PROMPT_VERSION}:
+    from .contextual_video_prompt import VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION
+
+    contextual = _CONTEXT_PACK_PAYLOAD_FIELDS <= frozenset(payload)
+    if is_video and prompt_version not in {
+        VLM_VIDEO_PROMPT_VERSION,
+        VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+    }:
         raise ValueError("unregistered video prompt version")
+    if (prompt_version == VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION) != contextual:
+        raise ValueError("prompt v7 requires exactly one hash-bound context pack")
     if prompt_version != VLM_BOUNDED_VIDEO_PROMPT_VERSION:
         return
     if not is_video:

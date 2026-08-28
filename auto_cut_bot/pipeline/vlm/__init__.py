@@ -6,6 +6,10 @@ from .ark_file_cache import (
     ArkFileCacheRecord,
     PostgresArkFileCache,
 )
+from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+    build_vlm_contextual_video_prompt,
+)
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
@@ -63,8 +67,10 @@ __all__ = [
     "QwenVlmProvider",
     "QwenVlmProviderConfig",
     "VLM_PROMPT_VERSION",
+    "VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION",
     "VLM_RESPONSE_SCHEMA",
     "build_vlm_prompt",
+    "build_vlm_contextual_video_prompt",
     "build_doubao_vlm_request",
     "vlm_response_schema_json",
 ]

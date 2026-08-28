@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "review",
-  "nextAction": "P0/P1 设计已完成，待独立复审后实施纯契约、映射、规范化与选择器；外部 API adapter 等端点与响应 schema 冻结。",
+  "currentPhase": "implementation",
+  "nextAction": "已完成 source_prep -> context_prepare -> VLM v7 的代码与定向验证；等待私有 Metadata API endpoint/key/显式映射和可访问媒体后，执行一次真实单窗口运行。",
   "branch": "feat/v213-contract-codegen"
 }

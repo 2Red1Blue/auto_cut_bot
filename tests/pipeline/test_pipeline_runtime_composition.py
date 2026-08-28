@@ -22,11 +22,14 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_MODEL_ID_ENV,
     PIPELINE_ARK_PROJECT_ID_ENV,
     PIPELINE_ARK_TENANT_ID_ENV,
+    PIPELINE_CONTEXT_OWNER_MAPS_ENV,
     PIPELINE_EVIDENCE_READ_LIMITS_ENV,
     PIPELINE_KERNEL_POSTGRES_DSN_ENV,
     PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
     PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
     PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+    PIPELINE_METADATA_API_BASE_URL_ENV,
+    PIPELINE_METADATA_API_KEY_ENV,
     PIPELINE_PLAN_ENV,
     PIPELINE_POSTGRES_DSN_ENV,
     PIPELINE_SOURCE_CATALOG_ENV,
@@ -82,6 +85,19 @@ def _environment(path: Path, *, api_key: str = "ark-secret-value") -> dict[str, 
         PIPELINE_ARK_MODEL_ID_ENV: "doubao-seed-2-1-pro-260628",
         PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV: "32768",
         PIPELINE_ARK_BASE_URL_ENV: "https://ark.example.invalid/api/v3",
+        PIPELINE_METADATA_API_BASE_URL_ENV: "https://metadata.example.invalid",
+        PIPELINE_METADATA_API_KEY_ENV: "metadata-test-key",
+        PIPELINE_CONTEXT_OWNER_MAPS_ENV: json.dumps({
+            "series_external_id": "book-1",
+            "mappings": [{
+                "local_relative_path": "episode-000.mp4",
+                "local_episode_index": 0,
+                "series_external_id": "book-1",
+                "external_episode_id": "episode-1",
+                "external_chapter_id": "chapter-1",
+                "external_episode_ordinal": 1,
+            }],
+        }),
         PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV: json.dumps(_media_policy(path)),
         PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV: str(staging_root),
         PIPELINE_EVIDENCE_READ_LIMITS_ENV: json.dumps({
@@ -300,7 +316,9 @@ def test_explicit_semantic_only_plan_composes_without_media_authority(
     assert runtime is not None
     assert runtime.authority_profile_resolver is None
     assert runtime.execution_profile.is_semantic_only
-    assert runtime.worker._runner._registry.stage_names == ("source_prep", "vlm")
+    assert runtime.worker._runner._registry.stage_names == (
+        "source_prep", "context_prepare", "vlm"
+    )
     assert runtime.worker._concurrency == 1
     assert runtime.worker._max_batch_size == 1
 
