@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "验证已实现的完整 VLM 阶段重跑；后续设计 selected_only、partial Aggregate 与 lineage hold/budget",
+  "nextAction": "将通过测试的 V14 语义策略同步到 PC，创建新 run 并以并发 3 完成真实 VLM 批次；成功后进入 PC ASR/VAD Media Preflight",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

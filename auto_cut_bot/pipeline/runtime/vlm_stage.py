@@ -62,6 +62,7 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
@@ -71,6 +72,7 @@ from auto_cut_bot.pipeline.vlm.policy_binding import (
     validate_installed_vlm_policy,
 )
 from auto_cut_bot.pipeline.vlm.request_factory import (
+    DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION,
     DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
     DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION,
 )
@@ -91,7 +93,7 @@ _ARTIFACT_REVISION = 1
 
 
 def _requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
-    """Only V7-V12 have a ContextPack input contract; older runs stay replayable."""
+    """Only V7-V14 have a ContextPack input contract; older runs stay replayable."""
 
     return policy.prompt_version in {
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
@@ -101,6 +103,7 @@ def _requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
         VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
     }
 
 
@@ -112,7 +115,10 @@ def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, in
         return VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
     if policy.stage_strategy_version in {DOUBAO_VLM_STAGE_STRATEGY_VERSION, DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION}:
         return VLM_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
-    if policy.stage_strategy_version == DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION:
+    if policy.stage_strategy_version in {
+        DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
+        DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION,
+    }:
         return VLM_EPISODE_SELECTION_STRATEGY_VERSION, 3
     raise PipelineRunValidationError("VLM profile has no registered episode selection strategy")
 

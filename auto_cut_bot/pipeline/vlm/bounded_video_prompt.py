@@ -172,6 +172,29 @@ def vlm_validated_reciprocal_core_video_response_schema() -> dict[str, object]:
     return schema
 
 
+def vlm_stable_core_video_response_schema() -> dict[str, object]:
+    """Return V14's V4-compatible schema with non-essential graph fields closed.
+
+    Causal reciprocity and multi-segment temporal-mode narration are useful
+    derived views, but requiring a generative model to emit their redundant
+    wire representations made a whole-series semantic batch fragile.  V14
+    keeps the evidence-bearing facts/events unchanged and closes these two
+    optional fields at the provider boundary.  Later deterministic semantic
+    stages may derive graph views from admitted observations.
+    """
+
+    schema = vlm_validated_reciprocal_core_video_response_schema()
+    properties = _object(schema["properties"])
+    events = _object(_object(properties["events"])["items"])
+    event_properties = _object(events["properties"])
+    for field in ("cause_event_refs", "effect_event_refs"):
+        _object(event_properties[field])["maxItems"] = 0
+    continuity = _object(properties["continuity"])
+    continuity_properties = _object(continuity["properties"])
+    _object(continuity_properties["temporal_segments"])["maxItems"] = 0
+    return schema
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -191,6 +214,12 @@ def vlm_validated_reciprocal_core_video_response_schema_json() -> str:
     """Return canonical V13 schema bytes for request identity binding."""
 
     return _canonical_json(vlm_validated_reciprocal_core_video_response_schema())
+
+
+def vlm_stable_core_video_response_schema_json() -> str:
+    """Return canonical V14 schema bytes for request identity binding."""
+
+    return _canonical_json(vlm_stable_core_video_response_schema())
 
 
 def ordered_bounded_video_schema(schema: object) -> dict[str, object]:

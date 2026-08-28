@@ -19,18 +19,22 @@ story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
 The installed semantic-only policy now selects
-`vlm-semantic-pack-v13-context-assisted-validated-reciprocal-causal-core`: the VLM receives the attached video,
+`vlm-semantic-pack-v14-context-assisted-stable-core-observations`: the VLM receives the attached video,
 the closed semantic-output contract, and only a bounded, immutable
 `WindowContextPack` produced by the immediately preceding Context Prepare
 stage. It still never receives ASR/VAD/subtitle text, API shot/highlight lists,
-frame tables or physical-cut endpoints. V13 retains the V8 core-observation
+frame tables or physical-cut endpoints. V14 retains the V8 core-observation
 shape and V4 parser, but binds a stricter response schema (`uncertainty_ms <=
 5000`) and a final model-side check for required fact fields, closed event
-enums, fact/event support overlap, complete JSON, and reciprocal causal edges.
-It also uses a probe-first, bounded-parallel-3 batch policy. The earlier
+enums, fact/event support overlap and complete JSON. The optional reciprocal
+causal arrays and multi-segment temporal narration are closed as empty at the
+provider boundary: they were redundant model-maintained views that caused real
+whole-batch failure, while admitted facts/events remain intact for later
+deterministic semantic derivation. It also uses a probe-first,
+bounded-parallel-3 batch policy. The earlier
 parallel-10 policy was deliberately exercised against Ark and produced real
 429 responses; its historical request/profile bytes remain replayable, but it
-is not used for new V13 runs. The parser and 32768 output-token budget remain
+is not used for new V14 runs. The parser and 32768 output-token budget remain
 unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
@@ -50,7 +54,7 @@ different thinking modes are not interchangeable.
 > behavior in a local environment file: the current runtime has not yet
 > implemented `ArkRequestScope/v1`.
 
-Before enabling V13, stop all older Pipeline workers and apply every pending
+Before enabling V14, stop all older Pipeline workers and apply every pending
 Kernel migration in numeric order, including `0038`. The v10 profile has a
 closed five-field parameter variant for v5; later VLM prompt registrations
 (`0030` onward) are also required for their corresponding authority profile.

@@ -530,6 +530,7 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
         VLM_BOUNDED_VIDEO_PROMPT_VERSION,
         vlm_bounded_video_response_schema_json,
         vlm_core_video_response_schema_json,
+        vlm_stable_core_video_response_schema_json,
         vlm_validated_reciprocal_core_video_response_schema_json,
     )
     from .video_prompt import VLM_VIDEO_PROMPT_VERSION
@@ -540,6 +541,7 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
         VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
@@ -555,6 +557,7 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
         VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     }:
         raise ValueError("unregistered video prompt version")
@@ -565,6 +568,7 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
             VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
         }
@@ -601,6 +605,8 @@ def _validate_video_generation_schema(payload: dict[str, object], *, is_video: b
     )
     if prompt_version == VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION:
         expected_schema = vlm_validated_reciprocal_core_video_response_schema_json()
+    if prompt_version == VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION:
+        expected_schema = vlm_stable_core_video_response_schema_json()
     if schema_json != expected_schema:
         raise ValueError("video prompt requires its exact registered schema")
 

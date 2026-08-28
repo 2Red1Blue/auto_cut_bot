@@ -31,6 +31,9 @@ VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v13-context-assisted-validated-reciprocal-causal-core"
 )
+VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v14-context-assisted-stable-core-observations"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -92,6 +95,13 @@ VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "包含 B；禁止自指、未知 ID、重复 ID 或只写单侧。无法同时证明因果和互反关系时，两侧均写 []。"
     "最后确认所有对象字段、数组和字符串都闭合为一个完整 JSON 后再输出。\n"
 )
+VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "本版本将两类非必要的冗余图字段固定为空：每个事件的 cause_event_refs 与 "
+    "effect_event_refs 都必须是 []；continuity.temporal_segments 也必须是 []。"
+    "不要用这三个数组表达因果、前情、倒叙或镜头时间线。事件本身、fact_refs、support "
+    "和 window_summary 仍须完整、准确；后续确定性阶段会从已校验观察推导所需关系。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -121,6 +131,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)
