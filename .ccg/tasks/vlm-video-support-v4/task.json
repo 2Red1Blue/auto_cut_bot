@@ -5,7 +5,7 @@
   "complexity": "L",
   "risk": "high",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "先实现并审查纯Kernel时间/证据类型，再接新版pack与实际生成路径",
+  "currentPhase": "review",
+  "nextAction": "prompt6优化与独立离线复审已完成；待数据库启动后验证/应用0031，再经确认跑真实单集、检查debug及Receipt。V4下游消费及轻量wire另行推进；不自动付费调用。",
   "branch": "feat/v213-contract-codegen"
 }

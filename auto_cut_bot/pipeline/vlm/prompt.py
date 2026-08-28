@@ -486,6 +486,13 @@ def resolve_vlm_prompt_template(prompt_version: str) -> str:
         return VLM_PROMPT_TEMPLATE
     if prompt_version == VLM_COMPACT_PROMPT_VERSION:
         return VLM_COMPACT_PROMPT_TEMPLATE
+    from .bounded_video_prompt import (
+        VLM_BOUNDED_VIDEO_PROMPT_TEMPLATE,
+        VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+    )
+
+    if prompt_version == VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+        return VLM_BOUNDED_VIDEO_PROMPT_TEMPLATE
     from .video_prompt import VLM_VIDEO_PROMPT_TEMPLATE, VLM_VIDEO_PROMPT_VERSION
 
     if prompt_version == VLM_VIDEO_PROMPT_VERSION:
@@ -506,6 +513,13 @@ def build_vlm_prompt(
 
     if type(manifest) is not WindowManifest:  # noqa: E721
         raise TypeError("manifest must be an exact WindowManifest")
+    from .bounded_video_prompt import (
+        VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+        build_vlm_bounded_video_prompt,
+    )
+
+    if prompt_version == VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+        return build_vlm_bounded_video_prompt(manifest)
     from .video_prompt import VLM_VIDEO_PROMPT_VERSION, build_vlm_video_prompt
 
     if prompt_version == VLM_VIDEO_PROMPT_VERSION:

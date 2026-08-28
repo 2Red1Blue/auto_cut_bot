@@ -36,3 +36,27 @@ Next dependent layers (do not call real provider before these close):
 No shared-file multiple writers, Claude, SSH, new deployment gates, fake frame
 proofs, automatic timestamp repairs or stale-profile relabeling. Any unsupported
 downstream consumer must be explicit; a semantic-only run is not full pipeline.
+
+## Current bounded prompt optimization (2026-08-28)
+
+User requested adversarial review and implementation of prompt/schema optimization.
+Main owns new bounded_video_prompt.py, prompt/factory/provider/semantic authority,
+new prompt integration tests, resources and documentation. Worker owns only 0031
+and new bounded-video profile tests. Independent reviewer is read-only.
+
+Preserve all frozen V3/V4 parser source bytes, old prompt5/schema/body, original
+raw outputs, provider file-cache identity and existing semantic field meanings.
+New prompt6 narrows V4 generation to video_observation, removes sparse frame/hash
+context, caps typed short IDs/references by existing declaration budgets, renders
+native schema definition-first. Context contains only duration_ms_floor.
+Unknown refs still fail real Kernel closure; schema bounds do not prove semantic
+completeness. Retain confidence/uncertainty and role-specific candidate references.
+Do not silently remove mandatory reverse-cause/continuity/summary fields while
+using the old parser: a separate lighter wire adapter is future work, not hidden
+repair of provider output in this task. No Stage1 mapping expansion this turn.
+
+Checks: field/schema restrictions, canonical wire order before paid side effects,
+old/new profile identity separation and old-body equality; real raw hash unchanged
+through Generation/replay; real disposable SQL migration/profile preservation;
+independent review; commit scoped files locally. No real provider or production DB
+migration in this optimization turn. Activate installed authority only after tests.

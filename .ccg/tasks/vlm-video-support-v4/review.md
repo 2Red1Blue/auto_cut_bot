@@ -28,3 +28,28 @@ Verification checkpoints (overlapping suites; do not sum):
 
 Real enablement is a separate checkpoint: no claim that fixture success proves
 real video semantics, full pipeline, ASR/VAD, rendering or publication.
+
+## Bounded prompt6 optimization checkpoint — 2026-08-28
+
+Independent reviewer: recompute_design_review; implementation split between
+bounded prompt/schema, profile migration tests, and root Runtime/provider wiring.
+No Claude, real provider dispatch, or database startup in this checkpoint.
+
+No P0/P1 findings remain in the scoped implementation. The reviewer explicitly
+checked generation-subset versus unchanged V4 admission, declaration capacities,
+typed references, old wire preservation, early schema rejection, and the 0031
+validation-only projection. Final installed-authority changes passed independent
+150-test regression; old runs still reconstruct their own frozen profile.
+
+Final overlapping verification:
+- pipeline + VLM: 1830 passed, 257 skipped (same pre-existing artifact-cache
+  legacy collection exclusion).
+- Ruff: all changed Python files clean.
+- BasedPyright: five modified/new production modules clean.
+- PostgreSQL 0031 tests added but NOT executed in this checkpoint: Podman VM is
+  stopped; do not report prior database runs as verification of this schema.
+
+Measured same-window input_text: 4517 -> 3380 UTF-8 bytes; schema 13151 -> 10797.
+These are not token measurements or proof of improved real output. No fifth
+paid call. New installed default requires 0031 before creating a new run.
+The wider V4 task remains open for real semantic success and downstream readers.

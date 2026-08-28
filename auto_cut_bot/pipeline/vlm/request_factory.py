@@ -29,6 +29,10 @@ from auto_cut_bot.pipeline.source_prep.command import (
     PreparedSourceEpisode,
 )
 
+from .bounded_video_prompt import (
+    VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+    vlm_bounded_video_response_schema_json,
+)
 from .doubao_ark_provider import (
     DOUBAO_ARK_ADAPTER_STRATEGY_VERSION,
     DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION,
@@ -59,11 +63,15 @@ DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION = (
 )
 
 
-def registered_response_schema_json(parser_strategy_version: str) -> str:
+def registered_response_schema_json(
+    parser_strategy_version: str, prompt_version: str | None = None,
+) -> str:
     """Resolve the frozen wire schema; never infer a parser from failed output."""
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
+        if prompt_version == VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+            return vlm_bounded_video_response_schema_json()
         return vlm_video_response_schema_json()
     raise ValueError("parser strategy must be a registered Kernel version")
 
@@ -189,11 +197,11 @@ class DoubaoVlmRequestPolicy:
             raise ValueError("legacy Ark adapters do not accept thinking_type")
         resolve_vlm_prompt_template(self.prompt_version)
         _strict_json_object(self.response_schema_json, "response schema JSON")
-        if self.response_schema_json != registered_response_schema_json(self.parser_strategy_version):
+        if self.response_schema_json != registered_response_schema_json(self.parser_strategy_version, self.prompt_version):
             raise ValueError("response schema JSON must be the exact registered canonical schema")
         video_contract = self.parser_strategy_version == VLM_PARSER_V4
         require_parser_contract(self.parser_strategy_version, self.parser_contract_sha256)
-        if video_contract != (self.prompt_version == VLM_VIDEO_PROMPT_VERSION):
+        if video_contract != (self.prompt_version in {VLM_VIDEO_PROMPT_VERSION, VLM_BOUNDED_VIDEO_PROMPT_VERSION}):
             raise ValueError("V4 video prompt and parser must be selected together")
         if video_contract != (self.stage_strategy_version == DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION):
             raise ValueError("V4 video parser requires its registered stage strategy")

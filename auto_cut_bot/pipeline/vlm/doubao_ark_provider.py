@@ -236,6 +236,7 @@ class DoubaoArkVlmProvider:
             text=_response_text_format(
                 cast(str, parameters["adapter_strategy_version"]),
                 cast(dict[str, object], payload["response_schema"]),
+                prompt_version=cast(str, payload["prompt_version"]),
             ),
             max_output_tokens=parameters["max_output_tokens"],
             temperature=parameters["temperature"],
@@ -491,6 +492,7 @@ def _request_payload(raw: bytes) -> dict[str, object]:
         raise ValueError("request payload provider_id mismatch")
     if not isinstance(payload["response_schema"], dict):
         raise ValueError("response_schema must be an object")
+    _validate_video_generation_schema(payload, is_video=is_video)
     if not isinstance(payload["retry_policy"], dict):
         raise ValueError("retry_policy must be an object")
     retry_policy_bytes = json.dumps(
@@ -503,6 +505,29 @@ def _request_payload(raw: bytes) -> dict[str, object]:
     if payload["retry_policy_sha256"] != expected_retry_hash:
         raise ValueError("retry_policy_sha256 does not bind retry_policy")
     return payload
+
+
+def _validate_video_generation_schema(payload: dict[str, object], *, is_video: bool) -> None:
+    """Validate the new generation subset before any client/cache/upload work."""
+    from .bounded_video_prompt import (
+        VLM_BOUNDED_VIDEO_PROMPT_VERSION,
+        vlm_bounded_video_response_schema_json,
+    )
+    from .video_prompt import VLM_VIDEO_PROMPT_VERSION
+
+    prompt_version = payload["prompt_version"]
+    if is_video and prompt_version not in {VLM_VIDEO_PROMPT_VERSION, VLM_BOUNDED_VIDEO_PROMPT_VERSION}:
+        raise ValueError("unregistered video prompt version")
+    if prompt_version != VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+        return
+    if not is_video:
+        raise ValueError("bounded video prompt requires the frozen V4 parser")
+    parameters = _request_parameters(payload["request_parameters"])
+    if parameters["adapter_strategy_version"] != DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION:
+        raise ValueError("bounded video prompt requires the explicit-thinking adapter")
+    schema_json = json.dumps(payload["response_schema"], ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    if schema_json != vlm_bounded_video_response_schema_json():
+        raise ValueError("bounded video prompt requires its exact registered schema")
 
 
 def _request_parameters(value: object) -> dict[str, str | int | float]:
@@ -565,7 +590,8 @@ def _upload_file_argument(
 
 
 def _response_text_format(
-    adapter_strategy_version: str, response_schema: dict[str, object]
+    adapter_strategy_version: str, response_schema: dict[str, object], *,
+    prompt_version: str | None = None,
 ) -> dict[str, object]:
     """Return the versioned Ark Responses structured-output wire contract.
 
@@ -574,6 +600,10 @@ def _response_text_format(
     endpoint-accepted v4 form is direct under ``text.format``.  A persisted
     v3 request must still reproduce its original wire contract during replay.
     """
+    from .bounded_video_prompt import VLM_BOUNDED_VIDEO_PROMPT_VERSION, ordered_bounded_video_schema
+
+    if prompt_version == VLM_BOUNDED_VIDEO_PROMPT_VERSION:
+        response_schema = ordered_bounded_video_schema(response_schema)
     properties = response_schema.get("properties")
     version = cast(dict[str, object], properties).get("schema_version") if isinstance(properties, dict) else None
     declared = cast(dict[str, object], version).get("const") if isinstance(version, dict) else None

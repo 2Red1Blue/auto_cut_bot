@@ -142,7 +142,9 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
             provider_id=cast(str, vlm["provider_id"]),
             adapter_strategy_version=cast(str, vlm["adapter_strategy_version"]),
             prompt_version=cast(str, vlm["prompt_version"]),
-            response_schema_json=registered_response_schema_json(cast(str, vlm["parser_strategy_version"])),
+            response_schema_json=registered_response_schema_json(
+                cast(str, vlm["parser_strategy_version"]), cast(str, vlm["prompt_version"]),
+            ),
             max_output_tokens=cast(int, parameters["max_output_tokens"]),
             temperature=cast(int | float, parameters["temperature"]),
             video_fps=cast(int | float, parameters["video_fps"]),
