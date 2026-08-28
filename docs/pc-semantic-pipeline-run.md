@@ -134,6 +134,22 @@ run must prepend its authoritative Kernel source as above, otherwise an older
 bundled copy in an existing virtual environment can shadow the checked-out
 Kernel code.  A built wheel does not need this override.
 
+On a native Windows host, run the semantic-only service through its installed
+console script (rather than `uv run auto_cut_bot`, which can resolve the
+same-named local module incorrectly in Git Bash):
+
+```bash
+.venv/Scripts/auto_cut_bot.exe pipeline-serve --host 127.0.0.1 --port 18769
+```
+
+This is intentionally limited to semantic SourcePrep/Context/VLM execution.
+Physical media materialization uses a cross-process POSIX advisory-lock ledger;
+native Windows rejects that later stage with a clear infrastructure failure
+rather than replacing it with an unsafe process-local quota lock. Run calibrated
+ASR/VAD and media-preflight materialization in the verified Linux/WSL/container
+runtime until an equivalent cross-process Windows ledger is separately designed
+and verified.
+
 Submit one run with a new idempotency key and the source reference from the
 catalog:
 

@@ -14,12 +14,16 @@ import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from fcntl import LOCK_EX, LOCK_UN, flock
 from pathlib import Path
 from typing import Literal, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
+
+try:  # ``fcntl`` is absent on Windows, where semantic-only execution is valid.
+    import fcntl as _fcntl
+except ModuleNotFoundError:  # pragma: no cover - exercised by Windows runtime.
+    _fcntl = None
 
 from ..contracts.compiler.canonical import canonical_json_bytes
 from ..media import (
@@ -209,6 +213,30 @@ _MATERIALIZATION_DIRECTORY_PREFIX = ".autocut-media-"
 SHADOW_MEASUREMENT_LEASE_SECONDS = 60
 
 
+def _acquire_materialization_ledger_lock(lock_fd: int) -> None:
+    """Take the cross-process POSIX lock required by physical media staging.
+
+    A process-local fallback would make quota accounting unsafe whenever two
+    workers share a staging root.  Windows can still run the semantic-only
+    VLM pipeline because it never materializes physical media; a request that
+    does require physical materialization is rejected clearly and before any
+    reservation is written.
+    """
+
+    if _fcntl is None:
+        raise MaterializationError(
+            "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+            "physical media materialization requires POSIX advisory file locks",
+            outcome="failed",
+        )
+    _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+
+
+def _release_materialization_ledger_lock(lock_fd: int) -> None:
+    if _fcntl is not None:
+        _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+
+
 def validate_materialization_staging_root(root: Path) -> Path:
     """Create and verify the one private root used for verified media leases.
 
@@ -250,7 +278,7 @@ class _MaterializationQuotaLease:
         try:
             root_fd, lock_fd, reservations_fd = _open_materialization_ledger(self.root)
             try:
-                flock(lock_fd, LOCK_EX)
+                _acquire_materialization_ledger_lock(lock_fd)
                 try:
                     os.unlink(f"{self.reservation_id}.lease", dir_fd=reservations_fd)
                 except FileNotFoundError:
@@ -259,7 +287,7 @@ class _MaterializationQuotaLease:
                     pass
                 os.fsync(reservations_fd)
             finally:
-                flock(lock_fd, LOCK_UN)
+                _release_materialization_ledger_lock(lock_fd)
                 os.close(reservations_fd)
                 os.close(lock_fd)
                 os.close(root_fd)
@@ -389,7 +417,7 @@ def _reserve_materialization_quota(
     directory_created = False
     reservation_created = False
     try:
-        flock(lock_fd, LOCK_EX)
+        _acquire_materialization_ledger_lock(lock_fd)
         _pin_materialization_quota(root_fd, limit)
         used = 0
         for name in os.listdir(reservations_fd):
@@ -444,7 +472,7 @@ def _reserve_materialization_quota(
                 pass
         raise
     finally:
-        flock(lock_fd, LOCK_UN)
+        _release_materialization_ledger_lock(lock_fd)
         os.close(reservations_fd)
         os.close(lock_fd)
         os.close(root_fd)

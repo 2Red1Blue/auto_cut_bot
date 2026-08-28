@@ -38,6 +38,16 @@ recompute regression was already passed before the VM stopped, but it must be
 rerun after the VM is deliberately restarted; a stopped database is never
 reported as a passing portability check.
 
+## Windows semantic runtime correction
+
+Native Windows initially failed while importing the PostgreSQL adapter because
+the physical-media quota ledger imported the Unix-only `fcntl` module at module
+load time. The adapter now imports on Windows so semantic-only SourcePrep,
+Context and VLM can run. The physical ledger deliberately still rejects without
+a POSIX advisory lock: a process-local fallback would silently break the quota
+invariant across worker processes. A focused test covers that fail-closed path;
+Ruff, BasedPyright and 70 focused tests pass.
+
 ## Follow-up scope
 
 `POST /v1/pipeline/recompute` now implements the deliberately narrow,
