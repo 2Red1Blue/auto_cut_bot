@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import cast
 
+from ..context_pack import WindowContextPack
 from ..media.types import canonical_sha256
 from ..source_manifest import decode_source_manifest
 from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
@@ -106,12 +107,24 @@ def verify_v4_semantic_pack(
     """Reconstruct from the exact committed Source owner and original provider bytes."""
     if generation_semantic_version(request_payload, pack_payload) != (VLM_PARSER_V4, 4):
         raise StoreValidationError("V4 verifier cannot accept a legacy semantic pack")
-    fields = {
+    base_fields = {
         "model_id", "parse_policy", "parser_strategy_version", "parser_contract_sha256", "prompt", "prompt_version",
         "provider_id", "proxy_blob", "request_parameters", "retry_policy", "retry_policy_sha256",
         "response_schema", "window_manifest_sha256", "window_manifest_set_sha256",
     }
-    if set(request_payload) != fields:
+    context_fields = {"context_pack", "context_pack_sha256"}
+    payload_fields = set(request_payload)
+    context_pack: WindowContextPack | None = None
+    if payload_fields == base_fields:
+        pass
+    elif payload_fields == base_fields | context_fields:
+        try:
+            context_pack = WindowContextPack.from_mapping(request_payload["context_pack"])
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError("V4 frozen WindowContextPack is invalid") from error
+        if request_payload["context_pack_sha256"] != context_pack.canonical_hash:
+            raise StoreValidationError("V4 frozen WindowContextPack hash is invalid")
+    else:
         raise StoreValidationError("V4 provider request payload does not match its closed schema")
     if request_payload["parser_contract_sha256"] != parser_contract_sha256_for(VLM_PARSER_V4):
         raise StoreValidationError("V4 frozen parser contract does not match the installed implementation")
@@ -178,6 +191,11 @@ def verify_v4_semantic_pack(
         "proxy_blob": manifest.proxy_blob_ref.to_mapping(),
         "source_provenance_sha256": source.canonical_hash,
         "source_manifest_sha256": source.reference.content_hash,
+        **(
+            {"context_pack_sha256": context_pack.canonical_hash}
+            if context_pack is not None
+            else {}
+        ),
     })
     if (
         expected_request_hash != child.request_hash

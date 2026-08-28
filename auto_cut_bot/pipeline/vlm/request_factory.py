@@ -36,7 +36,11 @@ from .bounded_video_prompt import (
     vlm_core_video_response_schema_json,
 )
 from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -77,7 +81,13 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
-        if prompt_version == VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION:
+        if prompt_version in {
+            VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        }:
             return vlm_core_video_response_schema_json()
         # V7 only adds an immutable narrative-context projection to the V6
         # video-observation contract.  It must retain the V6 response schema:
@@ -225,6 +235,10 @@ class DoubaoVlmRequestPolicy:
                 VLM_BOUNDED_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
             }
         ):
             raise ValueError("V4 video prompt and parser must be selected together")
@@ -348,6 +362,10 @@ def build_doubao_vlm_request(
     contextual_prompt = policy.prompt_version in {
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     }
     if contextual_prompt != (context_pack is not None):
         raise ValueError("contextual video prompt requires exactly one WindowContextPack")

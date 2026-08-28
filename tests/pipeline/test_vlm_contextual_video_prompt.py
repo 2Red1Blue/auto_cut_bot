@@ -16,7 +16,11 @@ from auto_cut_bot.pipeline.vlm.bounded_video_prompt import (
     vlm_core_video_response_schema,
 )
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
 )
@@ -128,3 +132,76 @@ def test_v8_contextual_core_prompt_forbids_candidate_generation() -> None:
     assert "candidate_hypotheses 必须严格输出空数组 []" in prompt
     assert schema == vlm_core_video_response_schema()
     assert schema["properties"]["candidate_hypotheses"]["maxItems"] == 0
+
+
+def test_v9_contextual_timeline_core_prompt_requires_event_fact_temporal_closure() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "event.fact_refs 的每项均与事件区间相交" in prompt
+    assert "candidate_hypotheses 必须严格输出空数组 []" in prompt
+    assert schema == vlm_core_video_response_schema()
+
+
+def test_v10_contextual_closed_vocabulary_keeps_core_schema_and_spells_out_fact_kinds() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "fact_kind 仅 visible_presence、visible_state" in prompt
+    assert "禁止 visible_reaction" in prompt
+    assert "window_summary.summary不超过360个字符" in prompt
+    assert schema == vlm_core_video_response_schema()
+
+
+def test_v11_contextual_compact_canonical_prompt_requires_json_string_references() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "最多输出12个实体、18个事实、10个事件" in prompt
+    assert "带双引号的 JSON 字符串，例如 \"p001\"" in prompt
+    assert schema == vlm_core_video_response_schema()
+
+
+def test_v12_contextual_prompt_requires_reciprocal_causal_edges() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "事件因果边必须成对" in prompt
+    assert "反向引用完全一致" in prompt
+    assert schema == vlm_core_video_response_schema()

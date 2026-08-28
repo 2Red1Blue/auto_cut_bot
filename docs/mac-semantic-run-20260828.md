@@ -141,3 +141,22 @@ V10 的真实返回还显示 Schema 可能被部分忽略：`object_ref:p012` �
 规模（12实体、18事实、10事件、4时间段）。它显式要求所有本地 ID 与引用是带双引号的
 JSON 字符串、必填字段恰好一次、空值为 `null`、引用数组排序且不重复。该紧凑限制仅影响
 新 V11 请求；之后可用更多小窗口补充覆盖，不能拿未验证的大 JSON 冒充完整语义图。
+
+## V12 真实运行：单集 Source → Context → VLM 已成功持久化
+
+`pipeline_run_11815ba2eac4489f8cd40066e361764a` 是本机正常 HTTP
+`pipeline-serve` 的真实单集运行。SourcePrep、`video_only` ContextPack 与 VLM 均已写入
+不可变 Artifact/Receipt，最终 run 状态为 `succeeded`。Ark 只生成了一次；随后 HTTP
+resume 仅重读已提交的 GenerationAttempt 并完成本地聚合，没有产生第二次 provider 调用。
+
+本次先前出现的 `indeterminate` 不是模型失败：VLM 子调用已经提交，但 V4 聚合验证器仍将
+含 `context_pack` 与其 hash 的 V7+ 冻结请求当作旧 V4 的非法字段集。修复后，验证器只接受
+两种精确闭合形状（旧请求，或旧请求加完整 WindowContextPack 和匹配 hash），并将 ContextPack
+hash 纳入重算后的请求身份；不接受缺失、伪造或不匹配的 Pack。专门的真实 PostgreSQL
+重启/聚合测试覆盖此路径。
+
+V12 `vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core` 在 V11 的紧凑、时间线和
+封闭词表规则上增加事件因果边的双向引用要求，解决了此前“因果只写一端”的真实拒绝。
+它仍是新 Prompt/Profile/Request hash，未修改任何历史失败结果。原始 request、terminal
+状态和响应只保存在私有 debug 目录的该 run 下；默认 HTTP 端口改为 `18768`，避开本机已有
+服务的 `18767` 冲突。

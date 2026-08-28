@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from autocut_kernel.context_pack import ContextSelectionPolicy, video_only_window_context_pack
 from autocut_kernel.pipeline import (
     FinalizeVlmBatchCommand,
     FinalizeVlmBatchRequest,
@@ -199,6 +200,26 @@ def test_source_v4_generation_batch_reopen_and_zero_provider_replay(prepared: Pr
         restarted.read_committed_semantic_inputs(CommittedSemanticInputsRequest(
             prepared.request.job, prepared.source_reference, aggregate,
         ))
+
+
+def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> None:
+    """The aggregate verifier must accept the exact persisted V7+ Pack shape."""
+
+    request = replace(
+        prepared.request,
+        idempotency_key="vlm-child-v4-context",
+        context_pack=video_only_window_context_pack(
+            ContextSelectionPolicy(), "metadata_unconfigured"
+        ),
+    )
+    result = GenerateVlmEvidenceCommand(prepared.store, FixtureProvider(_raw())).execute(request)
+    assert result.outcome.state == "succeeded"
+    contextual = replace(prepared, request=request)
+    batch = FinalizeVlmBatchCommand(prepared.store).execute(_batch(contextual))
+    assert batch.outcome.state == "succeeded" and batch.artifact is not None
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    reopened = restarted.read_committed_vlm_generation_child(request.job, request.idempotency_key)
+    assert reopened.request_hash == request.request_hash
 
 
 class ForgedPackStore(PostgresRuntimeStore):

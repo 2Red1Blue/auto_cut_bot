@@ -16,6 +16,18 @@ VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION = "vlm-semantic-pack-v7-context-assisted"
 VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v8-context-assisted-core-observations"
 )
+VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v9-context-assisted-timeline-core-observations"
+)
+VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v10-context-assisted-timeline-closed-vocabulary"
+)
+VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v11-context-assisted-compact-canonical-core"
+)
+VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v12-context-assisted-reciprocal-causal-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -29,6 +41,43 @@ VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE
     + "本轮只采集可由视频支持的核心观察图。candidate_hypotheses 必须严格输出空数组 []；"
     "不要尝试评分、命名或提出高光/钩子。后续阶段会仅依据已通过校验的事实和事件生成候选。\n"
+)
+VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "事件与事实必须按时间线闭合：先为每个事件确定其 support 区间，再只选择与该区间"
+    "有非空时间交集的事实写入 fact_refs。相同人物在更早或更晚发生的动作、状态、"
+    "镜头不得作为该事件的 fact_refs。一个叙事描述跨越不连续动作时，拆成多个事件，"
+    "不要扩大事件区间或把远处事实并入。若不能为事件选出至少一个严格时间相交的事实，"
+    "保留事实但不要输出该事件。输出前逐个复核 event.fact_refs 的每项均与事件区间相交。\n"
+)
+VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_TEMPLATE
+    + "所有枚举必须逐字使用下列封闭值，不得造词或翻译：entity_kind 仅 person、object、"
+    "location、screen_text_source；fact_kind 仅 visible_presence、visible_state、"
+    "visible_action、visible_change、visible_relation、scene_context、character_appearance、"
+    "screen_text、temporal_mode；event_kind 仅 action、interaction、state_change、reaction、"
+    "reveal、transition；temporal_mode 仅 present、flashback、flashforward、dream、unknown。"
+    "特别地，人物的表情、惊讶、恐惧、愤怒等“反应”不是 fact_kind：有可见动作写"
+    "visible_action，只有表情或姿态写 visible_state。输出前逐个检查这些字段；"
+    "禁止 visible_reaction、emotion、dialogue、establishing_shot 等未注册值。"
+    "所有 summary、reason、visual_description、open_question 等文本字段均使用一到两句短句，"
+    "不超过240个字符；window_summary.summary不超过360个字符，不能复述事实列表。\n"
+)
+VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_TEMPLATE
+    + "为确保可验证性，本窗口最多输出12个实体、18个事实、10个事件、4个 temporal_segments；"
+    "只保留高信息量观察，不凑满上限。JSON词法规则：每个 local_*_id、subject_ref、object_ref、"
+    "participant_refs、fact_refs、event_refs 都必须是带双引号的 JSON 字符串，例如 \"p001\"，"
+    "绝不能写成 p001；所有 Schema 必填字段必须恰好出现一次，未知可空字段写 null，"
+    "对象不得添加字段，引用数组按字典序且无重复。输出前按 Schema 逐字段检查 JSON 引号、"
+    "逗号和括号；只返回一个 JSON 对象。\n"
+)
+VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "事件因果边必须成对且只表达画面明确支持的直接关系：若事件 B 的 cause_event_refs 包含 "
+    "\"e001\"，则事件 e001 的 effect_event_refs 必须包含 B 的 local_event_id；反之亦然。"
+    "同一因果边只能各写一次、不得自指。不能同时保证两端引用时，两个数组都保持空数组 []。"
+    "输出前逐一核对每条 cause_event_refs 与对应 effect_event_refs 的反向引用完全一致。\n"
 )
 
 
@@ -45,6 +94,18 @@ def build_vlm_contextual_video_prompt(
     templates = {
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION: VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE,
         VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION: VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_TEMPLATE,
+        VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
     }
     template = templates.get(prompt_version)
     if template is None:

@@ -58,7 +58,11 @@ from auto_cut_bot.pipeline.vlm import (
     build_doubao_vlm_request,
 )
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
 )
 from auto_cut_bot.pipeline.vlm.policy_binding import (
@@ -83,11 +87,15 @@ _ARTIFACT_REVISION = 1
 
 
 def _requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
-    """Only V7/V8 have a ContextPack input contract; older runs stay replayable."""
+    """Only V7-V12 have a ContextPack input contract; older runs stay replayable."""
 
     return policy.prompt_version in {
         VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     }
 
 
