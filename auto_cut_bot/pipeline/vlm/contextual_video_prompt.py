@@ -209,12 +209,36 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "window_summary 必须简短并只引用已经声明的事实或事件。\n"
     "播放窗口："
 )
-# The response/parser contract for historical minimal runs is identical.  The
-# prompt text is not re-emitted for committed children, but registration keeps
-# old execution profiles loadable and prevents startup from failing closed.
-VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
-VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
-VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
+# The response/parser contract for historical minimal runs is identical, but
+# the prompt bytes are not.  Re-rendering an in-flight child must use the exact
+# historical wording that its prompt_version names; aliasing V19/V20 to V22
+# would silently change model-visible input under the same persisted identity.
+_MINIMAL_FIXED_CONTINUITY = (
+    "每个 event 的 support 必须逐字复制其唯一 fact_ref 的完整 support。为避免跨窗口推断，"
+    "本轮 continuity 必须固定输出 continues_from_previous=false、continues_into_next=false、"
+    "starts_mid_event=false、ends_mid_event=false、entry_state_fact_refs=[]、"
+    "exit_state_fact_refs=[]、temporal_segments=[]；不要填写任何跨窗口事实引用。"
+)
+_MINIMAL_FLEXIBLE_CONTINUITY = (
+    "每个 event 的 support 必须逐字复制其唯一 fact_ref 的完整 support。continuity 的布尔值和"
+    "entry_state_fact_refs、exit_state_fact_refs 必须彼此一致；不确定时使用 false 和 []。"
+)
+_MINIMAL_TEMPLATE_WITHOUT_FIELD_GUARD = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE.replace(
+    "每个对象只能包含 Schema 已声明的字段；字段名只能出现一次，不得新增、重复或拼接字段名。\n",
+    "",
+)
+_MINIMAL_V21_TEMPLATE = _MINIMAL_TEMPLATE_WITHOUT_FIELD_GUARD
+_MINIMAL_V20_TEMPLATE = _MINIMAL_TEMPLATE_WITHOUT_FIELD_GUARD.replace(
+    "不得使用上述列表之外的值。",
+    "不得创造 visible_state_change、visible_reaction、emotion 或其他未注册值。",
+)
+_MINIMAL_V19_TEMPLATE = _MINIMAL_V20_TEMPLATE.replace(
+    _MINIMAL_FIXED_CONTINUITY,
+    _MINIMAL_FLEXIBLE_CONTINUITY,
+)
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_TEMPLATE = _MINIMAL_V19_TEMPLATE
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_TEMPLATE = _MINIMAL_V20_TEMPLATE
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_TEMPLATE = _MINIMAL_V21_TEMPLATE
 
 
 def build_vlm_contextual_video_prompt(

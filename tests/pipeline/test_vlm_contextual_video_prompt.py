@@ -23,6 +23,9 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION,
+    VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION,
+    VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION,
     VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
@@ -32,6 +35,10 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
     build_vlm_contextual_video_prompt,
+)
+from auto_cut_bot.pipeline.vlm.prompt import (
+    resolve_vlm_prompt_template,
+    vlm_prompt_template_sha256,
 )
 from auto_cut_bot.pipeline.vlm.request_factory import (
     build_doubao_vlm_request,
@@ -285,6 +292,26 @@ def test_v19_uses_only_the_core_observation_prompt_and_stable_schema() -> None:
     event_properties = schema["properties"]["events"]["items"]["properties"]
     assert event_properties["cause_event_refs"]["maxItems"] == 0
     assert event_properties["effect_event_refs"]["maxItems"] == 0
+
+
+def test_historical_minimal_prompt_versions_preserve_their_exact_contract_bytes() -> None:
+    expected_hashes = {
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION:
+            "sha256:73de76aeb543c0450b1093ffb5662a0bf074106af3d26974291dde07b7d96c09",
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION:
+            "sha256:10a57f718f0aa00f1ef138bf75cb291e0ccc80b76f21d49c318cc622a0744bdd",
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION:
+            "sha256:92b655fb4e511a209f29a7b3484e0daa9d3c855580cb0ec74de02af107e0f1f3",
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION:
+            "sha256:031991e9a7f5fcfb23549df3a4cda5435ed74756e94efb23d21c31a839b4f329",
+    }
+    assert {version: vlm_prompt_template_sha256(version) for version in expected_hashes} == expected_hashes
+    templates = {version: resolve_vlm_prompt_template(version) for version in expected_hashes}
+    assert "continuity 的布尔值" in templates[VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION]
+    assert "本轮 continuity 必须固定输出" in templates[VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION]
+    assert "不得创造 visible_state_change" in templates[VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION]
+    assert "不得使用上述列表之外的值" in templates[VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION]
+    assert "每个对象只能包含 Schema 已声明的字段" in templates[VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION]
 
 
 def test_v15_requires_explicit_empty_fields_without_closing_them_in_schema() -> None:
