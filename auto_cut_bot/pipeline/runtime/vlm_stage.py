@@ -456,7 +456,7 @@ class VlmPipelineStage:
         )
         for chunk_index, chunk in enumerate(chunks):
             results = await asyncio.gather(
-                *(asyncio.to_thread(self._command.execute, request) for request in chunk),
+                *(asyncio.to_thread(self._execute_child, context, request) for request in chunk),
             )
             unresolved: GenerateVlmEvidenceResult | None = None
             terminal: GenerateVlmEvidenceResult | None = None
@@ -528,6 +528,28 @@ class VlmPipelineStage:
             ),
         )
         return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
+
+    def _execute_child(
+        self,
+        context: PipelineStageContext,
+        request: GenerateVlmEvidenceRequest,
+    ) -> GenerateVlmEvidenceResult:
+        """Reuse a terminal child outcome without replaying its full semantic JSON.
+
+        Reconciliation already has the immutable child Receipt in the Store.
+        Re-running ``GenerateVlmEvidenceCommand.execute`` for every committed
+        window reparses the raw response and recomputes the complete frame-PTS
+        index for each support record, even though the batch finalizer is the
+        only consumer that needs the verified semantic payload.  Keep the
+        normal command path for pending/failed children; for an already
+        succeeded idempotency key, the durable outcome is the exact value the
+        batch projection consumes.
+        """
+
+        existing = self._store.read_outcome(self._job(context), request.idempotency_key)
+        if existing is not None and existing.state == "succeeded":
+            return GenerateVlmEvidenceResult(existing, None)
+        return self._command.execute(request)
 
     def _probe_inspection_is_holding(
         self,
