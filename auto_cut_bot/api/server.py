@@ -549,7 +549,7 @@ def _configure_pipeline_control_plane(
                     logger.error("Pipeline runtime worker stopped before application shutdown")
                     return
                 _app[_PIPELINE_WORKER_ERROR_KEY].append("pipeline worker failed")
-                logger.error(
+                logger.exception(
                     "Pipeline runtime worker failed with {}",
                     type(error).__name__,
                 )
