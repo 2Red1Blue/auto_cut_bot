@@ -21,6 +21,7 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
@@ -314,4 +315,27 @@ def test_v17_requires_fact_anchored_event_support() -> None:
     assert "每一个 event.fact_refs 必须恰好有一个" in prompt
     assert "event.support 必须逐字复制该唯一 fact 的完整 support 对象" in prompt
     assert "[198000,213000)" in prompt
+    assert schema == vlm_validated_reciprocal_core_video_response_schema()
+
+
+def test_v18_disambiguates_fact_kind_without_widening_the_wire_schema() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=(
+            VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION
+        ),
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "尤其禁止 visible_state_change" in prompt
+    assert "状态改变写 visible_change" in prompt
+    assert "visible_reaction" in prompt
+    assert "\"object_ref\":null" in prompt
+    assert "严格 JSON 解析器" in prompt
     assert schema == vlm_validated_reciprocal_core_video_response_schema()

@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "将 V17 fact-anchored event 提示词与 migration 0042 同步到 PC；新建真实 Run 验证全剧 VLM，再进入 ASR/VAD Media Preflight",
+  "nextAction": "将 V18 fact-kind 枚举消歧提示词与 migration 0043 同步到 PC；新建真实 Run 验证全剧 VLM，再进入 ASR/VAD Media Preflight",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

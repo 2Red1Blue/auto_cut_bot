@@ -66,3 +66,29 @@ that deletes the origin host path before the target SourcePrep projection.
 Selected-episode VLM dispatch, policy-changing plans, partial-result
 Aggregates, durable inspection hold and lineage budget controls remain
 unimplemented. They must not be inferred from the full-stage endpoint.
+
+## V17 real-run failure review and V18 repair
+
+Date: 2026-08-29
+
+The PC `semantic_only` run `pipeline_run_44ccc80880004f2da27053b62ec478ab`
+was stopped after preserving its durable Receipts and stage debug artifacts.
+It had completed SourcePrep and Context Prepare, then exposed real provider
+outputs that the strict parser correctly rejected: `visible_state_change`,
+`visible_reaction`, a string `"null"` used as `object_ref`, and one incomplete
+JSON object. No failed output was normalized, promoted, or treated as semantic
+evidence.
+
+V18 remains on the exact V17 wire schema and parser. It changes only the
+immutable prompt/profile identity and makes the observed cases explicit:
+state transition maps to `visible_change`, expression/pose maps to
+`visible_state`, reaction is not a fact kind, missing objects use literal JSON
+`null`, every non-null object reference must resolve to a declared entity, and
+the final response must be strict JSON. Migration `0043` admits only the new
+V18 prompt plus its v7 stage strategy and delegates all other profiles to V17;
+historical rows are therefore still immutable and replayable.
+
+Evidence: focused Ruff, 128 focused tests, and BasedPyright pass; the installed
+semantic authority reloads and recomputes its exact V18 prompt hash. V18 has
+not yet been represented as a successful real VLM run; that remains the next
+required PC verification.

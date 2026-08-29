@@ -43,6 +43,9 @@ VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v17-context-assisted-fact-anchored-event-core"
 )
+VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v18-context-assisted-enum-disambiguated-fact-anchored-event-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -148,6 +151,20 @@ VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE = (
     "一个事件需要多个事实时，保留额外事实但为每个时间不连续事实分别输出 event；不要在"
     "同一 event.fact_refs 中加入第二个事实。输出前逐 event 比对其唯一 fact_ref 与 support 完全相同。\n"
 )
+VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
+    + "事实类型必须逐字从下列九个值中选择，不能拼接、加后缀或创建组合词："
+    "visible_presence、visible_state、visible_action、visible_change、visible_relation、"
+    "scene_context、character_appearance、screen_text、temporal_mode。尤其禁止 "
+    "visible_state_change：画面中已经发生的状态改变写 visible_change；只描述某时刻的"
+    "状态、表情或姿态写 visible_state。visible_state_change、state_change_fact、"
+    "visible_reaction、emotion、reaction 都不是合法 fact_kind。反应的动作写 visible_action；"
+    "只有表情或姿态写 visible_state。输出前逐条检查 facts[*].fact_kind；不能确定时保留事实但"
+    "选上述最接近的单一合法值，绝不造新枚举。再做引用与 JSON 机械自检：每个非 null object_ref "
+    "必须逐字出现在 entities.local_entity_id；没有受词时只能写 JSON token \"object_ref\":null，"
+    "绝不能写字符串 \"null\"。输出必须是一个可由严格 JSON 解析器读取的对象：所有 key/字符串"
+    "使用双引号，不能有尾逗号、注释、Markdown、解释文字或半截对象。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -189,6 +206,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)
