@@ -466,8 +466,7 @@ class VlmPipelineStage:
             )
             unresolved: GenerateVlmEvidenceResult | None = None
             terminal: GenerateVlmEvidenceResult | None = None
-            for request, result in zip(chunk, results, strict=True):
-                episode_index = request.episode_index
+            for request, (result, reused) in zip(chunk, results, strict=True):
                 outcome = result.outcome
                 if outcome.state in ("pending", "running"):
                     unresolved = unresolved or result
@@ -479,17 +478,39 @@ class VlmPipelineStage:
                 if outcome.state in ("denied", "failed"):
                     terminal = terminal or result
                     continue
+                persisted = (
+                    self._store.read_committed_vlm_generation_child(
+                        self._job(context),
+                        request.idempotency_key,
+                    )
+                    if reused
+                    else None
+                )
                 children.append(
                     VlmBatchChildOutcome(
-                        episode_index=episode_index,
-                        idempotency_key=request.idempotency_key,
-                        window_manifest_sha256=request.manifest.canonical_hash,
-                        source_manifest_sha256=source_bundle.artifact_reference.content_hash,
-                        source_provenance_sha256=source_bundle.canonical_hash,
-                        request_hash=request.request_hash,
-                        state=outcome.state,
-                        receipt_id=outcome.receipt_id,
-                        artifact_set_id=outcome.artifact_set_id,
+                        episode_index=(persisted.episode_index if persisted is not None else request.episode_index),
+                        idempotency_key=(persisted.idempotency_key if persisted is not None else request.idempotency_key),
+                        window_manifest_sha256=(
+                            persisted.window_manifest_sha256
+                            if persisted is not None
+                            else request.manifest.canonical_hash
+                        ),
+                        source_manifest_sha256=(
+                            persisted.source_manifest_sha256
+                            if persisted is not None
+                            else source_bundle.artifact_reference.content_hash
+                        ),
+                        source_provenance_sha256=(
+                            persisted.source_provenance_sha256
+                            if persisted is not None
+                            else source_bundle.canonical_hash
+                        ),
+                        request_hash=(persisted.request_hash if persisted is not None else request.request_hash),
+                        state="succeeded",
+                        receipt_id=(persisted.receipt_id if persisted is not None else outcome.receipt_id),
+                        artifact_set_id=(
+                            persisted.artifact_set_id if persisted is not None else outcome.artifact_set_id
+                        ),
                     )
                 )
             # A chunk is intentionally the most work that can already have
@@ -539,7 +560,7 @@ class VlmPipelineStage:
         self,
         context: PipelineStageContext,
         request: GenerateVlmEvidenceRequest,
-    ) -> GenerateVlmEvidenceResult:
+    ) -> tuple[GenerateVlmEvidenceResult, bool]:
         """Reuse a terminal child outcome without replaying its full semantic JSON.
 
         Reconciliation already has the immutable child Receipt in the Store.
@@ -554,8 +575,8 @@ class VlmPipelineStage:
 
         existing = self._store.read_outcome(self._job(context), request.idempotency_key)
         if existing is not None and existing.state == "succeeded":
-            return GenerateVlmEvidenceResult(existing, None)
-        return self._command.execute(request)
+            return GenerateVlmEvidenceResult(existing, None), True
+        return self._command.execute(request), False
 
     def _probe_inspection_is_holding(
         self,
