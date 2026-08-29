@@ -50,7 +50,7 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION 
     "vlm-semantic-pack-v18-context-assisted-enum-disambiguated-fact-anchored-event-core"
 )
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
-    "vlm-semantic-pack-v19-context-assisted-minimal-core-observations"
+    "vlm-semantic-pack-v20-context-assisted-minimal-core-observations"
 )
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
@@ -190,8 +190,10 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "reaction、reveal、transition。\n"
     "每个实体、事实、事件都必须有 video_observation support。时间使用从播放窗口开始的整数毫秒半开区间，"
     "满足 0<=start_ms<end_ms<=duration_ms_floor；uncertainty_ms 是 0 到 5000 的整数。"
-    "每个 event 的 support 必须逐字复制其唯一 fact_ref 的完整 support。continuity 的布尔值和"
-    "entry_state_fact_refs、exit_state_fact_refs 必须彼此一致；不确定时使用 false 和 []。"
+    "每个 event 的 support 必须逐字复制其唯一 fact_ref 的完整 support。为避免跨窗口推断，"
+    "本轮 continuity 必须固定输出 continues_from_previous=false、continues_into_next=false、"
+    "starts_mid_event=false、ends_mid_event=false、entry_state_fact_refs=[]、"
+    "exit_state_fact_refs=[]、temporal_segments=[]；不要填写任何跨窗口事实引用。"
     "window_summary 必须简短并只引用已经声明的事实或事件。\n"
     "播放窗口："
 )
