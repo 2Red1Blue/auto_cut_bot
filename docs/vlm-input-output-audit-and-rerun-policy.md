@@ -43,3 +43,11 @@ V19、V20、V21、V22 是四个不同的模型可见模板，历史版本的 con
 4. 只有上述实现和测试完成后，才允许单集 selected-only 真实验证；不得用 50 集新 run
    作为回归测试。
 
+## 本轮双模型审查结论
+
+Claude Code 发现并已修复 V19/V20 历史模板别名问题；同时指出跨 run 语义结果目前
+尚未接入生产调度、Store 重建失败可能形成 poison loop、Ark `failed` 媒体缓存需要
+区分可重试故障与终态拒绝。Codex 独立确认核心 request identity 覆盖完整，并提醒
+未来 reuse binding 必须先做 intent reservation，避免重复绑定产生孤儿对象；`raw-output.bin`
+需要权限、大小和保留策略。上述未实现项保持为后续 Kernel/Runtime slice，不通过临时
+补丁绕过权威 Receipt/ArtifactSet。
