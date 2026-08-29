@@ -142,13 +142,26 @@ private environment, then start the Pipeline-only server on loopback:
 ```bash
 uv sync --extra api
 export PYTHONPATH="$PWD/packages/autocut-kernel/src${PYTHONPATH:+:$PYTHONPATH}"
+export AUTO_CUT_BOT_KERNEL_SOURCE_ROOT="$PWD/packages/autocut-kernel/src"
+uv run python - <<'PY'
+from pathlib import Path
+import autocut_kernel
+root = Path.cwd().joinpath("packages/autocut-kernel/src").resolve()
+loaded = Path(autocut_kernel.__file__).resolve()
+if not loaded.is_relative_to(root):
+    raise SystemExit(f"wrong autocut_kernel origin: {loaded} (expected under {root})")
+print(f"autocut_kernel={loaded}")
+PY
 uv run auto_cut_bot pipeline-serve --host 127.0.0.1 --port 18769
 ```
 
-The root wheel bundles `autocut_kernel` for deployment.  A worktree development
-run must prepend its authoritative Kernel source as above, otherwise an older
-bundled copy in an existing virtual environment can shadow the checked-out
-Kernel code.  A built wheel does not need this override.
+The root wheel bundles `autocut_kernel` for deployment. A worktree development
+run must prepend its authoritative Kernel source and set
+`AUTO_CUT_BOT_KERNEL_SOURCE_ROOT` as above. `pipeline-serve` verifies the
+loaded module path before constructing the runtime, so an older bundled copy
+in an existing virtual environment cannot silently shadow the checked-out
+Kernel code. A built wheel does not set this variable and does not need the
+override.
 
 On a native Windows host, run the semantic-only service through its installed
 console script (rather than `uv run auto_cut_bot`, which can resolve the

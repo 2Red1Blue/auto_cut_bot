@@ -49,6 +49,39 @@ def test_port_uses_only_strict_decimal_best_effort_timestamps() -> None:
     assert "-show_frames" in calls[1] and any("best_effort_timestamp" in item for item in calls[1])
 
 
+def test_windows_ffprobe_receives_a_windows_path_for_a_wsl_mount() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        if "-show_streams" in command:
+            return _completed(_metadata())
+        if "-show_frames" in command:
+            return _completed({"frames": [{"media_type": "video", "stream_index": 0, "best_effort_timestamp": 0}]})
+        return subprocess.CompletedProcess(command, 0, b"ffprobe version mock\n", b"")
+
+    FFprobePort("ffprobe.exe", runner=runner).probe(Path("/mnt/d/media/foo bar.mp4"))
+
+    assert [command[-1] for command in calls[:2]] == ["D:/media/foo bar.mp4", "D:/media/foo bar.mp4"]
+    assert all(command[-2] == "--" for command in calls[:2])
+
+
+def test_native_ffprobe_keeps_the_posix_path() -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        if "-show_streams" in command:
+            return _completed(_metadata())
+        if "-show_frames" in command:
+            return _completed({"frames": [{"media_type": "video", "stream_index": 0, "best_effort_timestamp": 0}]})
+        return subprocess.CompletedProcess(command, 0, b"ffprobe version mock\n", b"")
+
+    FFprobePort("ffprobe", runner=runner).probe(Path("/mnt/d/media/foo bar.mp4"))
+
+    assert [command[-1] for command in calls[:2]] == ["/mnt/d/media/foo bar.mp4", "/mnt/d/media/foo bar.mp4"]
+
+
 def test_port_resolves_a_leading_dash_source_path_after_option_terminator() -> None:
     calls: list[list[str]] = []
 

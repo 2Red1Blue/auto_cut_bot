@@ -431,6 +431,7 @@ def pipeline_serve(
         raise typer.Exit(1)
 
     from auto_cut_bot.api.server import create_pipeline_app
+    from auto_cut_bot.cli.kernel_origin import KernelOriginError, validate_kernel_origin
     from auto_cut_bot.pipeline.runtime.composition import PipelineRuntimeConfigurationError
 
     _set_auto_cut_bot_logs(verbose)
@@ -440,6 +441,13 @@ def pipeline_serve(
             "[red]Error: AUTO_CUT_BOT_PIPELINE_API_KEY must be set for pipeline-serve.[/red]"
         )
         raise typer.Exit(1)
+    try:
+        kernel_file = validate_kernel_origin(auto_detect=True)
+    except KernelOriginError as error:
+        console.print(f"[red]Kernel source selection error: {error}[/red]")
+        raise typer.Exit(1) from error
+    if kernel_file is not None:
+        console.print(f"  [cyan]Kernel[/cyan]   : {kernel_file}")
     try:
         pipeline_app = create_pipeline_app(api_key=api_key)
     except PipelineRuntimeConfigurationError as error:

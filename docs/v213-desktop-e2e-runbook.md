@@ -50,7 +50,19 @@ ffmpeg -version
 podman version
 podman compose version
 uv sync --extra dev
-uv run python -c 'import auto_cut_bot, autocut_kernel; print("imports ok")'
+# Worktree runs must prove that the checked-out Kernel wins over any older
+# autocut-kernel wheel already installed in this uv environment.
+export PYTHONPATH="$PWD/packages/autocut-kernel/src${PYTHONPATH:+:$PYTHONPATH}"
+export AUTO_CUT_BOT_KERNEL_SOURCE_ROOT="$PWD/packages/autocut-kernel/src"
+uv run python - <<'PY'
+from pathlib import Path
+import autocut_kernel
+root = Path.cwd().joinpath("packages/autocut-kernel/src").resolve()
+loaded = Path(autocut_kernel.__file__).resolve()
+if not loaded.is_relative_to(root):
+    raise SystemExit(f"wrong autocut_kernel origin: {loaded} (expected under {root})")
+print(f"autocut_kernel={loaded}")
+PY
 ```
 
 密钥、媒体、模型、数据库密码和输出目录都放在仓库外。不要把 secret 写入已跟踪的
