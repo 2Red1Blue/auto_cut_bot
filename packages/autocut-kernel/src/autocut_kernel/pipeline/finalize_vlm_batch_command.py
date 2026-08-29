@@ -285,19 +285,21 @@ class FinalizeVlmBatchCommand:
         child: VlmBatchChildOutcome,
         persisted: PersistedVlmGenerationChild,
     ) -> None:
-        if (
-            child.state != "succeeded"
-            or persisted.idempotency_key != child.idempotency_key
-            or persisted.episode_index != child.episode_index
-            or persisted.window_manifest_sha256 != child.window_manifest_sha256
-            or persisted.source_manifest_sha256 != child.source_manifest_sha256
-            or persisted.source_provenance_sha256 != child.source_provenance_sha256
-            or persisted.request_hash != child.request_hash
-            or persisted.receipt_id != child.receipt_id
-            or persisted.artifact_set_id != child.artifact_set_id
-        ):
+        checks = {
+            "state": child.state == "succeeded",
+            "idempotency_key": persisted.idempotency_key == child.idempotency_key,
+            "episode_index": persisted.episode_index == child.episode_index,
+            "window_manifest_sha256": persisted.window_manifest_sha256 == child.window_manifest_sha256,
+            "source_manifest_sha256": persisted.source_manifest_sha256 == child.source_manifest_sha256,
+            "source_provenance_sha256": persisted.source_provenance_sha256 == child.source_provenance_sha256,
+            "request_hash": persisted.request_hash == child.request_hash,
+            "receipt_id": persisted.receipt_id == child.receipt_id,
+            "artifact_set_id": persisted.artifact_set_id == child.artifact_set_id,
+        }
+        if not all(checks.values()):
             raise ValueError(
-                "VLM batch child does not match its exact persisted Kernel outcome"
+                "VLM batch child does not match its exact persisted Kernel outcome: "
+                + ",".join(name for name, matched in checks.items() if not matched)
             )
 
     @staticmethod
