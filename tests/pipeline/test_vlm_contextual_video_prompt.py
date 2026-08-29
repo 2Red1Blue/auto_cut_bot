@@ -24,6 +24,7 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
@@ -275,3 +276,22 @@ def test_v15_requires_explicit_empty_fields_without_closing_them_in_schema() -> 
     event_properties = schema["properties"]["events"]["items"]["properties"]
     assert event_properties["cause_event_refs"]["maxItems"] > 0
     assert event_properties["effect_event_refs"]["maxItems"] > 0
+
+
+def test_v16_uses_one_unambiguous_wire_protocol_for_ids_and_enums() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "绝不能输出 /p008、裸 p008、\"null\"" in prompt
+    assert "confrontation、argument、fight、dialogue、emotion 都不是合法 event_kind" in prompt
+    assert "\"object_ref\":null" in prompt
+    assert schema == vlm_validated_reciprocal_core_video_response_schema()

@@ -37,6 +37,9 @@ VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v15-context-assisted-required-empty-array-core"
 )
+VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v16-context-assisted-strict-wire-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -114,6 +117,25 @@ VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_TEMPLATE = (
     "object_ref；无受词时写 JSON null（不带引号），绝不能写字符串 \"null\"。"
     "先检查所有必填字段均出现后再输出。\n"
 )
+VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "本版本只输出观察图，不输出因果边或多段时间模式：每一个 event 必须显式包含"
+    "\"cause_event_refs\":[] 与 \"effect_event_refs\":[]；continuity 必须显式包含"
+    "\"temporal_segments\":[]。这些字段不能省略、不能写 null、不能写成字符串或加入 ID。"
+    "candidate_hypotheses 也必须显式为 []。\n"
+    "严格执行本地 ID 协议：先声明实体，实体 ID 依次只能使用 p001、p002、…；再声明事实，"
+    "事实 ID 依次只能使用 f001、f002、…；最后声明事件，事件 ID 依次只能使用 e001、e002、…。"
+    "所有 ref 都必须逐字复制已声明的本地 ID，且必须是 JSON 字符串。例："
+    "\"subject_ref\":\"p001\"，\"object_ref\":\"p008\"，无受词时"
+    "\"object_ref\":null。绝不能输出 /p008、裸 p008、\"null\"、`p008`、角色名或 API ID。"
+    "每一个 subject_ref 和非 null object_ref 必须在 entities.local_entity_id 中存在；每一个"
+    "participant_refs 必须引用已声明 entity；每一个 fact_refs 必须引用已声明 fact。\n"
+    "event_kind 只能逐字使用 action、interaction、state_change、reaction、reveal、transition。"
+    "例如 confrontation、argument、fight、dialogue、emotion 都不是合法 event_kind：冲突互动用 interaction，"
+    "单人动作用 action，状态变化用 state_change，反应只用 reaction。"
+    "输出前按以下顺序机械检查：完整 JSON；所有本地 ID/ref 的引号和格式；引用闭合；枚举；"
+    "全部必填字段。只返回一个 JSON 对象，不要 Markdown、解释或代码围栏。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -149,6 +171,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)

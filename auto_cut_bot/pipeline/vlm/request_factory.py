@@ -44,6 +44,7 @@ from .contextual_video_prompt import (
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_TIMELINE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
@@ -86,6 +87,9 @@ DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION = (
 DOUBAO_VLM_REQUIRED_EMPTY_ARRAY_VIDEO_STAGE_STRATEGY_VERSION = (
     "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-3-v4"
 )
+DOUBAO_VLM_STRICT_WIRE_VIDEO_STAGE_STRATEGY_VERSION = (
+    "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-3-v5"
+)
 
 
 def registered_response_schema_json(
@@ -95,7 +99,10 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
-        if prompt_version == VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION:
+        if prompt_version in {
+            VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
+            VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
+        }:
             return vlm_validated_reciprocal_core_video_response_schema_json()
         if prompt_version == VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION:
             return vlm_stable_core_video_response_schema_json()
@@ -262,6 +269,7 @@ class DoubaoVlmRequestPolicy:
                 VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
                 VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
+                VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
             }
         ):
             raise ValueError("V4 video prompt and parser must be selected together")
@@ -272,6 +280,7 @@ class DoubaoVlmRequestPolicy:
                 DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
                 DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION,
                 DOUBAO_VLM_REQUIRED_EMPTY_ARRAY_VIDEO_STAGE_STRATEGY_VERSION,
+                DOUBAO_VLM_STRICT_WIRE_VIDEO_STAGE_STRATEGY_VERSION,
             }
         ):
             raise ValueError("V4 video parser requires its registered stage strategy")
@@ -289,6 +298,7 @@ class DoubaoVlmRequestPolicy:
             DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION,
             DOUBAO_VLM_REQUIRED_EMPTY_ARRAY_VIDEO_STAGE_STRATEGY_VERSION,
+            DOUBAO_VLM_STRICT_WIRE_VIDEO_STAGE_STRATEGY_VERSION,
         }:
             raise ValueError("stage strategy must be a registered Doubao request version")
         supported_combinations = {
@@ -307,6 +317,7 @@ class DoubaoVlmRequestPolicy:
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STABLE_VIDEO_STAGE_STRATEGY_VERSION),
             (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_REQUIRED_EMPTY_ARRAY_VIDEO_STAGE_STRATEGY_VERSION),
+            (DOUBAO_ARK_EXPLICIT_THINKING_ADAPTER_STRATEGY_VERSION, DOUBAO_VLM_STRICT_WIRE_VIDEO_STAGE_STRATEGY_VERSION),
         }
         if (self.adapter_strategy_version, self.stage_strategy_version) not in supported_combinations:
             raise ValueError(
@@ -406,6 +417,7 @@ def build_doubao_vlm_request(
         VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
         VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
     }
     if contextual_prompt != (context_pack is not None):
         raise ValueError("contextual video prompt requires exactly one WindowContextPack")
