@@ -254,7 +254,7 @@ def build_vlm_contextual_video_prompt(
             template
             + build_vlm_window_duration_descriptor(manifest)
             + "\n"
-            + VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE
+            + "剧情辅助：\n（仅供理解，不是视频证据）\n"
             + context_pack.rendered_context
         )
     return (
