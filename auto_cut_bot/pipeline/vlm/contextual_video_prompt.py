@@ -52,6 +52,18 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION 
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v22-context-assisted-minimal-core-observations"
 )
+# Historical minimal prompt identities remain registered so persisted V19–V21
+# runs can be reconstructed after a deploy.  They are read-only compatibility
+# aliases; new runs must use the current V22 contract.
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION = (
+    "vlm-semantic-pack-v19-context-assisted-minimal-core-observations"
+)
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION = (
+    "vlm-semantic-pack-v20-context-assisted-minimal-core-observations"
+)
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION = (
+    "vlm-semantic-pack-v21-context-assisted-minimal-core-observations"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -197,6 +209,12 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "window_summary 必须简短并只引用已经声明的事实或事件。\n"
     "播放窗口："
 )
+# The response/parser contract for historical minimal runs is identical.  The
+# prompt text is not re-emitted for committed children, but registration keeps
+# old execution profiles loadable and prevents startup from failing closed.
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_TEMPLATE = VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
 
 
 def build_vlm_contextual_video_prompt(
@@ -245,11 +263,19 @@ def build_vlm_contextual_video_prompt(
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
         ),
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_TEMPLATE,
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_TEMPLATE,
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_TEMPLATE,
     }
     template = templates.get(prompt_version)
     if template is None:
         raise ValueError("prompt version is not a registered contextual video prompt")
-    if prompt_version == VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION:
+    if prompt_version in {
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION,
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION,
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION,
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION,
+    }:
         return (
             template
             + build_vlm_window_duration_descriptor(manifest)
