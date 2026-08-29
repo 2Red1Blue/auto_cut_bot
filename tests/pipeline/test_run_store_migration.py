@@ -238,9 +238,12 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
     ):
         assert f"%s, %s, {ordinal}, '{stage}', 'pending', 0" in insert
     # The full v9 branch retains six ordered commands.  The explicit v10
-    # semantic-only branch adds exactly two, never a partial story/media plan.
+    # semantic-only branch owns SourcePrep, Context Prepare and VLM: three
+    # commands total, never a partial story/media plan.
     assert "if execution_profile.is_semantic_only:" in source
-    assert insert.count("uuid4(), run_id") == 8
+    assert "1, 'context_prepare', 'pending', 0" in insert
+    assert "2, 'vlm', 'pending', 0" in insert
+    assert insert.count("uuid4(), run_id") == 9
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
     assert "->> 'schema_version' = 'pipeline-execution-profile-v9'" in source
     assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
