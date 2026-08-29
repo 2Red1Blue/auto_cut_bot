@@ -163,6 +163,11 @@ in an existing virtual environment cannot silently shadow the checked-out
 Kernel code. A built wheel does not set this variable and does not need the
 override.
 
+When WSL selects a Windows `ffprobe.exe`, the Kernel media port translates
+`/mnt/<drive>/...` to `X:/...` at the subprocess boundary. Do not pass the WSL
+mount path to `ffprobe.exe` from a custom wrapper; native `ffprobe` continues to
+receive the resolved POSIX path.
+
 On a native Windows host, run the semantic-only service through its installed
 console script (rather than `uv run auto_cut_bot`, which can resolve the
 same-named local module incorrectly in Git Bash):
