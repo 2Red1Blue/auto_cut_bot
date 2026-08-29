@@ -17,6 +17,12 @@ durable, but cannot masquerade as a whole-series VLM batch or unlock Stage 1.
 
 ## Implementation order
 
+0. Before retrying any failed episode, register V19's minimal core-observation
+   profile: it must not inherit V6 candidate-generation instructions, must
+   retain entities/facts/events/window-summary/continuity richness, and must
+   use the stable V4 schema that closes only candidate, causal and temporal
+   segment arrays.  Register its distinct Prompt/Schema/strategy hashes and
+   database profile gate; do not reinterpret V18 artifacts.
 1. Add closed `VlmSelectedOnlyRecomputeRequest` and a stable selection
    identity: `base_run_id`, `expected_version`, `stage=vlm`,
    `completion_scope=selected_only`, and strictly ascending `episode_numbers`.

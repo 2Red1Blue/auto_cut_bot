@@ -236,6 +236,16 @@ def ordered_bounded_video_schema(schema: object) -> dict[str, object]:
 
 def build_vlm_bounded_video_prompt(manifest: WindowManifest) -> str:
     """Expose only exact floored playback duration; evidence remains program-owned."""
+    return VLM_BOUNDED_VIDEO_PROMPT_TEMPLATE + build_vlm_window_duration_descriptor(manifest)
+
+
+def build_vlm_window_duration_descriptor(manifest: WindowManifest) -> str:
+    """Return the lone video-window fact safe to expose to minimal prompts.
+
+    This deliberately contains no frame IDs, PTS values, source clock or
+    physical-cut permission.  Contextual V19 uses it instead of inheriting
+    V6's obsolete candidate-generation instructions.
+    """
     if type(manifest) is not WindowManifest:  # noqa: E721
         raise TypeError("bounded video prompt requires an exact WindowManifest")
     timeline = manifest.timeline_map
@@ -247,4 +257,4 @@ def build_vlm_bounded_video_prompt(manifest: WindowManifest) -> str:
     duration_floor = duration.numerator // duration.denominator
     if duration_floor < 1:
         raise ValueError("V4 millisecond wire requires at least one millisecond")
-    return VLM_BOUNDED_VIDEO_PROMPT_TEMPLATE + _canonical_json({"duration_ms_floor": duration_floor})
+    return _canonical_json({"duration_ms_floor": duration_floor})

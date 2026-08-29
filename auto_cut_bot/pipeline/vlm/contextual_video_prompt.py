@@ -10,7 +10,10 @@ from __future__ import annotations
 from autocut_kernel.context_pack import WindowContextPack
 from autocut_kernel.vlm import WindowManifest
 
-from .bounded_video_prompt import build_vlm_bounded_video_prompt
+from .bounded_video_prompt import (
+    build_vlm_bounded_video_prompt,
+    build_vlm_window_duration_descriptor,
+)
 
 VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION = "vlm-semantic-pack-v7-context-assisted"
 VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION = (
@@ -45,6 +48,9 @@ VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION = (
 )
 VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v18-context-assisted-enum-disambiguated-fact-anchored-event-core"
+)
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v19-context-assisted-minimal-core-observations"
 )
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
@@ -165,6 +171,30 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
     "绝不能写字符串 \"null\"。输出必须是一个可由严格 JSON 解析器读取的对象：所有 key/字符串"
     "使用双引号，不能有尾逗号、注释、Markdown、解释文字或半截对象。\n"
 )
+VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
+    "你是完整视频窗口的局部语义分析器。本轮只输出可由当前视频支持的核心观察，"
+    "不生成剪辑候选、因果图或多段时间叙事。"
+    "candidate_hypotheses 必须是 []；每个 event 的 cause_event_refs 与 effect_event_refs 必须是 []；"
+    "continuity.temporal_segments 必须是 []。这些字段均须显式出现，不能省略或写 null。\n"
+    "只返回一个完整、严格的 JSON 对象：schema_version 必须为 4，根字段按 schema_version、entities、facts、"
+    "events、window_summary、continuity、candidate_hypotheses 输出；不要 Markdown、解释、注释或尾逗号。"
+    "只保留高信息量观察，不凑数量。\n"
+    "先声明实体，再声明事实，最后声明事件。实体本地 ID 只能依次为 p001、p002、…；事实只能依次为"
+    "f001、f002、…；事件只能依次为 e001、e002、…。每一个 subject_ref、非 null object_ref 与"
+    "participant_refs 必须逐字引用已声明的实体；每一个 event.fact_refs 必须恰好引用一个已声明事实。"
+    "没有受词时 object_ref 必须写 JSON null，绝不能省略或写字符串 \"null\"。\n"
+    "fact_kind 只能是 visible_presence、visible_state、visible_action、visible_change、visible_relation、"
+    "scene_context、character_appearance、screen_text、temporal_mode。表情或姿态写 visible_state，"
+    "已发生的状态改变写 visible_change，动作写 visible_action；不得创造 visible_state_change、"
+    "visible_reaction、emotion 或其他未注册值。event_kind 只能是 action、interaction、state_change、"
+    "reaction、reveal、transition。\n"
+    "每个实体、事实、事件都必须有 video_observation support。时间使用从播放窗口开始的整数毫秒半开区间，"
+    "满足 0<=start_ms<end_ms<=duration_ms_floor；uncertainty_ms 是 0 到 5000 的整数。"
+    "每个 event 的 support 必须逐字复制其唯一 fact_ref 的完整 support。continuity 的布尔值和"
+    "entry_state_fact_refs、exit_state_fact_refs 必须彼此一致；不确定时使用 false 和 []。"
+    "window_summary 必须简短并只引用已经声明的事实或事件。\n"
+    "播放窗口："
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -210,10 +240,21 @@ def build_vlm_contextual_video_prompt(
         VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
         ),
+        VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
     }
     template = templates.get(prompt_version)
     if template is None:
         raise ValueError("prompt version is not a registered contextual video prompt")
+    if prompt_version == VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION:
+        return (
+            template
+            + build_vlm_window_duration_descriptor(manifest)
+            + "\n"
+            + VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE
+            + context_pack.rendered_context
+        )
     return (
         build_vlm_bounded_video_prompt(manifest)
         + "\n"

@@ -23,6 +23,7 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
@@ -257,6 +258,29 @@ def test_v14_closes_nonessential_redundant_graph_fields() -> None:
     assert event_properties["cause_event_refs"]["maxItems"] == 0
     assert event_properties["effect_event_refs"]["maxItems"] == 0
     assert schema["properties"]["continuity"]["properties"]["temporal_segments"]["maxItems"] == 0
+
+
+def test_v19_uses_only_the_core_observation_prompt_and_stable_schema() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "本轮只输出可由当前视频支持的核心观察" in prompt
+    assert "候选只是高光/钩子假设" not in prompt
+    assert "candidate_hypotheses 必须是 []" in prompt
+    assert prompt.index("播放窗口：") < prompt.index('{"duration_ms_floor":') < prompt.index("剧情辅助：")
+    assert schema == vlm_stable_core_video_response_schema()
+    event_properties = schema["properties"]["events"]["items"]["properties"]
+    assert event_properties["cause_event_refs"]["maxItems"] == 0
+    assert event_properties["effect_event_refs"]["maxItems"] == 0
 
 
 def test_v15_requires_explicit_empty_fields_without_closing_them_in_schema() -> None:
