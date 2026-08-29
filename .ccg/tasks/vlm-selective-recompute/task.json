@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "将通过测试的 V14 语义策略同步到 PC，创建新 run 并以并发 3 完成真实 VLM 批次；成功后进入 PC ASR/VAD Media Preflight",
+  "nextAction": "将 V15 必填空数组策略与 migration 0040 同步到 PC；新建真实 Run 进行首集探测，成功后继续全剧 VLM 并进入 ASR/VAD Media Preflight",
   "branch": "feat/v213-contract-codegen",
   "createdAt": "2026-08-28T00:00:00+08:00"
 }

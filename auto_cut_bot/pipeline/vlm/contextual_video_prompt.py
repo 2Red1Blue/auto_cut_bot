@@ -34,6 +34,9 @@ VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v14-context-assisted-stable-core-observations"
 )
+VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v15-context-assisted-required-empty-array-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -102,6 +105,15 @@ VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_TEMPLATE = (
     "不要用这三个数组表达因果、前情、倒叙或镜头时间线。事件本身、fact_refs、support "
     "和 window_summary 仍须完整、准确；后续确定性阶段会从已校验观察推导所需关系。\n"
 )
+VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_VALIDATED_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_TEMPLATE
+    + "本版本不输出因果边或多段时间模式：每一个 event 都必须显式包含"
+    "\"cause_event_refs\":[] 与 \"effect_event_refs\":[]，并且"
+    "continuity 必须显式包含 \"temporal_segments\":[]。这些字段虽然为空，"
+    "但绝不能省略、写成 null、写成字符串或添加 ID。每一个 fact 也必须显式包含"
+    "object_ref；无受词时写 JSON null（不带引号），绝不能写字符串 \"null\"。"
+    "先检查所有必填字段均出现后再输出。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -134,6 +146,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)
