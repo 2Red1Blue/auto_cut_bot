@@ -50,7 +50,7 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION 
     "vlm-semantic-pack-v18-context-assisted-enum-disambiguated-fact-anchored-event-core"
 )
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
-    "vlm-semantic-pack-v20-context-assisted-minimal-core-observations"
+    "vlm-semantic-pack-v21-context-assisted-minimal-core-observations"
 )
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
@@ -185,8 +185,7 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "没有受词时 object_ref 必须写 JSON null，绝不能省略或写字符串 \"null\"。\n"
     "fact_kind 只能是 visible_presence、visible_state、visible_action、visible_change、visible_relation、"
     "scene_context、character_appearance、screen_text、temporal_mode。表情或姿态写 visible_state，"
-    "已发生的状态改变写 visible_change，动作写 visible_action；不得创造 visible_state_change、"
-    "visible_reaction、emotion 或其他未注册值。event_kind 只能是 action、interaction、state_change、"
+    "已发生的状态改变写 visible_change，动作写 visible_action；不得使用上述列表之外的值。event_kind 只能是 action、interaction、state_change、"
     "reaction、reveal、transition。\n"
     "每个实体、事实、事件都必须有 video_observation support。时间使用从播放窗口开始的整数毫秒半开区间，"
     "满足 0<=start_ms<end_ms<=duration_ms_floor；uncertainty_ms 是 0 到 5000 的整数。"

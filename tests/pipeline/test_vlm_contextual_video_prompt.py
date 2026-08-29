@@ -276,6 +276,7 @@ def test_v19_uses_only_the_core_observation_prompt_and_stable_schema() -> None:
     assert "本轮只输出可由当前视频支持的核心观察" in prompt
     assert "候选只是高光/钩子假设" not in prompt
     assert "你会得到一段外部剧情辅助" not in prompt
+    assert "visible_reaction" not in prompt
     assert "candidate_hypotheses 必须是 []" in prompt
     assert "continues_from_previous=false" in prompt
     assert "exit_state_fact_refs=[]" in prompt
