@@ -430,9 +430,7 @@ def pipeline_serve(
         console.print("[red]aiohttp is required. Install with: uv sync --extra api[/red]")
         raise typer.Exit(1)
 
-    from auto_cut_bot.api.server import create_pipeline_app
     from auto_cut_bot.cli.kernel_origin import KernelOriginError, validate_kernel_origin
-    from auto_cut_bot.pipeline.runtime.composition import PipelineRuntimeConfigurationError
 
     _set_auto_cut_bot_logs(verbose)
     api_key = os.environ.get("AUTO_CUT_BOT_PIPELINE_API_KEY", "").strip()
@@ -448,6 +446,11 @@ def pipeline_serve(
         raise typer.Exit(1) from error
     if kernel_file is not None:
         console.print(f"  [cyan]Kernel[/cyan]   : {kernel_file}")
+    # Import the application/runtime only after the origin gate has passed;
+    # otherwise a shadowed installed Kernel could execute during module import.
+    from auto_cut_bot.api.server import create_pipeline_app
+    from auto_cut_bot.pipeline.runtime.composition import PipelineRuntimeConfigurationError
+
     try:
         pipeline_app = create_pipeline_app(api_key=api_key)
     except PipelineRuntimeConfigurationError as error:
