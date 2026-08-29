@@ -11,6 +11,7 @@ import contextlib
 import hmac
 import json as _json
 import time
+import traceback
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
@@ -549,9 +550,10 @@ def _configure_pipeline_control_plane(
                     logger.error("Pipeline runtime worker stopped before application shutdown")
                     return
                 _app[_PIPELINE_WORKER_ERROR_KEY].append("pipeline worker failed")
-                logger.exception(
-                    "Pipeline runtime worker failed with {}",
+                logger.error(
+                    "Pipeline runtime worker failed with {}\n{}",
                     type(error).__name__,
+                    "".join(traceback.format_exception(error)),
                 )
 
             worker_task.add_done_callback(observe_worker_result)
