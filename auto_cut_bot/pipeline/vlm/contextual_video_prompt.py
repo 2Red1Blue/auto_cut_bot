@@ -50,7 +50,7 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION 
     "vlm-semantic-pack-v18-context-assisted-enum-disambiguated-fact-anchored-event-core"
 )
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
-    "vlm-semantic-pack-v21-context-assisted-minimal-core-observations"
+    "vlm-semantic-pack-v22-context-assisted-minimal-core-observations"
 )
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
@@ -179,6 +179,7 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "只返回一个完整、严格的 JSON 对象：schema_version 必须为 4，根字段按 schema_version、entities、facts、"
     "events、window_summary、continuity、candidate_hypotheses 输出；不要 Markdown、解释、注释或尾逗号。"
     "只保留高信息量观察，不凑数量。\n"
+    "每个对象只能包含 Schema 已声明的字段；字段名只能出现一次，不得新增、重复或拼接字段名。\n"
     "先声明实体，再声明事实，最后声明事件。实体本地 ID 只能依次为 p001、p002、…；事实只能依次为"
     "f001、f002、…；事件只能依次为 e001、e002、…。每一个 subject_ref、非 null object_ref 与"
     "participant_refs 必须逐字引用已声明的实体；每一个 event.fact_refs 必须恰好引用一个已声明事实。"
