@@ -19,22 +19,24 @@ story stages, physical editing, render/QC, authority bootstrap or publication.
 `succeeded` therefore means **semantic evidence complete only**.
 
 The installed semantic-only policy now selects
-`vlm-semantic-pack-v16-context-assisted-strict-wire-core`: the VLM receives the attached video,
+`vlm-semantic-pack-v17-context-assisted-fact-anchored-event-core`: the VLM receives the attached video,
 the closed semantic-output contract, and only a bounded, immutable
 `WindowContextPack` produced by the immediately preceding Context Prepare
 stage. It still never receives ASR/VAD/subtitle text, API shot/highlight lists,
-frame tables or physical-cut endpoints. V16 retains the V8 core-observation
+frame tables or physical-cut endpoints. V17 retains the V8 core-observation
 shape and V4 parser, binds the strict response schema (`uncertainty_ms <=
 5000`), and gives Ark one explicit local-ID and closed-enum protocol. The
 optional reciprocal causal arrays and multi-segment temporal narration must be
 explicitly empty; they remain required schema fields because Ark can omit fields
 whose item limit is zero. This also avoids V15's observed ambiguity around
-bare/slashed IDs, string `"null"`, and colloquial event kinds. Admitted
-facts/events remain intact for later deterministic semantic derivation. It uses
-a probe-first, bounded-parallel-3 batch policy. The earlier
+bare/slashed IDs, string `"null"`, and colloquial event kinds. Each event now
+copies the full support of exactly one referenced fact, so a model cannot treat
+adjacent half-open intervals as overlapping. Admitted facts/events remain intact
+for later deterministic semantic derivation. It uses a probe-first,
+bounded-parallel-3 batch policy. The earlier
 parallel-10 policy was deliberately exercised against Ark and produced real
 429 responses; its historical request/profile bytes remain replayable, but it
-is not used for new V16 runs. The parser and 32768 output-token budget remain
+is not used for new V17 runs. The parser and 32768 output-token budget remain
 unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
@@ -54,8 +56,8 @@ different thinking modes are not interchangeable.
 > behavior in a local environment file: the current runtime has not yet
 > implemented `ArkRequestScope/v1`.
 
-Before enabling V16, stop all older Pipeline workers and apply every pending
-Kernel migration in numeric order, including `0041`. The v10 profile has a
+Before enabling V17, stop all older Pipeline workers and apply every pending
+Kernel migration in numeric order, including `0042`. The v10 profile has a
 closed five-field parameter variant for v5; later VLM prompt registrations
 (`0030` onward) are also required for their corresponding authority profile.
 Full-pipeline is not widened.

@@ -40,6 +40,9 @@ VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION = (
 VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v16-context-assisted-strict-wire-core"
 )
+VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v17-context-assisted-fact-anchored-event-core"
+)
 VLM_CONTEXTUAL_VIDEO_PROMPT_TEMPLATE = (
     "你会得到一段外部剧情辅助。它只帮助理解叙事，不是视频证据。"
     "不得把其中的人名、关系、剧情或主题直接写成已观察到的 entity、fact、event、"
@@ -136,6 +139,15 @@ VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_TEMPLATE = (
     "输出前按以下顺序机械检查：完整 JSON；所有本地 ID/ref 的引号和格式；引用闭合；枚举；"
     "全部必填字段。只返回一个 JSON 对象，不要 Markdown、解释或代码围栏。\n"
 )
+VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE = (
+    VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_TEMPLATE
+    + "严格执行事件锚定规则：每一个 event.fact_refs 必须恰好有一个已声明 fact ID。"
+    "event.support 必须逐字复制该唯一 fact 的完整 support 对象（support_kind、confidence 与"
+    "interval_ms 的 start_ms、end_ms、uncertainty_ms 都相同）。不得把相邻片段当作重叠："
+    "例如 fact 为 [198000,213000) 时，event 不能从 213000 或更晚开始。"
+    "一个事件需要多个事实时，保留额外事实但为每个时间不连续事实分别输出 event；不要在"
+    "同一 event.fact_refs 中加入第二个事实。输出前逐 event 比对其唯一 fact_ref 与 support 完全相同。\n"
+)
 
 
 def build_vlm_contextual_video_prompt(
@@ -174,6 +186,9 @@ def build_vlm_contextual_video_prompt(
         ),
         VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
+        VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_TEMPLATE
         ),
     }
     template = templates.get(prompt_version)

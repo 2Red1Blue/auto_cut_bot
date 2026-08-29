@@ -21,6 +21,7 @@ from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
     VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_RECIPROCAL_CAUSAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_STABLE_CORE_VIDEO_PROMPT_VERSION,
@@ -294,4 +295,23 @@ def test_v16_uses_one_unambiguous_wire_protocol_for_ids_and_enums() -> None:
     assert "绝不能输出 /p008、裸 p008、\"null\"" in prompt
     assert "confrontation、argument、fight、dialogue、emotion 都不是合法 event_kind" in prompt
     assert "\"object_ref\":null" in prompt
+    assert schema == vlm_validated_reciprocal_core_video_response_schema()
+
+
+def test_v17_requires_fact_anchored_event_support() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "每一个 event.fact_refs 必须恰好有一个" in prompt
+    assert "event.support 必须逐字复制该唯一 fact 的完整 support 对象" in prompt
+    assert "[198000,213000)" in prompt
     assert schema == vlm_validated_reciprocal_core_video_response_schema()

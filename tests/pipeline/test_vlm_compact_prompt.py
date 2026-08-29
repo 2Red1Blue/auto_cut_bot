@@ -22,7 +22,7 @@ from auto_cut_bot.pipeline.runtime.semantic_authority import (
 )
 from auto_cut_bot.pipeline.source_prep.command import PersistedPreparedSources
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
-    VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
+    VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION,
 )
 from auto_cut_bot.pipeline.vlm.doubao_ark_provider import DoubaoArkVlmProviderConfig
 from auto_cut_bot.pipeline.vlm.prompt import (
@@ -154,7 +154,7 @@ def test_compact_factory_changes_only_prompt_identity_and_preserves_budgets() ->
 
 def test_installed_semantic_authority_explicitly_selects_video_without_changing_default() -> None:
     authority = load_installed_semantic_run_authority()
-    assert authority.vlm_policy.prompt_version == VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION
+    assert authority.vlm_policy.prompt_version == VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION
     assert factory_fixture._policy().prompt_version == VLM_PROMPT_VERSION
     default_policy = factory_fixture._policy()
     assert authority.vlm_policy.thinking_type == "disabled"
@@ -193,7 +193,7 @@ def test_semantic_composition_preserves_installed_prompt_choice(tmp_path: Path) 
     runtime = composition.compose_pipeline_runtime_from_environment(environment)
     assert runtime is not None
     assert runtime.execution_profile.to_doubao_policy() == load_installed_semantic_run_authority().vlm_policy
-    assert runtime.execution_profile.prompt_version == VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION
+    assert runtime.execution_profile.prompt_version == VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION
 
 
 @pytest.mark.parametrize("version", [VLM_PROMPT_VERSION, VLM_COMPACT_PROMPT_VERSION])
@@ -226,7 +226,7 @@ def test_reuse_projection_selects_the_original_requests_template(version: str) -
 
 @pytest.mark.asyncio
 async def test_new_semantic_authority_does_not_relabel_a_v3_reconcile_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert load_installed_semantic_run_authority().vlm_policy.prompt_version == VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION
+    assert load_installed_semantic_run_authority().vlm_policy.prompt_version == VLM_CONTEXTUAL_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION
     bundle, blobs = _bundle()
     monkeypatch.setattr(vlm_stage, "read_persisted_prepared_sources_bundle", lambda *_args, **_kwargs: bundle)
     legacy_policy = factory_fixture._policy()
