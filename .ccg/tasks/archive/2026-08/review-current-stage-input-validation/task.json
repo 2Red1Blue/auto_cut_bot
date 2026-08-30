@@ -1,0 +1,12 @@
+{
+  "id": "review-current-stage-input-validation",
+  "title": "审查当前各阶段输入与格式校验",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "等待用户决定是否按 P0/P1 实施修复",
+  "createdAt": "2026-08-30T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
