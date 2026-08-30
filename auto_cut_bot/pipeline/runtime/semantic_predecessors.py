@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Protocol
+from typing import Protocol, cast
 
 from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
 from autocut_kernel.pipeline.build_narrative_graph_command import NarrativeGraphStore
@@ -22,9 +22,15 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
     Job,
+    RuntimeStoreError,
     SemanticInputUnavailableError,
 )
+from autocut_kernel.store.models import PersistedCommittedArtifactSet
 
+from auto_cut_bot.pipeline.context_prepare import (
+    ContextPrepareStore,
+    find_committed_window_context_packs,
+)
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     SourcePrepStore,
@@ -38,17 +44,29 @@ from .source_prep_stage import (
     require_committed_source_operation,
     source_prep_kernel_idempotency_key,
 )
-from .vlm_stage import vlm_batch_kernel_idempotency_key
+from .vlm_stage import requires_window_context_pack, vlm_batch_kernel_idempotency_key
 
 _SOURCE_ARTIFACT_REVISION = 1
 
 
-class Stage1NarrativePipelineStore(SourcePrepStore, NarrativeGraphStore, Protocol):
+class Stage1NarrativePipelineStore(
+    SourcePrepStore,
+    NarrativeGraphStore,
+    Protocol,
+):
     """Public committed read seams shared by semantic Runtime adapters."""
 
     def read_committed_vlm_semantic_pack_set_reference(
         self, job: Job, idempotency_key: str,
     ) -> CommittedArtifactMemberReference: ...
+
+    def find_committed_context_pack_set(
+        self,
+        job: Job,
+        *,
+        artifact_scope: ArtifactScope,
+        artifact_revision: int,
+    ) -> PersistedCommittedArtifactSet | None: ...
 
 
 def stage1_narrative_kernel_idempotency_key(
@@ -88,9 +106,31 @@ def read_stage1_pipeline_request(
         artifact_revision=_SOURCE_ARTIFACT_REVISION,
     )
     require_committed_source_operation(source_bundle, "semantic_analysis")
+    context_packs = None
+    if requires_window_context_pack(vlm_policy):
+        try:
+            committed_context = find_committed_window_context_packs(
+                # The committed owner currently types its read seam through the
+                # broader command Store; Stage 1 only requires this one lookup.
+                cast(ContextPrepareStore, store),
+                job=job,
+                artifact_scope=ArtifactScope("pipeline", "job", run_id),
+                artifact_revision=_SOURCE_ARTIFACT_REVISION,
+                source_bundle=source_bundle,
+            )
+        except (RuntimeStoreError, TypeError, ValueError) as error:
+            raise PipelineRunValidationError(
+                "Stage 1 requires one exact committed WindowContextPackSet"
+            ) from error
+        if committed_context is None:
+            raise PipelineRunValidationError(
+                "Stage 1 requires one exact committed WindowContextPackSet"
+            )
+        context_packs = committed_context.packs
     vlm_key = vlm_batch_kernel_idempotency_key(
         run_id=run_id, source_bundle=source_bundle, policy=vlm_policy,
         execution_profile_hash=execution_profile_hash,
+        context_packs=context_packs,
     )
     vlm_outcome = store.read_outcome(job, vlm_key)
     if vlm_outcome is None or vlm_outcome.state in ("pending", "running"):

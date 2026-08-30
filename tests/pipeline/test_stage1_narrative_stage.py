@@ -9,6 +9,11 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from autocut_kernel.context_pack import (
+    ContextSelectionPolicy,
+    WindowContextPack,
+    video_only_window_context_pack,
+)
 from autocut_kernel.media import (
     AudioBoundaryMethod,
     AudioSampleBoundary,
@@ -42,16 +47,24 @@ from autocut_kernel.source_manifest import (
     identity_frame_index,
 )
 from autocut_kernel.store import (
+    ArtifactMember,
     ArtifactScope,
     BlobRef,
     CommandOutcome,
     CommittedArtifactMemberReference,
     Job,
     PersistedWholeSeriesSourceManifest,
+    SemanticInputIntegrityError,
     SemanticInputUnavailableError,
+    StoreValidationError,
     WholeSeriesSourceManifestReference,
 )
-from autocut_kernel.store.models import canonical_payload_hash
+from autocut_kernel.store.models import (
+    PersistedCommittedArtifactMember,
+    PersistedCommittedArtifactSet,
+    artifact_set_hash,
+    canonical_payload_hash,
+)
 from autocut_kernel.vlm import (
     ProxyTimelineMap,
     WindowFrameSample,
@@ -60,6 +73,14 @@ from autocut_kernel.vlm import (
     WindowProxyBlobRef,
 )
 
+from auto_cut_bot.pipeline.context_prepare import (
+    COMMAND_NAME as CONTEXT_PREPARE_COMMAND_NAME,
+)
+from auto_cut_bot.pipeline.context_prepare import (
+    CONTEXT_PACK_SET_ARTIFACT_TYPE,
+    CONTEXT_PACK_SET_LOGICAL_ID,
+    PreparedWindowContextSet,
+)
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.models import (
     PipelineCommand,
@@ -67,6 +88,8 @@ from auto_cut_bot.pipeline.runtime.models import (
     PipelineRunRequest,
     PipelineStageContext,
 )
+from auto_cut_bot.pipeline.runtime.semantic_authority import load_installed_semantic_run_authority
+from auto_cut_bot.pipeline.runtime.semantic_predecessors import read_stage1_pipeline_request
 from auto_cut_bot.pipeline.runtime.stage1_narrative_stage import (
     Stage1NarrativePipelineStage,
     stage1_narrative_kernel_idempotency_key,
@@ -84,6 +107,11 @@ from auto_cut_bot.pipeline.source_prep.probe import (
     PresentationTimelineProbeDraft,
     SourceMediaProbe,
 )
+from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy
+from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+)
+from auto_cut_bot.pipeline.vlm.request_factory import registered_response_schema_json
 from tests.authority.test_authority_profile_sources import synthetic_stage1_command_policy
 from tests.pipeline.installed_profile_fixture import synthetic_installed_resource
 from tests.pipeline.test_pipeline_vlm_stage import _profile
@@ -121,12 +149,19 @@ class _CommittedStore:
         source_record: PersistedWholeSeriesSourceManifest | None,
         vlm_outcome: CommandOutcome | None,
         aggregate: CommittedArtifactMemberReference | None,
+        context_record: PersistedCommittedArtifactSet | None = None,
+        context_error: Exception | None = None,
+        expected_vlm_key: str | None = None,
     ) -> None:
         self.source_outcome = source_outcome
         self.source_record = source_record
         self.vlm_outcome = vlm_outcome
         self.aggregate = aggregate
+        self.context_record = context_record
+        self.context_error = context_error
+        self.expected_vlm_key = expected_vlm_key
         self.outcome_calls: list[tuple[Job, str]] = []
+        self.context_reads: list[tuple[Job, ArtifactScope, int]] = []
         self.thread_ids: list[int] = []
 
     def read_outcome(self, job: Job, idempotency_key: str) -> CommandOutcome | None:
@@ -135,6 +170,8 @@ class _CommittedStore:
         if idempotency_key.startswith("source-prep-kernel-v1:"):
             return self.source_outcome
         if idempotency_key.startswith("vlm-batch:"):
+            if self.expected_vlm_key is not None:
+                assert idempotency_key == self.expected_vlm_key
             return self.vlm_outcome
         raise AssertionError("Stage 1 queried an unregistered predecessor identity")
 
@@ -153,11 +190,25 @@ class _CommittedStore:
     ) -> CommittedArtifactMemberReference:
         self.thread_ids.append(threading.get_ident())
         assert idempotency_key.startswith("vlm-batch:")
+        if self.expected_vlm_key is not None:
+            assert idempotency_key == self.expected_vlm_key
         aggregate = self.aggregate
         if aggregate is None:
             raise SemanticInputUnavailableError("fixture has no committed aggregate")
         assert job == Job(RUN_ID, "test")
         return aggregate
+
+    def find_committed_context_pack_set(
+        self,
+        job: Job,
+        *,
+        artifact_scope: ArtifactScope,
+        artifact_revision: int,
+    ) -> PersistedCommittedArtifactSet | None:
+        self.context_reads.append((job, artifact_scope, artifact_revision))
+        if self.context_error is not None:
+            raise self.context_error
+        return self.context_record
 
 
 def _hash(digit: str) -> str:
@@ -255,20 +306,31 @@ def _bundle(*, purposes: tuple[SourceOperationPurpose, ...] = ("semantic_analysi
     )
 
 
-def _context(*, stage1_policy: Stage1CommandPolicy | None = None,
+def _context(*, vlm_policy: DoubaoVlmRequestPolicy | None = None,
+             stage1_policy: Stage1CommandPolicy | None = None,
              stage2_policy: Stage2CommandPolicy | None = None) -> PipelineStageContext:
     base = _profile()
     policy = base.build_stage1_command_policy() if stage1_policy is None else stage1_policy
-    profile = PipelineExecutionProfile.from_policies(
-        base.to_doubao_policy(),
-        base.to_media_preflight_policy(),
-        retry_policy=base.to_generation_retry_policy(),
-        materialization_limits=base.to_materialization_limits(),
-        stage1_policy=policy,
-        stage2_policy=base.build_stage2_command_policy() if stage2_policy is None else stage2_policy,
-        stage3_policy=base.build_stage3_command_policy(),
-        evidence_read_limits=base.to_evidence_read_limits(),
-    )
+    resolved_stage2 = base.build_stage2_command_policy() if stage2_policy is None else stage2_policy
+    if vlm_policy is None:
+        profile = PipelineExecutionProfile.from_policies(
+            base.to_doubao_policy(),
+            base.to_media_preflight_policy(),
+            retry_policy=base.to_generation_retry_policy(),
+            materialization_limits=base.to_materialization_limits(),
+            stage1_policy=policy,
+            stage2_policy=resolved_stage2,
+            stage3_policy=base.build_stage3_command_policy(),
+            evidence_read_limits=base.to_evidence_read_limits(),
+        )
+    else:
+        profile = PipelineExecutionProfile.from_semantic_story_policies(
+            vlm_policy,
+            retry_policy=base.to_generation_retry_policy(),
+            stage1_policy=policy,
+            stage2_policy=resolved_stage2,
+            stage3_policy=base.build_stage3_command_policy(),
+        )
     return PipelineStageContext(
         RUN_ID,
         PipelineRunRequest("test", source_reference="authorized-source"),
@@ -309,6 +371,68 @@ def _aggregate() -> CommittedArtifactMemberReference:
         uuid4(), uuid4(), 0, ArtifactScope("pipeline", "job", RUN_ID),
         "vlm_semantic_pack_set", "vlm_semantic_pack_set", 1, "sha256:" + "2" * 64,
     )
+
+
+def _context_record(
+    bundle: PersistedPreparedSources,
+    *,
+    source_provenance_sha256: str | None = None,
+) -> tuple[PersistedCommittedArtifactSet, WindowContextPack]:
+    pack = video_only_window_context_pack(
+        ContextSelectionPolicy(), "EXTERNAL_CONTEXT_NOT_CONFIGURED"
+    )
+    prepared = PreparedWindowContextSet(
+        packs=(pack,),
+        source_provenance_sha256=(
+            bundle.canonical_hash
+            if source_provenance_sha256 is None
+            else source_provenance_sha256
+        ),
+        owner_maps_sha256=_hash("d"),
+        snapshot=None,
+        raw_snapshot_blob=None,
+        normalized_context=None,
+        binding_set=None,
+        diagnostic_code="EXTERNAL_CONTEXT_NOT_CONFIGURED",
+    )
+    payload_json = json.dumps(
+        prepared.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    scope = ArtifactScope("pipeline", "job", RUN_ID)
+    artifact = ArtifactMember(
+        CONTEXT_PACK_SET_ARTIFACT_TYPE,
+        CONTEXT_PACK_SET_LOGICAL_ID,
+        1,
+        scope,
+        canonical_payload_hash(payload_json),
+        payload_json,
+    )
+    command_slot_id = uuid4()
+    receipt_id = uuid4()
+    artifact_set_id = uuid4()
+    reference = CommittedArtifactMemberReference(
+        receipt_id,
+        artifact_set_id,
+        0,
+        scope,
+        artifact.artifact_type,
+        artifact.logical_id,
+        artifact.revision,
+        artifact.content_hash,
+    )
+    record = PersistedCommittedArtifactSet(
+        Job(RUN_ID, "test"),
+        uuid4(),
+        command_slot_id,
+        receipt_id,
+        artifact_set_id,
+        _hash("e"),
+        CONTEXT_PREPARE_COMMAND_NAME,
+        "deterministic",
+        artifact_set_hash((artifact,)),
+        (PersistedCommittedArtifactMember(reference, payload_json, command_slot_id),),
+    )
+    return record, pack
 
 
 def _stage(
@@ -380,6 +504,157 @@ async def test_execute_reads_exact_predecessors_off_event_loop_and_delegates_onc
     )
     assert threading.get_ident() not in store.thread_ids
     assert threading.get_ident() not in spy.thread_ids
+    assert store.context_reads == []
+
+
+@pytest.mark.asyncio
+async def test_v23_stage1_reconstructs_the_context_bound_succeeded_vlm_batch_key() -> None:
+    bundle, _ = _bundle()
+    context_record, pack = _context_record(bundle)
+    vlm_policy = load_installed_semantic_run_authority().vlm_policy
+    context = _context(vlm_policy=vlm_policy)
+    expected_vlm_key = vlm_batch_kernel_idempotency_key(
+        run_id=RUN_ID,
+        source_bundle=bundle,
+        policy=vlm_policy,
+        execution_profile_hash=context.execution_profile_hash,
+        context_packs=(pack,),
+    )
+    assert expected_vlm_key != vlm_batch_kernel_idempotency_key(
+        run_id=RUN_ID,
+        source_bundle=bundle,
+        policy=vlm_policy,
+        execution_profile_hash=context.execution_profile_hash,
+    )
+    store = _CommittedStore(
+        source_outcome=_source_success(bundle),
+        source_record=_source_record(bundle),
+        vlm_outcome=CommandOutcome(
+            uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4()
+        ),
+        aggregate=_aggregate(),
+        context_record=context_record,
+        expected_vlm_key=expected_vlm_key,
+    )
+    stage, spy = _stage(
+        store,
+        CommandOutcome(
+            uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4()
+        ),
+    )
+
+    result = await stage.execute(context)
+
+    assert result.outcome == "succeeded"
+    assert len(spy.requests) == 1
+    assert tuple(key for _, key in store.outcome_calls) == (
+        "source-prep-kernel-v1:" + RUN_ID,
+        expected_vlm_key,
+    )
+    assert store.context_reads == [
+        (Job(RUN_ID, "test"), ArtifactScope("pipeline", "job", RUN_ID), 1)
+    ]
+
+
+def test_historical_contextual_prompt_reconstructs_the_committed_context_bound_key() -> None:
+    bundle, _ = _bundle()
+    context_record, pack = _context_record(bundle)
+    installed_policy = load_installed_semantic_run_authority().vlm_policy
+    vlm_policy = replace(
+        installed_policy,
+        prompt_version=VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        response_schema_json=registered_response_schema_json(
+            installed_policy.parser_strategy_version,
+            VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION,
+        ),
+    )
+    execution_profile_hash = _hash("a")
+    expected_vlm_key = vlm_batch_kernel_idempotency_key(
+        run_id=RUN_ID,
+        source_bundle=bundle,
+        policy=vlm_policy,
+        execution_profile_hash=execution_profile_hash,
+        context_packs=(pack,),
+    )
+    store = _CommittedStore(
+        source_outcome=_source_success(bundle),
+        source_record=_source_record(bundle),
+        vlm_outcome=CommandOutcome(
+            uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4()
+        ),
+        aggregate=_aggregate(),
+        context_record=context_record,
+        expected_vlm_key=expected_vlm_key,
+    )
+
+    request = read_stage1_pipeline_request(
+        store,
+        job=Job(RUN_ID, "test"),
+        run_id=RUN_ID,
+        execution_profile_hash=execution_profile_hash,
+        vlm_policy=vlm_policy,
+        policy=synthetic_stage1_command_policy(),
+    )
+
+    assert request is not None
+    assert tuple(key for _, key in store.outcome_calls) == (
+        "source-prep-kernel-v1:" + RUN_ID,
+        expected_vlm_key,
+    )
+    assert len(store.context_reads) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_cause"),
+    (
+        ("absent", None),
+        ("provenance_mismatch", ValueError),
+        ("store_integrity", SemanticInputIntegrityError),
+        ("store_unavailable", SemanticInputUnavailableError),
+        ("store_validation", StoreValidationError),
+    ),
+)
+async def test_v23_stage1_fails_closed_without_the_exact_committed_context_pack_set(
+    failure: str,
+    expected_cause: type[BaseException] | None,
+) -> None:
+    bundle, _ = _bundle()
+    context_record = (
+        None
+        if failure == "absent"
+        else _context_record(bundle, source_provenance_sha256=_hash("f"))[0]
+    )
+    vlm_policy = load_installed_semantic_run_authority().vlm_policy
+    store = _CommittedStore(
+        source_outcome=_source_success(bundle),
+        source_record=_source_record(bundle),
+        vlm_outcome=None,
+        aggregate=None,
+        context_record=context_record,
+        context_error=(
+            expected_cause("committed context lookup failed")
+            if failure.startswith("store_") and expected_cause is not None
+            else None
+        ),
+    )
+    stage, spy = _stage(store, CommandOutcome(uuid4(), "running"))
+
+    with pytest.raises(
+        PipelineRunValidationError,
+        match="exact committed WindowContextPackSet",
+    ) as captured:
+        await stage.execute(_context(vlm_policy=vlm_policy))
+
+    if expected_cause is None:
+        assert captured.value.__cause__ is None
+    else:
+        assert isinstance(captured.value.__cause__, expected_cause)
+    assert tuple(key for _, key in store.outcome_calls) == (
+        "source-prep-kernel-v1:" + RUN_ID,
+    )
+    assert len(store.context_reads) == 1
+    assert spy.requests == []
 
 
 @pytest.mark.asyncio

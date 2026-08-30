@@ -106,7 +106,7 @@ VLM_EPISODE_MAX_CONCURRENCY = 10
 _ARTIFACT_REVISION = 1
 
 
-def _requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
+def requires_window_context_pack(policy: DoubaoVlmRequestPolicy) -> bool:
     """Only contextual profiles have a ContextPack input contract; older runs stay replayable."""
 
     return policy.prompt_version in {
@@ -343,7 +343,7 @@ class VlmPipelineStage:
                 artifact_revision=_ARTIFACT_REVISION,
                 source_bundle=source_bundle,
             )
-            if _requires_window_context_pack(policy)
+            if requires_window_context_pack(policy)
             else None
         )
         if committed_context is not None:
@@ -374,7 +374,7 @@ class VlmPipelineStage:
             context_packs = read_committed_window_context_packs(
                 self._store, context_request, context_outcome
             )
-        elif _requires_window_context_pack(policy):
+        elif requires_window_context_pack(policy):
             raise PipelineRunValidationError(
                 "no committed WindowContextPack is available; context_prepare must complete first"
             )
@@ -617,6 +617,7 @@ __all__ = (
     "VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION",
     "VlmPipelineStage",
     "VlmPipelineStore",
+    "requires_window_context_pack",
     "vlm_batch_kernel_idempotency_key",
     "vlm_kernel_idempotency_key",
 )
