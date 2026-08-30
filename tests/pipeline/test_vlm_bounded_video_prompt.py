@@ -57,7 +57,7 @@ def test_historical_prompt_schema_and_parser_stay_byte_exact() -> None:
     assert vlm_prompt_template_sha256(VLM_VIDEO_PROMPT_VERSION) == "sha256:ec079b2d1dc2154928d34f60effe83f9fa30ea7fce14678086c5277004942b4c"
     digest = "sha256:" + hashlib.sha256(vlm_video_response_schema_json().encode()).hexdigest()
     assert digest == "sha256:e389f11b66e885f2b686bc32f811e9fe49d4839f4f07b3f6a39495df69d6d67d"
-    assert parser_contract_sha256_for(VLM_PARSER_V4) == "sha256:bd7a642ab2f3bf84dd99ea06297134a284f5e2c0d092b26fb832f9d3d7ccd63f"
+    assert parser_contract_sha256_for(VLM_PARSER_V4) == "sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630"
 
 
 def test_unregistered_prompt_version_has_no_current_fallback() -> None:

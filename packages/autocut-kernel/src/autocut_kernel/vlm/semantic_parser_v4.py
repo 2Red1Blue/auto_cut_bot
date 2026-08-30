@@ -10,8 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from decimal import Decimal
-from enum import Enum
-from typing import TypeVar, cast
+from typing import cast
 
 from ..media.types import sha256_prefixed
 from .models import (
@@ -38,6 +37,7 @@ from .parser import (
     # no v3 support, entity, event or pack is constructed by this parser.
     _array,  # pyright: ignore[reportPrivateUsage]
     _bool,  # pyright: ignore[reportPrivateUsage]
+    _canonical_enums,  # pyright: ignore[reportPrivateUsage]
     _check_count,  # pyright: ignore[reportPrivateUsage]
     _closed,  # pyright: ignore[reportPrivateUsage]
     _constant,  # pyright: ignore[reportPrivateUsage]
@@ -63,21 +63,6 @@ from .semantic_support_v4 import decode_support_v4, parse_support_v4
 from .window import WindowManifest, WindowManifestSet
 
 VLM_PARSER_STRATEGY_VERSION_V4 = "strict-semantic-pack-v4"
-_EnumT = TypeVar("_EnumT", bound=Enum)
-
-
-def _canonicalized_enum_set(
-    value: object,
-    field_name: str,
-    enum_type: type[_EnumT],
-) -> tuple[_EnumT, ...]:
-    """Normalize a provider set whose wire ordering has no business meaning."""
-
-    raw_values = _array(value, field_name)
-    values = tuple(_enum(item, enum_type, f"{field_name}[]") for item in raw_values)
-    if not values or len(values) != len(set(values)):
-        _reject("NONCANONICAL_ENUM_SET", f"{field_name} must be non-empty and unique")
-    return tuple(item for item in enum_type if item in values)
 
 
 def _validate_context(
@@ -527,17 +512,15 @@ def _parse_value(
                 dialogue_excerpt=budget.text(
                     item["dialogue_excerpt"], f"{field}.dialogue_excerpt", nullable=True
                 ),
-                editing_modes=_canonicalized_enum_set(
+                editing_modes=_canonical_enums(
                     item["editing_modes"], f"{field}.editing_modes", VlmEditingMode
                 ),
-                narrative_functions=_canonicalized_enum_set(
+                narrative_functions=_canonical_enums(
                     item["narrative_functions"],
                     f"{field}.narrative_functions",
                     VlmNarrativeFunction,
                 ),
-                tags=_canonicalized_enum_set(
-                    item["tags"], f"{field}.tags", VlmCandidateTag
-                ),
+                tags=_canonical_enums(item["tags"], f"{field}.tags", VlmCandidateTag),
                 measurements=tuple(measurements),
                 support=parse_support_v4(item["support"], manifest, manifest_set),
             )

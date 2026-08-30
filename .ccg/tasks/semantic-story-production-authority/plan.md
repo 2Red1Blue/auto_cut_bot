@@ -7,4 +7,3 @@
 5. 运行 Ruff、定向 pytest、PostgreSQL V11 测试。
 6. 审查 diff，提交并推送。
 7. PC 拉取，启动一集 semantic_story，检查 debug/Receipt。
-8. 用真实失败 Receipt 区分无语义格式差异与语义引用错误；只对前者做确定性规范化并回放真实输出。

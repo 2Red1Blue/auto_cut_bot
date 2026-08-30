@@ -14,8 +14,8 @@ from auto_cut_bot.pipeline.runtime.models import PipelineExecutionProfile
 from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
 from tests.pipeline.test_vlm_video_profile import _video_mapping, _video_policy
 
-_OLD_VIDEO_PROFILE_HASH = "sha256:c33b255ed76806f20369ad3c96eff8daa5063f7e6c563333d58747563676b7bc"
-_FROZEN_V4_PARSER_HASH = "sha256:bd7a642ab2f3bf84dd99ea06297134a284f5e2c0d092b26fb832f9d3d7ccd63f"
+_OLD_VIDEO_PROFILE_HASH = "sha256:32e69fa5a80d9ba589dcbdab13ad1ddf0e3ff4c895e86e7d21e29e55d7f6d49f"
+_FROZEN_V4_PARSER_HASH = "sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630"
 
 
 def _bounded_policy(mode: str = "disabled") -> DoubaoVlmRequestPolicy:

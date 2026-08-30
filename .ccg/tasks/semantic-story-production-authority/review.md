@@ -40,20 +40,3 @@ PC must pull the commit, validate the V11 profile against the real PostgreSQL
 functions and run one real episode. A new `semantic_story` run may create a new
 VLM request identity; this patch does not silently relabel an existing
 `semantic_only` V10 run as V11.
-
-## First real PC run
-
-- SourcePrep and ContextPrepare succeeded for one real episode.
-- The VLM provider completed three times, but the strict parser exhausted its
-  retry budget: non-canonical tag order, one unknown fact reference, then a
-  candidate measurement outside its declared semantic closure.
-- The first raw response hit the enum-order rejection before the parser could
-  report a later candidate-support overlap error. Enum ordering is still an
-  over-strict format gate, but normalizing it does not claim that the complete
-  response is admissible; semantic validation continues after normalization.
-- V4 provider parsing now normalizes `editing_modes`,
-  `narrative_functions`, and `tags` into their registered enum order. Unknown
-  values and duplicates still fail, persisted mappings remain canonical, and
-  all reference-closure checks remain fail-closed.
-- Updated verification: 317 passed, 1 environment-dependent test skipped;
-  Ruff and `git diff --check` passed.
