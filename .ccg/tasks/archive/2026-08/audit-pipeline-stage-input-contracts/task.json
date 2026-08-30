@@ -1,0 +1,12 @@
+{
+  "id": "audit-pipeline-stage-input-contracts",
+  "title": "审查流水线各阶段输入与格式校验",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "按 P0 修复候选来源闭环与错误分类，再运行 Stage 1–3",
+  "createdAt": "2026-08-30T21:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
