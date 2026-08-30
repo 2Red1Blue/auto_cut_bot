@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from autocut_kernel.context_pack import ContextSelectionPolicy, video_only_window_context_pack
 from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
 from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
@@ -35,9 +36,18 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineStageResult,
     PostgresPipelineRunStore,
 )
-from auto_cut_bot.pipeline.runtime.media_preflight_stage import MediaPreflightPipelineStage
+from auto_cut_bot.pipeline.runtime.media_preflight_stage import (
+    MediaPreflightPipelineStage,
+    media_preflight_vlm_batch_kernel_idempotency_key,
+)
+from auto_cut_bot.pipeline.runtime.semantic_authority import (
+    load_installed_semantic_run_authority,
+)
 from auto_cut_bot.pipeline.runtime.source_prep_stage import SourcePrepPipelineStage
-from auto_cut_bot.pipeline.runtime.vlm_stage import VlmPipelineStage
+from auto_cut_bot.pipeline.runtime.vlm_stage import (
+    VlmPipelineStage,
+    vlm_batch_kernel_idempotency_key,
+)
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     SourceOperationPolicy,
@@ -52,6 +62,7 @@ from tests.pipeline.installed_profile_fixture import synthetic_installed_resourc
 from tests.pipeline.media_preflight_acceptance_fixture import seed_media_preflight_authority
 from tests.pipeline.runtime_profile_fixture import execution_profile, media_preflight_policy
 from tests.pipeline.test_local_media_preflight import _SpeechPort
+from tests.pipeline.test_pipeline_vlm_stage import _bundle
 
 try:
     import psycopg
@@ -65,6 +76,67 @@ AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
     "sha256:" + "a" * 64,
     TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
 )
+
+
+def test_contextual_media_preflight_reproduces_exact_vlm_batch_identity() -> None:
+    bundle, _blobs = _bundle()
+    policy = load_installed_semantic_run_authority().vlm_policy
+    pack = video_only_window_context_pack(
+        ContextSelectionPolicy(),
+        "EXTERNAL_CONTEXT_NOT_CONFIGURED",
+    )
+    expected = vlm_batch_kernel_idempotency_key(
+        run_id=bundle.source_job.job_key,
+        source_bundle=bundle,
+        policy=policy,
+        execution_profile_hash="sha256:" + "a" * 64,
+        context_packs=(pack,),
+    )
+
+    actual = media_preflight_vlm_batch_kernel_idempotency_key(
+        run_id=bundle.source_job.job_key,
+        source_bundle=bundle,
+        policy=policy,
+        execution_profile_hash="sha256:" + "a" * 64,
+        context_packs=(pack,),
+    )
+
+    assert actual == expected
+
+
+def test_contextual_media_preflight_refuses_missing_committed_context_pack() -> None:
+    bundle, _blobs = _bundle()
+    policy = load_installed_semantic_run_authority().vlm_policy
+
+    with pytest.raises(PipelineRunValidationError, match="one exact context pack"):
+        media_preflight_vlm_batch_kernel_idempotency_key(
+            run_id=bundle.source_job.job_key,
+            source_bundle=bundle,
+            policy=policy,
+            execution_profile_hash="sha256:" + "a" * 64,
+            context_packs=None,
+        )
+
+
+def test_legacy_media_preflight_keeps_non_context_vlm_batch_identity() -> None:
+    bundle, _blobs = _bundle()
+    policy = execution_profile().to_doubao_policy()
+    expected = vlm_batch_kernel_idempotency_key(
+        run_id=bundle.source_job.job_key,
+        source_bundle=bundle,
+        policy=policy,
+        execution_profile_hash="sha256:" + "a" * 64,
+    )
+
+    actual = media_preflight_vlm_batch_kernel_idempotency_key(
+        run_id=bundle.source_job.job_key,
+        source_bundle=bundle,
+        policy=policy,
+        execution_profile_hash="sha256:" + "a" * 64,
+        context_packs=None,
+    )
+
+    assert actual == expected
 
 
 def _fixture_policy(**changes: object) -> LocalMediaPreflightPolicy:

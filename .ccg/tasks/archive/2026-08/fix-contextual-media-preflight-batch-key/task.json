@@ -1,0 +1,12 @@
+{
+  "id": "fix-contextual-media-preflight-batch-key",
+  "title": "闭合 Contextual VLM 到 Media Preflight 的批次身份",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "归档并通过 Git 更新 PC",
+  "createdAt": "2026-08-31T12:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}

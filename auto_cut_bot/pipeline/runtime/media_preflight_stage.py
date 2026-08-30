@@ -7,8 +7,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Protocol
+from typing import Protocol, cast
 
+from autocut_kernel.context_pack import WindowContextPack
 from autocut_kernel.media.runtime_measurement_identity import (
     PC_CUDA_RUNTIME_CAPABILITY_ID,
     RuntimeMeasurementIdentity,
@@ -56,15 +57,21 @@ from autocut_kernel.store import (
     MediaEvidenceUnavailableError,
     PersistedVlmSemanticPack,
     RuntimeCalibrationIdentityMismatchError,
+    RuntimeStoreError,
     SemanticInputUnavailableError,
     StoreValidationError,
 )
 from autocut_kernel.store.models import (
     MaterializationLimits,
+    PersistedCommittedArtifactSet,
     VerifiedMaterializedBlob,
     canonical_recipe_scope,
 )
 
+from auto_cut_bot.pipeline.context_prepare import (
+    ContextPrepareStore,
+    find_committed_window_context_packs,
+)
 from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightError,
     LocalMediaPreflightPolicy,
@@ -84,6 +91,7 @@ from auto_cut_bot.pipeline.source_prep import (
     SourcePrepStore,
     read_persisted_prepared_sources_bundle,
 )
+from auto_cut_bot.pipeline.vlm import DoubaoVlmRequestPolicy
 from auto_cut_bot.pipeline.vlm.policy_binding import (
     validate_installed_source_sampling,
     validate_installed_vlm_policy,
@@ -100,11 +108,42 @@ from .source_prep_stage import (
     require_committed_source_operation,
     source_prep_kernel_idempotency_key,
 )
-from .vlm_stage import vlm_batch_kernel_idempotency_key
+from .vlm_stage import requires_window_context_pack, vlm_batch_kernel_idempotency_key
 
 MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequential-v1"
 RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-pc-cuda-evidence-sequential-v1"
 _ARTIFACT_REVISION = 1
+
+
+def media_preflight_vlm_batch_kernel_idempotency_key(
+    *,
+    run_id: str,
+    source_bundle: PersistedPreparedSources,
+    policy: DoubaoVlmRequestPolicy,
+    execution_profile_hash: str,
+    context_packs: tuple[WindowContextPack, ...] | None,
+) -> str:
+    """Reproduce the already-committed VLM aggregate identity exactly."""
+    if requires_window_context_pack(policy):
+        if (
+            type(context_packs) is not tuple  # noqa: E721
+            or len(context_packs) != len(source_bundle.prepared.episodes)
+            or any(type(pack) is not WindowContextPack for pack in context_packs)  # noqa: E721
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight requires one exact context pack per source episode"
+            )
+    elif context_packs is not None:
+        raise PipelineRunValidationError(
+            "non-contextual VLM batch identity cannot bind context packs"
+        )
+    return vlm_batch_kernel_idempotency_key(
+        run_id=run_id,
+        source_bundle=source_bundle,
+        policy=policy,
+        execution_profile_hash=execution_profile_hash,
+        context_packs=context_packs,
+    )
 
 
 def media_evidence_read_limits(profile: PipelineExecutionProfile) -> TimedMediaReadLimits:
@@ -147,6 +186,14 @@ class MediaPreflightPipelineStore(
         self,
         request: CommittedSemanticInputsRequest,
     ) -> CommittedSemanticInputs: ...
+
+    def find_committed_context_pack_set(
+        self,
+        job: Job,
+        *,
+        artifact_scope: ArtifactScope,
+        artifact_revision: int,
+    ) -> PersistedCommittedArtifactSet | None: ...
 
 
 class _RuntimeCudaAuthority:
@@ -440,11 +487,35 @@ class MediaPreflightPipelineStage:
         validate_installed_source_sampling(source_bundle)
         require_committed_source_operation(source_bundle, "render_source")
         require_committed_source_operation(source_bundle, "semantic_analysis")
-        vlm_batch_key = vlm_batch_kernel_idempotency_key(
+        vlm_policy = context.execution_profile.to_doubao_policy()
+        contextual = requires_window_context_pack(vlm_policy)
+        try:
+            committed_context = (
+                find_committed_window_context_packs(
+                    cast(ContextPrepareStore, self._store),
+                    job=job,
+                    artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                    artifact_revision=_ARTIFACT_REVISION,
+                    source_bundle=source_bundle,
+                )
+                if contextual
+                else None
+            )
+        except (RuntimeStoreError, TypeError, ValueError) as error:
+            raise PipelineRunValidationError(
+                "media-preflight requires the committed contextual VLM PackSet"
+            ) from error
+        if contextual and committed_context is None:
+            raise PipelineRunValidationError(
+                "media-preflight requires the committed contextual VLM PackSet"
+            )
+        context_packs = None if committed_context is None else committed_context.packs
+        vlm_batch_key = media_preflight_vlm_batch_kernel_idempotency_key(
             run_id=context.run_id,
             source_bundle=source_bundle,
-            policy=context.execution_profile.to_doubao_policy(),
+            policy=vlm_policy,
             execution_profile_hash=context.execution_profile_hash,
+            context_packs=context_packs,
         )
         try:
             vlm_semantic_pack_set = self._store.read_committed_vlm_semantic_pack_set_reference(
