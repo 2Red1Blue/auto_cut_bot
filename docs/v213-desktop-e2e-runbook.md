@@ -230,7 +230,7 @@ Command；创建新的 v9 run。有效 ASR/VAD 校准及 narrative/shadow/local-
 如果台式机已 bootstrap 旧 local-run 版本，新配置必须使用新的 `profile_version`，并
 同步其中 timed-speech entry 的版本，再 bootstrap 新 key；不能覆盖旧版本的 anchor。
 这只是新增运行策略的版本，不能修改测量结果或伪造校准。
-详细边界见 [Stage 3 运行接线](./v213-task-plan/08-21-07-stage1-3-semantic-chain/stage3-runtime-wave.md)。
+详细边界见 [Stage 3 模型输入输出契约](./llm-stage-contracts/04-stage3-blueprint.md)。
 
 Media Preflight 从 `fd515321` 起要求完整的已提交 Source/VLM 引用，并在根证据中
 保存完整校准绑定。若曾用旧代码启动 run，请保留旧记录并创建新 run 验证；不要给

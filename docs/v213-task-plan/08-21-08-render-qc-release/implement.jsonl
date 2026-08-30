@@ -1,6 +1,0 @@
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/06-stage-05-render-qc-release-implementation.md","reason":"authoritative render, QC and local release implementation boundary"}
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/01-artifact-store-and-transaction-kernel.md","reason":"Receipt and exact ArtifactSet atomic visibility"}
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/08-publication-transaction-and-certification.md","reason":"publication boundary and batch visibility constraints; external publication remains disabled"}
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-production-spec/v2-stage-04-story-assembly-v2.md","reason":"admitted Recipe and render input contract"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/auto_cut_bot/backend/index.md","reason":"backend implementation authority"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/backend/implementation-conformance-gates.md","reason":"runtime and persistence conformance gate"}

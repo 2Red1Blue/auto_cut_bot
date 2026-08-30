@@ -1,5 +1,0 @@
-{"file":"ac_auto_cut/原理/v2.1-implementation-design/10-postgresql-physical-schema-and-data-lifecycle.md","reason":"Validate composite keys, FKs, CAS and transaction behavior against physical authority"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/research/authority-slice-map.md","reason":"Whole-file hashes and exact authority ranges; reviewer must read authority directly rather than truncated injection"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/prd.md","reason":"Acceptance criteria and prohibited behavior"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/design.md","reason":"Review stated first-slice boundary and omission of unplanned subsystems"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/research/artifact-store-first-vertical-slice.md","reason":"Independently review physical constraints, FK prerequisites and no-SQLite policy"}

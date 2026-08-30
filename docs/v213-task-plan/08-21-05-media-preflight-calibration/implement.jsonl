@@ -1,9 +1,0 @@
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/03-media-evidence-preflight.md","reason":"authoritative media evidence design"}
-{"file":"/Users/liuzx/Code/python/work_ai/ac_auto_cut/原理/v2.1-implementation-design/11-compatible-algorithm-principles-and-reuse-boundaries.md","reason":"VLM-first and alignment reuse boundary"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-05-media-preflight-calibration/research/funasr-final-review.md","reason":"reviewed SenseVoice/FSMN evidence capability and resource boundary"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-21-05-media-preflight-calibration/research/bounded-source-materialization-design.md","reason":"reviewed bounded immutable BlobRef materialization contract"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/spec/auto_cut_bot/backend/index.md","reason":"backend authority"}
-{"file":"/Users/liuzx/Code/python/work_ai/.trellis/tasks/08-25-lock-real-test-authority-profiles/research/calibration-record-persistence-design.md","reason":"independent CalibrationRecord persistence analysis; this task design owns corrected artifact/scope spellings"}
-{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/pipeline/measure_shadow_calibration_command.py","reason":"closed measurement request and v3 predecessor input"}
-{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/src/autocut_kernel/store/postgres.py","reason":"existing exact member reader, command transaction and shadow measurement finalizer"}
-{"file":"/Users/liuzx/Code/python/work_ai/.worktrees/auto-cut-bot-v213/packages/autocut-kernel/migrations/0016_shadow_calibration_measurement_recovery.sql","reason":"native unknown-outcome boundary validator must not extend"}

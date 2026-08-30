@@ -223,7 +223,7 @@ Narrative/Portfolio/Blueprint/Recipe 不属于新快照。首版不跨快照复�
 2. worker 读取 exact plan，Kernel 复算绑定，Store 校验 hold frontier。
 3. execute node 以 target run + plan hash + node identity 生成新 Command key。
    不给旧 key 加随机后缀；同一 node 的重试始终属于同一命令。
-4. 遵循 [Recovery/Generation 预算与 CAS 设计](v213-task-plan/08-21-04-command-admission-recovery/design.md)：
+4. 遵循 [LLM 共同请求与重试身份](llm-stage-contracts/00-shared-request-envelope.md)：
    新语义生成先取得 lineage 的 exact reservation；每个 GenerationAttempt 至多一次
    provider create。重复投递、超时重入不另计一份语义重算预算。
 5. 成功/失败/结果未知分别持久化，不把 HTTP 超时解释为 provider 失败。

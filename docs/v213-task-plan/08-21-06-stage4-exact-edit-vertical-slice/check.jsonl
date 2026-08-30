@@ -1,5 +1,0 @@
-{"file":".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice/production-integration-wave.md","reason":"Verify strict codec roundtrip, committed reader boundaries and no fixture authority"}
-{"file":".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice/research/sensevoice-sentence-completeness-resolution.md","reason":"Verify dialogue guard and fixture completeness"}
-{"file":"ac_auto_cut/原理/v2.1-implementation-design/11-compatible-algorithm-principles-and-reuse-boundaries.md","reason":"Verify no legacy import or semantic leakage"}
-{"file":".trellis/spec/backend/implementation-conformance-gates.md","reason":"Independent review and evidence requirements"}
-{"file":".trellis/tasks/08-21-06-stage4-exact-edit-vertical-slice/committed-reader-wave.md","reason":"Verify actual predecessor ownership, full calibration persistence, accepted bounds, rehashed tampering and bounded lease cleanup"}

@@ -1,5 +1,0 @@
-{"file":"ac_auto_cut/原理/v2.1-implementation-design/10-postgresql-physical-schema-and-data-lifecycle.md","reason":"Physical relational schema, constraints, transaction and lifecycle authority"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/research/authority-slice-map.md","reason":"Whole-file hashes and exact authority ranges; avoids truncated total-contract injection"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/prd.md","reason":"Task requirements and acceptance criteria"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/design.md","reason":"Approved vertical-slice boundary and commit algorithm"}
-{"file":".trellis/tasks/08-21-03-artifact-store-transaction-kernel/research/artifact-store-first-vertical-slice.md","reason":"Independent physical-schema/FK/CAS research and deliberate exclusions"}

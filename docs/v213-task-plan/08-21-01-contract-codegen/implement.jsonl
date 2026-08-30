@@ -1,5 +1,0 @@
-{"file":".trellis/tasks/08-21-01-contract-codegen/research/authority-slice-map.md","reason":"Whole-file authority hashes and exact source section closure required for each codegen source pack; avoids truncated document injection."}
-{"file":".trellis/tasks/08-21-01-contract-codegen/research/shared-primitives-extraction.md","reason":"Read-only shared primitive map and SourceSpanRef authority conflict that blocks speculative codegen."}
-{"file":".trellis/tasks/08-21-01-contract-codegen/research/system-contract-extraction.md","reason":"Exact system-contract boundaries that separate safe Scope generation from deferred Envelope/Command registry semantics."}
-{"file":".trellis/tasks/08-21-01-contract-codegen/research/diagnostic-degradation-ambiguity.md","reason":"Authority ambiguity preventing guessed Diagnostic.evidence_refs or Degradation.omitted_refs item schemas."}
-{"file":"ac_auto_cut/原理/v2.1-implementation-design/00-contract-toolchain-and-command-kernel.md","reason":"Non-normative implementation route for compiler layout; cannot override the five authorities."}

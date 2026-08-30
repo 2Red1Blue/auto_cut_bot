@@ -4,7 +4,7 @@
 随后完成prompt6输入/生成结构优化并设为新semantic-only默认值；本轮仅离线验证，
 数据库迁移0031及第五次真实调用尚未执行。字段审计见§7–9，本轮实际交付见§10。
 v3历史仍按原规则读取，Stage1–3尚不消费V4。
-证据：[Mac真实记录](mac-semantic-run-20260828.md)，第三次调用完整JSON、reasoning0；
+证据：[当前真实运行断点](llm-stage-contracts/05-errors-debug-status.md)，第三次调用完整JSON、reasoning0；
 79处support中34处区间非法，另有合法区间找不到可引用帧。不能统一缩放或裁剪修复。
 
 ## 1. 判断

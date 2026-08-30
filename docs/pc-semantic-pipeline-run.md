@@ -43,7 +43,7 @@ is not used for new V18 runs. The parser and 32768 output-token budget remain
 unchanged.
 Historical v3 requests retain their original prompt bytes and hashes on replay.
 Changing the prompt is not permission to reopen a failed run. See the
-[Mac real-run record](mac-semantic-run-20260828.md) for the observed failure.
+[Current LLM error and debug status](llm-stage-contracts/05-errors-debug-status.md) for the observed failure.
 
 The semantic-only authority additionally selects adapter
 `doubao-ark-files-responses-stream-v5` with explicit `thinking_type=disabled`.

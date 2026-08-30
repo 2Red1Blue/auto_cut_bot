@@ -1,4 +1,0 @@
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/prd.md","reason":"Check every acceptance criterion and scope boundary"}
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/design.md","reason":"Check transaction branches, exact refs and Runtime boundary"}
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/implement.md","reason":"Check ordered implementation gates and stop conditions"}
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/research/command-admission-recovery-authority-map.md","reason":"Cross-check authority and PostgreSQL concurrency/crash fixtures"}

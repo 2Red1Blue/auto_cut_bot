@@ -1,4 +1,0 @@
-{"file": ".trellis/spec/backend/implementation-conformance-gates.md", "reason": "Independent integration check must apply the same fail-closed gate contract"}
-{"file": "ac_auto_cut/原理/v2.1-implementation-design/02-execution-admission-recovery-generation-kernel.md", "reason": "Verify integration results preserve admission and recovery invariants without injecting a truncated monolithic contract"}
-{"file": "ac_auto_cut/原理/v2.1-implementation-design/07-dual-runtime-implementation.md", "reason": "Verify Pipeline and Agent runtime receipt parity"}
-{"file": "ac_auto_cut/原理/v2.1-implementation-design/12-implementation-conformance-and-ai-drift-prevention.md", "reason": "Verify task, candidate, independent check, commit and push evidence closure"}

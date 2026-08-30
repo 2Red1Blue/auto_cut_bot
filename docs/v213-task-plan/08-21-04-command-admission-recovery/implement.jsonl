@@ -1,4 +1,0 @@
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/prd.md","reason":"Task04 scope, entry conditions and executable acceptance criteria"}
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/design.md","reason":"Approved Dispatcher, Receipt, Admission and Recovery transaction boundary"}
-{"file":".trellis/tasks/08-21-04-command-admission-recovery/research/command-admission-recovery-authority-map.md","reason":"Current authority map, resolved errata and PostgreSQL test matrix"}
-{"file":".trellis/tasks/archive/2026-08/08-22-recovery-authority-closure-errata/research/authority-slice-map.md","reason":"Recovery fingerprint and exhausted-evidence source hash closure"}

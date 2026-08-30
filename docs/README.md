@@ -12,7 +12,17 @@ Repository docs follow the current source tree and can be newer than the latest 
 | You are comfortable running commands | [Install and Quick Start](./quick-start.md) | `nanobot status` is healthy and the WebUI or CLI can get one reply |
 | Something already failed | [Troubleshooting](./troubleshooting.md) | You have isolated the problem to install, config, model, gateway, channel, or tool access |
 | Continue v2.1.3 development on a desktop | [v2.1.3 desktop quick-start](./v213-desktop-e2e-runbook.md) | The correct branch, dependencies and local services are ready |
-| Read the current implementation task design | [v2.1.3 task plan snapshot](./v213-task-plan/README.md) | The current v2.1.3 task boundaries are available in the Git repository |
+| Inspect every Pipeline LLM input/output and current failure point | [LLM stage contracts](./llm-stage-contracts/README.md) | The current code-level model boundary is clear |
+
+Current auto-cut architecture documents are deliberately limited to the live design set:
+
+- [Ark Responses SDK integration](./ark-responses-sdk-integration-design.md)
+- [VLM v4 video support](./vlm-video-support-v4-design.md)
+- [WindowContextPack](./vlm-window-context-pack-design.md)
+- [Selective stage/episode recompute](./pipeline-selective-recompute-design.md)
+- [Pipeline LLM stage contracts](./llm-stage-contracts/README.md)
+- [PC semantic Pipeline runbook](./pc-semantic-pipeline-run.md)
+- [Desktop branch/runtime runbook](./v213-desktop-e2e-runbook.md)
 
 The recommended first-run path is:
 
@@ -30,21 +40,14 @@ Pick the row that matches what you want to accomplish next:
 | Goal | Guide |
 |---|---|
 | Learn the browser workbench | [WebUI](./webui.md) |
-| Connect Telegram, Discord, Slack, Feishu, WeChat, Email, or another chat app | [Chat Apps](./chat-apps.md) |
 | Choose a hosted, OAuth, company, or local model | [Provider Cookbook](./provider-cookbook.md) |
 | Add model fallbacks | [Configure Model Fallback](./guides/configure-model-fallback.md) |
 | Enable web search | [Configure Web Search](./guides/configure-web-search.md) |
 | Manage Agent Plugins, CLI Apps, or MCP integrations | [WebUI Apps](./webui.md#apps) |
 | Add an MCP tool server | [Configure MCP Tools](./guides/configure-mcp-tools.md) |
-| Generate images | [Image Generation](./image-generation.md) |
-| Schedule work or create a local trigger | [Automations](./automations.md) |
-| Understand and manage long-term memory | [Memory](./memory.md) |
 | Run nanobot continuously | [Deployment](./deployment.md) |
 | Run separate bots or workspaces | [Multiple Instances](./multiple-instances.md) |
 | Call nanobot from Python | [Python SDK](./python-sdk.md) |
-| Expose an OpenAI-compatible endpoint | [OpenAI-Compatible API](./openai-api.md) |
-
-For shorter, outcome-focused walkthroughs, browse the [task guide index](./guides/README.md).
 
 ## Operate nanobot
 
@@ -55,7 +58,6 @@ For shorter, outcome-focused walkthroughs, browse the [task guide index](./guide
 | Config, workspace, gateway, sessions, tools, and memory in plain language | [Concepts](./concepts.md) |
 | Provider/model matching and selection | [Providers and Models](./providers.md) |
 | Setup and runtime diagnosis | [Troubleshooting](./troubleshooting.md) |
-| Older development highlights | [Release Archive](./release-archive.md) |
 
 ## Reference
 
@@ -65,11 +67,7 @@ Use reference pages to look up an exact option after you know what you are tryin
 |---|---|
 | Every configuration field and default | [Configuration](./configuration.md) |
 | Provider and model behavior | [Providers and Models](./providers.md) |
-| Chat channel prerequisites and manual JSON | [Chat Apps](./chat-apps.md) |
-| WebSocket authentication and wire protocol | [WebSocket](./websocket.md) |
 | Python SDK classes, events, sessions, and hooks | [Python SDK](./python-sdk.md) |
-| OpenAI-compatible HTTP routes and payloads | [OpenAI-Compatible API](./openai-api.md) |
-| Runtime self-inspection and tuning | [My Tool](./my-tool.md) |
 
 Configuration examples are usually snippets to merge into `~/.nanobot/config.json`, not complete replacement files. The docs use camelCase because nanobot writes config that way. Keep real API keys, bot tokens, and passwords out of issues and public logs.
 
@@ -80,8 +78,7 @@ These pages explain implementation and extension points. You do not need them to
 | Goal | Read |
 |---|---|
 | Understand source ownership and runtime flow | [Architecture](./architecture.md) |
-| Set up a development environment | [Development](./development.md) and [CONTRIBUTING.md](../CONTRIBUTING.md) |
-| Add a channel package | [Channel Package Guide](./channel-package-guide.md) |
+| Follow repository contribution rules | [CONTRIBUTING.md](../CONTRIBUTING.md) |
 | Build the WebUI source | [WebUI Development](../webui/README.md) |
 
 If a command or screen no longer matches these docs, please [open an issue](https://github.com/HKUDS/nanobot/issues) with your nanobot version, operating system, and the page that needs correction.
