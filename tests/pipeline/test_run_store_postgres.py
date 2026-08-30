@@ -31,6 +31,9 @@ from auto_cut_bot.pipeline.runtime import (
 )
 from auto_cut_bot.pipeline.runtime.composition import ConfiguredSourceCatalog, SourceCatalogEntry
 from auto_cut_bot.pipeline.runtime.models import EvidenceReadLimits
+from auto_cut_bot.pipeline.runtime.semantic_authority import (
+    load_installed_semantic_run_authority,
+)
 from auto_cut_bot.pipeline.source_prep import (
     AuthorizedSeriesSourceRoot,
     SourceOperationPolicy,
@@ -38,7 +41,12 @@ from auto_cut_bot.pipeline.source_prep import (
 from tests.pipeline.runtime_profile_fixture import (
     execution_profile as frozen_execution_profile,
 )
-from tests.pipeline.runtime_profile_fixture import media_preflight_policy, stage1_command_policy
+from tests.pipeline.runtime_profile_fixture import (
+    media_preflight_policy,
+    stage1_command_policy,
+    stage2_command_policy,
+    stage3_command_policy,
+)
 
 psycopg = pytest.importorskip("psycopg")
 
@@ -1190,6 +1198,142 @@ def _semantic_execution_profile() -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_semantic_policies(
         full.to_doubao_policy(), retry_policy=full.to_generation_retry_policy(),
     )
+
+
+def _semantic_story_execution_profile() -> PipelineExecutionProfile:
+    semantic = load_installed_semantic_run_authority()
+    return PipelineExecutionProfile.from_semantic_story_policies(
+        semantic.vlm_policy,
+        retry_policy=semantic.retry_policy,
+        stage1_policy=stage1_command_policy(),
+        stage2_policy=stage2_command_policy(),
+        stage3_policy=stage3_command_policy(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_0049_v11_real_store_accepts_only_semantic_story_authority() -> None:
+    assert DSN is not None
+    profile = _semantic_story_execution_profile()
+    store = PostgresPipelineRunStore(lambda: psycopg.connect(DSN))
+    request = PipelineRunRequest("test", source_root="/migration-0049/synthetic")
+    run_id = f"pipeline_run_{uuid4().hex}"
+
+    claimed = await store.claim_run(
+        run_id=run_id,
+        idempotency_key=f"migration-0049-{uuid4().hex}",
+        request=request,
+        request_hash=request.request_hash,
+        execution_profile=profile,
+    )
+
+    assert tuple(command.stage for command in claimed.snapshot.commands) == (
+        "source_prep",
+        "context_prepare",
+        "vlm",
+        "stage1_narrative",
+        "stage2_portfolio",
+        "stage3_blueprint",
+    )
+    for expected_stage in (
+        "source_prep",
+        "context_prepare",
+        "vlm",
+        "stage1_narrative",
+        "stage2_portfolio",
+        "stage3_blueprint",
+    ):
+        lease_id = f"v11-success-{expected_stage}"
+        command = await store.claim_next_pending(
+            run_id,
+            expected_version=0,
+            lease_id=lease_id,
+        )
+        assert command is not None and command.stage == expected_stage
+        await store.record_result(
+            run_id,
+            result=PipelineStageResult(command.command_id, "succeeded", uuid4()),
+            expected_version=command.version,
+            lease_id=lease_id,
+        )
+    completed = await store.read_run(run_id)
+    assert completed is not None and completed.status == "succeeded"
+    assert all(command.status == "succeeded" for command in completed.commands)
+
+    denied_run_id = f"pipeline_run_{uuid4().hex}"
+    denied = await store.claim_run(
+        run_id=denied_run_id,
+        idempotency_key=f"migration-0049-denied-{uuid4().hex}",
+        request=request,
+        request_hash=request.request_hash,
+        execution_profile=profile,
+    )
+    assert denied.snapshot.status == "accepted"
+    source = await store.claim_next_pending(
+        denied_run_id,
+        expected_version=0,
+        lease_id="v11-denied-source",
+    )
+    assert source is not None and source.stage == "source_prep"
+    await store.record_result(
+        denied_run_id,
+        result=PipelineStageResult(source.command_id, "denied", uuid4()),
+        expected_version=source.version,
+        lease_id="v11-denied-source",
+    )
+    denied_snapshot = await store.read_run(denied_run_id)
+    assert denied_snapshot is not None and denied_snapshot.status == "denied"
+    assert tuple(command.status for command in denied_snapshot.commands) == (
+        "denied",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    )
+
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        for compatible in (
+            profile,
+            _semantic_execution_profile(),
+            _execution_profile(),
+        ):
+            cursor.execute(
+                "SELECT runtime.execution_profile_semantic_story_v11_is_valid(%s::jsonb, 'accepted')",
+                (compatible.canonical_json,),
+            )
+            assert cursor.fetchone() == (True,)
+
+        cursor.execute(
+            """SELECT proname, proconfig
+                 FROM pg_proc
+                WHERE oid IN (
+                    'runtime.execution_profile_semantic_v10_is_valid(jsonb,text)'::regprocedure,
+                    'runtime.execution_profile_contextual_stable_core_prompt_is_valid(jsonb,text)'::regprocedure,
+                    'runtime.execution_profile_contextual_minimal_object_shape_is_valid(jsonb,text)'::regprocedure
+                )"""
+        )
+        assert {
+            name: tuple(config or ()) for name, config in cursor.fetchall()
+        } == {
+            "execution_profile_semantic_v10_is_valid": (
+                "search_path=pg_catalog, runtime",
+            ),
+            "execution_profile_contextual_stable_core_prompt_is_valid": (
+                "search_path=pg_catalog, runtime",
+            ),
+            "execution_profile_contextual_minimal_object_shape_is_valid": (
+                "search_path=pg_catalog, runtime",
+            ),
+        }
+
+        mixed = profile.to_mapping()
+        mixed["media_preflight_policy"] = {}
+        with pytest.raises(
+            psycopg.errors.CheckViolation,
+            match="pipeline_runs_execution_profile_closed_check",
+        ):
+            _insert_profile_for_guard(cursor, mixed)
 
 
 def _resume_frozen_history(run_id: str):

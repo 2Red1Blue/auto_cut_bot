@@ -81,3 +81,16 @@ def test_terminal_projection_accepts_only_the_closed_semantic_plan() -> None:
         ("vlm", "succeeded"),
         ("stage1_narrative", "succeeded"),
     ]) == "failed"
+
+
+def test_terminal_projection_accepts_exact_semantic_story_plan() -> None:
+    assert _terminal_run_state(
+        [
+            ("source_prep", "succeeded"),
+            ("context_prepare", "succeeded"),
+            ("vlm", "succeeded"),
+            ("stage1_narrative", "succeeded"),
+            ("stage2_portfolio", "succeeded"),
+            ("stage3_blueprint", "succeeded"),
+        ]
+    ) == "succeeded"

@@ -60,10 +60,11 @@ from .context_prepare_stage import ContextPreparePipelineStage
 from .highlight_projection import PipelineHighlightReadService
 from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_read_limits
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
-from .ports import PipelineRunService
+from .ports import PipelineRunService, PipelineStagePort, PipelineStageReconcilePort
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
 from .recompute import FullStageVlmRecomputeBinder
 from .semantic_authority import (
+    SemanticRunAuthority,
     SemanticRunAuthorityError,
     load_installed_semantic_run_authority,
 )
@@ -99,6 +100,7 @@ PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
 PIPELINE_EVIDENCE_READ_LIMITS_ENV = "AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON"
 PIPELINE_PLAN_ENV = "AUTO_CUT_BOT_PIPELINE_PLAN"
 SEMANTIC_ONLY_PLAN = "semantic_only"
+SEMANTIC_STORY_PLAN = "semantic_story"
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -159,6 +161,37 @@ DOUBAO_GENERATION_RETRY_POLICY = GenerationRetryPolicy(
 
 class PipelineRuntimeConfigurationError(ValueError):
     """Raised when an enabled paid runtime has incomplete or invalid config."""
+
+
+def _validate_semantic_story_authority(
+    profile: PipelineExecutionProfile,
+    semantic: SemanticRunAuthority,
+    story: InstalledLocalRunProfileResolver,
+) -> None:
+    """Admit only the non-overlapping V23 and Stage 1-3 capabilities.
+
+    The semantic resource remains narrow and the local-run narrative remains
+    V3. This check executes before any provider or Store object is created.
+    """
+    resource = story.resource
+    if not profile.is_semantic_story:
+        raise PipelineRuntimeConfigurationError("semantic-story profile kind is invalid")
+    if (
+        profile.to_doubao_policy() != semantic.vlm_policy
+        or profile.to_generation_retry_policy() != semantic.retry_policy
+        or profile.build_stage1_command_policy() != resource.narrative.command_policy
+        or profile.build_stage1_command_policy().canonical_hash
+        != resource.narrative.reference.stage1_command_policy_sha256
+        or profile.build_stage2_command_policy() != resource.local_run.stage2_command_policy
+        or profile.build_stage2_command_policy().canonical_hash
+        != resource.local_run.stage2_command_policy_sha256
+        or profile.build_stage3_command_policy() != resource.local_run.stage3_command_policy
+        or profile.build_stage3_command_policy().canonical_hash
+        != resource.local_run.stage3_command_policy_sha256
+    ):
+        raise PipelineRuntimeConfigurationError(
+            "semantic-story authority composition does not close"
+        )
 
 
 def _owner_episode_maps_from_json(raw: str) -> OwnerEpisodeMapSet:
@@ -442,9 +475,11 @@ def compose_pipeline_runtime_from_environment(
     plan = values.get(PIPELINE_PLAN_ENV, "").strip()
     if plan == SEMANTIC_ONLY_PLAN:
         return _compose_semantic_only_runtime(values)
+    if plan == SEMANTIC_STORY_PLAN:
+        return _compose_semantic_only_runtime(values, include_story=True)
     if plan:
         raise PipelineRuntimeConfigurationError(
-            f"{PIPELINE_PLAN_ENV} must be empty or {SEMANTIC_ONLY_PLAN}"
+            f"{PIPELINE_PLAN_ENV} must be empty, {SEMANTIC_ONLY_PLAN} or {SEMANTIC_STORY_PLAN}"
         )
     relevant = _REQUIRED_ENVIRONMENT + (
         PIPELINE_KERNEL_POSTGRES_DSN_ENV,
@@ -685,12 +720,15 @@ def compose_pipeline_run_service_from_environment() -> PipelineRunService | None
     return None if runtime is None else runtime.service
 
 
-def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime | None:
-    """Compose the real HTTP SourcePrep/VLM plan without media authority.
+def _compose_semantic_only_runtime(
+    values: Mapping[str, str], *, include_story: bool = False
+) -> PipelineRuntime | None:
+    """Compose the V23 semantic plan, optionally continuing through Stage 3.
 
     This is not a fallback from a full plan.  It is selected explicitly and the
-    installed semantic resource binds every paid VLM policy.  No FunASR/media,
-    story, render, or publication port is constructed here.
+    installed semantic resource binds every paid VLM policy.  The story variant
+    additionally freezes the installed Stage 1-3 command policies, but neither
+    variant constructs FunASR/media, render or publication ports.
     """
     relevant = _SEMANTIC_REQUIRED_ENVIRONMENT + (PIPELINE_KERNEL_POSTGRES_DSN_ENV, PIPELINE_ARK_BASE_URL_ENV)
     if not any(values.get(name, "").strip() for name in relevant):
@@ -715,10 +753,25 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         )
         if configured_policy != semantic_authority.vlm_policy:
             raise ValueError("configured Doubao policy differs from installed semantic authority")
-        execution_profile = PipelineExecutionProfile.from_semantic_policies(
-            semantic_authority.vlm_policy,
-            retry_policy=semantic_authority.retry_policy,
+        story_authority = load_installed_local_run_resolver() if include_story else None
+        execution_profile = (
+            PipelineExecutionProfile.from_semantic_story_policies(
+                semantic_authority.vlm_policy,
+                retry_policy=semantic_authority.retry_policy,
+                stage1_policy=story_authority.resource.narrative.command_policy,
+                stage2_policy=story_authority.resource.local_run.stage2_command_policy,
+                stage3_policy=story_authority.resource.local_run.stage3_command_policy,
+            )
+            if story_authority is not None
+            else PipelineExecutionProfile.from_semantic_policies(
+                semantic_authority.vlm_policy,
+                retry_policy=semantic_authority.retry_policy,
+            )
         )
+        if story_authority is not None:
+            _validate_semantic_story_authority(
+                execution_profile, semantic_authority, story_authority
+            )
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
@@ -782,15 +835,79 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         context_selection_policy=None if owner_maps is None else context_policy,
         stop_after_probe=stop_after_probe,
     )
-    registry = PipelineStageRegistry.from_ports(
+    stage_ports: list[tuple[str, object]] = [
         ("source_prep", source_stage),
         ("context_prepare", context_stage),
         ("vlm", vlm_stage),
+    ]
+    if story_authority is not None:
+        stage1_policy = story_authority.resource.narrative.command_policy
+        stage2_policy = story_authority.resource.local_run.stage2_command_policy
+        stage3_policy = story_authority.resource.local_run.stage3_command_policy
+        stage_ports.extend(
+            (
+                (
+                    "stage1_narrative",
+                    Stage1NarrativePipelineStage(
+                        kernel_store,
+                        DoubaoDraftProvider(
+                            ArkResponsesTransportConfig(
+                                provider_config.api_key,
+                                provider_config.base_url,
+                                provider_config.timeout_seconds,
+                                stage1_policy.draft_policy.max_response_bytes,
+                            ),
+                            max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+                            debug_sink=debug_sink,
+                        ),
+                        installed_profile=story_authority.resource,
+                    ),
+                ),
+                (
+                    "stage2_portfolio",
+                    Stage2PortfolioPipelineStage(
+                        kernel_store,
+                        DoubaoDraftProvider(
+                            ArkResponsesTransportConfig(
+                                provider_config.api_key,
+                                provider_config.base_url,
+                                provider_config.timeout_seconds,
+                                stage2_policy.draft_policy.max_response_bytes,
+                            ),
+                            max_request_bytes=stage2_policy.max_prompt_bytes,
+                            debug_sink=debug_sink,
+                        ),
+                        installed_profile=story_authority.resource,
+                    ),
+                ),
+                (
+                    "stage3_blueprint",
+                    Stage3BlueprintPipelineStage(
+                        kernel_store,
+                        DoubaoDraftProvider(
+                            ArkResponsesTransportConfig(
+                                provider_config.api_key,
+                                provider_config.base_url,
+                                provider_config.timeout_seconds,
+                                stage3_policy.draft_policy.max_response_bytes,
+                            ),
+                            max_request_bytes=stage3_policy.max_prompt_bytes,
+                            debug_sink=debug_sink,
+                        ),
+                        installed_profile=story_authority.resource,
+                    ),
+                ),
+            )
+        )
+    registry = PipelineStageRegistry.from_ports(
+        *cast(tuple[tuple[str, PipelineStagePort], ...], tuple(stage_ports))
     )
     service = DurablePipelineRunService(
         control_store, scheduler, catalog, execution_profile=execution_profile,
         full_stage_vlm_recompute_binder=(
-            FullStageVlmRecomputeBinder(kernel_store) if owner_maps is None else None
+            FullStageVlmRecomputeBinder(kernel_store)
+            if owner_maps is None and story_authority is None
+            else None
         ),
     )
     worker = DurablePipelineWorker(
@@ -799,9 +916,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         runner=PipelineStageRunner(registry, control_store, debug_sink=debug_sink),
         reconciler=PipelineStageReconciler.from_ports(
             control_store,
-            ("source_prep", source_stage),
-            ("context_prepare", context_stage),
-            ("vlm", vlm_stage),
+            *cast(tuple[tuple[str, PipelineStageReconcilePort], ...], tuple(stage_ports)),
             debug_sink=debug_sink,
         ),
         # One semantic run owns the process-level Ark concurrency budget.  The
@@ -809,7 +924,7 @@ def _compose_semantic_only_runtime(values: Mapping[str, str]) -> PipelineRuntime
         concurrency=1,
         max_batch_size=1,
     )
-    return PipelineRuntime(service, worker, execution_profile, None, kernel_store)
+    return PipelineRuntime(service, worker, execution_profile, story_authority, kernel_store)
 
 
 def _catalog_text(value: object, index: int, field_name: str) -> str:
@@ -933,6 +1048,7 @@ __all__ = (
     "PipelineRuntimeConfigurationError",
     "PipelineRuntimePort",
     "SEMANTIC_ONLY_PLAN",
+    "SEMANTIC_STORY_PLAN",
     "SourceCatalogEntry",
     "compose_pipeline_run_service_from_environment",
     "compose_pipeline_highlight_read_service_from_environment",

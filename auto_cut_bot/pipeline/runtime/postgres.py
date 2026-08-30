@@ -100,6 +100,14 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
     if tuple(stage for stage, _state in command_rows) in {
         ("source_prep", "vlm"),
         ("source_prep", "context_prepare", "vlm"),
+        (
+            "source_prep",
+            "context_prepare",
+            "vlm",
+            "stage1_narrative",
+            "stage2_portfolio",
+            "stage3_blueprint",
+        ),
     }:
         return "succeeded"
     if _PIPELINE_SUCCESS_TERMINAL_STAGE is not None and any(
@@ -214,6 +222,12 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         elif execution_profile.is_semantic_only:
             execution_profile.to_doubao_policy()
             execution_profile.to_generation_retry_policy()
+        elif execution_profile.is_semantic_story:
+            execution_profile.to_doubao_policy()
+            execution_profile.to_generation_retry_policy()
+            execution_profile.build_stage1_command_policy()
+            execution_profile.build_stage2_command_policy()
+            execution_profile.build_stage3_command_policy()
         else:
             raise PipelineRunValidationError("execution profile has no executable run plan")
         source_kind = "root" if request.source_root is not None else "reference"
@@ -282,6 +296,24 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             (%s, %s, 2, 'vlm', 'pending', 0)
                         """,
                         (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
+                    )
+                elif execution_profile.is_semantic_story:
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES
+                            (%s, %s, 0, 'source_prep', 'pending', 0),
+                            (%s, %s, 1, 'context_prepare', 'pending', 0),
+                            (%s, %s, 2, 'vlm', 'pending', 0),
+                            (%s, %s, 3, 'stage1_narrative', 'pending', 0),
+                            (%s, %s, 4, 'stage2_portfolio', 'pending', 0),
+                            (%s, %s, 5, 'stage3_blueprint', 'pending', 0)
+                        """,
+                        (
+                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                        ),
                     )
                 else:
                     cursor.execute(
@@ -583,7 +615,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                                 WHERE profile_run.run_id = candidate.run_id
                                   AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                                   AND profile_run.execution_profile ->> 'schema_version'
-                                      IN ('pipeline-execution-profile-v9', 'pipeline-execution-profile-v10')
+                                      IN ('pipeline-execution-profile-v9', 'pipeline-execution-profile-v10',
+                                          'pipeline-execution-profile-v11')
                            )
                        )
                        OR EXISTS (
@@ -592,15 +625,22 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                               AND candidate.stage IN ('stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')
                               AND profile_run.execution_profile ->> 'kind' = 'doubao_vlm'
                               AND profile_run.execution_profile
-                                  ->> 'schema_version' = 'pipeline-execution-profile-v9'
+                                  ->> 'schema_version' IN (
+                                      'pipeline-execution-profile-v9',
+                                      'pipeline-execution-profile-v11'
+                                  )
                               AND profile_run.execution_profile ? 'stage1_command_policy'
                               AND profile_run.execution_profile ? 'stage2_command_policy'
                               AND profile_run.execution_profile ? 'stage3_command_policy'
-                              AND profile_run.execution_profile ? 'evidence_read_limits'
+                              AND (
+                                  profile_run.execution_profile ->> 'schema_version'
+                                      = 'pipeline-execution-profile-v11'
+                                  OR profile_run.execution_profile ? 'evidence_read_limits'
+                              )
                        )
                    )
                    AND (
-                       candidate.stage NOT IN ('stage3_blueprint', 'media_preflight')
+                       candidate.stage <> 'media_preflight'
                        OR EXISTS (
                            SELECT 1 FROM runtime.pipeline_runs AS profile_run
                             WHERE profile_run.run_id = candidate.run_id
@@ -765,7 +805,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 ),
             )
             cursor.execute(
-                "SELECT stage, state FROM runtime.pipeline_commands WHERE run_id = %s",
+                """SELECT stage, state FROM runtime.pipeline_commands
+                    WHERE run_id = %s ORDER BY ordinal""",
                 (run_id,),
             )
             command_rows: list[tuple[str, str]] = []
@@ -908,7 +949,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     (result.command_id, run_id, result.command_id),
                 )
             cursor.execute(
-                "SELECT stage, state FROM runtime.pipeline_commands WHERE run_id = %s",
+                """SELECT stage, state FROM runtime.pipeline_commands
+                    WHERE run_id = %s ORDER BY ordinal""",
                 (run_id,),
             )
             command_rows: list[tuple[str, str]] = []

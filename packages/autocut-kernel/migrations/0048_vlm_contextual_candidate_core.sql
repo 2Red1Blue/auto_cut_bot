@@ -4,6 +4,16 @@ BEGIN;
 
 LOCK TABLE runtime.pipeline_runs IN SHARE ROW EXCLUSIVE MODE;
 
+-- Bound planning cost before adding another compatibility wrapper.  These
+-- semantic no-op settings prevent PostgreSQL from recursively inlining the
+-- complete historical validator chain on memory-constrained database hosts.
+ALTER FUNCTION runtime.execution_profile_semantic_v10_is_valid(jsonb, text)
+    SET search_path TO pg_catalog, runtime;
+ALTER FUNCTION runtime.execution_profile_contextual_stable_core_prompt_is_valid(jsonb, text)
+    SET search_path TO pg_catalog, runtime;
+ALTER FUNCTION runtime.execution_profile_contextual_minimal_object_shape_is_valid(jsonb, text)
+    SET search_path TO pg_catalog, runtime;
+
 CREATE FUNCTION runtime.execution_profile_contextual_candidate_core_is_valid(
     profile_value jsonb,
     run_state text

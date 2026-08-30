@@ -35,6 +35,7 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_SOURCE_CATALOG_ENV,
     PIPELINE_SOURCE_ROOTS_ENV,
     PIPELINE_VLM_STOP_AFTER_PROBE_ENV,
+    SEMANTIC_STORY_PLAN,
     ConfiguredSourceCatalog,
     PipelineRuntimeConfigurationError,
     compose_pipeline_highlight_read_service_from_environment,
@@ -321,6 +322,37 @@ def test_explicit_semantic_only_plan_composes_without_media_authority(
     )
     assert runtime.worker._concurrency == 1
     assert runtime.worker._max_batch_size == 1
+
+
+def test_explicit_semantic_story_plan_composes_v23_through_stage3_without_media(
+    tmp_path: Path,
+) -> None:
+    environment = _environment(tmp_path)
+    environment[PIPELINE_PLAN_ENV] = SEMANTIC_STORY_PLAN
+    for name in (
+        PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+        PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+        PIPELINE_EVIDENCE_READ_LIMITS_ENV,
+    ):
+        del environment[name]
+
+    runtime = compose_pipeline_runtime_from_environment(environment)
+
+    assert runtime is not None
+    assert runtime.execution_profile.is_semantic_story
+    assert runtime.execution_profile.prompt_version == (
+        "vlm-semantic-pack-v23-context-assisted-candidate-core"
+    )
+    assert runtime.worker._runner._registry.stage_names == (
+        "source_prep",
+        "context_prepare",
+        "vlm",
+        "stage1_narrative",
+        "stage2_portfolio",
+        "stage3_blueprint",
+    )
+    assert "media_preflight" not in runtime.worker._runner._registry.stage_names
 
 
 def test_semantic_only_replay_composes_without_metadata_credentials(

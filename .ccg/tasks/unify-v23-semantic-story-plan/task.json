@@ -1,0 +1,12 @@
+{
+  "id": "unify-v23-semantic-story-plan",
+  "title": "统一 V23 语义输入与 Stage 1-3 真实运行计划",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "review",
+  "nextAction": "提交推送并在 PC 跑单集真实链路",
+  "createdAt": "2026-08-30T20:10:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}

@@ -50,6 +50,7 @@ def test_candidate_core_profile_registers_v23_without_rewriting_history() -> Non
     assert "execution_profile_contextual_candidate_core_is_valid" in sql
     assert "execution_profile_contextual_minimal_object_shape_is_valid" in sql
     assert "pipeline-execution-profile-v10" in sql
+    assert "SET search_path TO pg_catalog, runtime" in sql
     assert "UPDATE runtime.pipeline_runs" not in sql
     assert "INSERT INTO runtime.pipeline_commands" not in sql
 
@@ -258,15 +259,32 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
     assert "if execution_profile.is_semantic_only:" in source
     assert "1, 'context_prepare', 'pending', 0" in insert
     assert "2, 'vlm', 'pending', 0" in insert
-    assert insert.count("uuid4(), run_id") == 9
+    assert "elif execution_profile.is_semantic_story:" in source
+    assert "5, 'stage3_blueprint', 'pending', 0" in insert
+    assert insert.count("uuid4(), run_id") == 15
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
-    assert "->> 'schema_version' = 'pipeline-execution-profile-v9'" in source
     assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source
     assert "profile_run.execution_profile ? 'stage2_command_policy'" in source
     assert "profile_run.execution_profile ? 'stage3_command_policy'" in source
     assert "predecessor.ordinal < candidate.ordinal" in source
     assert "predecessor.state <> 'succeeded'" in source
+    assert source.count("WHERE run_id = %s ORDER BY ordinal") == 2
+
+
+def test_semantic_story_profile_migration_reuses_v23_and_stage_policy_guards() -> None:
+    sql = (
+        Path("packages/autocut-kernel/migrations/0049_semantic_story_execution_profile.sql")
+    ).read_text(encoding="utf-8")
+
+    assert "pipeline-execution-profile-v11" in sql
+    assert "execution_profile_contextual_candidate_core_is_valid" in sql
+    assert "stage1_command_policy_shape_is_valid" in sql
+    assert "stage2_command_policy_shape_is_valid" in sql
+    assert "stage3_command_policy_shape_is_valid" in sql
+    assert "vlm-semantic-pack-v23-context-assisted-candidate-core" in sql
+    assert "SET search_path TO pg_catalog, runtime" in sql
+    assert "media_preflight_policy" not in sql
 
 
 def test_evidence_budget_migration_closes_v9_without_backfilling_history() -> None:
