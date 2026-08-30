@@ -176,7 +176,7 @@ def test_other_wire_versions_are_not_reinterpreted(version: object) -> None:
     "unknown_subject", "unknown_object", "unknown_participant", "unknown_fact", "unknown_cause",
     "duplicate_reference", "self_loop", "unknown_summary_ref", "bad_continuity", "bad_entry",
     "overlapping_segments", "reverse_segments", "unknown_anchor", "missing_payoff", "empty_measurements",
-    "unknown_measurement_ref", "unsupported_enum", "wrong_boolean", "noncanonical_tags", "no_event_overlap",
+    "unknown_measurement_ref", "unsupported_enum", "wrong_boolean", "no_event_overlap",
     "no_candidate_overlap", "video_frame_field", "fake_accepted",
 ])
 def test_semantic_constraints_fail_closed(mutation: str) -> None:
@@ -229,8 +229,6 @@ def test_semantic_constraints_fail_closed(mutation: str) -> None:
         wire["facts"][0]["fact_kind"] = "physical_safe"
     elif mutation == "wrong_boolean":
         wire["continuity"]["starts_mid_event"] = 0
-    elif mutation == "noncanonical_tags":
-        wire["candidate_hypotheses"][0]["tags"] = ["reveal", "dialogue"]
     elif mutation == "no_event_overlap":
         wire["events"][0]["support"] = _support(60, 70)
     elif mutation == "no_candidate_overlap":
@@ -241,6 +239,39 @@ def test_semantic_constraints_fail_closed(mutation: str) -> None:
         wire["facts"][0]["support"]["accepted"] = True
     with pytest.raises(VlmResponseRejected):
         _parse(wire)
+
+
+def test_provider_enum_sets_are_canonicalized_without_changing_semantics() -> None:
+    wire = _wire()
+    candidate = wire["candidate_hypotheses"][0]
+    candidate["editing_modes"] = ["action", "dialogue"]
+    candidate["narrative_functions"] = ["payoff", "hook"]
+    candidate["tags"] = ["reveal", "dialogue"]
+
+    parsed = _parse(wire).candidate_hypotheses[0]
+
+    assert tuple(item.value for item in parsed.editing_modes) == ("dialogue", "action")
+    assert tuple(item.value for item in parsed.narrative_functions) == ("hook", "payoff")
+    assert tuple(item.value for item in parsed.tags) == ("dialogue", "reveal")
+
+
+@pytest.mark.parametrize(
+    ("field", "valid_value"),
+    [("editing_modes", "dialogue"), ("narrative_functions", "hook"), ("tags", "dialogue")],
+)
+def test_provider_enum_sets_still_reject_duplicates_and_unknown_values(
+    field: str,
+    valid_value: str,
+) -> None:
+    duplicate = _wire()
+    duplicate["candidate_hypotheses"][0][field] = [valid_value, valid_value]
+    with pytest.raises(VlmResponseRejected, match="must be non-empty and unique"):
+        _parse(duplicate)
+
+    unknown = _wire()
+    unknown["candidate_hypotheses"][0][field] = ["unregistered"]
+    with pytest.raises(VlmResponseRejected):
+        _parse(unknown)
 
 
 @pytest.mark.parametrize("mutation", ["inverse", "cycle", "measurement_closure"])

@@ -98,7 +98,7 @@ ProxyTimelineMap得到粗源区间。绝不使用二进制float推导媒体时�
 - 更新本机实际安装的Kernel wheel，不只靠pytest的源码路径通过测试。
 - 真实`autocut`应用0030前完整备份并经pg_restore验证；六条既有run逐字节不变，
   旧profile全部仍合法，新V4 profile通过SQL校验。未重建库，未改旧Receipt。
-- V4实现摘要：`sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630`。
+- V4实现摘要：`sha256:bd7a642ab2f3bf84dd99ea06297134a284f5e2c0d092b26fb832f9d3d7ccd63f`。Provider 返回的封闭枚举集合允许任意顺序，Parser 在持久化前按注册枚举顺序规范化；重复值和未知值仍拒绝。
 - 新execution profile：`sha256:59c09cd593452ca9d33816690da2dc996b0ff69ded5219572f51a18a70f5d518`。
 - 全量离线检查点1761passed/218skipped；真实disposable Store39passed、
   profile/run-store218passed；启用新authority后重点回归144passed/1skipped。
