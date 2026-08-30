@@ -7,7 +7,7 @@ from contextlib import nullcontext
 
 from auto_cut_bot.pipeline.debug import PipelineStageDebugContext, PipelineStageDebugSink
 
-from .errors import PipelineRunValidationError
+from .errors import PipelineRunValidationError, PipelineStageIsolationError
 from .models import (
     PipelineCommand,
     PipelineRunSnapshot,
@@ -287,6 +287,7 @@ class PipelineStageReconciler:
             if self._debug_sink is not None
             else nullcontext()
         )
+        isolated_result = False
         with stage_scope:
             if self._debug_sink is not None:
                 self._debug_sink.capture_stage_input(
@@ -294,6 +295,14 @@ class PipelineStageReconciler:
                 )
             try:
                 result = await self._require(command.stage).reconcile(context)
+            except PipelineStageIsolationError as error:
+                if self._debug_sink is not None:
+                    self._debug_sink.capture_stage_error(debug_context, error)
+                result = await self._command_store.record_isolated_failure(
+                    snapshot.run_id,
+                    failure=error,
+                )
+                isolated_result = True
             except Exception as error:
                 if self._debug_sink is not None:
                     self._debug_sink.capture_stage_error(debug_context, error)
@@ -312,6 +321,10 @@ class PipelineStageReconciler:
             raise PipelineRunValidationError(
                 "reconcile result must be an exact durable outcome for the command"
             )
+        if isolated_result:
+            # The store-minted isolation Receipt has already atomically
+            # terminalized the exact indeterminate command.
+            return result
         await self._command_store.record_reconciled_result(
             snapshot.run_id,
             result=result,

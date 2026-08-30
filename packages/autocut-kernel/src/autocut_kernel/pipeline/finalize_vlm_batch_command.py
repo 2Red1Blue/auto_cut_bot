@@ -153,6 +153,29 @@ class FinalizeVlmBatchResult:
     artifact: ArtifactMember | None = None
 
 
+class VlmBatchRequestPolicyMismatchError(ValueError):
+    """Exact persisted children cannot form one frozen-policy batch."""
+
+    failure_code = "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH"
+
+    def __init__(
+        self,
+        *,
+        declared_episode_count: int,
+        ordered_policy_hashes: tuple[str, ...],
+    ) -> None:
+        distinct_policy_count = len(set(ordered_policy_hashes))
+        self.failure_detail: dict[str, object] = {
+            "declared_episode_count": declared_episode_count,
+            "distinct_policy_count": distinct_policy_count,
+            "ordered_policy_hashes_sha256": canonical_sha256(
+                list(ordered_policy_hashes)
+            ),
+            "schema_version": "vlm-batch-policy-mismatch-v1",
+        }
+        super().__init__("VLM batch children do not share one frozen request policy")
+
+
 class VlmBatchFinalizerStore(Protocol):
     def read_committed_vlm_generation_child(
         self,
@@ -336,7 +359,12 @@ class FinalizeVlmBatchCommand:
             raise ValueError("persisted VLM children do not bind the declared source")
         policies = tuple(child.request_policy for child in children)
         if not policies or any(policy != policies[0] for policy in policies[1:]):
-            raise ValueError("VLM batch children do not share one frozen request policy")
+            raise VlmBatchRequestPolicyMismatchError(
+                declared_episode_count=request.declared_episode_count,
+                ordered_policy_hashes=tuple(
+                    canonical_sha256(policy.to_mapping()) for policy in policies
+                ),
+            )
         for child in children:
             require_batch_child_version(
                 request.strategy_version, child.parser_strategy_version, child.semantic_schema_version,
@@ -359,4 +387,5 @@ __all__ = (
     "VLM_BATCH_FINALIZER_STRATEGY_VERSION",
     "VlmBatchChildOutcome",
     "VlmBatchFinalizerStore",
+    "VlmBatchRequestPolicyMismatchError",
 )

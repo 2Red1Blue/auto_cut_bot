@@ -24,6 +24,7 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineRunSnapshot,
     PipelineRunValidationError,
     PipelineStageContext,
+    PipelineStageIsolationError,
     PipelineStageReconciler,
     PipelineStageRegistry,
     PipelineStageResult,
@@ -775,6 +776,7 @@ class FakeCommandClaimStore:
         self.command = command or PipelineCommand("command-1", "source_prep", "pending")
         self.claims = 0
         self.results: list[PipelineStageResult] = []
+        self.isolated_failures: list[PipelineStageIsolationError] = []
 
     async def claim_next_pending(
         self,
@@ -866,6 +868,32 @@ class FakeCommandClaimStore:
             receipt_id=result.receipt_id,
             version=expected_version + 1,
         )
+
+    async def record_isolated_failure(
+        self,
+        run_id: str,
+        *,
+        failure: PipelineStageIsolationError,
+    ) -> PipelineStageResult:
+        del run_id
+        if (
+            self.command.command_id != failure.command_id
+            or self.command.stage != failure.stage
+            or self.command.status != "indeterminate"
+            or self.command.version != failure.command_version
+        ):
+            raise StaleRunVersionError("pipeline_run_" + "a" * 32)
+        receipt_id = uuid4()
+        result = PipelineStageResult(failure.command_id, "failed", receipt_id)
+        self.isolated_failures.append(failure)
+        self.results.append(result)
+        self.command = replace(
+            self.command,
+            status="failed",
+            receipt_id=receipt_id,
+            version=failure.command_version + 1,
+        )
+        return result
 
 
 @pytest.mark.asyncio
@@ -1000,6 +1028,22 @@ class FakeCalibrationWaitReconcileStage:
         return PipelineStageResult(context.command.command_id, "awaiting_calibration")
 
 
+class IsolatedVlmMismatchReconcileStage:
+    async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult:
+        raise PipelineStageIsolationError(
+            command_id=context.command.command_id,
+            command_version=context.command.version,
+            stage=context.command.stage,
+            failure_code="VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH",
+            failure_detail={
+                "declared_episode_count": 50,
+                "distinct_policy_count": 2,
+                "ordered_policy_hashes_sha256": "sha256:" + "a" * 64,
+                "schema_version": "vlm-batch-policy-mismatch-v1",
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> None:
     command_store = FakeCommandClaimStore(
@@ -1016,6 +1060,26 @@ async def test_indeterminate_command_uses_typed_reconcile_without_execute() -> N
     assert result == PipelineStageResult("command-1", "succeeded", stage.receipt_id)
     assert stage.commands == [PipelineCommand("command-1", "source_prep", "indeterminate", None, 2)]
     assert command_store.command.status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_persisted_vlm_policy_mismatch_terminalizes_only_its_command() -> None:
+    command_store = FakeCommandClaimStore(
+        PipelineCommand("command-vlm", "vlm", "indeterminate", None, 9)
+    )
+    reconciler = PipelineStageReconciler.from_ports(
+        command_store,
+        ("vlm", IsolatedVlmMismatchReconcileStage()),
+    )
+
+    result = await reconciler.reconcile(_snapshot(command_store.command))
+
+    assert result is not None and result.outcome == "failed"
+    assert command_store.command.status == "failed"
+    assert len(command_store.isolated_failures) == 1
+    assert command_store.isolated_failures[0].failure_code == (
+        "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH"
+    )
 
 
 @pytest.mark.asyncio

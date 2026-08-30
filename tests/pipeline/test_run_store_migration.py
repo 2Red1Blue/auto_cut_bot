@@ -29,6 +29,21 @@ SEMANTIC_ONLY_PROFILE_MIGRATION = Path(
 CANDIDATE_CORE_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0048_vlm_contextual_candidate_core.sql"
 )
+ISOLATION_RECEIPT_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0050_pipeline_stage_isolation_receipts.sql"
+)
+
+
+def test_isolation_receipt_migration_is_closed_and_legacy_compatible() -> None:
+    sql = ISOLATION_RECEIPT_MIGRATION.read_text(encoding="utf-8")
+
+    assert "ADD COLUMN failure_code text" in sql
+    assert "ADD COLUMN failure_detail jsonb" in sql
+    assert "failure_code IS NULL AND failure_detail IS NULL" in sql
+    assert "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH" in sql
+    assert "vlm-batch-policy-mismatch-v1" in sql
+    assert "outcome = 'failed'" in sql
+    assert "UPDATE runtime.pipeline_run_receipts" not in sql
 
 
 def test_semantic_only_profile_migration_closes_v10_without_media_fields() -> None:

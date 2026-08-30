@@ -9,6 +9,7 @@ from autocut_kernel.pipeline import (
     FinalizeVlmBatchCommand,
     FinalizeVlmBatchRequest,
     VlmBatchChildOutcome,
+    VlmBatchRequestPolicyMismatchError,
 )
 from autocut_kernel.store import (
     VLM_BATCH_IDEMPOTENCY_PREFIX,
@@ -358,5 +359,18 @@ def test_mixed_frozen_request_policies_cannot_be_batched() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="frozen request policy"):
+    with pytest.raises(VlmBatchRequestPolicyMismatchError) as caught:
         FinalizeVlmBatchCommand(store).execute(request)
+    assert caught.value.failure_code == "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH"
+    assert caught.value.failure_detail == {
+        "declared_episode_count": 2,
+        "distinct_policy_count": 2,
+        "ordered_policy_hashes_sha256": caught.value.failure_detail[
+            "ordered_policy_hashes_sha256"
+        ],
+        "schema_version": "vlm-batch-policy-mismatch-v1",
+    }
+    assert str(caught.value.failure_detail["ordered_policy_hashes_sha256"]).startswith(
+        "sha256:"
+    )
+    assert store.claims == {}

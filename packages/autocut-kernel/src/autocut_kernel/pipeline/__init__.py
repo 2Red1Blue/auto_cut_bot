@@ -38,6 +38,7 @@ from .finalize_vlm_batch_command import (
     FinalizeVlmBatchResult,
     VlmBatchChildOutcome,
     VlmBatchFinalizerStore,
+    VlmBatchRequestPolicyMismatchError,
 )
 from .generate_vlm_evidence_command import (
     VLM_PARSER_STRATEGY_VERSION,
@@ -126,6 +127,7 @@ __all__ = [
     "VLM_BATCH_FINALIZER_STRATEGY_VERSION",
     "VlmBatchChildOutcome",
     "VlmBatchFinalizerStore",
+    "VlmBatchRequestPolicyMismatchError",
     "VLM_PARSER_STRATEGY_VERSION",
     "LocalMediaCommand",
     "LocalMediaCommandRequest",

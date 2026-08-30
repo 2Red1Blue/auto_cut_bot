@@ -15,6 +15,7 @@ from .errors import (
     PipelineRunError,
     PipelineRunNotFoundError,
     PipelineRunValidationError,
+    PipelineStageIsolationError,
     ResumeNotAllowedError,
     StaleRunVersionError,
 )
@@ -968,6 +969,103 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             )
 
         self._transaction(operation)
+
+    async def record_isolated_failure(
+        self,
+        run_id: str,
+        *,
+        failure: PipelineStageIsolationError,
+    ) -> PipelineStageResult:
+        if type(failure) is not PipelineStageIsolationError:  # noqa: E721
+            raise PipelineRunValidationError("isolated failure must use the closed type")
+        return await asyncio.to_thread(self._record_isolated_failure_sync, run_id, failure)
+
+    def _record_isolated_failure_sync(
+        self,
+        run_id: str,
+        failure: PipelineStageIsolationError,
+    ) -> PipelineStageResult:
+        def operation(cursor: DbCursor) -> PipelineStageResult:
+            cursor.execute(
+                """
+                SELECT command.state, command.version, command.stage, run.state
+                  FROM runtime.pipeline_commands AS command
+                  JOIN runtime.pipeline_runs AS run ON run.run_id = command.run_id
+                 WHERE command.run_id = %s AND command.command_id = %s
+                 FOR UPDATE OF command, run
+                """,
+                (run_id, failure.command_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise PipelineRunNotFoundError(run_id)
+            if (
+                _text(row[0]) != "indeterminate"
+                or int(_text(row[1])) != failure.command_version
+            ):
+                raise StaleRunVersionError(run_id)
+            if _text(row[2]) != failure.stage or failure.stage != "vlm":
+                raise PipelineRunValidationError("isolated failure does not bind the VLM command")
+            if _text(row[3]) not in ("accepted", "running"):
+                raise ResumeNotAllowedError(run_id)
+
+            receipt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.pipeline_run_receipts
+                    (receipt_id, command_id, outcome, failure_code, failure_detail)
+                VALUES (%s, %s, 'failed', %s, %s::jsonb)
+                """,
+                (
+                    receipt_id,
+                    failure.command_id,
+                    failure.failure_code,
+                    failure.failure_detail_json,
+                ),
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET state = 'failed', version = version + 1,
+                       completed_at = transaction_timestamp(),
+                       updated_at = transaction_timestamp()
+                 WHERE command_id = %s AND state = 'indeterminate' AND version = %s
+                RETURNING command_id
+                """,
+                (failure.command_id, failure.command_version),
+            )
+            if cursor.fetchone() is None:
+                raise StaleRunVersionError(run_id)
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET state = 'blocked', version = version + 1,
+                       blocking_command_id = %s,
+                       completed_at = transaction_timestamp(),
+                       updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND state = 'pending'
+                   AND ordinal > (
+                       SELECT ordinal FROM runtime.pipeline_commands
+                        WHERE command_id = %s
+                   )
+                """,
+                (failure.command_id, run_id, failure.command_id),
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_runs
+                   SET state = 'failed', version = version + 1,
+                       updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND state IN ('accepted', 'running')
+                RETURNING run_id
+                """,
+                (run_id,),
+            )
+            if cursor.fetchone() is None:
+                raise StaleRunVersionError(run_id)
+            return PipelineStageResult(failure.command_id, "failed", receipt_id)
+
+        return self._transaction(operation)
 
     @staticmethod
     def _insert_outbox(cursor: DbCursor, run_id: str) -> None:

@@ -25,6 +25,7 @@ from autocut_kernel.pipeline import (
     GenerationStore,
     VlmBatchChildOutcome,
     VlmBatchFinalizerStore,
+    VlmBatchRequestPolicyMismatchError,
 )
 from autocut_kernel.registry.installed_local_run import LocalRunResource
 from autocut_kernel.store import (
@@ -45,6 +46,7 @@ from auto_cut_bot.pipeline.context_prepare import (
     read_committed_window_context_packs,
 )
 from auto_cut_bot.pipeline.media_preflight.installed_policy import validate_installed_media_policy
+from auto_cut_bot.pipeline.runtime.errors import PipelineStageIsolationError
 from auto_cut_bot.pipeline.source_prep import (
     PersistedPreparedSources,
     SourcePrepStore,
@@ -556,7 +558,16 @@ class VlmPipelineStage:
                 else VLM_BATCH_FINALIZER_STRATEGY_VERSION
             ),
         )
-        return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
+        try:
+            return await asyncio.to_thread(self._finalizer.execute, finalizer_request)
+        except VlmBatchRequestPolicyMismatchError as error:
+            raise PipelineStageIsolationError(
+                command_id=context.command.command_id,
+                command_version=context.command.version,
+                stage=context.command.stage,
+                failure_code=error.failure_code,
+                failure_detail=error.failure_detail,
+            ) from error
 
     def _execute_child(
         self,

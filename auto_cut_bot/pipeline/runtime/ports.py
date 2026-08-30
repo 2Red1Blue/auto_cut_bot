@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .errors import PipelineStageIsolationError
 from .models import (
     OutboxLease,
     PipelineCommand,
@@ -150,6 +151,13 @@ class PipelineCommandClaimStore(Protocol):
         result: PipelineStageResult,
         expected_version: int,
     ) -> None: ...
+
+    async def record_isolated_failure(
+        self,
+        run_id: str,
+        *,
+        failure: PipelineStageIsolationError,
+    ) -> PipelineStageResult: ...
 
 
 class PipelineSnapshotStore(Protocol):

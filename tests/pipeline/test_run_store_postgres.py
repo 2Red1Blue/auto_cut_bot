@@ -21,6 +21,7 @@ from auto_cut_bot.pipeline.runtime import (
     PipelineRunSnapshot,
     PipelineRunValidationError,
     PipelineStageContext,
+    PipelineStageIsolationError,
     PipelineStageReconciler,
     PipelineStageResult,
     PostgresPipelineRunStore,
@@ -1364,6 +1365,70 @@ async def _complete_semantic_source(store: PostgresPipelineRunStore, run_id: str
         expected_version=source.version,
         lease_id="source",
     )
+
+
+@pytest.mark.asyncio
+async def test_isolated_vlm_policy_mismatch_persists_receipt_and_blocks_successors(
+    tmp_path: Path,
+) -> None:
+    service, store, _scheduler = _composition(
+        tmp_path,
+        execution_profile=_semantic_story_execution_profile(),
+    )
+    submitted = await service.submit(
+        PipelineRunRequest("test", source_root=str(tmp_path / "input")),
+        f"isolated-vlm-{uuid4().hex}",
+    )
+    run_id = submitted.snapshot.run_id
+    await _complete_semantic_source(store, run_id)
+    vlm = await store.claim_next_pending(run_id, expected_version=0, lease_id="vlm")
+    assert vlm is not None and vlm.stage == "vlm"
+    await store.record_result(
+        run_id,
+        result=PipelineStageResult(vlm.command_id, "indeterminate"),
+        expected_version=vlm.version,
+        lease_id="vlm",
+    )
+    indeterminate = await store.read_indeterminate(run_id, expected_version=2)
+    assert indeterminate is not None
+    failure = PipelineStageIsolationError(
+        command_id=indeterminate.command_id,
+        command_version=indeterminate.version,
+        stage="vlm",
+        failure_code="VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH",
+        failure_detail={
+            "declared_episode_count": 50,
+            "distinct_policy_count": 2,
+            "ordered_policy_hashes_sha256": "sha256:" + "a" * 64,
+            "schema_version": "vlm-batch-policy-mismatch-v1",
+        },
+    )
+
+    result = await store.record_isolated_failure(run_id, failure=failure)
+
+    assert result.outcome == "failed"
+    snapshot = await store.read_run(run_id)
+    assert snapshot is not None and snapshot.status == "failed"
+    assert tuple(command.status for command in snapshot.commands) == (
+        "succeeded",
+        "failed",
+        "blocked",
+        "blocked",
+        "blocked",
+        "blocked",
+    )
+    assert DSN is not None
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """SELECT outcome, failure_code, failure_detail
+                 FROM runtime.pipeline_run_receipts WHERE receipt_id = %s""",
+            (result.receipt_id,),
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == "failed"
+    assert row[1] == "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH"
+    assert row[2]["schema_version"] == "vlm-batch-policy-mismatch-v1"
 
 
 @pytest.mark.asyncio
