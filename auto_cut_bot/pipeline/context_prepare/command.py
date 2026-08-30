@@ -17,6 +17,7 @@ from autocut_kernel.context_pack import (
     ContextSelectionPolicy,
     EpisodeContextBinding,
     EpisodeContextBindingSet,
+    ExternalContextNormalizationError,
     OwnerEpisodeMapSet,
     WindowContextPack,
     build_window_context_pack,
@@ -42,7 +43,7 @@ from autocut_kernel.store.models import (
 
 from auto_cut_bot.pipeline.source_prep import PersistedPreparedSources
 
-from .api import ExternalNarrativeApiClient
+from .api import ExternalNarrativeApiClient, ExternalNarrativeApiError
 
 COMMAND_NAME = "PrepareWindowContextCommand"
 CONTEXT_PACK_SET_ARTIFACT_TYPE = "window_context_pack_set"
@@ -147,6 +148,20 @@ class PreparedWindowContextSet:
             raise ValueError("raw snapshot blob requires snapshot identity")
         if self.binding_set is not None and self.normalized_context is None:
             raise ValueError("binding set requires normalized context")
+        if self.snapshot is None and any(
+            value is not None for value in (self.raw_snapshot_blob, self.normalized_context, self.binding_set)
+        ):
+            raise ValueError("snapshot-less context set cannot claim external provenance")
+        if self.binding_set is not None:
+            for binding in self.binding_set.bindings:
+                if binding.local_episode_index >= len(self.packs):
+                    raise ValueError("binding refers to an episode outside the pack set")
+                pack = self.packs[binding.local_episode_index]
+                if (
+                    pack.mode != "api_assisted"
+                    or pack.source_binding_hash != binding.canonical_hash
+                ):
+                    raise ValueError("binding set does not match its API-assisted pack")
 
     def pack_for_episode(self, episode_index: int) -> WindowContextPack:
         if type(episode_index) is not int or not 0 <= episode_index < len(self.packs):  # noqa: E721
@@ -331,6 +346,7 @@ class PrepareWindowContextCommand:
             }
             bindings: list[EpisodeContextBinding] = []
             packs: list[WindowContextPack] = []
+            diagnostics: set[str] = set()
             for episode_index, episode in enumerate(request.source_bundle.prepared.episodes):
                 manifest = episode.manifest
                 source = request.source_bundle.prepared.census.sources[episode_index]
@@ -341,6 +357,7 @@ class PrepareWindowContextCommand:
                     raise ValueError("committed source episode does not match source census")
                 owner_map = maps_by_local.get((source.relative_path, episode_index))
                 if owner_map is None:
+                    diagnostics.add("EXTERNAL_EPISODE_BINDING_MISSING")
                     packs.append(video_only_window_context_pack(
                         request.selection_policy, "EXTERNAL_EPISODE_BINDING_MISSING"
                     ))
@@ -349,15 +366,19 @@ class PrepareWindowContextCommand:
                     local_source_id=manifest.source_id,
                     local_source_sha256=manifest.source_sha256,
                 )
-                bindings.append(binding)
-                packs.append(build_window_context_pack(
+                pack = build_window_context_pack(
                     normalized,
                     binding,
                     local_source_id=manifest.source_id,
                     local_source_sha256=manifest.source_sha256,
                     local_episode_index=episode_index,
                     policy=request.selection_policy,
-                ))
+                )
+                if pack.mode == "api_assisted":
+                    bindings.append(binding)
+                elif pack.video_only_reason_code is not None:
+                    diagnostics.add(pack.video_only_reason_code)
+                packs.append(pack)
             binding_set = EpisodeContextBindingSet(
                 request.owner_maps.series_external_id,
                 tuple(sorted(bindings, key=lambda item: item.canonical_hash)),
@@ -370,9 +391,9 @@ class PrepareWindowContextCommand:
                 raw_snapshot_blob=raw_blob,
                 normalized_context=normalized.to_mapping(),
                 binding_set=binding_set,
-                diagnostic_code=None,
+                diagnostic_code=(None if not diagnostics else "EXTERNAL_CONTEXT_PARTIAL"),
             )
-        except Exception as error:
+        except (ExternalNarrativeApiError, ExternalContextNormalizationError) as error:
             prepared = _video_only_prepared(
                 request,
                 "EXTERNAL_CONTEXT_UNAVAILABLE",

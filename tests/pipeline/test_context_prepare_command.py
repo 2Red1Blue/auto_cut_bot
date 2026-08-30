@@ -15,6 +15,7 @@ from autocut_kernel.store.models import canonical_recipe_scope
 
 from auto_cut_bot.pipeline.context_prepare import (
     ExternalNarrativeApiConfig,
+    ExternalNarrativeApiError,
     FetchedExternalNarrativeContext,
     PrepareWindowContextCommand,
     PrepareWindowContextRequest,
@@ -143,7 +144,7 @@ def test_context_command_degrades_to_video_only_when_api_fetch_fails() -> None:
 
     class FailingClient:
         def fetch(self, _series: str):
-            raise RuntimeError("network unavailable")
+            raise ExternalNarrativeApiError("network unavailable")
 
     result = PrepareWindowContextCommand(_Store(), FailingClient()).execute(request)
     assert result.outcome.state == "succeeded"

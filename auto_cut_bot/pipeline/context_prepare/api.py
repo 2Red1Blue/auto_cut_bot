@@ -20,8 +20,53 @@ DEFAULT_ASSET_RESOURCE_PATH = "/assets/tmp/batch-content-assets"
 DEFAULT_EPISODE_RESOURCE_PATH = "/assets/tmp/batch-episodes-info"
 
 
+class ExternalNarrativeApiError(RuntimeError):
+    """The external metadata service returned an unusable or unavailable result."""
+
+
 def _canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+class _DuplicateJsonKeyError(ValueError):
+    pass
+
+
+def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError(key)
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> object:
+    raise ValueError(f"unsupported JSON constant: {value}")
+
+
+def _strict_json_body(raw: bytes, path: str) -> dict[str, object]:
+    try:
+        body = json.loads(
+            raw.decode("utf-8", "strict"),
+            object_pairs_hook=_closed_json_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ExternalNarrativeApiError(
+            f"metadata API {path} returned non-canonical JSON"
+        ) from error
+    if type(body) is not dict:  # noqa: E721
+        raise ExternalNarrativeApiError(
+            f"metadata API {path} returned a non-object response"
+        )
+    return cast(dict[str, object], body)
 
 
 def _origin(base_url: str) -> str:
@@ -65,6 +110,26 @@ class FetchedExternalNarrativeContext:
     raw_payload: bytes
     asset_response: dict[str, object]
     episode_response: dict[str, object]
+
+    def __post_init__(self) -> None:
+        if type(self.snapshot) is not ExternalContextSnapshot:  # noqa: E721
+            raise TypeError("snapshot must be an exact ExternalContextSnapshot")
+        if type(self.raw_payload) is not bytes:  # noqa: E721
+            raise TypeError("raw_payload must be exact bytes")
+        if type(self.asset_response) is not dict or type(self.episode_response) is not dict:  # noqa: E721
+            raise TypeError("external responses must be JSON objects")
+        try:
+            expected = _canonical_json_bytes({
+                "asset_response": self.asset_response,
+                "episode_response": self.episode_response,
+            })
+        except (TypeError, ValueError) as error:
+            raise ExternalNarrativeApiError("external response is not canonical JSON") from error
+        actual_hash = "sha256:" + hashlib.sha256(self.raw_payload).hexdigest()
+        if actual_hash != self.snapshot.raw_payload_sha256 or expected != self.raw_payload:
+            raise ExternalNarrativeApiError(
+                "fetched responses do not match the immutable snapshot payload"
+            )
 
     def debug_mapping(self) -> dict[str, object]:
         """Safe enough for local debug: never includes the configured API key."""
@@ -125,12 +190,11 @@ class ExternalNarrativeApiClient:
 
     @staticmethod
     def _post_json(client: httpx.Client, path: str, payload: dict[str, object]) -> dict[str, object]:
-        response = client.post(path, json=payload)
-        response.raise_for_status()
         try:
-            body = response.json()
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"metadata API {path} returned non-JSON data") from error
-        if type(body) is not dict:  # noqa: E721
-            raise ValueError(f"metadata API {path} returned a non-object response")
-        return cast(dict[str, object], body)
+            response = client.post(path, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise ExternalNarrativeApiError(
+                f"metadata API request failed for {path}"
+            ) from error
+        return _strict_json_body(response.content, path)

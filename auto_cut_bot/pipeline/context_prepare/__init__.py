@@ -5,6 +5,7 @@ from .api import (
     DEFAULT_EPISODE_RESOURCE_PATH,
     ExternalNarrativeApiClient,
     ExternalNarrativeApiConfig,
+    ExternalNarrativeApiError,
     FetchedExternalNarrativeContext,
 )
 from .command import (
@@ -27,6 +28,7 @@ __all__ = [
     "DEFAULT_EPISODE_RESOURCE_PATH",
     "ExternalNarrativeApiClient",
     "ExternalNarrativeApiConfig",
+    "ExternalNarrativeApiError",
     "FetchedExternalNarrativeContext",
     "COMMAND_NAME",
     "CommittedWindowContextPacks",
