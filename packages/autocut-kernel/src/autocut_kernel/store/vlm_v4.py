@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from typing import cast
 
 from ..context_pack import WindowContextPack
@@ -13,20 +12,18 @@ from ..source_manifest import decode_source_manifest
 from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
 from ..vlm.retry_policy import GenerationRetryPolicy
 from ..vlm.semantic_contracts import VLM_PARSER_V3, VLM_PARSER_V4, parser_contract_sha256_for
-from ..vlm.semantic_pack_v4 import VlmSemanticPackV4
 from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4, parse_vlm_response_v4
 from .errors import StoreValidationError
 from .models import (
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,
+    VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4,
     ArtifactMember,
     PersistedVlmGenerationChild,
+    PersistedVlmSemanticPackV4,
     PersistedWholeSeriesSourceManifest,
     VlmSemanticPackReference,
     canonical_payload_hash,
-    canonical_recipe_scope,
 )
-
-VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4 = "vlm-batch-finalizer-v2-semantic-pack-v4"
 
 
 def batch_version_fields(strategy: str) -> dict[str, object]:
@@ -64,38 +61,6 @@ def generation_semantic_version(
         if type(constant) is not int or constant != 4:  # noqa: E721
             raise StoreValidationError("V4 frozen request must declare response schema version four")
     return cast(str, parser), schema
-
-
-@dataclass(frozen=True, slots=True)
-class PersistedVlmSemanticPackV4:
-    """A distinct v4 value, never acceptable to the v3 downstream input wrapper."""
-
-    reference: VlmSemanticPackReference
-    payload_json: str
-    semantic_pack: VlmSemanticPackV4
-    source_child: PersistedVlmGenerationChild
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.reference) is not VlmSemanticPackReference
-            or type(self.semantic_pack) is not VlmSemanticPackV4
-            or type(self.source_child) is not PersistedVlmGenerationChild
-        ):
-            raise StoreValidationError("V4 Semantic Pack requires exact typed values")
-        require_batch_child_version(
-            VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4,
-            self.source_child.parser_strategy_version,
-            self.source_child.semantic_schema_version,
-        )
-        if (
-            self.reference.scope != canonical_recipe_scope(self.source_child.source_job)
-            or self.reference.logical_id != f"semantic_pack_{self.source_child.window_manifest_sha256[7:39]}"
-            or canonical_payload_hash(self.payload_json) != self.reference.content_hash
-            or canonical_payload_hash(json.dumps(self.semantic_pack.to_mapping())) != self.reference.content_hash
-            or self.semantic_pack.request_identity_sha256 != self.source_child.request_identity_sha256
-            or self.semantic_pack.window_manifest_sha256 != self.source_child.window_manifest_sha256
-        ):
-            raise StoreValidationError("V4 Semantic Pack does not match its committed child identity")
 
 
 def verify_v4_semantic_pack(

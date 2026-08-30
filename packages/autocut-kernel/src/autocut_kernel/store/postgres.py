@@ -5388,13 +5388,7 @@ class PostgresRuntimeStore:
                     "exact committed VLM Semantic Pack set is unavailable"
                 )
             try:
-                if _strict_json_object(
-                    aggregate_set.members[0][1].payload_json, "VLM Semantic Pack set"
-                ).get("strategy_version") == VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4:
-                    raise SemanticInputUnavailableError(
-                        "V4 video observations are unsupported by the Stage1-3 semantic input reader"
-                    )
-                aggregate = _decode_vlm_semantic_pack_set(
+                aggregate = _decode_registered_vlm_semantic_pack_set(
                     aggregate_set.members[0][1].payload_json
                 )
             except (StoreValidationError, TypeError, ValueError) as error:
@@ -5482,7 +5476,7 @@ class PostgresRuntimeStore:
                                request_blob.byte_length, request_blob.media_type,
                                response_blob.object_id, response_blob.content_hash,
                                response_blob.byte_length, response_blob.media_type,
-                               attempt.provider_request_id
+                               attempt.provider_request_id, attempt.retry_policy_hash
                           FROM runtime.generation_attempts AS attempt
                           JOIN runtime.command_slots AS slot
                             ON slot.command_slot_id = attempt.command_slot_id
@@ -5526,6 +5520,7 @@ class PostgresRuntimeStore:
                         response_byte_length,
                         response_media_type,
                         provider_request_id,
+                        attempt_retry_policy_hash,
                     ) = attempt_rows[0]
                     request_payload = BlobRef(
                         UUID(str(request_object_id)),
@@ -5570,6 +5565,19 @@ class PostgresRuntimeStore:
                         ).decode("utf-8", "strict"),
                         "VLM provider request payload",
                     )
+                    pack_payload = _strict_json_object(
+                        semantic_pack_artifact.payload_json,
+                        "VLM Semantic Pack",
+                    )
+                    parser_version, semantic_version = generation_semantic_version(
+                        provider_request_payload,
+                        pack_payload,
+                    )
+                    require_batch_child_version(
+                        aggregate.strategy_version,
+                        parser_version,
+                        semantic_version,
+                    )
                     parse_policy = _decode_parse_policy(
                         provider_request_payload["parse_policy"]
                     )
@@ -5605,6 +5613,8 @@ class PostgresRuntimeStore:
                         source_manifest_sha256=source_manifest_sha256,
                         source_provenance_sha256=source_provenance_sha256,
                         request_identity_sha256=request_identity_sha256,
+                        parser_strategy_version=parser_version,
+                        semantic_schema_version=semantic_version,
                     )
                     if (
                         child.episode_index != batch_child.episode_index
@@ -5615,23 +5625,43 @@ class PostgresRuntimeStore:
                         raise StoreValidationError(
                             "VLM child does not match its aggregate identity/policy"
                         )
-                    decoded = decode_vlm_semantic_pack(
-                        _strict_json_object(
-                            semantic_pack_artifact.payload_json,
-                            "VLM Semantic Pack",
+                    raw_bytes = _exact_blob_bytes(
+                        cursor,
+                        raw_response,
+                        "VLM raw response",
+                    )
+                    if semantic_version == 4:
+                        if (
+                            _text(attempt_provider_id) != provider_request_payload.get("provider_id")
+                            or _text(attempt_retry_policy_hash)
+                            != provider_request_payload.get("retry_policy_sha256")
+                        ):
+                            raise StoreValidationError(
+                                "V4 generation attempt differs from its frozen provider/retry policy"
+                            )
+                        semantic_pack = verify_v4_semantic_pack(
+                            child=child,
+                            artifact=semantic_pack_artifact,
+                            request_record=request_payload_json,
+                            request_payload=provider_request_payload,
+                            pack_payload=pack_payload,
+                            raw_response=raw_bytes,
+                            source=source_manifest,
                         )
-                    )
-                    semantic_pack = PersistedVlmSemanticPack(
-                        reference=VlmSemanticPackReference(
-                            semantic_pack_artifact.scope,
-                            semantic_pack_artifact.logical_id,
-                            semantic_pack_artifact.revision,
-                            semantic_pack_artifact.content_hash,
-                        ),
-                        payload_json=semantic_pack_artifact.payload_json,
-                        semantic_pack=decoded,
-                        source_child=child,
-                    )
+                        decoded = semantic_pack.semantic_pack
+                    else:
+                        decoded = decode_vlm_semantic_pack(pack_payload)
+                        semantic_pack = PersistedVlmSemanticPack(
+                            reference=VlmSemanticPackReference(
+                                semantic_pack_artifact.scope,
+                                semantic_pack_artifact.logical_id,
+                                semantic_pack_artifact.revision,
+                                semantic_pack_artifact.content_hash,
+                            ),
+                            payload_json=semantic_pack_artifact.payload_json,
+                            semantic_pack=decoded,
+                            source_child=child,
+                        )
                     response = _closed_mapping(
                         response_payload,
                         frozenset(
@@ -5718,25 +5748,21 @@ class PostgresRuntimeStore:
                         raise StoreValidationError(
                             "VLM input does not match its committed Source/Window owner"
                         )
-                    raw_bytes = _exact_blob_bytes(
-                        cursor,
-                        raw_response,
-                        "VLM raw response",
-                    )
-                    reparsed = parse_vlm_response(
-                        raw_bytes,
-                        manifest=decoded_source_window.manifest,
-                        manifest_set=decoded_source_window.manifest_set,
-                        request_identity=request_identity,
-                        policy=parse_policy,
-                    )
-                    if (
-                        reparsed.to_mapping() != decoded.to_mapping()
-                        or reparsed.canonical_hash != decoded.canonical_hash
-                    ):
-                        raise StoreValidationError(
-                            "persisted VLM Semantic Pack does not match exact raw-response reparse"
+                    if semantic_version == 3:
+                        reparsed = parse_vlm_response(
+                            raw_bytes,
+                            manifest=decoded_source_window.manifest,
+                            manifest_set=decoded_source_window.manifest_set,
+                            request_identity=request_identity,
+                            policy=parse_policy,
                         )
+                        if (
+                            reparsed.to_mapping() != decoded.to_mapping()
+                            or reparsed.canonical_hash != decoded.canonical_hash
+                        ):
+                            raise StoreValidationError(
+                                "persisted VLM Semantic Pack does not match exact raw-response reparse"
+                            )
                     semantic_inputs.append(
                         CommittedVlmSemanticInput(
                             source_window=source_window,
@@ -5778,6 +5804,7 @@ class PostgresRuntimeStore:
                 request.vlm_semantic_pack_set,
                 aggregate_policy,
                 tuple(semantic_inputs),
+                aggregate.strategy_version,
             )
 
         return self._transaction(operation)

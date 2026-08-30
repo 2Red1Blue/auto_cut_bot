@@ -26,8 +26,8 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
     Job,
+    PersistedVlmSemanticPackV4,
     PostgresRuntimeStore,
-    SemanticInputUnavailableError,
     StoreValidationError,
 )
 from autocut_kernel.store.models import (
@@ -208,10 +208,13 @@ def test_source_v4_generation_batch_reopen_and_zero_provider_replay(prepared: Pr
     assert replay.outcome.receipt_id == first.outcome.receipt_id and replay.semantic_pack == first.semantic_pack
     assert FinalizeVlmBatchCommand(restarted).execute(batch_request).outcome.receipt_id == batch.outcome.receipt_id
     assert provider.calls == 1 and _history(prepared.request.job) == before
-    with pytest.raises(SemanticInputUnavailableError, match="V4 video observations are unsupported"):
-        restarted.read_committed_semantic_inputs(CommittedSemanticInputsRequest(
-            prepared.request.job, prepared.source_reference, aggregate,
-        ))
+    committed = restarted.read_committed_semantic_inputs(CommittedSemanticInputsRequest(
+        prepared.request.job, prepared.source_reference, aggregate,
+    ))
+    assert committed.vlm_batch_strategy_version == VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4
+    assert len(committed.inputs) == 1
+    assert type(committed.inputs[0].semantic_pack) is PersistedVlmSemanticPackV4
+    assert type(committed.inputs[0].semantic_pack.semantic_pack) is VlmSemanticPackV4
 
 
 def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> None:

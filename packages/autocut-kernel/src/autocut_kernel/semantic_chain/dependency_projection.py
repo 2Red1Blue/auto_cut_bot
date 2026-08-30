@@ -8,7 +8,12 @@ from typing import cast
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
 from ..store.models import ArtifactMember, CommittedSemanticInputs, SourceWindowIdentity
-from ..vlm.models import VlmEvent, VlmFact
+from .core_observations import (
+    CoreEvent,
+    CoreFact,
+    observation_source_interval,
+    semantic_pack,
+)
 from .dependency_graph import DependencyArc
 from .ledger_models import CoverageLedger
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
@@ -205,8 +210,8 @@ def project_dependencies(
     source_identity = _source_identity(inputs)
     source_windows = {item.source_window.window_manifest_sha256: item.source_window for item in inputs.inputs}
     sources = {(item.source_window.source_id, item.source_window.source_sha256) for item in inputs.inputs}
-    raw_facts: dict[str, tuple[SemanticMemberIdentity, SourceWindowIdentity, VlmFact]] = {}
-    raw_events: dict[str, tuple[SemanticMemberIdentity, SourceWindowIdentity, VlmEvent]] = {}
+    raw_facts: dict[str, tuple[SemanticMemberIdentity, SourceWindowIdentity, CoreFact]] = {}
+    raw_events: dict[str, tuple[SemanticMemberIdentity, SourceWindowIdentity, CoreEvent]] = {}
     for item in inputs.inputs:
         pack_identity = SemanticMemberIdentity(
             item.semantic_pack.reference.artifact_type,
@@ -215,11 +220,12 @@ def project_dependencies(
             item.semantic_pack.reference.scope,
             item.semantic_pack.reference.content_hash,
         )
-        for fact in item.semantic_pack.semantic_pack.facts:
+        pack = semantic_pack(item)
+        for fact in pack.facts:
             if fact.fact_id in raw_facts:
                 raise DependencyProjectionError("committed VLM Fact identity is duplicated")
             raw_facts[fact.fact_id] = (pack_identity, item.source_window, fact)
-        for event in item.semantic_pack.semantic_pack.events:
+        for event in pack.events:
             if event.event_id in raw_events:
                 raise DependencyProjectionError("committed VLM Event identity is duplicated")
             raw_events[event.event_id] = (pack_identity, item.source_window, event)
@@ -244,7 +250,7 @@ def project_dependencies(
         if any(
             item.source_ref != expected_source
             or item.clock_id != window.source_clock_id
-            or item.mapped_interval != raw_event.support.source_interval
+            or item.mapped_interval != observation_source_interval(raw_event)
             for item in card.source_range_refs
         ):
             raise DependencyProjectionError("EventCard source range is not its exact committed VLM/source mapping")

@@ -14,6 +14,7 @@ from decimal import Decimal
 from ..contracts.compiler.canonical import canonical_json_hash
 from ..store.models import ArtifactMember, CommittedSemanticInputs
 from .continuity_analysis import analyze_continuity
+from .core_observations import observation_confidence, semantic_pack
 from .coverage_analysis import Stage1CoveragePolicy
 from .diagnostic_models import (
     ConfidenceMeasurement,
@@ -173,20 +174,21 @@ class _Truth:
         for item in self.inputs.inputs:
             window, pack = (
                 item.source_window.window_manifest_sha256,
-                item.semantic_pack.semantic_pack,
+                semantic_pack(item),
             )
             observations: list[tuple[str, str, Decimal]] = [
-                ("entity", value.entity_id, value.support.confidence) for value in pack.entities
+                ("entity", value.entity_id, observation_confidence(value))
+                for value in pack.entities
             ]
             observations.extend(
-                ("fact", value.fact_id, value.support.confidence) for value in pack.facts
+                ("fact", value.fact_id, observation_confidence(value)) for value in pack.facts
             )
             observations.extend(
-                ("event", value.event_id, value.support.confidence) for value in pack.events
+                ("event", value.event_id, observation_confidence(value)) for value in pack.events
             )
             for kind, object_id, confidence in (
                 *observations,
-                ("window_summary", window, pack.window_summary.confidence),
+                ("window_summary", window, observation_confidence(pack.window_summary)),
             ):
                 if (kind, object_id) in seen:
                     raise ValueError("raw observation identity is duplicated")
@@ -311,7 +313,7 @@ class _Truth:
         for item in self.inputs.inputs:
             window, pack = (
                 item.source_window.window_manifest_sha256,
-                item.semantic_pack.semantic_pack,
+                semantic_pack(item),
             )
             summary_ref = self.canonical("source_window", window)
             summary_assignment = self.summary_assignment(item.source_window.episode_index)
@@ -460,7 +462,7 @@ def _check_universes(truth: _Truth, violations: dict[str, set[str]]) -> None:
     ):
         violations["KC-COV-002"].add("window_conservation_mismatch")
     for item in inputs.inputs:
-        key, pack = item.source_window.window_manifest_sha256, item.semantic_pack.semantic_pack
+        key, pack = item.source_window.window_manifest_sha256, semantic_pack(item)
         window = windows.get(truth.canonical("source_window", key))
         if window is None:
             continue

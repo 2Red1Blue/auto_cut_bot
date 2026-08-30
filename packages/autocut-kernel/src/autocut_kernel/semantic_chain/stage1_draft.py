@@ -27,6 +27,7 @@ from ..store.models import (
     CommittedSemanticInputs,
     CommittedVlmSemanticInput,
 )
+from .core_observations import semantic_pack
 
 STAGE1_DRAFT_SCHEMA_VERSION = "stage1-cross-window-draft-v1"
 _ID_PATTERN = r"[a-z][a-z0-9_]{0,63}"
@@ -209,7 +210,7 @@ def _member_binding(
 ) -> dict[str, object]:
     source, identity = item.source_window, item.request_identity
     persisted = item.semantic_pack
-    pack, child, response = persisted.semantic_pack, persisted.source_child, item.response_record
+    pack, child, response = semantic_pack(item), persisted.source_child, item.response_record
     if (
         source.window_manifest_sha256 != identity.window_manifest_sha256
         or source.window_manifest_sha256 != pack.window_manifest_sha256
@@ -300,16 +301,16 @@ def _catalog(
         len(values)
         for item in inputs.inputs
         for values in (
-            item.semantic_pack.semantic_pack.entities,
-            item.semantic_pack.semantic_pack.facts,
-            item.semantic_pack.semantic_pack.events,
+            semantic_pack(item).entities,
+            semantic_pack(item).facts,
+            semantic_pack(item).events,
         )
     )
     if count > policy.max_input_objects:
         raise Stage1DraftError("committed object count exceeds draft policy")
     refs: set[Stage1DraftEvidenceRef] = set()
     for item in inputs.inputs:
-        pack = item.semantic_pack.semantic_pack
+        pack = semantic_pack(item)
         for kind, ids in (
             ("entity", tuple(value.entity_id for value in pack.entities)),
             ("fact", tuple(value.fact_id for value in pack.facts)),
@@ -342,7 +343,7 @@ def stage1_draft_prompt_inputs(
     binding, refs = _catalog(inputs, policy)
     windows: list[dict[str, object]] = []
     for item in inputs.inputs:
-        pack = item.semantic_pack.semantic_pack
+        pack = semantic_pack(item)
         windows.append(
             {
                 "window_manifest_sha256": pack.window_manifest_sha256,

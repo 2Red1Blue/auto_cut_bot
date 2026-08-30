@@ -14,6 +14,7 @@ from typing import Literal, cast
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
 from ..store.models import CommittedSemanticInputs, CommittedVlmSemanticInput
+from .core_observations import semantic_pack
 from .stage1_draft import Stage1DraftError, Stage1DraftPolicy, stage1_draft_prompt_inputs
 
 _HASH = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -162,7 +163,7 @@ class ContinuityIssue:
 
 
 def _claim(item: CommittedVlmSemanticInput, direction: _Direction) -> ContinuityClaim:
-    continuity = item.semantic_pack.semantic_pack.continuity
+    continuity = semantic_pack(item).continuity
     previous = direction == "previous"
     return ContinuityClaim(
         item.source_window.window_manifest_sha256,

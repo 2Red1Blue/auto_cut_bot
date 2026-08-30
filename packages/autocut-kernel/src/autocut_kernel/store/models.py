@@ -19,6 +19,7 @@ from ..media.calibration_record import (
 from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
 from ..source_manifest import SourceOperationGrant
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
+from ..vlm.semantic_pack_v4 import VlmSemanticPackV4
 from .errors import StoreValidationError
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
@@ -46,6 +47,7 @@ ShadowLocalMeasurementMemberState = Literal[
 VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
+VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4 = "vlm-batch-finalizer-v2-semantic-pack-v4"
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -61,7 +63,6 @@ GenerationFailureDisposition = Literal["retryable", "nonretryable", "repairable"
 _LEGACY_GENERATION_RETRY_POLICY_HASH = (
     "sha256:70f279a4b886d1aaf1498b432af937495e431113db3f38728a635ed24a6fbe39"
 )
-
 
 def _text(value: str, field_name: str) -> None:
     if type(value) is not str or not value.strip():  # noqa: E721
@@ -625,6 +626,44 @@ class PersistedVlmSemanticPack:
         ):
             raise StoreValidationError(
                 "VLM Semantic Pack does not match its committed request provenance"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedVlmSemanticPackV4:
+    """A distinct V4 value, never accepted by the frozen V3 wrapper."""
+
+    reference: VlmSemanticPackReference
+    payload_json: str
+    semantic_pack: VlmSemanticPackV4
+    source_child: PersistedVlmGenerationChild
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.reference) is not VlmSemanticPackReference
+            or type(self.semantic_pack) is not VlmSemanticPackV4
+            or type(self.source_child) is not PersistedVlmGenerationChild
+        ):
+            raise StoreValidationError("V4 Semantic Pack requires exact typed values")
+        if (
+            self.source_child.parser_strategy_version,
+            self.source_child.semantic_schema_version,
+        ) != ("strict-semantic-pack-v4", 4):
+            raise StoreValidationError("V4 Semantic Pack child version is invalid")
+        if (
+            self.reference.scope != canonical_recipe_scope(self.source_child.source_job)
+            or self.reference.logical_id
+            != f"semantic_pack_{self.source_child.window_manifest_sha256[7:39]}"
+            or canonical_payload_hash(self.payload_json) != self.reference.content_hash
+            or canonical_payload_hash(json.dumps(self.semantic_pack.to_mapping()))
+            != self.reference.content_hash
+            or self.semantic_pack.request_identity_sha256
+            != self.source_child.request_identity_sha256
+            or self.semantic_pack.window_manifest_sha256
+            != self.source_child.window_manifest_sha256
+        ):
+            raise StoreValidationError(
+                "V4 Semantic Pack does not match its committed child identity"
             )
 
 
@@ -1317,7 +1356,7 @@ class CommittedVlmSemanticInput:
 
     source_window: SourceWindowIdentity
     request_identity: VlmRequestIdentity
-    semantic_pack: PersistedVlmSemanticPack
+    semantic_pack: PersistedVlmSemanticPack | PersistedVlmSemanticPackV4
     response_record: CommittedArtifactMemberReference
     raw_response: BlobRef
 
@@ -1326,8 +1365,23 @@ class CommittedVlmSemanticInput:
             raise StoreValidationError("VLM semantic source_window is invalid")
         if type(self.request_identity) is not VlmRequestIdentity:  # noqa: E721
             raise StoreValidationError("VLM semantic request_identity is invalid")
-        if type(self.semantic_pack) is not PersistedVlmSemanticPack:  # noqa: E721
+        if type(self.semantic_pack) not in (  # noqa: E721
+            PersistedVlmSemanticPack,
+            PersistedVlmSemanticPackV4,
+        ):
             raise StoreValidationError("VLM semantic pack is invalid")
+        expected_version = (
+            ("strict-semantic-pack-v3", 3)
+            if type(self.semantic_pack) is PersistedVlmSemanticPack
+            else ("strict-semantic-pack-v4", 4)
+        )
+        child = self.semantic_pack.source_child
+        child_version = (
+            getattr(child, "parser_strategy_version", "strict-semantic-pack-v3"),
+            getattr(child, "semantic_schema_version", 3),
+        )
+        if child_version != expected_version:
+            raise StoreValidationError("VLM semantic pack exact type disagrees with its child version")
         if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
             raise StoreValidationError("VLM semantic response_record is invalid")
         if type(self.raw_response) is not BlobRef:  # noqa: E721
@@ -1343,6 +1397,7 @@ class CommittedSemanticInputs:
     vlm_semantic_pack_set: CommittedArtifactMemberReference
     vlm_aggregate_policy: VlmBatchRequestPolicy
     inputs: tuple[CommittedVlmSemanticInput, ...]
+    vlm_batch_strategy_version: str = VLM_BATCH_FINALIZER_STRATEGY_VERSION
 
     def __post_init__(self) -> None:
         if type(self.source_manifest) is not PersistedWholeSeriesSourceManifest:  # noqa: E721
@@ -1371,6 +1426,27 @@ class CommittedSemanticInputs:
         ):
             raise StoreValidationError(
                 "semantic inputs must have unique canonical Source/Window order"
+            )
+        expected_version = {
+            VLM_BATCH_FINALIZER_STRATEGY_VERSION: ("strict-semantic-pack-v3", 3),
+            VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4: ("strict-semantic-pack-v4", 4),
+        }.get(self.vlm_batch_strategy_version)
+        if expected_version is None:
+            raise StoreValidationError("semantic VLM aggregate strategy is not registered")
+        if any(
+            (
+                getattr(
+                    item.semantic_pack.source_child,
+                    "parser_strategy_version",
+                    "strict-semantic-pack-v3",
+                ),
+                getattr(item.semantic_pack.source_child, "semantic_schema_version", 3),
+            )
+            != expected_version
+            for item in inputs
+        ):
+            raise StoreValidationError(
+                "semantic VLM aggregate cannot mix child parser/schema versions"
             )
         object.__setattr__(self, "inputs", inputs)
 

@@ -21,7 +21,15 @@ from ..store.models import (
     SourceWindowIdentity,
     canonical_payload_hash,
 )
-from ..vlm.models import VlmEntity, VlmEvent, VlmFact, VlmSemanticPack
+from .core_observations import (
+    CoreEntity,
+    CoreEvent,
+    CoreFact,
+    CoreSemanticPack,
+    observation_confidence,
+    observation_source_interval,
+    semantic_pack,
+)
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 from .narrative_models import (
     BeatAttributes,
@@ -171,8 +179,8 @@ def _edge_id(edge_type: str, from_node_id: str, to_node_id: str) -> str:
 
 
 def _project_edges(
-    facts: dict[str, tuple[VlmFact, SemanticObjectRef]],
-    events: dict[str, tuple[VlmEvent, SemanticObjectRef, str]],
+    facts: dict[str, tuple[CoreFact, SemanticObjectRef]],
+    events: dict[str, tuple[CoreEvent, SemanticObjectRef, str]],
     draft: Stage1Draft,
 ) -> tuple[GraphEdge, ...]:
     """Aggregate every raw declaration of one logical directional Graph edge."""
@@ -239,14 +247,16 @@ def project_narrative(
     source_identity = _committed_identity(inputs.source_manifest.reference)
     granted_sources = {(item.source_id, item.content_sha256) for item in inputs.source_grant.sources}
 
-    entities: dict[str, tuple[VlmEntity, SemanticObjectRef]] = {}
-    facts: dict[str, tuple[VlmFact, SemanticObjectRef]] = {}
-    events: dict[str, tuple[VlmEvent, SemanticObjectRef, str]] = {}
+    entities: dict[str, tuple[CoreEntity, SemanticObjectRef]] = {}
+    facts: dict[str, tuple[CoreFact, SemanticObjectRef]] = {}
+    events: dict[str, tuple[CoreEvent, SemanticObjectRef, str]] = {}
     pack_owners: dict[str, SemanticMemberIdentity] = {}
-    episode_windows: dict[int, list[tuple[SourceWindowIdentity, SemanticObjectRef, VlmSemanticPack]]] = {}
+    episode_windows: dict[
+        int, list[tuple[SourceWindowIdentity, SemanticObjectRef, CoreSemanticPack]]
+    ] = {}
 
     for committed in inputs.inputs:
-        window, pack = committed.source_window, committed.semantic_pack.semantic_pack
+        window, pack = committed.source_window, semantic_pack(committed)
         if (window.source_id, window.source_sha256) not in granted_sources:
             raise NarrativeProjectionError("VLM input source is not in the exact source grant")
         if pack.window_manifest_sha256 != window.window_manifest_sha256:
@@ -292,7 +302,7 @@ def project_narrative(
                 CoarseSourceRange(
                     SemanticObjectRef(source_identity, "source", committed.source_window.source_id),
                     committed.source_window.source_clock_id,
-                    event.support.source_interval,
+                    observation_source_interval(event),
                 ),
             ),
             (event_ref,),
@@ -300,7 +310,7 @@ def project_narrative(
         for committed in inputs.inputs
         for event, event_ref, episode_id in (
             (item, events[item.event_id][1], events[item.event_id][2])
-            for item in committed.semantic_pack.semantic_pack.events
+            for item in semantic_pack(committed).events
         )
     )
     event_set = EventCardSet(event_card_set_id, cards)
@@ -348,7 +358,7 @@ def project_narrative(
                 entity.display_label,
                 EntityAttributes(entity.entity_kind.value, entity.display_label, entity.visual_description),
                 (entity_evidence,),
-                _confidence(entity.support.confidence, method="model"),
+                _confidence(observation_confidence(entity), method="model"),
             )
         )
     for fact, fact_evidence in facts.values():
@@ -360,7 +370,7 @@ def project_narrative(
                 fact.summary,
                 FactAttributes(fact.subject_ref, fact.fact_kind.value, value, "none"),
                 (fact_evidence,),
-                _confidence(fact.support.confidence, method="model"),
+                _confidence(observation_confidence(fact), method="model"),
             )
         )
     for event, event_evidence, episode_id in events.values():
@@ -380,7 +390,7 @@ def project_narrative(
                     SemanticObjectRef(event_identity, "event", event.event_id),
                     SemanticObjectRef(digest_identity, "episode_digest", episode_id),
                 ),
-                _confidence(event.support.confidence, method="model"),
+                _confidence(observation_confidence(event), method="model"),
             )
         )
 
@@ -397,7 +407,7 @@ def project_narrative(
             if pack_owners.get(draft_evidence.window_manifest_sha256) != fact_ref.member_ref:
                 raise NarrativeProjectionError("draft Fact evidence has the wrong source window owner")
             obligation_refs.append(fact_ref)
-            obligation_confidences.append(fact.support.confidence)
+            obligation_confidences.append(observation_confidence(fact))
             fact_ids.append(fact.fact_id)
         node_id = draft_node_id(draft, "obligation", obligation.obligation_id)
         obligation_evidence[obligation.obligation_id] = tuple(obligation_refs)
@@ -422,7 +432,7 @@ def project_narrative(
             if pack_owners.get(draft_evidence.window_manifest_sha256) != event_ref.member_ref:
                 raise NarrativeProjectionError("draft Event evidence has the wrong source window owner")
             beat_refs.append(event_ref)
-            beat_confidences.append(event.support.confidence)
+            beat_confidences.append(observation_confidence(event))
         nodes.append(
             GraphNode(
                 draft_node_id(draft, "beat", beat.beat_id),

@@ -10,7 +10,14 @@ from decimal import Decimal
 
 from ..contracts.compiler.canonical import canonical_json_hash
 from ..store.models import ArtifactMember, CommittedSemanticInputs
-from ..vlm.models import VlmEntity, VlmEvent, VlmFact
+from .core_observations import (
+    CoreEntity,
+    CoreEvent,
+    CoreFact,
+    observation_confidence,
+    observation_source_interval,
+    semantic_pack,
+)
 from .coverage_analysis import Stage1CoveragePolicy
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 from .narrative_models import (
@@ -62,9 +69,9 @@ def verify_factual_members(
             "input_binding_sha256": draft.input_binding_sha256, "kind": kind, "local_id": local_id,
         })
 
-    entities: dict[str, tuple[VlmEntity, SemanticObjectRef]] = {}
-    facts: dict[str, tuple[VlmFact, SemanticObjectRef]] = {}
-    events: dict[str, tuple[VlmEvent, SemanticObjectRef, str]] = {}
+    entities: dict[str, tuple[CoreEntity, SemanticObjectRef]] = {}
+    facts: dict[str, tuple[CoreFact, SemanticObjectRef]] = {}
+    events: dict[str, tuple[CoreEvent, SemanticObjectRef, str]] = {}
     expected_cards: list[EventCard] = []
     known_refs: set[SemanticObjectRef] = set()
     episodes: dict[int, list[tuple[str, SemanticObjectRef, tuple[SemanticObjectRef, ...]]]] = {}
@@ -75,7 +82,7 @@ def verify_factual_members(
     except ValueError:
         errors["KC-AUTH-001"].add("semantic_analysis_not_authorized")
     for item in inputs.inputs:
-        window, pack = item.source_window, item.semantic_pack.semantic_pack
+        window, pack = item.source_window, semantic_pack(item)
         if (window.source_id, window.source_sha256) not in authorized:
             errors["KC-AUTH-001"].add("source_hash_not_authorized")
         ref = item.semantic_pack.reference
@@ -98,10 +105,10 @@ def verify_factual_members(
                                SemanticObjectRef(card_owner, "source_range", f"{event.event_id}:range:0")))
             expected_cards.append(EventCard(
                 event.event_id, f"episode-{window.episode_index + 1}", event.summary,
-                (CoarseSourceRange(source_ref, window.source_clock_id, event.support.source_interval),), (raw_ref,),
+                (CoarseSourceRange(source_ref, window.source_clock_id, observation_source_interval(event)),), (raw_ref,),
             ))
         summary = pack.window_summary
-        if summary.confidence < threshold:
+        if observation_confidence(summary) < threshold:
             errors["KC-GRAPH-002"].add("summary_low_confidence")
         if not summary.fact_refs and not summary.event_refs:
             errors["KC-GRAPH-002"].add("summary_missing_evidence")
@@ -136,23 +143,23 @@ def verify_factual_members(
     for entity, ref in entities.values():
         node(entity.entity_id, "entity", entity.display_label,
              EntityAttributes(entity.entity_kind.value, entity.display_label, entity.visual_description),
-             (ref,), (entity.support.confidence,), "model")
+             (ref,), (observation_confidence(entity),), "model")
     for fact, ref in facts.values():
         fact_value = FactTextValue(fact.summary) if fact.object_ref is None else FactEntityRefValue(fact.object_ref)
         node(fact.fact_id, "fact", fact.summary, FactAttributes(fact.subject_ref, fact.fact_kind.value, fact_value, "none"),
-             (ref,), (fact.support.confidence,), "model")
+             (ref,), (observation_confidence(fact),), "model")
     for event, ref, episode in events.values():
         event_ref = SemanticObjectRef(card_owner, "event", event.event_id)
         node(event.event_id, "event", event.summary,
              EventAttributes(event_ref, episode, event.summary,
                              (SemanticObjectRef(card_owner, "source_range", f"{event.event_id}:range:0"),), event.participant_refs),
-             (ref, event_ref, SemanticObjectRef(digest_owner, "episode_digest", episode)), (event.support.confidence,), "model")
+             (ref, event_ref, SemanticObjectRef(digest_owner, "episode_digest", episode)), (observation_confidence(event),), "model")
     obligation_refs: dict[str, tuple[SemanticObjectRef, ...]] = {}
     obligation_scores: dict[str, tuple[Decimal, ...]] = {}
     for obligation in draft.obligations:
         keys = tuple(ref.object_id for ref in obligation.required_fact_refs)
         refs = tuple(facts[key][1] for key in keys)
-        scores = tuple(facts[key][0].support.confidence for key in keys)
+        scores = tuple(observation_confidence(facts[key][0]) for key in keys)
         obligation_refs[obligation.obligation_id], obligation_scores[obligation.obligation_id] = refs, scores
         node(identity("obligation", obligation.obligation_id), "obligation", obligation.description,
              ObligationAttributes(obligation.description, keys, obligation.success_criteria), refs, scores, "rule")
@@ -160,7 +167,7 @@ def verify_factual_members(
         node(identity("beat", beat.beat_id), "beat", beat.summary,
              BeatAttributes(beat.summary, beat.phase, tuple(identity("obligation", key) for key in beat.obligation_ids)),
              tuple(events[ref.object_id][1] for ref in beat.event_refs),
-             tuple(events[ref.object_id][0].support.confidence for ref in beat.event_refs), "rule")
+             tuple(observation_confidence(events[ref.object_id][0]) for ref in beat.event_refs), "rule")
     for thread in draft.story_threads:
         node(identity("story_thread", thread.story_thread_id), "story_thread", thread.title,
              StoryThreadAttributes(thread.title, thread.premise, tuple(identity("obligation", key) for key in thread.obligation_ids)),
