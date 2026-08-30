@@ -40,3 +40,38 @@ PC must pull the commit, validate the V11 profile against the real PostgreSQL
 functions and run one real episode. A new `semantic_story` run may create a new
 VLM request identity; this patch does not silently relabel an existing
 `semantic_only` V10 run as V11.
+
+## Real PC evidence and adversarial follow-up
+
+The first one-episode V11 run proved SourcePrep and ContextPrepare, then
+exhausted all three VLM attempts before Stage 1:
+
+1. `NONCANONICAL_ENUM_SET`: candidate tags used a valid but non-canonical order.
+2. `UNKNOWN_REFERENCE`: event `e020` referenced undeclared fact `f049` after the
+   response had reached the 48-fact bound.
+3. `SEMANTIC_PACK_INVARIANT_VIOLATION`: a candidate measurement referenced
+   facts outside its declared event closure.
+
+The first response also contains a later candidate-support overlap error that
+was masked by the earlier tag-order rejection. This is evidence that V23 asks
+one expensive video call to produce two different products at once: factual
+video observations and editorial candidate hypotheses with redundant support,
+closure, ordering, and measurement representations.
+
+Changing the frozen V4 parser in place was tested and rejected: startup
+reconstruction immediately refused persisted V4 profiles whose bound parser
+hash differed. Commit `60b7ec18` was therefore reverted by `7649e3d8`; old
+profiles remain replayable.
+
+Recommended next contract is versioned rather than patched in place:
+
+- expensive VLM pass returns admitted core observations only;
+- a cheaper text-only candidate compiler consumes the admitted local-ID graph;
+- candidate support is deterministically derived from selected event support,
+  not echoed redundantly by the model;
+- model-visible candidate fields contain only editorial choices; Kernel expands
+  aliases, canonicalizes order, recomputes closure, and records a separate
+  Candidate receipt;
+- old V23/V4 runs retain their exact resolver and parser identities.
+
+This is now the P0 input-contract issue blocking a reliable Stage 1-3 real run.

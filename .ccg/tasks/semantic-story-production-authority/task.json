@@ -6,7 +6,7 @@
   "risk": "high",
   "domain": "backend",
   "currentPhase": "review",
-  "nextAction": "提交推送后在 PC PostgreSQL 中验证 V11 并运行一集 semantic_story",
+  "nextAction": "把 VLM 核心观察与 Candidate 生成拆分为可重放的新版本契约，再续跑单集 Stage 1-3",
   "createdAt": "2026-08-30T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

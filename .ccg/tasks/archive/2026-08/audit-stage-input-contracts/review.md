@@ -67,6 +67,14 @@ genre_tags、editing_profile、teaser_strategy、duration 等在 schema 中仍�
 
 这提高了格式稳定性，但会丢失真实的跨集未完事件信号。因果边与 temporal_segments 固定空合理；starts/ends_mid_event 应允许模型观察并由 Stage 1 保守合并。
 
+### L. V23 将事实观察与 Candidate 假设塞进一次昂贵 VLM 输出
+
+真实单集运行三次均由 Candidate/引用闭合失败：合法标签集合仅顺序不同、事件引用越过事实数量上限、measurement 超出 Candidate 事件闭包；第一次在放宽顺序后还会继续触发 Candidate support 与事件 support 不相交。
+
+这些不是 Ark `json_schema` 能完全表达的约束。Candidate 的 support、枚举顺序和闭包中有大量可确定性推导的冗余字段，不应要求视频模型重复回显。否则一个 Candidate 错误会丢弃已经有效的 entities/facts/events，并再次上传/理解整段视频。
+
+修复方向：新增版本化的两步契约。视频 VLM 只产生核心观察；核心 Pack Admission 后，由便宜的文本 Candidate Compiler 使用短 ID 图生成编辑假设。Candidate support 由所选事件 support 确定性求并集，长引用和 canonical order 由 Kernel 扩展。Candidate 失败只重跑 Candidate Compiler，不重跑视频。
+
 ## 保留项
 
 - HTTP run intent 保持小而封闭，不允许调用者上传执行 policy。
@@ -80,9 +88,10 @@ genre_tags、editing_profile、teaser_strategy、duration 等在 schema 中仍�
 ## 推荐修复顺序
 
 1. semantic authority v2：落入真实 Stage 1-3 policies，删除 semantic_story 对 local-run 的依赖。
-2. explicit episode manifest：显式绑定剧情顺序。
-3. Stage 1 temporal projection + 全链路 short alias map。
-4. Stage 2 policy-derived JSON Schema。
-5. Stage 3 AuditClosure/ModelContextProjection 分离。
-6. strict HTTP JSON ingress 与 token budgets。
-7. 再接 Stage 4/Recipe/Render/Publication QC。
+2. 拆分核心 VLM 观察与 Candidate Compiler，禁止因 Candidate 格式失败重跑视频。
+3. explicit episode manifest：显式绑定剧情顺序。
+4. Stage 1 temporal projection + 全链路 short alias map。
+5. Stage 2 policy-derived JSON Schema。
+6. Stage 3 AuditClosure/ModelContextProjection 分离。
+7. strict HTTP JSON ingress 与 token budgets。
+8. 再接 Stage 4/Recipe/Render/Publication QC。
