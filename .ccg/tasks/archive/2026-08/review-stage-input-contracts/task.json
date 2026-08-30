@@ -1,0 +1,12 @@
+{
+  "id": "review-stage-input-contracts",
+  "title": "审查当前各阶段输入、格式校验与字段必要性",
+  "status": "completed",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "architecture",
+  "currentPhase": "completed",
+  "nextAction": "按 review.md 的 P0 顺序另建实现任务",
+  "createdAt": "2026-08-30T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
