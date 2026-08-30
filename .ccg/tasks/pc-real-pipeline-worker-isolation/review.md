@@ -22,8 +22,9 @@ content successful.
 
 - Ruff: passed on all changed Python files.
 - BasedPyright: passed on the changed production modules.
-- Pytest: 82 passed; PostgreSQL integration cases are collected and skipped
-  locally until run against the disposable PC database.
+- Pytest: 99 relevant tests passed, including zero provider redispatch during
+  replay; PostgreSQL integration cases are collected and skipped locally until
+  run against the disposable PC database.
 
 ## Remaining checkpoint
 

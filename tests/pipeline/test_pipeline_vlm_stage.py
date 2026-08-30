@@ -22,7 +22,10 @@ from autocut_kernel.media import (
     TimeBase,
 )
 from autocut_kernel.media.types import canonical_sha256
-from autocut_kernel.pipeline import FinalizeVlmBatchCommand
+from autocut_kernel.pipeline import (
+    FinalizeVlmBatchCommand,
+    VlmBatchRequestPolicyMismatchError,
+)
 from autocut_kernel.store import (
     BlobRef,
     CommandClaim,
@@ -53,7 +56,10 @@ from autocut_kernel.vlm import (
     WindowProxyBlobRef,
 )
 
-from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
+from auto_cut_bot.pipeline.runtime.errors import (
+    PipelineRunValidationError,
+    PipelineStageIsolationError,
+)
 from auto_cut_bot.pipeline.runtime.models import (
     EvidenceReadLimits,
     PipelineCommand,
@@ -1264,6 +1270,39 @@ class CrashAfterAggregateReceipt:
             self.crashed = True
             raise RuntimeError("crash after aggregate Kernel Receipt")
         return result
+
+
+class IncompatiblePersistedBatchFinalizer:
+    def execute(self, request):
+        raise VlmBatchRequestPolicyMismatchError(
+            declared_episode_count=request.declared_episode_count,
+            ordered_policy_hashes=("sha256:" + "1" * 64, "sha256:" + "2" * 64),
+        )
+
+
+@pytest.mark.asyncio
+async def test_incompatible_persisted_batch_isolated_without_provider_redispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(2)
+    stage, _store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+    stage._finalizer = IncompatiblePersistedBatchFinalizer()  # type: ignore[assignment]
+
+    with pytest.raises(PipelineStageIsolationError) as first:
+        await stage.execute(_context())
+    dispatch_count = len(provider.dispatch_calls)
+    with pytest.raises(PipelineStageIsolationError) as replay:
+        await stage.reconcile(_context(status="indeterminate"))
+
+    assert dispatch_count == 2
+    assert len(provider.dispatch_calls) == dispatch_count
+    assert first.value.failure_code == "VLM_BATCH_CHILD_REQUEST_POLICY_MISMATCH"
+    assert replay.value.failure_detail == first.value.failure_detail
 
 
 @pytest.mark.asyncio
