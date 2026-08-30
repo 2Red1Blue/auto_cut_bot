@@ -34,10 +34,12 @@ from .bounded_video_prompt import (
     VLM_BOUNDED_VIDEO_PROMPT_VERSION,
     vlm_bounded_video_response_schema_json,
     vlm_core_video_response_schema_json,
+    vlm_stable_candidate_video_response_schema_json,
     vlm_stable_core_video_response_schema_json,
     vlm_validated_reciprocal_core_video_response_schema_json,
 )
 from .contextual_video_prompt import (
+    VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
@@ -114,6 +116,8 @@ def registered_response_schema_json(
     if parser_strategy_version == VLM_PARSER_STRATEGY_VERSION:
         return vlm_response_schema_json()
     if parser_strategy_version == VLM_PARSER_V4:
+        if prompt_version == VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION:
+            return vlm_stable_candidate_video_response_schema_json()
         if prompt_version in {
             VLM_CONTEXTUAL_REQUIRED_EMPTY_ARRAY_CORE_VIDEO_PROMPT_VERSION,
             VLM_CONTEXTUAL_STRICT_WIRE_CORE_VIDEO_PROMPT_VERSION,
@@ -300,6 +304,7 @@ class DoubaoVlmRequestPolicy:
                 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION,
                 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION,
                 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION,
+                VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
             }
         ):
             raise ValueError("V4 video prompt and parser must be selected together")
@@ -463,6 +468,7 @@ def build_doubao_vlm_request(
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION,
+        VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
     }
     if contextual_prompt != (context_pack is not None):
         raise ValueError("contextual video prompt requires exactly one WindowContextPack")

@@ -1,0 +1,12 @@
+{
+  "id": "fix-semantic-candidate-closure",
+  "title": "闭合 VLM 语义候选与真实 Stage 1-3 流程",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "high",
+  "domain": "backend",
+  "currentPhase": "review",
+  "nextAction": "审查 V23 候选契约，提交推送并在 PC 单集验证",
+  "createdAt": "2026-08-30T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}

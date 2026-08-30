@@ -11,16 +11,19 @@ from autocut_kernel.vlm.parser import VlmResponseRejected
 from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4, parser_contract_sha256_for
 from jsonschema import Draft202012Validator
 
+from auto_cut_bot.pipeline.runtime.semantic_authority import load_installed_semantic_run_authority
 from auto_cut_bot.pipeline.vlm.bounded_video_prompt import (
     VLM_BOUNDED_VIDEO_PROMPT_VERSION,
     VLM_VIDEO_FIELD_ORDER,
     vlm_bounded_video_response_schema_json,
+    vlm_stable_candidate_video_response_schema_json,
 )
 from auto_cut_bot.pipeline.vlm.doubao_ark_provider import DoubaoArkVlmProvider
 from auto_cut_bot.pipeline.vlm.request_factory import build_doubao_vlm_request
 from tests.pipeline import test_doubao_ark_provider as provider_fixture
 from tests.pipeline import test_doubao_vlm_request_factory as factory_fixture
 from tests.pipeline import test_pipeline_vlm_stage as stage_fixture
+from tests.pipeline.test_vlm_contextual_video_prompt import _pack
 from tests.pipeline.test_vlm_video_integration import _policy
 from tests.vlm.test_semantic_pack_v4 import _parse, _wire
 
@@ -76,6 +79,43 @@ def test_final_sdk_schema_is_definition_first_and_file_cache_is_unchanged(old_vi
     assert isinstance(provider.dispatch(request), ProviderCompleted)
     replay_body_bytes = json.dumps(client.responses.create_calls[-1], ensure_ascii=False, separators=(",", ":")).encode()
     assert replay_body_bytes == old_body_bytes
+
+
+def test_v23_contextual_candidate_request_reaches_ark_with_its_exact_schema() -> None:
+    policy = load_installed_semantic_run_authority().vlm_policy
+    bundle = factory_fixture._source_bundle()
+    built = build_doubao_vlm_request(
+        source_bundle=bundle,
+        episode_index=0,
+        job=bundle.source_job,
+        artifact_revision=1,
+        idempotency_key="v23-provider-wire",
+        policy=policy,
+        retry_policy=factory_fixture._retry_policy(),
+        context_pack=_pack(),
+    )
+    base = provider_fixture._dispatch()
+    provider_payload = json.loads(built.request_payload)
+    provider_payload["proxy_blob"] = base.proxy_blob_ref.to_mapping()
+    provider_payload_bytes = json.dumps(
+        provider_payload, separators=(",", ":"), sort_keys=True
+    ).encode()
+    dispatch = replace(
+        base,
+        request_payload=provider_payload_bytes,
+        request_payload_sha256="sha256:" + hashlib.sha256(provider_payload_bytes).hexdigest(),
+    )
+    client = provider_fixture.FakeClientFactory(provider_fixture._completed_stream())
+    provider = DoubaoArkVlmProvider(
+        provider_fixture._config(),
+        file_cache=provider_fixture.MemoryFileCache(),
+        client_factory=client,
+    )
+
+    assert isinstance(provider.dispatch(dispatch), ProviderCompleted)
+    body = client.responses.create_calls[-1]
+    assert body["text"]["format"]["schema"] == json.loads(policy.response_schema_json)
+    assert body["text"]["format"]["schema"]["properties"]["candidate_hypotheses"]["maxItems"] == 8
 
 
 @pytest.mark.parametrize("tamper", ["schema", "old_schema", "unknown_prompt", "parser", "adapter", "digest", "boolean_schema"])
@@ -148,6 +188,18 @@ def test_generation_preserves_original_raw_and_replays_without_another_call() ->
     assert second.semantic_pack == first.semantic_pack
     assert second.outcome.receipt_id == first.outcome.receipt_id
     assert provider.calls == 1
+
+
+def test_v23_nonempty_candidate_is_strictly_parsed_as_semantic_evidence() -> None:
+    wire = json.loads(_bounded_fixture_bytes())
+    wire["continuity"]["temporal_segments"] = []
+    schema = json.loads(vlm_stable_candidate_video_response_schema_json())
+
+    Draft202012Validator(schema).validate(wire)
+    pack = _parse(wire)
+
+    assert len(pack.candidate_hypotheses) == 1
+    assert pack.candidate_hypotheses[0].local_candidate_id == "c001"
 
 
 def test_schema_vocabulary_does_not_replace_actual_reference_closure() -> None:

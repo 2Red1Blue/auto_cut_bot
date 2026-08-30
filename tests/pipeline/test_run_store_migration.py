@@ -26,6 +26,9 @@ STAGE3_PROFILE_MIGRATION = Path(
 SEMANTIC_ONLY_PROFILE_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0028_semantic_only_execution_profile.sql"
 )
+CANDIDATE_CORE_PROFILE_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0048_vlm_contextual_candidate_core.sql"
+)
 
 
 def test_semantic_only_profile_migration_closes_v10_without_media_fields() -> None:
@@ -37,6 +40,18 @@ def test_semantic_only_profile_migration_closes_v10_without_media_fields() -> No
     assert "media_preflight_policy" not in sql
     assert "stage1_command_policy" not in sql
     assert "external_publication" not in sql
+
+
+def test_candidate_core_profile_registers_v23_without_rewriting_history() -> None:
+    sql = CANDIDATE_CORE_PROFILE_MIGRATION.read_text(encoding="utf-8")
+
+    assert "vlm-semantic-pack-v23-context-assisted-candidate-core" in sql
+    assert "vlm-semantic-pack-v22-context-assisted-minimal-core-observations" in sql
+    assert "execution_profile_contextual_candidate_core_is_valid" in sql
+    assert "execution_profile_contextual_minimal_object_shape_is_valid" in sql
+    assert "pipeline-execution-profile-v10" in sql
+    assert "UPDATE runtime.pipeline_runs" not in sql
+    assert "INSERT INTO runtime.pipeline_commands" not in sql
 
 
 def test_pipeline_http_run_migration_owns_durable_control_plane() -> None:

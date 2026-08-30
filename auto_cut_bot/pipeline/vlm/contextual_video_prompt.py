@@ -52,9 +52,12 @@ VLM_CONTEXTUAL_ENUM_DISAMBIGUATED_FACT_ANCHORED_EVENT_CORE_VIDEO_PROMPT_VERSION 
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION = (
     "vlm-semantic-pack-v22-context-assisted-minimal-core-observations"
 )
-# Historical minimal prompt identities remain registered so persisted V19–V21
+VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION = (
+    "vlm-semantic-pack-v23-context-assisted-candidate-core"
+)
+# Historical minimal prompt identities remain registered so persisted V19–V22
 # runs can be reconstructed after a deploy.  They are read-only compatibility
-# aliases; new runs must use the current V22 contract.
+# contracts; new semantic runs use V23.
 VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION = (
     "vlm-semantic-pack-v19-context-assisted-minimal-core-observations"
 )
@@ -209,6 +212,43 @@ VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE = (
     "window_summary 必须简短并只引用已经声明的事实或事件。\n"
     "播放窗口："
 )
+VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_TEMPLATE = (
+    "你是完整视频窗口的局部语义分析器。本轮输出可由当前视频支持的核心观察，以及严格筛选的"
+    "语义候选。语义候选用于后续故事设计，不是物理剪辑端点；不得输出源时间、帧级切点、"
+    "ASR/VAD 边界、提前量或渲染参数。外部剧情辅助只帮助理解，不是视频证据；人物身份、关系、"
+    "剧情和候选仍必须由当前视频里的实体、事实和事件支持。\n"
+    "只返回一个完整、严格的 JSON 对象：schema_version 必须为 4，根字段按 schema_version、entities、facts、"
+    "events、window_summary、continuity、candidate_hypotheses 输出；不要 Markdown、解释、注释或尾逗号。"
+    "每个对象只能包含 Schema 已声明的字段；字段名只能出现一次。只保留高信息量观察和绝对标准下成立的候选，不凑数量。\n"
+    "先声明实体，再声明事实和事件，最后声明候选。实体 ID 只能依次为 p001、p002、…；事实为"
+    "f001、f002、…；事件为 e001、e002、…；候选为 c001、c002、…。所有 ref 必须逐字引用已声明的"
+    "同类型 ID。没有受词时 object_ref 写 JSON null。每个 event.fact_refs 必须恰好引用一个事实，"
+    "event.support 必须逐字复制该事实的完整 support。\n"
+    "fact_kind 只能是 visible_presence、visible_state、visible_action、visible_change、visible_relation、"
+    "scene_context、character_appearance、screen_text、temporal_mode；event_kind 只能是 action、interaction、"
+    "state_change、reaction、reveal、transition。每个 event 的 cause_event_refs 和 effect_event_refs 必须是 []；"
+    "continuity.temporal_segments 必须是 []。continuity 固定输出 continues_from_previous=false、"
+    "continues_into_next=false、starts_mid_event=false、ends_mid_event=false、entry_state_fact_refs=[]、"
+    "exit_state_fact_refs=[]。\n"
+    "每个实体、事实、事件和候选都必须有 video_observation support。时间使用从播放窗口开始的整数毫秒半开区间，"
+    "满足 0<=start_ms<end_ms<=duration_ms_floor；uncertainty_ms 是 0 到 5000 的整数。"
+    "所有 confidence 以及 measurement.value 都是 0 到 1 的十进制字符串，不是 JSON 浮点数。\n"
+    "candidate_hypotheses 只在当前窗口存在明确高光或钩子时输出，否则为 []。candidate_kind=hook 必须提出"
+    "具体且尚未回答的 open_question，并令 payoff_event_refs=[]；candidate_kind=highlight 必须引用当前窗口"
+    "已经发生的非空 payoff_event_refs。每个候选必须引用 anchor_event_ref，至少一条 measurement，且"
+    "anchor/supporting/payoff 事件都由当前视频观察支持。context_event_refs 只能补充背景，不能单独生成候选。"
+    "候选 support 必须与 anchor、supporting 和 payoff 事件的 support 有非空交集；context 事件可在候选区间外，"
+    "不得为纳入背景而扩大候选区间。reason 说明入选理由，anchor_summary 简述核心事件，"
+    "payoff_or_open_question 对 highlight 写已发生回报、对 hook 写同一未解问题。"
+    "editing_modes 只能是 [\"dialogue\"]、[\"action\"] 或 [\"dialogue\",\"action\"]。"
+    "narrative_functions 按 hook、setup、escalation、confrontation、reveal、reversal、payoff、aftermath 的顺序去重；"
+    "tags 按 dialogue、action、emotion、suspense、conflict、reveal、reversal、visual_spectacle、"
+    "character_moment、relationship_moment 的顺序去重。measurement_kind 只能是 hook_strength、reveal_strength、"
+    "emotional_payoff_strength、dialogue_salience、action_salience、visual_salience，并至少引用一个本候选相关 fact 或 event。"
+    "dialogue_excerpt 只是简短语义描述，"
+    "不是逐字 ASR 或时间证据。\n"
+    "window_summary 必须简短并只引用已经声明的事实或事件。播放窗口："
+)
 # The response/parser contract for historical minimal runs is identical, but
 # the prompt bytes are not.  Re-rendering an in-flight child must use the exact
 # historical wording that its prompt_version names; aliasing V19/V20 to V22
@@ -287,6 +327,9 @@ def build_vlm_contextual_video_prompt(
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_VERSION: (
             VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_TEMPLATE
         ),
+        VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION: (
+            VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_TEMPLATE
+        ),
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_TEMPLATE,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_TEMPLATE,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION: VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_TEMPLATE,
@@ -299,6 +342,7 @@ def build_vlm_contextual_video_prompt(
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V19_VERSION,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V20_VERSION,
         VLM_CONTEXTUAL_MINIMAL_CORE_VIDEO_PROMPT_V21_VERSION,
+        VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
     }:
         return (
             template

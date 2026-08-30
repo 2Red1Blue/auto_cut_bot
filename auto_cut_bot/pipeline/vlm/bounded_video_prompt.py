@@ -195,6 +195,34 @@ def vlm_stable_core_video_response_schema() -> dict[str, object]:
     return schema
 
 
+def vlm_stable_candidate_video_response_schema() -> dict[str, object]:
+    """Return V23's stable observation graph with semantic candidates enabled.
+
+    V14/V22 closed candidate generation together with redundant causal and
+    temporal graph fields.  That made provider output more reliable, but also
+    removed the sole normative source consumed by ``CandidateCatalog``.  V23
+    restores only the candidate member from the bounded V4 contract while
+    keeping causal edges and temporal segments closed.  Candidate support is
+    still coarse video evidence, never a physical edit endpoint.
+    """
+
+    schema = vlm_stable_core_video_response_schema()
+    properties = _object(schema["properties"])
+    bounded_properties = _object(vlm_bounded_video_response_schema()["properties"])
+    properties["candidate_hypotheses"] = copy.deepcopy(
+        bounded_properties["candidate_hypotheses"]
+    )
+    candidates = _object(_object(properties["candidate_hypotheses"])["items"])
+    candidate_support = _object(_object(candidates["properties"])["support"])
+    interval = _object(_object(candidate_support["properties"])["interval_ms"])
+    _object(interval["properties"])["uncertainty_ms"] = {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5_000,
+    }
+    return schema
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -220,6 +248,12 @@ def vlm_stable_core_video_response_schema_json() -> str:
     """Return canonical V14 schema bytes for request identity binding."""
 
     return _canonical_json(vlm_stable_core_video_response_schema())
+
+
+def vlm_stable_candidate_video_response_schema_json() -> str:
+    """Return canonical V23 schema bytes for request identity binding."""
+
+    return _canonical_json(vlm_stable_candidate_video_response_schema())
 
 
 def ordered_bounded_video_schema(schema: object) -> dict[str, object]:

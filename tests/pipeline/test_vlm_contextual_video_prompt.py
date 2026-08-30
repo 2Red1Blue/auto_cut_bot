@@ -14,10 +14,12 @@ from autocut_kernel.context_pack import (
 from auto_cut_bot.pipeline.vlm.bounded_video_prompt import (
     vlm_bounded_video_response_schema,
     vlm_core_video_response_schema,
+    vlm_stable_candidate_video_response_schema,
     vlm_stable_core_video_response_schema,
     vlm_validated_reciprocal_core_video_response_schema,
 )
 from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CLOSED_VOCABULARY_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_COMPACT_CANONICAL_CORE_VIDEO_PROMPT_VERSION,
     VLM_CONTEXTUAL_CORE_VIDEO_PROMPT_VERSION,
@@ -292,6 +294,31 @@ def test_v19_uses_only_the_core_observation_prompt_and_stable_schema() -> None:
     event_properties = schema["properties"]["events"]["items"]["properties"]
     assert event_properties["cause_event_refs"]["maxItems"] == 0
     assert event_properties["effect_event_refs"]["maxItems"] == 0
+
+
+def test_v23_restores_semantic_candidates_without_granting_physical_edit_authority() -> None:
+    pack = _pack()
+    prompt = build_vlm_contextual_video_prompt(
+        factory_fixture._prepared_episode().manifest,
+        pack,
+        prompt_version=VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
+    )
+    schema = json.loads(
+        registered_response_schema_json(
+            _policy().parser_strategy_version,
+            VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
+        )
+    )
+    assert "语义候选" in prompt
+    assert "不是物理剪辑端点" in prompt
+    assert "ASR" in prompt and "VAD" in prompt
+    assert "candidate_hypotheses 必须是 []" not in prompt
+    assert schema == vlm_stable_candidate_video_response_schema()
+    assert schema["properties"]["candidate_hypotheses"]["maxItems"] == 8
+    event_properties = schema["properties"]["events"]["items"]["properties"]
+    assert event_properties["cause_event_refs"]["maxItems"] == 0
+    assert event_properties["effect_event_refs"]["maxItems"] == 0
+    assert schema["properties"]["continuity"]["properties"]["temporal_segments"]["maxItems"] == 0
 
 
 def test_historical_minimal_prompt_versions_preserve_their_exact_contract_bytes() -> None:
