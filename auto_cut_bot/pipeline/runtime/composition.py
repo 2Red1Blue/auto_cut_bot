@@ -166,28 +166,16 @@ class PipelineRuntimeConfigurationError(ValueError):
 def _validate_semantic_story_authority(
     profile: PipelineExecutionProfile,
     semantic: SemanticRunAuthority,
-    story: InstalledLocalRunProfileResolver,
 ) -> None:
-    """Admit only the non-overlapping V23 and Stage 1-3 capabilities.
-
-    The semantic resource remains narrow and the local-run narrative remains
-    V3. This check executes before any provider or Store object is created.
-    """
-    resource = story.resource
+    """Admit the one independently installed V23 + Stage 1-3 authority."""
     if not profile.is_semantic_story:
         raise PipelineRuntimeConfigurationError("semantic-story profile kind is invalid")
     if (
         profile.to_doubao_policy() != semantic.vlm_policy
         or profile.to_generation_retry_policy() != semantic.retry_policy
-        or profile.build_stage1_command_policy() != resource.narrative.command_policy
-        or profile.build_stage1_command_policy().canonical_hash
-        != resource.narrative.reference.stage1_command_policy_sha256
-        or profile.build_stage2_command_policy() != resource.local_run.stage2_command_policy
-        or profile.build_stage2_command_policy().canonical_hash
-        != resource.local_run.stage2_command_policy_sha256
-        or profile.build_stage3_command_policy() != resource.local_run.stage3_command_policy
-        or profile.build_stage3_command_policy().canonical_hash
-        != resource.local_run.stage3_command_policy_sha256
+        or profile.build_stage1_command_policy() != semantic.stage1_command_policy
+        or profile.build_stage2_command_policy() != semantic.stage2_command_policy
+        or profile.build_stage3_command_policy() != semantic.stage3_command_policy
     ):
         raise PipelineRuntimeConfigurationError(
             "semantic-story authority composition does not close"
@@ -726,9 +714,9 @@ def _compose_semantic_only_runtime(
     """Compose the V23 semantic plan, optionally continuing through Stage 3.
 
     This is not a fallback from a full plan.  It is selected explicitly and the
-    installed semantic resource binds every paid VLM policy.  The story variant
-    additionally freezes the installed Stage 1-3 command policies, but neither
-    variant constructs FunASR/media, render or publication ports.
+    installed semantic resource binds every paid VLM policy and, for the story
+    variant, the Stage 1-3 command policies.  Neither variant constructs
+    FunASR/media, render or publication ports.
     """
     relevant = _SEMANTIC_REQUIRED_ENVIRONMENT + (PIPELINE_KERNEL_POSTGRES_DSN_ENV, PIPELINE_ARK_BASE_URL_ENV)
     if not any(values.get(name, "").strip() for name in relevant):
@@ -753,25 +741,22 @@ def _compose_semantic_only_runtime(
         )
         if configured_policy != semantic_authority.vlm_policy:
             raise ValueError("configured Doubao policy differs from installed semantic authority")
-        story_authority = load_installed_local_run_resolver() if include_story else None
         execution_profile = (
             PipelineExecutionProfile.from_semantic_story_policies(
                 semantic_authority.vlm_policy,
                 retry_policy=semantic_authority.retry_policy,
-                stage1_policy=story_authority.resource.narrative.command_policy,
-                stage2_policy=story_authority.resource.local_run.stage2_command_policy,
-                stage3_policy=story_authority.resource.local_run.stage3_command_policy,
+                stage1_policy=semantic_authority.stage1_command_policy,
+                stage2_policy=semantic_authority.stage2_command_policy,
+                stage3_policy=semantic_authority.stage3_command_policy,
             )
-            if story_authority is not None
+            if include_story
             else PipelineExecutionProfile.from_semantic_policies(
                 semantic_authority.vlm_policy,
                 retry_policy=semantic_authority.retry_policy,
             )
         )
-        if story_authority is not None:
-            _validate_semantic_story_authority(
-                execution_profile, semantic_authority, story_authority
-            )
+        if include_story:
+            _validate_semantic_story_authority(execution_profile, semantic_authority)
         api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
         tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
         project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
@@ -840,10 +825,10 @@ def _compose_semantic_only_runtime(
         ("context_prepare", context_stage),
         ("vlm", vlm_stage),
     ]
-    if story_authority is not None:
-        stage1_policy = story_authority.resource.narrative.command_policy
-        stage2_policy = story_authority.resource.local_run.stage2_command_policy
-        stage3_policy = story_authority.resource.local_run.stage3_command_policy
+    if include_story:
+        stage1_policy = semantic_authority.stage1_command_policy
+        stage2_policy = semantic_authority.stage2_command_policy
+        stage3_policy = semantic_authority.stage3_command_policy
         stage_ports.extend(
             (
                 (
@@ -860,7 +845,7 @@ def _compose_semantic_only_runtime(
                             max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
                             debug_sink=debug_sink,
                         ),
-                        installed_profile=story_authority.resource,
+                        semantic_authority=semantic_authority,
                     ),
                 ),
                 (
@@ -877,7 +862,7 @@ def _compose_semantic_only_runtime(
                             max_request_bytes=stage2_policy.max_prompt_bytes,
                             debug_sink=debug_sink,
                         ),
-                        installed_profile=story_authority.resource,
+                        semantic_authority=semantic_authority,
                     ),
                 ),
                 (
@@ -894,7 +879,7 @@ def _compose_semantic_only_runtime(
                             max_request_bytes=stage3_policy.max_prompt_bytes,
                             debug_sink=debug_sink,
                         ),
-                        installed_profile=story_authority.resource,
+                        semantic_authority=semantic_authority,
                     ),
                 ),
             )
@@ -906,7 +891,7 @@ def _compose_semantic_only_runtime(
         control_store, scheduler, catalog, execution_profile=execution_profile,
         full_stage_vlm_recompute_binder=(
             FullStageVlmRecomputeBinder(kernel_store)
-            if owner_maps is None and story_authority is None
+            if owner_maps is None and not include_story
             else None
         ),
     )
@@ -924,7 +909,7 @@ def _compose_semantic_only_runtime(
         concurrency=1,
         max_batch_size=1,
     )
-    return PipelineRuntime(service, worker, execution_profile, story_authority, kernel_store)
+    return PipelineRuntime(service, worker, execution_profile, None, kernel_store)
 
 
 def _catalog_text(value: object, index: int, field_name: str) -> str:

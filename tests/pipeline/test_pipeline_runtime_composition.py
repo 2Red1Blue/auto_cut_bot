@@ -41,6 +41,9 @@ from auto_cut_bot.pipeline.runtime.composition import (
     compose_pipeline_highlight_read_service_from_environment,
     compose_pipeline_runtime_from_environment,
 )
+from auto_cut_bot.pipeline.runtime.semantic_authority import (
+    load_installed_semantic_run_authority,
+)
 from auto_cut_bot.pipeline.runtime.worker import DurablePipelineWorker
 from tests.pipeline.installed_profile_fixture import (
     synthetic_installed_resource,
@@ -325,8 +328,15 @@ def test_explicit_semantic_only_plan_composes_without_media_authority(
 
 
 def test_explicit_semantic_story_plan_composes_v23_through_stage3_without_media(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def forbidden_local_run() -> None:
+        pytest.fail("semantic_story must not load the timed-media local-run authority")
+
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.composition.load_installed_local_run_resolver",
+        forbidden_local_run,
+    )
     environment = _environment(tmp_path)
     environment[PIPELINE_PLAN_ENV] = SEMANTIC_STORY_PLAN
     for name in (
@@ -340,6 +350,7 @@ def test_explicit_semantic_story_plan_composes_v23_through_stage3_without_media(
     runtime = compose_pipeline_runtime_from_environment(environment)
 
     assert runtime is not None
+    assert runtime.authority_profile_resolver is None
     assert runtime.execution_profile.is_semantic_story
     assert runtime.execution_profile.prompt_version == (
         "vlm-semantic-pack-v23-context-assisted-candidate-core"
@@ -353,6 +364,11 @@ def test_explicit_semantic_story_plan_composes_v23_through_stage3_without_media(
         "stage3_blueprint",
     )
     assert "media_preflight" not in runtime.worker._runner._registry.stage_names
+    semantic = load_installed_semantic_run_authority()
+    registry = runtime.worker._runner._registry
+    assert registry.require("stage1_narrative")._semantic_authority == semantic
+    assert registry.require("stage2_portfolio")._semantic_authority == semantic
+    assert registry.require("stage3_blueprint")._semantic_authority == semantic
 
 
 def test_semantic_only_replay_composes_without_metadata_credentials(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
+from auto_cut_bot.pipeline.runtime import composition
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
 from auto_cut_bot.pipeline.runtime.models import PipelineExecutionProfile
 from auto_cut_bot.pipeline.runtime.semantic_authority import (
@@ -48,6 +50,43 @@ def test_v11_semantic_story_profile_roundtrips_without_physical_fields() -> None
         "materialization_limits",
         "evidence_read_limits",
     }.intersection(restored.to_mapping())
+
+
+def test_installed_semantic_authority_owns_real_stage_policies_and_rejects_drift() -> None:
+    semantic = load_installed_semantic_run_authority()
+    policies = (
+        semantic.stage1_command_policy,
+        semantic.stage2_command_policy,
+        semantic.stage3_command_policy,
+    )
+    assert all(policy.generation.model_id == semantic.vlm_policy.model_id for policy in policies)
+    assert all("synthetic" not in str(policy.to_mapping()).lower() for policy in policies)
+    assert all(policy.retry_policy == semantic.retry_policy for policy in policies)
+    profile = PipelineExecutionProfile.from_semantic_story_policies(
+        semantic.vlm_policy,
+        retry_policy=semantic.retry_policy,
+        stage1_policy=semantic.stage1_command_policy,
+        stage2_policy=semantic.stage2_command_policy,
+        stage3_policy=semantic.stage3_command_policy,
+    )
+    composition._validate_semantic_story_authority(profile, semantic)
+
+    drifted_stage1 = replace(
+        semantic.stage1_command_policy,
+        generation=replace(
+            semantic.stage1_command_policy.generation,
+            prompt_version="unauthorized-stage1-prompt",
+        ),
+    )
+    drifted = PipelineExecutionProfile.from_semantic_story_policies(
+        semantic.vlm_policy,
+        retry_policy=semantic.retry_policy,
+        stage1_policy=drifted_stage1,
+        stage2_policy=semantic.stage2_command_policy,
+        stage3_policy=semantic.stage3_command_policy,
+    )
+    with pytest.raises(composition.PipelineRuntimeConfigurationError, match="does not close"):
+        composition._validate_semantic_story_authority(drifted, semantic)
 
 
 @pytest.mark.parametrize(

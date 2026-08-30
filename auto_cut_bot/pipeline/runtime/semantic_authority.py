@@ -1,8 +1,9 @@
 """Digest-bound authority for the independently executable semantic plan.
 
-This resource deliberately authorizes only SourcePrep and Doubao VLM semantic
-evidence.  It is not a local-run profile and cannot authorize timed speech,
-editing, rendering, publication, or an authority bootstrap.
+This resource deliberately authorizes only SourcePrep, Doubao VLM semantic
+evidence and the text-only Stage 1-3 semantic chain.  It is not a local-run
+profile and cannot authorize timed speech, editing, rendering, publication, or
+an authority bootstrap.
 """
 
 from __future__ import annotations
@@ -13,6 +14,9 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import cast
 
+from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
+from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
+from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
 from autocut_kernel.vlm import GenerationRetryPolicy, VlmParsePolicy
 from autocut_kernel.vlm.semantic_contracts import VLM_PARSER_V4, parser_contract_sha256_for
 
@@ -31,11 +35,14 @@ class SemanticRunAuthorityError(ValueError):
     """The installed semantic-only authority is absent or inconsistent."""
 
 
-_SCHEMA_VERSION = "autocut-semantic-run-authority-v1"
+_SCHEMA_VERSION = "autocut-semantic-run-authority-v2"
 _CONTRACT_VERSION = "2.1.3"
 _DIGEST_NAME = "semantic-run.sha256"
 _RESOURCE_NAME = "semantic-run.json"
-_FIELDS = frozenset({"capabilities", "contract_version", "retry_policy", "schema_version", "vlm"})
+_FIELDS = frozenset({
+    "capabilities", "contract_version", "retry_policy", "schema_version",
+    "stage1_command_policy", "stage2_command_policy", "stage3_command_policy", "vlm",
+})
 _VLM_FIELDS = frozenset({
     "adapter_strategy_version", "model_id", "parse_policy", "parser_contract_sha256",
     "parser_strategy_version", "prompt_template_sha256", "prompt_version", "provider_id",
@@ -92,16 +99,25 @@ def _required_int(value: dict[str, object], field: str) -> int:
 
 @dataclass(frozen=True, slots=True)
 class SemanticRunAuthority:
-    """Exact VLM/retry policies and an intentionally narrow capability set."""
+    """Exact VLM/semantic policies and an intentionally narrow capability set."""
 
     vlm_policy: DoubaoVlmRequestPolicy
     retry_policy: GenerationRetryPolicy
+    stage1_command_policy: Stage1CommandPolicy
+    stage2_command_policy: Stage2CommandPolicy
+    stage3_command_policy: Stage3CommandPolicy
 
     def __post_init__(self) -> None:
         if type(self.vlm_policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
             raise SemanticRunAuthorityError("semantic authority requires an exact VLM policy")
         if type(self.retry_policy) is not GenerationRetryPolicy:  # noqa: E721
             raise SemanticRunAuthorityError("semantic authority requires an exact retry policy")
+        if type(self.stage1_command_policy) is not Stage1CommandPolicy:  # noqa: E721
+            raise SemanticRunAuthorityError("semantic authority requires an exact Stage 1 policy")
+        if type(self.stage2_command_policy) is not Stage2CommandPolicy:  # noqa: E721
+            raise SemanticRunAuthorityError("semantic authority requires an exact Stage 2 policy")
+        if type(self.stage3_command_policy) is not Stage3CommandPolicy:  # noqa: E721
+            raise SemanticRunAuthorityError("semantic authority requires an exact Stage 3 policy")
 
 
 def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> SemanticRunAuthority:
@@ -117,8 +133,8 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
     capabilities = _closed_object(document["capabilities"], _CAPABILITY_FIELDS, "capabilities")
     expected_capabilities = {
         "authority_bootstrap": False, "external_publication": False, "physical_edit": False,
-        "render_qc": False, "source_prep": True, "stage1_compile": False,
-        "stage2_compile": False, "stage3_compile": False, "timed_speech": False,
+        "render_qc": False, "source_prep": True, "stage1_compile": True,
+        "stage2_compile": True, "stage3_compile": True, "timed_speech": False,
         "vlm_semantic_evidence": True,
     }
     if capabilities != expected_capabilities:
@@ -191,7 +207,21 @@ def decode_semantic_run_authority(raw: bytes, *, expected_sha256: str) -> Semant
         )
     except (TypeError, ValueError) as error:
         raise SemanticRunAuthorityError("semantic authority retry policy is invalid") from error
-    return SemanticRunAuthority(policy, retry_policy)
+    try:
+        stage1_policy = Stage1CommandPolicy.from_mapping(document["stage1_command_policy"])
+        stage2_policy = Stage2CommandPolicy.from_mapping(document["stage2_command_policy"])
+        stage3_policy = Stage3CommandPolicy.from_mapping(document["stage3_command_policy"])
+    except (TypeError, ValueError) as error:
+        raise SemanticRunAuthorityError("semantic authority Stage 1-3 policy is invalid") from error
+    if (
+        stage1_policy.retry_policy != retry_policy
+        or stage2_policy.retry_policy != retry_policy
+        or stage3_policy.retry_policy != retry_policy
+    ):
+        raise SemanticRunAuthorityError("semantic authority retry policies differ")
+    return SemanticRunAuthority(
+        policy, retry_policy, stage1_policy, stage2_policy, stage3_policy,
+    )
 
 
 def load_installed_semantic_run_authority() -> SemanticRunAuthority:

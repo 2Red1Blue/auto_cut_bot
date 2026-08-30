@@ -18,6 +18,7 @@ from autocut_kernel.store import CommandOutcome, Job
 
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
+from .semantic_authority import SemanticRunAuthority
 from .semantic_predecessors import (
     Stage1NarrativePipelineStore,
     read_stage1_pipeline_request,
@@ -35,6 +36,7 @@ class Stage1NarrativePipelineStage:
         *,
         command: BuildNarrativeGraphCommand | None = None,
         installed_profile: LocalRunResource | None = None,
+        semantic_authority: SemanticRunAuthority | None = None,
     ) -> None:
         if not callable(getattr(provider, "dispatch", None)) or not callable(getattr(provider, "reconcile", None)):
             raise PipelineRunValidationError("Stage 1 requires an exact text generation provider")
@@ -45,7 +47,12 @@ class Stage1NarrativePipelineStage:
             raise PipelineRunValidationError(
                 "Stage 1 requires an exact installed local-run resource"
             )
+        if semantic_authority is not None and type(semantic_authority) is not SemanticRunAuthority:  # noqa: E721
+            raise PipelineRunValidationError("Stage 1 requires an exact semantic authority")
+        if installed_profile is not None and semantic_authority is not None:
+            raise PipelineRunValidationError("Stage 1 authority sources are mutually exclusive")
         self._installed_profile = installed_profile
+        self._semantic_authority = semantic_authority
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -72,6 +79,11 @@ class Stage1NarrativePipelineStage:
                 raise PipelineRunValidationError(
                     "persisted Stage 1 policy differs from installed narrative policy"
                 )
+        semantic = self._semantic_authority
+        if semantic is not None and policy != semantic.stage1_command_policy:
+            raise PipelineRunValidationError(
+                "persisted Stage 1 policy differs from installed semantic authority"
+            )
         return read_stage1_pipeline_request(
             self._store, job=job, run_id=context.run_id,
             execution_profile_hash=context.execution_profile_hash,

@@ -1,1 +1,48 @@
-{"capabilities":{"authority_bootstrap":false,"external_publication":false,"physical_edit":false,"render_qc":false,"source_prep":true,"stage1_compile":false,"stage2_compile":false,"stage3_compile":false,"timed_speech":false,"vlm_semantic_evidence":true},"contract_version":"2.1.3","retry_policy":{"backoff_seconds":[2,8],"max_attempts":3,"strategy_version":"generation-retry-v1"},"schema_version":"autocut-semantic-run-authority-v1","vlm":{"adapter_strategy_version":"doubao-ark-files-responses-stream-v5","model_id":"doubao-seed-2-1-pro-260628","parse_policy":{"max_candidate_hypotheses":8,"max_entities":24,"max_events":24,"max_facts":48,"max_measurements":48,"max_response_bytes":2097152,"max_temporal_segments":8,"max_text_characters":512,"max_total_text_characters":65536},"parser_contract_sha256":"sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630","parser_strategy_version":"strict-semantic-pack-v4","prompt_template_sha256":"sha256:16e4a57ad4f6605f91d4a82c03d7db18e45eff3d0ff6b8f15237eb0cec418126","prompt_version":"vlm-semantic-pack-v23-context-assisted-candidate-core","provider_id":"doubao-ark-responses-stream","request_parameters":{"max_output_tokens":32768,"temperature":0,"thinking_type":"disabled","video_fps":1},"response_schema_sha256":"sha256:67fafe020c971852e130a2b823977068a66524b68d453d64983b770d006a12ff","stage_strategy_version":"doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-3-v8","window_sampling_policy_sha256":"sha256:488a902717464a2124ba778f095388ebdd225dc9ccbeed0af68187b67cd593f0"}}
+{
+  "capabilities": {"authority_bootstrap": false, "external_publication": false, "physical_edit": false, "render_qc": false, "source_prep": true, "stage1_compile": true, "stage2_compile": true, "stage3_compile": true, "timed_speech": false, "vlm_semantic_evidence": true},
+  "contract_version": "2.1.3",
+  "retry_policy": {"backoff_seconds": [2, 8], "max_attempts": 3, "strategy_version": "generation-retry-v1"},
+  "schema_version": "autocut-semantic-run-authority-v2",
+  "stage1_command_policy": {
+    "artifact_revision": 1,
+    "coverage_policy": {"coverage_mode": "strict_global", "minimum_confidence": "0.65"},
+    "dependency_policy": {
+      "attribute_projections": ["subject_to_fact", "entity_ref_value_to_fact", "participant_to_event", "required_fact_to_obligation", "obligation_to_beat", "obligation_to_story_thread", "entity_to_character", "state_fact_to_character", "character_to_character_state", "state_fact_to_character_state", "answer_fact_to_question", "setup_payoff_event_to_foreshadow", "subject_object_character_to_relationship"],
+      "canonical_owner_by_object_type": {"beat": "narrative_graph", "character": "narrative_graph", "character_state": "narrative_graph", "coverage_window": "coverage_ledger", "entity": "narrative_graph", "event": "event_card_set", "fact": "narrative_graph", "foreshadow": "narrative_graph", "obligation": "narrative_graph", "question": "narrative_graph", "relationship": "narrative_graph", "source": "whole_series_source_manifest", "source_window": "whole_series_source_manifest", "story_thread": "narrative_graph"},
+      "edge_projections": {"causes": "from_to", "contradicts": "seed_both_no_recursive_arc", "involves": "attributes_only", "precedes": "no_propagation_seed_both_on_conflict", "requires": "to_from", "resolves": "from_to", "satisfies": "from_to", "supports": "from_to"},
+      "external_root_projections": ["source_window_to_coverage_window", "coverage_window_to_source", "coverage_window_to_fact", "coverage_window_to_event", "source_to_fact", "source_to_event"],
+      "strategy_version": "semantic-dependencies-v1"
+    },
+    "draft_policy": {"max_beats": 256, "max_input_objects": 8192, "max_input_windows": 128, "max_merge_proposals": 256, "max_obligations": 256, "max_prompt_bytes": 16777216, "max_references_per_item": 128, "max_response_bytes": 2097152, "max_story_threads": 128, "max_text_characters": 2048, "max_total_text_characters": 1048576},
+    "generation": {"adapter_strategy_version": "doubao-ark-text-responses-stream-v1", "max_output_tokens": 32768, "model_id": "doubao-seed-2-1-pro-260628", "prompt_template": "仅依据所给已提交 VLM 语义观察生成跨窗口叙事草案。完整覆盖每个事实、事件和窗口；不得发明证据、身份、关系或排除理由；不确定与冲突必须保留。只返回响应 JSON Schema 指定的对象，并逐字复用允许的 evidence refs、input_binding_sha256 与封闭枚举。", "prompt_version": "autocut-stage1-narrative-production-v1", "provider_id": "doubao-ark-text-responses-stream", "temperature": "0.2"},
+    "retry_policy": {"backoff_seconds": [2, 8], "max_attempts": 3, "strategy_version": "generation-retry-v1"}
+  },
+  "stage2_command_policy": {
+    "artifact_revision": 1,
+    "candidate_policy": {"minimum_confidence": "0.65", "required_measurement_kinds": [], "strategy_version": "candidate-catalog-v1"},
+    "draft_policy": {"max_genre_tags": 8, "max_json_depth": 32, "max_material_requirements_per_proposal": 16, "max_proposals": 8, "max_references_per_field": 128, "max_response_bytes": 2097152, "max_text_characters": 2048, "max_total_material_requirements": 64, "max_total_references": 2048, "max_total_text_characters": 1048576},
+    "generation": {"adapter_strategy_version": "doubao-ark-text-responses-stream-v1", "max_output_tokens": 32768, "model_id": "doubao-seed-2-1-pro-260628", "prompt_template": "从已准入 Narrative Graph 与 CandidateCatalog 生成 Story Proposal 候选。每个引用必须来自输入，必须保留全部叙事义务、事实、物理要求和来源约束；不得自填 material_support、能力、授权或物理通过结论。严格遵守冻结 JobPolicy/StoryDesignPolicy 的数量、枚举和时长范围，只返回响应 JSON Schema 指定的对象。", "prompt_version": "autocut-stage2-portfolio-production-v1", "provider_id": "doubao-ark-text-responses-stream", "temperature": "0.2"},
+    "job_policy": {"completion_policy": "all_or_nothing", "max_search_states": 1000, "policy_id": "autocut-job-production", "policy_version": "1.0.0", "proposal_count": {"max": 8, "min": 4}, "selected_story_count": 1, "source_constraints": {"allowed_source_refs": [], "authorization_purpose": "render_source", "forbidden_source_refs": []}, "source_reuse_policy": "allow", "story_design_policy_sha256": "sha256:48e609ce7d44772318ecd0a0fc7f85b6cb544bdfa5ba2becfdc91dd1b27f1987", "target_duration_seconds": {"max": 180, "min": 30}},
+    "max_prompt_bytes": 16777216,
+    "retry_policy": {"backoff_seconds": [2, 8], "max_attempts": 3, "strategy_version": "generation-retry-v1"},
+    "story_policy": {"allowed_genre_tags": ["action", "comedy", "growth", "mystery", "revenge", "romance", "suspense"], "editing_profiles": [{"profile_id": "dramatic_short", "profile_version": "1.0.0"}], "policy_id": "autocut-story-design-production", "policy_version": "1.0.0", "required_physical_requirements": [{"mode": "complete", "requirement_kind": "dialogue_integrity"}, {"mode": "protect_detected_cues", "requirement_kind": "subtitle_clearance"}, {"mode": "endpoint_and_stable_region", "requirement_kind": "visual_validity"}], "selection_strategy": "first_feasible_lexicographic_v1", "teaser_strategies": ["chronological", "cold_open", "delayed_reprise"]}
+  },
+  "stage3_command_policy": {
+    "artifact_revision": 1,
+    "blueprint_strategy_version": "unpartitioned-batch-v1",
+    "context_policy": {"budget_unit": "bytes", "max_batch_context_bytes": 16777216, "max_source_members": 2048, "max_story_context_bytes": 8388608, "strategy": "unpartitioned-batch-v1"},
+    "draft_policy": {"budget_unit": "bytes", "max_alternatives_per_requirement": 32, "max_beats_per_story": 64, "max_json_depth": 32, "max_ordering_constraints_per_story": 256, "max_references_per_field": 256, "max_requirements_per_beat": 32, "max_response_bytes": 4194304, "max_stories": 8, "max_text_characters": 2048, "max_total_alternatives": 2048, "max_total_beats": 512, "max_total_ordering_constraints": 2048, "max_total_references": 16384, "max_total_requirements": 1024, "max_total_text_characters": 1048576},
+    "feasibility_policy": {"max_search_states": 100000, "strategy_version": "editorial-material-feasibility-v1"},
+    "generation": {"adapter_strategy_version": "doubao-ark-text-responses-stream-v1", "max_output_tokens": 32768, "model_id": "doubao-seed-2-1-pro-260628", "prompt_template": "为冻结 Portfolio 中的全部 Story 生成 Editorial Blueprint。逐 Beat 保留 required obligations/facts、证据替代集合、物理要求、时长区间和硬排序约束；只能引用输入闭包中的对象，不得引入 ASR/VAD、最终 source tick、物理通过结论或发布决策。只返回响应 JSON Schema 指定的完整批对象。", "prompt_version": "autocut-stage3-blueprint-production-v1", "provider_id": "doubao-ark-text-responses-stream", "temperature": "0.2"},
+    "max_prompt_bytes": 16777216,
+    "retry_policy": {"backoff_seconds": [2, 8], "max_attempts": 3, "strategy_version": "generation-retry-v1"}
+  },
+  "vlm": {
+    "adapter_strategy_version": "doubao-ark-files-responses-stream-v5", "model_id": "doubao-seed-2-1-pro-260628",
+    "parse_policy": {"max_candidate_hypotheses": 8, "max_entities": 24, "max_events": 24, "max_facts": 48, "max_measurements": 48, "max_response_bytes": 2097152, "max_temporal_segments": 8, "max_text_characters": 512, "max_total_text_characters": 65536},
+    "parser_contract_sha256": "sha256:9b285e4344ab1838573eae26f041b9553308510413fd8cca3722072ec9248630", "parser_strategy_version": "strict-semantic-pack-v4",
+    "prompt_template_sha256": "sha256:16e4a57ad4f6605f91d4a82c03d7db18e45eff3d0ff6b8f15237eb0cec418126", "prompt_version": "vlm-semantic-pack-v23-context-assisted-candidate-core", "provider_id": "doubao-ark-responses-stream",
+    "request_parameters": {"max_output_tokens": 32768, "temperature": 0, "thinking_type": "disabled", "video_fps": 1},
+    "response_schema_sha256": "sha256:67fafe020c971852e130a2b823977068a66524b68d453d64983b770d006a12ff", "stage_strategy_version": "doubao-generate-vlm-semantic-pack-v4-probe-then-parallel-3-v8", "window_sampling_policy_sha256": "sha256:488a902717464a2124ba778f095388ebdd225dc9ccbeed0af68187b67cd593f0"
+  }
+}
