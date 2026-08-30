@@ -1,0 +1,12 @@
+{
+  "id": "audit-stage-input-contracts",
+  "title": "审查当前流水线各阶段输入与格式校验",
+  "status": "completed",
+  "complexity": "L+",
+  "risk": "high",
+  "domain": "architecture",
+  "currentPhase": "completed",
+  "nextAction": "按审查优先级修复生产 Stage 1-3 authority 与模型输入投影",
+  "createdAt": "2026-08-30T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}
