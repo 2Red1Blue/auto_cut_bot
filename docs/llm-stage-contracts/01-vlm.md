@@ -36,6 +36,13 @@ V23 prompt 要求模型仅根据当前视频输出：
 
 ## 模型响应字段
 
+注意：本次 VLM 请求输入没有预先存在的 `facts` 或 `events`。`facts[]` 与 `events[]` 是模型
+根据视频新生成的同一响应对象；`event.fact_refs` 必须引用该响应中已经声明的
+`facts[].local_fact_id`。例如事件写入 `f049`，但 `facts[]` 没有 `local_fact_id: "f049"`，
+就是响应内部的引用闭合错误，不是请求漏传了一个 fact。JSON Schema 只能约束字符串形状，
+不能单独表达这种跨数组外键关系，所以 V4 parser 必须在 Schema 解码后建立响应内符号表并
+再次校验。
+
 根对象字段固定为：
 
 | 字段 | 含义 | 下游作用 |
