@@ -74,7 +74,7 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
   不闭合后，`RETRY_BUDGET_EXHAUSTED` 终止。此时继续重放相同输入不会改善，必须修 prompt、
   Schema/策略或做选择性重算。
 
-## 当前最后已知真实断点（2026-08-31）
+## 当前最后已知真实断点（2026-09-01 更新）
 
 最后明确记录的 `semantic_story` 真实 run 是
 `pipeline_run_694567bc4b4e456a98aa939f71f24f84`：
@@ -87,7 +87,10 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
 VLM 原始响应暴露的三类问题为：合法 enum 集合顺序不规范、事件引用未声明 fact `f049`、
 candidate measurement 引用不在候选闭包。这里记录的是**最后一次已观察运行事实**，不是说
 当前工作树已经再次验证仍会失败。当前代码已加入历史 batch policy mismatch 隔离和
-contextual batch identity 修复，但尚无一次更新后 PC 实跑可以把上述 checkpoint 改成成功。
+contextual batch identity 修复。该父 run 只包含一集，因此其唯一失败目标对应用户集号 1。
+当前代码已支持从该终态父 run 创建 `selected_only + episode_numbers:[1]` 新 run；成功后会
+闭合一集完整 VLM Batch，并继续 semantic-story 的 Stage 1–3。尚无一次更新后 PC 实跑可以
+把上述 checkpoint 改成成功。
 
 由于该 run 没有进入 Stage 1，Stage 1–3 当前冻结的嵌套 `text.format.json_schema` wire
 shape 也尚未完成真实 Ark 验证。这是下一个阶段的显式验证项，而不是已经观察到的失败；具体

@@ -1177,6 +1177,37 @@ async def test_selected_only_recompute_dispatches_one_episode_without_batch_fina
 
 
 @pytest.mark.asyncio
+async def test_selected_only_recompute_finalizes_when_selection_covers_entire_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(1)
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+    selected = VlmFullStageRecomputeRequest(
+        "pipeline_run_" + "b" * 32,
+        5,
+        completion_scope="selected_only",
+        episode_numbers=(1,),
+    )
+
+    result = await stage.execute(_context(recompute_request=selected))
+
+    assert result.outcome == "succeeded"
+    assert len(provider.dispatch_calls) == 1
+    aggregate_claims = [
+        (claim, outcome)
+        for claim, outcome in store.claims.values()
+        if claim.command_name == "FinalizeVlmBatchCommand"
+    ]
+    assert len(aggregate_claims) == 1
+    assert result.receipt_id == aggregate_claims[0][1].receipt_id
+
+
+@pytest.mark.asyncio
 async def test_selected_only_recompute_rejects_episode_outside_source_before_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

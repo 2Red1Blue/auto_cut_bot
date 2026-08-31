@@ -1,7 +1,7 @@
 # Pipeline 阶段与单集重算设计
 
-状态：详细设计；**重算 API 尚未实现，不是当前 API 使用说明**。证据基线：
-`17530231`（2026-08-28）。当前可用操作见 [PC 运行说明](pc-semantic-pipeline-run.md)。
+状态：首个可执行切片已实现；当前使用方法见
+[PC 运行说明](pc-semantic-pipeline-run.md)。完整的跨 Job 多集混合复用仍是后续设计。
 本设计补齐现有架构，不恢复已删除的总契约，不引入旧 pipeline、Agent 强制编排、
 外部发布或新的人工审批系统。Kernel 负责结果与复用校验，Pipeline 负责固定 DAG；
 未来 Agent Runtime 可调用同一类型化接口，不能绕过 Kernel 改写结果。
@@ -11,13 +11,13 @@
 用户需要的是：真实流程出错后能看原始输入输出，修复后只重算必要部分，
 不必重复上传、转码或调用已经成功且仍适用的模型结果。
 
-当前三种行为必须分开：
+三种行为必须分开：
 
 | 行为 | 当前状态 | 目标语义 |
 | --- | --- | --- |
 | 相同请求、相同幂等键再次提交 | 已有 | 返回同一 run；不是强制重新生成 |
 | 同一命令的 transport retry/reconcile | 已有 | 确认可重试才增加 Attempt；结果未知时对账同一次调用 |
-| 指定阶段/集数重新生成 | 未闭合 | 新 run、新命令、新结果；通过显式绑定复用旧输入/结果 |
+| 指定阶段/集数重新生成 | 单集/整阶段首切片已实现 | 新 run、新命令、新结果；通过显式绑定复用旧输入 |
 
 2026-08-28 修复：HTTP `/resume` 可唤醒 accepted/running run 中已有的
 pending/indeterminate 命令，包含 semantic_only 的 VLM；校准等待仍只处理
@@ -32,10 +32,14 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 `completion_scope=full_stage` 为完整 VLM 阶段创建一个新的 Run，先以
 `BindWholeSeriesSourcesCommand` 把原 Run 的精确 SourcePrep 证据绑定到新 Job，再由
 既有 Context/VLM 阶段正常执行；`completion_scope=selected_only` 一次接受一个集号，只创建
-该集的新 VLM child Receipt，不执行批次 Finalizer，也不进入 Stage 1。两者只在
-`semantic_only`、父 Run 已提交 `video_only` Context Pack 且安装 execution profile 与父 Run
-完全一致时启用。API-assisted Context、`source_prep`、ASR/VAD、故事阶段及混合复用批次
-仍未实现，必须明确返回 unsupported；不能以 `force=true` 放开任何阶段。
+该集的新 VLM child Receipt。若父 SourcePrep 本身只有这一集，选择集同时就是完整集合，
+运行正常执行批次 Finalizer；`semantic_story` 目标 Run 随后继续 Stage 1–3。若父集合包含多集，
+该结果仍只是检查分支，不执行 Finalizer，也不进入 Stage 1。两者只在 `semantic_only` 或
+`semantic_story`、父 Run 已提交 `video_only` Context Pack 且安装 execution profile 与父 Run
+完全一致时启用。API-assisted Context、ASR/VAD 和多集混合复用批次仍未实现，必须明确返回
+unsupported；不能以 `force=true` 放开任何阶段。
+为避免部分 VLM child 推进故事链，多集父集合的 `selected_only` 只允许 `semantic_only`
+检查分支；`semantic_story + selected_only` 在 Source 绑定阶段确认集数后、创建目标 Run 前拒绝。
 换源文件、改集序或改素材授权集合仍走新的完整 SourcePrep，不声称已经支持增量换源。
 
 ## 2. 不可破坏的规则
@@ -68,8 +72,8 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 ```
 
 `selected_only` 额外且必须携带 `"episode_numbers":[12]`；首版数组恰好一个正整数。
-该请求会持久化到目标 Run，重启后仍能恢复选择。它是单集检查结果，服务不能把它伪装成
-完整 VLM Batch。
+该请求会持久化到目标 Run，重启后仍能恢复选择。多集父集合中的单集结果只是检查结果，
+服务不能把它伪装成完整 VLM Batch；只有父集合本来就恰好一集时，才能产生一集完整 Batch。
 
 - `episode_numbers` 是用户集号，严格升序、无重复、从 1 开始，必须属于源集合；
   内部 `episode_index` 从 0 开始，只在 API 边界转换一次。全阶段重算显式列全体集号。
@@ -92,7 +96,8 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 
 | 范围 | 结果 | 后续 |
 | --- | --- | --- |
-| `selected_only` | 目标 Run 的 VLM 控制命令绑定一个新生成 child 的成功 Receipt；选择仍由目标 Run 的持久化 recompute request 表达 | 仅供真实输入输出检查；不产生完整 VLM Batch，不进入故事链 |
+| `selected_only`（父集合多集） | semantic-only 目标 Run 的 VLM 控制命令绑定一个新生成 child 的成功 Receipt；选择仍由目标 Run 的持久化 recompute request 表达 | 仅供真实输入输出检查；不产生完整 VLM Batch，不进入故事链；semantic-story 请求提前拒绝 |
+| `selected_only`（父集合恰好一集） | 新 child 经正常 Finalizer 闭合为一集完整 VLM Batch | semantic-story 计划可继续 Stage 1–3 |
 | `full_stage` | 完整 `VlmBatch` 新版本，引用本次执行和兼容复用的全部成员 | 仅全部成员满足目标策略才允许进入当前计划的后续阶段 |
 
 选择集总是新生成。`full_stage` 中其余兼容成功成员复用，不兼容/缺失成员进入

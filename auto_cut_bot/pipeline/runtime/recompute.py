@@ -120,6 +120,14 @@ class FullStageVlmRecomputeBinder:
             artifact_scope=ArtifactScope("pipeline", "job", base.run_id),
             artifact_revision=1,
         )
+        if (
+            base.execution_profile.is_semantic_story
+            and request.completion_scope == "selected_only"
+            and len(origin.prepared.episodes) != 1
+        ):
+            raise PipelineRunValidationError(
+                "semantic-story selected recompute requires a one-episode source census"
+            )
         selected_index = request.selected_episode_index
         if selected_index is not None and selected_index >= len(origin.prepared.episodes):
             raise PipelineRunValidationError(

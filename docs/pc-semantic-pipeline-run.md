@@ -279,7 +279,7 @@ curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
 父 Run 状态或 SourcePrep Receipt 不闭合，服务拒绝创建可调度的目标 Run。不要复制旧
 Receipts、清空终态行或改写父 profile 作为替代方案。
 
-单集检查使用 `selected_only`，一次只接受一个从 1 开始的用户集号：
+单集重算使用 `selected_only`，一次只接受一个从 1 开始的用户集号：
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
@@ -296,12 +296,15 @@ curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
 ```
 
 它创建新的持久化 Run，只对第 12 集创建一次正常 VLM Command/Attempt，并保存正常的
-模型输入输出 Debug。其他集不会调用 provider，且不会执行批次 Finalizer。目标 Run 成功只
-表示“所选单集生成成功”，不是整剧 `VlmSemanticPackSet`，不能进入 Stage 1。
+模型输入输出 Debug。其他集不会调用 provider。父 SourcePrep 含多集时，目标 Run 成功只
+表示“所选单集生成成功”，不是整剧 `VlmSemanticPackSet`，不能进入 Stage 1；该模式只允许
+`semantic_only`，多集 `semantic_story` 会在创建目标 Run 前拒绝。父 SourcePrep
+本来就只有一集且选择第 1 集时，该选择覆盖完整集合：运行执行正常批次 Finalizer，并在
+`semantic_story` 计划中继续 Stage 1–3。
 
 ### 尚未实现的批次补齐
 
-改变 VLM 策略后的批量局部试跑、把“新单集 + 父 Run 成功集”闭合为新的完整批次、
+改变 VLM 策略后的批量局部试跑、把多集父 Run 的“新单集 + 父 Run 成功集”闭合为新的完整批次、
 API-assisted Context Pack 跨 Job 绑定、可持久化 inspection hold 以及 lineage 预算 CAS
 仍未实现。不能通过跨 Job 直接引用成员来绕过当前 Finalizer/semantic reader 的同 Job 校验。
 详见 [selective recompute design](pipeline-selective-recompute-design.md)。

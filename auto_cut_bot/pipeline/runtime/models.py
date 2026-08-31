@@ -1722,8 +1722,10 @@ class PipelineRunRequest:
 class VlmFullStageRecomputeRequest:
     """Closed request for a full-stage or one-episode VLM recompute Run.
 
-    ``selected_only`` is deliberately an inspection branch.  It commits one
-    ordinary VLM child Receipt but never labels that child as a complete series.
+    ``selected_only`` normally commits one ordinary VLM child Receipt as an
+    inspection result.  When the committed source census itself contains that
+    one selected episode, the selection is also the complete series and may
+    produce the normal aggregate VLM Receipt for downstream story stages.
     """
 
     base_run_id: str

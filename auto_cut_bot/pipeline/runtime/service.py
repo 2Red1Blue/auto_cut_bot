@@ -147,9 +147,12 @@ class DurablePipelineRunService:
             raise PipelineRunValidationError(
                 "installed execution profile differs from the base run; exact recompute is unsafe"
             )
-        if not base.execution_profile.is_semantic_only:
+        if not (
+            base.execution_profile.is_semantic_only
+            or base.execution_profile.is_semantic_story
+        ):
             raise PipelineRunValidationError(
-                "first recompute slice supports semantic-only VLM runs"
+                "VLM recompute requires a semantic-only or semantic-story base run"
             )
         target_run_id = _recompute_run_id(idempotency_key, request.request_hash)
         # Binding happens before the target control-plane Run exists.  Thus a

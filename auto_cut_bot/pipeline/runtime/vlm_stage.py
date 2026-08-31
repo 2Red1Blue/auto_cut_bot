@@ -483,8 +483,33 @@ class VlmPipelineStage:
                 raise PipelineRunValidationError(
                     "selected-only VLM recompute must dispatch exactly one episode"
                 )
-            result, _reused = await asyncio.to_thread(self._execute_child, context, requests[0])
-            return result
+            request = requests[0]
+            result, reused = await asyncio.to_thread(self._execute_child, context, request)
+            if len(source_bundle.prepared.episodes) != 1:
+                # A strict subset is an inspection result, not aggregate
+                # completion evidence.  It must never enter Stage 1.
+                return result
+            if request.episode_index != 0:
+                raise PipelineRunValidationError(
+                    "single-episode source completion must select episode one"
+                )
+            if result.outcome.state != "succeeded":
+                return result
+            child = self._succeeded_batch_child(
+                context=context,
+                request=request,
+                result=result,
+                reused=reused,
+                source_bundle=source_bundle,
+            )
+            return await self._finalize_batch(
+                context=context,
+                source_bundle=source_bundle,
+                policy=policy,
+                requests=requests,
+                context_packs=context_packs,
+                children=(child,),
+            )
         children: list[VlmBatchChildOutcome] = []
         selection_strategy, max_concurrency = _episode_selection_strategy(policy)
         chunks = (
@@ -519,55 +544,13 @@ class VlmPipelineStage:
                 if outcome.state in ("denied", "failed"):
                     terminal = terminal or result
                     continue
-                persisted = (
-                    self._store.read_committed_vlm_generation_child(
-                        self._job(context),
-                        request.idempotency_key,
-                    )
-                    if reused
-                    else None
-                )
                 children.append(
-                    VlmBatchChildOutcome(
-                        episode_index=(
-                            persisted.episode_index
-                            if persisted is not None
-                            else request.episode_index
-                        ),
-                        idempotency_key=(
-                            persisted.idempotency_key
-                            if persisted is not None
-                            else request.idempotency_key
-                        ),
-                        window_manifest_sha256=(
-                            persisted.window_manifest_sha256
-                            if persisted is not None
-                            else request.manifest.canonical_hash
-                        ),
-                        source_manifest_sha256=(
-                            persisted.source_manifest_sha256
-                            if persisted is not None
-                            else source_bundle.artifact_reference.content_hash
-                        ),
-                        source_provenance_sha256=(
-                            persisted.source_provenance_sha256
-                            if persisted is not None
-                            else source_bundle.canonical_hash
-                        ),
-                        request_hash=(
-                            persisted.request_hash
-                            if persisted is not None
-                            else request.request_hash
-                        ),
-                        state="succeeded",
-                        receipt_id=(
-                            persisted.receipt_id if persisted is not None else outcome.receipt_id
-                        ),
-                        artifact_set_id=(
-                            persisted.artifact_set_id
-                            if persisted is not None
-                            else outcome.artifact_set_id
-                        ),
+                    self._succeeded_batch_child(
+                        context=context,
+                        request=request,
+                        result=result,
+                        reused=reused,
+                        source_bundle=source_bundle,
                     )
                 )
             # A chunk is intentionally the most work that can already have
@@ -590,6 +573,81 @@ class VlmPipelineStage:
                         "probe inspection requires the registered single-episode probe strategy"
                     )
                 return None
+        return await self._finalize_batch(
+            context=context,
+            source_bundle=source_bundle,
+            policy=policy,
+            requests=requests,
+            context_packs=context_packs,
+            children=tuple(children),
+        )
+
+    def _succeeded_batch_child(
+        self,
+        *,
+        context: PipelineStageContext,
+        request: GenerateVlmEvidenceRequest,
+        result: GenerateVlmEvidenceResult,
+        reused: bool,
+        source_bundle: PersistedPreparedSources,
+    ) -> VlmBatchChildOutcome:
+        outcome = result.outcome
+        if outcome.state != "succeeded" or outcome.receipt_id is None:
+            raise PipelineRunValidationError(
+                "VLM batch child projection requires a succeeded Receipt"
+            )
+        persisted = (
+            self._store.read_committed_vlm_generation_child(
+                self._job(context),
+                request.idempotency_key,
+            )
+            if reused
+            else None
+        )
+        return VlmBatchChildOutcome(
+            episode_index=(
+                persisted.episode_index if persisted is not None else request.episode_index
+            ),
+            idempotency_key=(
+                persisted.idempotency_key if persisted is not None else request.idempotency_key
+            ),
+            window_manifest_sha256=(
+                persisted.window_manifest_sha256
+                if persisted is not None
+                else request.manifest.canonical_hash
+            ),
+            source_manifest_sha256=(
+                persisted.source_manifest_sha256
+                if persisted is not None
+                else source_bundle.artifact_reference.content_hash
+            ),
+            source_provenance_sha256=(
+                persisted.source_provenance_sha256
+                if persisted is not None
+                else source_bundle.canonical_hash
+            ),
+            request_hash=(
+                persisted.request_hash if persisted is not None else request.request_hash
+            ),
+            state="succeeded",
+            receipt_id=(persisted.receipt_id if persisted is not None else outcome.receipt_id),
+            artifact_set_id=(
+                persisted.artifact_set_id
+                if persisted is not None
+                else outcome.artifact_set_id
+            ),
+        )
+
+    async def _finalize_batch(
+        self,
+        *,
+        context: PipelineStageContext,
+        source_bundle: PersistedPreparedSources,
+        policy: DoubaoVlmRequestPolicy,
+        requests: tuple[GenerateVlmEvidenceRequest, ...],
+        context_packs: tuple[WindowContextPack, ...] | None,
+        children: tuple[VlmBatchChildOutcome, ...],
+    ) -> FinalizeVlmBatchResult:
         finalizer_request = FinalizeVlmBatchRequest(
             job=Job(context.run_id, context.request.profile),
             idempotency_key=vlm_batch_kernel_idempotency_key(
@@ -604,7 +662,7 @@ class VlmPipelineStage:
             declared_episode_count=len(requests),
             source_manifest_sha256=source_bundle.artifact_reference.content_hash,
             source_provenance_sha256=source_bundle.canonical_hash,
-            children=tuple(children),
+            children=children,
             strategy_version=(
                 VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4
                 if policy.parser_strategy_version == VLM_PARSER_V4

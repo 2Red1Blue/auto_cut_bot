@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,7 @@ from auto_cut_bot.pipeline.debug import FileModelIoDebugSink
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
     DurablePipelineWorker,
+    FullStageVlmRecomputeBinder,
     IdempotencyConflictError,
     OutboxLease,
     PipelineCommand,
@@ -35,6 +37,9 @@ from auto_cut_bot.pipeline.runtime import (
     StaleRunVersionError,
     VlmFullStageRecomputeRequest,
 )
+from auto_cut_bot.pipeline.runtime.semantic_authority import (
+    load_installed_semantic_run_authority,
+)
 from auto_cut_bot.pipeline.vlm import (
     DOUBAO_ARK_LEGACY_ADAPTER_STRATEGY_VERSION,
     DOUBAO_VLM_LEGACY_STAGE_STRATEGY_VERSION,
@@ -43,7 +48,12 @@ from auto_cut_bot.pipeline.vlm import (
 from tests.pipeline.runtime_profile_fixture import (
     execution_profile as frozen_execution_profile,
 )
-from tests.pipeline.runtime_profile_fixture import media_preflight_policy, stage3_command_policy
+from tests.pipeline.runtime_profile_fixture import (
+    media_preflight_policy,
+    stage1_command_policy,
+    stage2_command_policy,
+    stage3_command_policy,
+)
 
 
 class FakeRunStore:
@@ -78,6 +88,15 @@ class FakeRunStore:
         )
         if execution_profile.is_semantic_only:
             stages = ("source_prep", "context_prepare", "vlm")
+        elif execution_profile.is_semantic_story:
+            stages = (
+                "source_prep",
+                "context_prepare",
+                "vlm",
+                "stage1_narrative",
+                "stage2_portfolio",
+                "stage3_blueprint",
+            )
         elif execution_profile.schema_version == "pipeline-execution-profile-v2":
             stages = ("source_prep", "vlm")
         elif execution_profile.schema_version == "pipeline-execution-profile-v5":
@@ -192,6 +211,17 @@ def semantic_execution_profile() -> PipelineExecutionProfile:
     return PipelineExecutionProfile.from_semantic_policies(
         DoubaoVlmRequestPolicy("doubao-seed-2-1-pro-260628"),
         retry_policy=GenerationRetryPolicy(GENERATION_RETRY_STRATEGY_VERSION, 3, (1, 2)),
+    )
+
+
+def semantic_story_execution_profile() -> PipelineExecutionProfile:
+    semantic = load_installed_semantic_run_authority()
+    return PipelineExecutionProfile.from_semantic_story_policies(
+        semantic.vlm_policy,
+        retry_policy=semantic.retry_policy,
+        stage1_policy=stage1_command_policy(),
+        stage2_policy=stage2_command_policy(),
+        stage3_policy=stage3_command_policy(),
     )
 
 
@@ -429,6 +459,103 @@ async def test_selected_only_recompute_persists_exact_selection_on_target_run() 
 
     assert claim.snapshot.recompute_request == selected
     assert claim.snapshot.recompute_request.selected_episode_index == 11
+
+
+@pytest.mark.asyncio
+async def test_selected_only_recompute_preserves_semantic_story_plan() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = semantic_story_execution_profile()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "d" * 32,
+        request(),
+        request().request_hash,
+        "failed",
+        (
+            PipelineCommand("source", "source_prep", "succeeded", uuid4()),
+            PipelineCommand("context", "context_prepare", "succeeded", uuid4()),
+            PipelineCommand("vlm", "vlm", "failed", uuid4()),
+            PipelineCommand("stage1", "stage1_narrative", "blocked", blocking_command_id="vlm"),
+            PipelineCommand("stage2", "stage2_portfolio", "blocked", blocking_command_id="vlm"),
+            PipelineCommand("stage3", "stage3_blueprint", "blocked", blocking_command_id="vlm"),
+        ),
+        9,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        full_stage_vlm_recompute_binder=FakeFullStageBinder(),
+    )
+
+    claim = await service.recompute_full_vlm_stage(
+        VlmFullStageRecomputeRequest(
+            base.run_id,
+            9,
+            completion_scope="selected_only",
+            episode_numbers=(1,),
+        ),
+        "recompute-semantic-story-episode-1",
+    )
+
+    assert tuple(command.stage for command in claim.snapshot.commands) == (
+        "source_prep",
+        "context_prepare",
+        "vlm",
+        "stage1_narrative",
+        "stage2_portfolio",
+        "stage3_blueprint",
+    )
+
+
+@pytest.mark.asyncio
+async def test_semantic_story_selected_recompute_rejects_multi_episode_source_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = semantic_story_execution_profile()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "8" * 32,
+        request(),
+        request().request_hash,
+        "failed",
+        (
+            PipelineCommand("source", "source_prep", "succeeded", uuid4()),
+            PipelineCommand("context", "context_prepare", "succeeded", uuid4()),
+            PipelineCommand("vlm", "vlm", "failed", uuid4()),
+            PipelineCommand("stage1", "stage1_narrative", "blocked", blocking_command_id="vlm"),
+            PipelineCommand("stage2", "stage2_portfolio", "blocked", blocking_command_id="vlm"),
+            PipelineCommand("stage3", "stage3_blueprint", "blocked", blocking_command_id="vlm"),
+        ),
+        9,
+        profile,
+    )
+
+    class BinderStore:
+        def read_outcome(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(state="succeeded")
+
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.recompute.read_persisted_prepared_sources_bundle",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            prepared=SimpleNamespace(episodes=(object(), object()))
+        ),
+    )
+    binder = FullStageVlmRecomputeBinder(BinderStore())  # type: ignore[arg-type]
+
+    with pytest.raises(PipelineRunValidationError, match="one-episode source census"):
+        await binder.bind(
+            base=base,
+            target_run_id="pipeline_run_" + "9" * 32,
+            request=VlmFullStageRecomputeRequest(
+                base.run_id,
+                base.version,
+                completion_scope="selected_only",
+                episode_numbers=(1,),
+            ),
+        )
 
 
 @pytest.mark.asyncio
