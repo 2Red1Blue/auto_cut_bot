@@ -46,14 +46,17 @@ from autocut_kernel.vlm import (
 from auto_cut_bot.pipeline.runtime import (
     DurablePipelineRunService,
     FullStageVlmRecomputeBinder,
+    PipelineCommand,
     PipelineExecutionProfile,
     PipelineRunRequest,
+    PipelineRunValidationError,
     PipelineStageContext,
     PipelineStageResult,
     PostgresPipelineRunStore,
     SourcePrepPipelineStage,
     VlmFullStageRecomputeRequest,
 )
+from auto_cut_bot.pipeline.runtime.context_prepare_stage import ContextPreparePipelineStage
 from auto_cut_bot.pipeline.runtime.source_prep_stage import source_prep_kernel_idempotency_key
 from auto_cut_bot.pipeline.source_prep import (
     DECODED_AUDIO_BOUNDARY_GENERATION_POLICY_SHA256,
@@ -1424,6 +1427,21 @@ async def test_full_vlm_recompute_reuses_bound_sources_after_origin_host_removal
         )
     )
     assert origin.outcome.state == "succeeded" and origin.outcome.receipt_id is not None
+    context_result = await ContextPreparePipelineStage(kernel, None, None).execute(
+        PipelineStageContext(
+            base_run_id,
+            request,
+            PipelineCommand(
+                "base-context-prepare",
+                "context_prepare",
+                "running",
+                version=1,
+                lease_id="base-context-lease",
+            ),
+            profile,
+        )
+    )
+    assert context_result.outcome == "succeeded"
     _complete_control_run_for_recompute(control, base_claim.snapshot, origin.outcome.receipt_id)
     base = control._read_run_sync(base_run_id)
     assert base is not None and base.status == "succeeded"
@@ -1437,6 +1455,20 @@ async def test_full_vlm_recompute_reuses_bound_sources_after_origin_host_removal
         execution_profile=profile,
         full_stage_vlm_recompute_binder=FullStageVlmRecomputeBinder(kernel),
     )
+    with pytest.raises(
+        PipelineRunValidationError,
+        match="outside the committed source census",
+    ):
+        await service.recompute_full_vlm_stage(
+            VlmFullStageRecomputeRequest(
+                base_run_id,
+                base.version,
+                completion_scope="selected_only",
+                episode_numbers=(2,),
+            ),
+            "invalid-episode-recompute",
+        )
+    assert scheduler.run_ids == []
     recompute = await service.recompute_full_vlm_stage(
         VlmFullStageRecomputeRequest(base_run_id, base.version), "full-recompute-1"
     )

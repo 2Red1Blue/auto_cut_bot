@@ -27,6 +27,7 @@ from .models import (
     PipelineRunSnapshot,
     PipelineStageResult,
     RunClaim,
+    VlmFullStageRecomputeRequest,
 )
 
 
@@ -82,7 +83,10 @@ def _execution_profile(value: object, expected_hash: object) -> PipelineExecutio
 def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
     states = [state for _stage, state in command_rows]
     if "recompute_needed" in states:
-        if any(state in ("pending", "running", "indeterminate", "awaiting_calibration") for state in states):
+        if any(
+            state in ("pending", "running", "indeterminate", "awaiting_calibration")
+            for state in states
+        ):
             return "running"
         return "recompute_needed"
     if "awaiting_calibration" in states:
@@ -191,6 +195,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
+        recompute_request: VlmFullStageRecomputeRequest | None = None,
     ) -> RunClaim:
         return await asyncio.to_thread(
             self._claim_run_sync,
@@ -199,6 +204,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             request,
             request_hash,
             execution_profile,
+            recompute_request,
         )
 
     def _claim_run_sync(
@@ -208,6 +214,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
+        recompute_request: VlmFullStageRecomputeRequest | None = None,
     ) -> RunClaim:
         if type(execution_profile) is not PipelineExecutionProfile:  # noqa: E721
             raise PipelineRunValidationError("claim_run requires a PipelineExecutionProfile")
@@ -215,6 +222,14 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             raise PipelineRunValidationError(
                 "claim_run request_hash does not bind the canonical request"
             )
+        if (
+            recompute_request is not None
+            and type(  # noqa: E721
+                recompute_request
+            )
+            is not VlmFullStageRecomputeRequest
+        ):
+            raise PipelineRunValidationError("claim_run recompute_request must be canonical")
         if execution_profile.has_media_preflight_policy:
             execution_profile.build_stage1_command_policy()
             execution_profile.build_stage2_command_policy()
@@ -235,6 +250,17 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         source_value = request.source_root or request.source_reference
         if source_value is None:
             raise PipelineRunValidationError("pipeline request source is missing")
+        recompute_json = (
+            None
+            if recompute_request is None
+            else json.dumps(
+                recompute_request.to_mapping(),
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        recompute_hash = None if recompute_request is None else recompute_request.request_hash
 
         def operation(cursor: DbCursor) -> RunClaim:
             cursor.execute(
@@ -242,8 +268,9 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                 INSERT INTO runtime.pipeline_runs
                     (run_id, idempotency_key, request_hash, profile, source_kind,
                      source_value, execution_profile, execution_profile_hash,
-                     state, version)
-                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'accepted', 0)
+                     recompute_request, recompute_request_hash, state, version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                        %s::jsonb, %s, 'accepted', 0)
                 ON CONFLICT (idempotency_key) DO NOTHING
                 RETURNING run_id
                 """,
@@ -256,6 +283,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     source_value,
                     execution_profile.canonical_json,
                     execution_profile.canonical_hash,
+                    recompute_json,
+                    recompute_hash,
                 ),
             )
             inserted = cursor.fetchone()
@@ -264,7 +293,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             if replayed:
                 cursor.execute(
                     """
-                    SELECT run_id, request_hash, profile, source_kind, source_value
+                    SELECT run_id, request_hash, profile, source_kind, source_value,
+                           recompute_request_hash
                       FROM runtime.pipeline_runs
                      WHERE idempotency_key = %s FOR UPDATE
                     """,
@@ -281,6 +311,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     or _text(existing[2]) != request.profile
                     or _text(existing[3]) != source_kind
                     or _text(existing[4]) != source_value
+                    or (None if existing[5] is None else _text(existing[5])) != recompute_hash
                 ):
                     raise IdempotencyConflictError(
                         "idempotency key already binds another pipeline request"
@@ -312,8 +343,18 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             (%s, %s, 5, 'stage3_blueprint', 'pending', 0)
                         """,
                         (
-                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
-                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
                         ),
                     )
                 else:
@@ -330,8 +371,18 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             (%s, %s, 5, 'media_preflight', 'pending', 0)
                         """,
                         (
-                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
-                            uuid4(), run_id, uuid4(), run_id, uuid4(), run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
                         ),
                     )
                 self._insert_outbox(cursor, run_id)
@@ -890,8 +941,13 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             raise PipelineRunValidationError("reconciled result cannot remain indeterminate")
         if result.outcome in ("succeeded", "denied", "failed") and result.receipt_id is None:
             raise PipelineRunValidationError("terminal reconciled result must contain a Receipt")
-        if result.outcome in ("awaiting_calibration", "recompute_needed") and result.receipt_id is not None:
-            raise PipelineRunValidationError("calibration reconciliation result cannot contain a Receipt")
+        if (
+            result.outcome in ("awaiting_calibration", "recompute_needed")
+            and result.receipt_id is not None
+        ):
+            raise PipelineRunValidationError(
+                "calibration reconciliation result cannot contain a Receipt"
+            )
 
         def operation(cursor: DbCursor) -> None:
             cursor.execute(
@@ -999,10 +1055,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             row = cursor.fetchone()
             if row is None:
                 raise PipelineRunNotFoundError(run_id)
-            if (
-                _text(row[0]) != "indeterminate"
-                or int(_text(row[1])) != failure.command_version
-            ):
+            if _text(row[0]) != "indeterminate" or int(_text(row[1])) != failure.command_version:
                 raise StaleRunVersionError(run_id)
             if _text(row[2]) != failure.stage or failure.stage != "vlm":
                 raise PipelineRunValidationError("isolated failure does not bind the VLM command")
@@ -1083,7 +1136,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         cursor.execute(
             """
             SELECT request_hash, profile, source_kind, source_value, state, version,
-                   execution_profile, execution_profile_hash
+                   execution_profile, execution_profile_hash,
+                   recompute_request, recompute_request_hash
               FROM runtime.pipeline_runs WHERE run_id = %s
             """,
             (run_id,),
@@ -1100,6 +1154,8 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             version,
             execution_profile_json,
             execution_profile_hash,
+            recompute_request_json,
+            recompute_request_hash,
         ) = run
         request_mapping: dict[str, object] = {"profile": _text(profile)}
         request_mapping["source_root" if _text(source_kind) == "root" else "source_reference"] = (
@@ -1110,6 +1166,26 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             execution_profile_json,
             execution_profile_hash,
         )
+        frozen_recompute_request: VlmFullStageRecomputeRequest | None = None
+        if recompute_request_json is not None:
+            if isinstance(recompute_request_json, Mapping):
+                recompute_mapping = cast(Mapping[str, object], recompute_request_json)
+            else:
+                decoded_recompute = cast(object, json.loads(_text(recompute_request_json)))
+                if not isinstance(decoded_recompute, Mapping):
+                    raise PipelineRunValidationError(
+                        "persisted recompute request must be an object"
+                    )
+                recompute_mapping = cast(Mapping[str, object], decoded_recompute)
+            frozen_recompute_request = VlmFullStageRecomputeRequest.from_mapping(recompute_mapping)
+            if recompute_request_hash is None or frozen_recompute_request.request_hash != _text(
+                recompute_request_hash
+            ):
+                raise PipelineRunValidationError(
+                    "persisted recompute request hash does not bind its canonical request"
+                )
+        elif recompute_request_hash is not None:
+            raise PipelineRunValidationError("persisted recompute identity is incomplete")
         cursor.execute(
             """
             SELECT command.command_id, command.stage, command.state, receipt.receipt_id,
@@ -1142,6 +1218,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             tuple(commands),
             int(_text(version)),
             frozen_execution_profile,
+            frozen_recompute_request,
         )
 
 

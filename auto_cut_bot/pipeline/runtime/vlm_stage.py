@@ -138,7 +138,10 @@ def _episode_selection_strategy(policy: DoubaoVlmRequestPolicy) -> tuple[str, in
         return VLM_LEGACY_EPISODE_SELECTION_STRATEGY_VERSION, 1
     if policy.stage_strategy_version == DOUBAO_VLM_PARALLEL_STAGE_STRATEGY_VERSION:
         return VLM_PARALLEL_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
-    if policy.stage_strategy_version in {DOUBAO_VLM_STAGE_STRATEGY_VERSION, DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION}:
+    if policy.stage_strategy_version in {
+        DOUBAO_VLM_STAGE_STRATEGY_VERSION,
+        DOUBAO_VLM_VIDEO_STAGE_STRATEGY_VERSION,
+    }:
         return VLM_EPISODE_SELECTION_STRATEGY_VERSION, VLM_EPISODE_MAX_CONCURRENCY
     if policy.stage_strategy_version in {
         DOUBAO_VLM_VALIDATED_VIDEO_STAGE_STRATEGY_VERSION,
@@ -215,12 +218,12 @@ def vlm_batch_kernel_idempotency_key(
             "VLM batch identity requires exact persisted source provenance"
         )
     payload: dict[str, object] = {
-            "execution_profile_sha256": execution_profile_hash,
-            "run_id": run_id,
-            "selection_strategy_version": _episode_selection_strategy(policy)[0],
-            "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
-            "source_provenance_sha256": source_bundle.canonical_hash,
-        }
+        "execution_profile_sha256": execution_profile_hash,
+        "run_id": run_id,
+        "selection_strategy_version": _episode_selection_strategy(policy)[0],
+        "source_manifest_sha256": source_bundle.artifact_reference.content_hash,
+        "source_provenance_sha256": source_bundle.canonical_hash,
+    }
     if context_packs is not None:
         payload["context_pack_hashes"] = [item.canonical_hash for item in context_packs]
     encoded = json.dumps(
@@ -265,10 +268,15 @@ class VlmPipelineStage:
         self._installed_profile = installed_profile
         if context_owner_maps is not None and type(context_owner_maps) is not OwnerEpisodeMapSet:  # noqa: E721
             raise PipelineRunValidationError("VLM context owner maps must be exact")
-        if context_selection_policy is not None and type(context_selection_policy) is not ContextSelectionPolicy:  # noqa: E721
+        if (
+            context_selection_policy is not None
+            and type(context_selection_policy) is not ContextSelectionPolicy
+        ):  # noqa: E721
             raise PipelineRunValidationError("VLM context policy must be exact")
         if (context_owner_maps is None) != (context_selection_policy is None):
-            raise PipelineRunValidationError("VLM context maps and policy must be supplied together")
+            raise PipelineRunValidationError(
+                "VLM context maps and policy must be supplied together"
+            )
         self._context_owner_maps = context_owner_maps
         self._context_selection_policy = context_selection_policy
         # This is an operational inspection hold only. It is deliberately not
@@ -292,24 +300,31 @@ class VlmPipelineStage:
     def _requests(
         self,
         context: PipelineStageContext,
-    ) -> tuple[
-        PersistedPreparedSources,
-        DoubaoVlmRequestPolicy,
-        tuple[GenerateVlmEvidenceRequest, ...],
-        tuple[WindowContextPack, ...] | None,
-    ] | None:
+    ) -> (
+        tuple[
+            PersistedPreparedSources,
+            DoubaoVlmRequestPolicy,
+            tuple[GenerateVlmEvidenceRequest, ...],
+            tuple[WindowContextPack, ...] | None,
+        ]
+        | None
+    ):
         job = self._job(context)
         policy = context.execution_profile.to_doubao_policy()
         retry_policy = context.execution_profile.to_generation_retry_policy()
         if self._installed_profile is not None:
             validate_installed_vlm_policy(self._installed_profile.narrative, policy, retry_policy)
             validate_installed_media_policy(
-                self._installed_profile, context.execution_profile.to_media_preflight_policy(),
+                self._installed_profile,
+                context.execution_profile.to_media_preflight_policy(),
             )
-            if context.execution_profile.to_materialization_limits().timed_speech_max_request_bytes != (
-                self._installed_profile.local_run.native_timed_speech.max_request_bytes
+            if (
+                context.execution_profile.to_materialization_limits().timed_speech_max_request_bytes
+                != (self._installed_profile.local_run.native_timed_speech.max_request_bytes)
             ):
-                raise PipelineRunValidationError("persisted timed speech request limit differs from installed service")
+                raise PipelineRunValidationError(
+                    "persisted timed speech request limit differs from installed service"
+                )
         source_outcome = self._store.read_outcome(
             job,
             source_prep_kernel_idempotency_key(context.run_id),
@@ -372,7 +387,9 @@ class VlmPipelineStage:
             if context_outcome is None or context_outcome.state in ("pending", "running"):
                 return None
             if context_outcome.state != "succeeded":
-                raise PipelineRunValidationError("context prepare did not produce a committed PackSet")
+                raise PipelineRunValidationError(
+                    "context prepare did not produce a committed PackSet"
+                )
             context_packs = read_committed_window_context_packs(
                 self._store, context_request, context_outcome
             )
@@ -381,14 +398,11 @@ class VlmPipelineStage:
                 "no committed WindowContextPack is available; context_prepare must complete first"
             )
         selection_strategy, _max_concurrency = _episode_selection_strategy(policy)
-        if (
-            self._stop_after_probe
-            and selection_strategy != VLM_EPISODE_SELECTION_STRATEGY_VERSION
-        ):
+        if self._stop_after_probe and selection_strategy != VLM_EPISODE_SELECTION_STRATEGY_VERSION:
             raise PipelineRunValidationError(
                 "probe inspection requires the registered single-episode probe strategy"
             )
-        return source_bundle, policy, tuple(
+        all_requests = tuple(
             replace(
                 build_doubao_vlm_request(
                     source_bundle=source_bundle,
@@ -401,7 +415,9 @@ class VlmPipelineStage:
                         source_bundle=source_bundle,
                         policy=policy,
                         execution_profile_hash=context.execution_profile_hash,
-                        context_pack=None if context_packs is None else context_packs[episode_index],
+                        context_pack=None
+                        if context_packs is None
+                        else context_packs[episode_index],
                     ),
                     policy=policy,
                     retry_policy=retry_policy,
@@ -411,7 +427,16 @@ class VlmPipelineStage:
                 source_manifest_sha256=source_bundle.artifact_reference.content_hash,
             )
             for episode_index in range(len(source_bundle.prepared.episodes))
-        ), context_packs
+        )
+        recompute = context.recompute_request
+        if recompute is not None and recompute.completion_scope == "selected_only":
+            selected_index = recompute.selected_episode_index
+            if selected_index is None or selected_index >= len(all_requests):
+                raise PipelineRunValidationError(
+                    "selected episode is outside the committed source census"
+                )
+            return source_bundle, policy, (all_requests[selected_index],), context_packs
+        return source_bundle, policy, all_requests, context_packs
 
     async def execute(self, context: PipelineStageContext) -> PipelineStageResult:
         prepared = await asyncio.to_thread(self._requests, context)
@@ -450,17 +475,27 @@ class VlmPipelineStage:
         requests: tuple[GenerateVlmEvidenceRequest, ...],
         context_packs: tuple[WindowContextPack, ...] | None,
     ) -> FinalizeVlmBatchResult | GenerateVlmEvidenceResult | None:
+        if (
+            context.recompute_request is not None
+            and context.recompute_request.completion_scope == "selected_only"
+        ):
+            if len(requests) != 1:
+                raise PipelineRunValidationError(
+                    "selected-only VLM recompute must dispatch exactly one episode"
+                )
+            result, _reused = await asyncio.to_thread(self._execute_child, context, requests[0])
+            return result
         children: list[VlmBatchChildOutcome] = []
         selection_strategy, max_concurrency = _episode_selection_strategy(policy)
         chunks = (
             (requests[:1],)
             + tuple(
-                requests[start:start + max_concurrency]
+                requests[start : start + max_concurrency]
                 for start in range(1, len(requests), max_concurrency)
             )
             if selection_strategy == VLM_EPISODE_SELECTION_STRATEGY_VERSION
             else tuple(
-                requests[start:start + max_concurrency]
+                requests[start : start + max_concurrency]
                 for start in range(0, len(requests), max_concurrency)
             )
         )
@@ -476,7 +511,9 @@ class VlmPipelineStage:
                     unresolved = unresolved or result
                     continue
                 if outcome.state not in ("succeeded", "denied", "failed"):
-                    raise PipelineRunValidationError("Kernel returned an unsupported VLM child outcome")
+                    raise PipelineRunValidationError(
+                        "Kernel returned an unsupported VLM child outcome"
+                    )
                 if outcome.receipt_id is None:
                     raise PipelineRunValidationError("terminal Kernel VLM child lost its Receipt")
                 if outcome.state in ("denied", "failed"):
@@ -492,8 +529,16 @@ class VlmPipelineStage:
                 )
                 children.append(
                     VlmBatchChildOutcome(
-                        episode_index=(persisted.episode_index if persisted is not None else request.episode_index),
-                        idempotency_key=(persisted.idempotency_key if persisted is not None else request.idempotency_key),
+                        episode_index=(
+                            persisted.episode_index
+                            if persisted is not None
+                            else request.episode_index
+                        ),
+                        idempotency_key=(
+                            persisted.idempotency_key
+                            if persisted is not None
+                            else request.idempotency_key
+                        ),
                         window_manifest_sha256=(
                             persisted.window_manifest_sha256
                             if persisted is not None
@@ -509,11 +554,19 @@ class VlmPipelineStage:
                             if persisted is not None
                             else source_bundle.canonical_hash
                         ),
-                        request_hash=(persisted.request_hash if persisted is not None else request.request_hash),
+                        request_hash=(
+                            persisted.request_hash
+                            if persisted is not None
+                            else request.request_hash
+                        ),
                         state="succeeded",
-                        receipt_id=(persisted.receipt_id if persisted is not None else outcome.receipt_id),
+                        receipt_id=(
+                            persisted.receipt_id if persisted is not None else outcome.receipt_id
+                        ),
                         artifact_set_id=(
-                            persisted.artifact_set_id if persisted is not None else outcome.artifact_set_id
+                            persisted.artifact_set_id
+                            if persisted is not None
+                            else outcome.artifact_set_id
                         ),
                     )
                 )
@@ -597,6 +650,11 @@ class VlmPipelineStage:
         request: GenerateVlmEvidenceRequest,
     ) -> bool:
         if not self._stop_after_probe:
+            return False
+        if (
+            context.recompute_request is not None
+            and context.recompute_request.completion_scope == "selected_only"
+        ):
             return False
         outcome = self._store.read_outcome(self._job(context), request.idempotency_key)
         return outcome is not None and outcome.state == "succeeded"

@@ -359,7 +359,10 @@ async def handle_chat_completions(request: web.Request) -> web.Response | web.St
 
     logger.info(
         "API request session_key={} media={} text={} stream={}",
-        session_key, len(media_paths), text[:80], stream,
+        session_key,
+        len(media_paths),
+        text[:80],
+        stream,
     )
     # -- streaming path --
     if stream:
@@ -457,7 +460,9 @@ async def handle_chat_completions(request: web.Request) -> web.Response | web.St
         return _error_json(500, "Internal server error", err_type="server_error")
 
     return web.json_response(
-        _chat_completion_response(response_text, model_name, getattr(agent_loop, "_last_usage", None))
+        _chat_completion_response(
+            response_text, model_name, getattr(agent_loop, "_last_usage", None)
+        )
     )
 
 
@@ -589,7 +594,7 @@ def _configure_pipeline_control_plane(
         auth = request.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return _error_json(401, "Missing Authorization header. Use: Bearer <api_key>")
-        if not hmac.compare_digest(auth[len("Bearer "):], api_key):
+        if not hmac.compare_digest(auth[len("Bearer ") :], api_key):
             return _error_json(401, "Invalid API key")
         return await handler(request)
 
@@ -621,9 +626,7 @@ def create_pipeline_app(
         raise ValueError("pipeline_poll_interval_seconds must be positive")
     runtime = pipeline_runtime or compose_pipeline_runtime_from_environment()
     if runtime is None:
-        raise PipelineRuntimeConfigurationError(
-            "pipeline-only HTTP runtime is not configured"
-        )
+        raise PipelineRuntimeConfigurationError("pipeline-only HTTP runtime is not configured")
     return _configure_pipeline_control_plane(
         web.Application(client_max_size=20 * 1024 * 1024),
         api_key=api_key,
@@ -760,6 +763,7 @@ async def handle_pipeline_recompute(request: web.Request) -> web.Response:
         {
             "base_run_id": recompute_request.base_run_id,
             "completion_scope": recompute_request.completion_scope,
+            "episode_numbers": list(recompute_request.episode_numbers),
             "run_id": claim.snapshot.run_id,
             "status": claim.snapshot.status,
             "replayed": claim.replayed,

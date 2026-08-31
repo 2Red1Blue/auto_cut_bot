@@ -125,6 +125,7 @@ class PipelineStageRunner:
             snapshot.request,
             command,
             snapshot.execution_profile,
+            snapshot.recompute_request,
         )
         stop = asyncio.Event()
         version = [command.version]
@@ -180,7 +181,9 @@ class PipelineStageRunner:
                     debug_context, value=_stage_output_snapshot(result)
                 )
         if heartbeat_error:
-            raise PipelineRunValidationError("stage command lease heartbeat was lost") from heartbeat_error[0]
+            raise PipelineRunValidationError(
+                "stage command lease heartbeat was lost"
+            ) from heartbeat_error[0]
         if type(result) is not PipelineStageResult or result.command_id != command.command_id:  # noqa: E721
             raise PipelineRunValidationError("stage result does not bind the dispatched command")
         await self._command_store.record_result(
@@ -274,6 +277,7 @@ class PipelineStageReconciler:
             snapshot.request,
             command,
             snapshot.execution_profile,
+            snapshot.recompute_request,
         )
         debug_context = PipelineStageDebugContext(
             context.run_id,
@@ -338,6 +342,9 @@ def _stage_input_snapshot(context: PipelineStageContext) -> dict[str, object]:
 
     return {
         "request": context.request.to_mapping(),
+        "recompute_request": (
+            None if context.recompute_request is None else context.recompute_request.to_mapping()
+        ),
         "command": context.command.to_mapping(),
         "execution_profile": {
             "schema_version": context.execution_profile.schema_version,

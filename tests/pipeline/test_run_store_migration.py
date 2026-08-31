@@ -276,7 +276,8 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
     assert "2, 'vlm', 'pending', 0" in insert
     assert "elif execution_profile.is_semantic_story:" in source
     assert "5, 'stage3_blueprint', 'pending', 0" in insert
-    assert insert.count("uuid4(), run_id") == 15
+    # Count generated command identities, independent of formatter line wraps.
+    assert insert.count("uuid4()") == 15
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
     assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source

@@ -28,12 +28,14 @@ media_preflight。它不是终态阶段重跑入口，不能把已失败/拒绝�
 SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚未接入付费重算派发**。
 指纹通过不代表已拥有跨 Job 读取权或可跳过成功 Receipt 验证。
 
-首版范围限定为 **VLM + 已提交、完全相同的 SourcePrep 集合**。已经实现的第一条
-路径只接受 `completion_scope=full_stage`：它为完整 VLM 阶段创建一个新的 Run，先以
+首版范围限定为 **VLM + 已提交、完全相同的 SourcePrep 集合**。已实现两条执行路径：
+`completion_scope=full_stage` 为完整 VLM 阶段创建一个新的 Run，先以
 `BindWholeSeriesSourcesCommand` 把原 Run 的精确 SourcePrep 证据绑定到新 Job，再由
-既有 Context/VLM 阶段正常执行。它只在 `semantic_only`、`video_only` Context Pack 且
-安装 execution profile 与父 Run 完全一致时启用。`source_prep`、ASR/VAD、故事阶段及
-逐集选择性重算仍未实现，必须明确返回 unsupported；不能以 `force=true` 放开任何阶段。
+既有 Context/VLM 阶段正常执行；`completion_scope=selected_only` 一次接受一个集号，只创建
+该集的新 VLM child Receipt，不执行批次 Finalizer，也不进入 Stage 1。两者只在
+`semantic_only`、父 Run 已提交 `video_only` Context Pack 且安装 execution profile 与父 Run
+完全一致时启用。API-assisted Context、`source_prep`、ASR/VAD、故事阶段及混合复用批次
+仍未实现，必须明确返回 unsupported；不能以 `force=true` 放开任何阶段。
 换源文件、改集序或改素材授权集合仍走新的完整 SourcePrep，不声称已经支持增量换源。
 
 ## 2. 不可破坏的规则
@@ -53,9 +55,8 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 
 `POST /v1/pipeline/recompute` 已注册。它沿用 Pipeline 的 Bearer 认证与
 `Idempotency-Key`，不是 Agent/chat API。当前已接纳的请求比完整设计窄：没有
-`episode_numbers`、`target_profile_ref` 或 `continuation`，服务端只允许当前安装的精确
-profile 和完整重跑。封闭请求如下（所有字段必填，无任意 provider 参数、路径或 Python
-类名）：
+`target_profile_ref` 或 `continuation`，服务端只允许当前安装的精确 profile。完整重跑的
+封闭请求如下：
 
 ```json
 {
@@ -66,8 +67,9 @@ profile 和完整重跑。封闭请求如下（所有字段必填，无任意 pr
 }
 ```
 
-上面的其余 `selected_only` 规划字段是后续设计，而非现行 API 契约。服务不能接受它们，
-也不能把单集结果伪装成完整 VLM Batch。
+`selected_only` 额外且必须携带 `"episode_numbers":[12]`；首版数组恰好一个正整数。
+该请求会持久化到目标 Run，重启后仍能恢复选择。它是单集检查结果，服务不能把它伪装成
+完整 VLM Batch。
 
 - `episode_numbers` 是用户集号，严格升序、无重复、从 1 开始，必须属于源集合；
   内部 `episode_index` 从 0 开始，只在 API 边界转换一次。全阶段重算显式列全体集号。
@@ -90,7 +92,7 @@ profile 和完整重跑。封闭请求如下（所有字段必填，无任意 pr
 
 | 范围 | 结果 | 后续 |
 | --- | --- | --- |
-| `selected_only` | 新的 `VlmSelectionResult/v1`，明确所选集和完整剧集总数 | 仅供真实输入输出检查；不是完整 VLM Batch，不进入故事链 |
+| `selected_only` | 目标 Run 的 VLM 控制命令绑定一个新生成 child 的成功 Receipt；选择仍由目标 Run 的持久化 recompute request 表达 | 仅供真实输入输出检查；不产生完整 VLM Batch，不进入故事链 |
 | `full_stage` | 完整 `VlmBatch` 新版本，引用本次执行和兼容复用的全部成员 | 仅全部成员满足目标策略才允许进入当前计划的后续阶段 |
 
 选择集总是新生成。`full_stage` 中其余兼容成功成员复用，不兼容/缺失成员进入

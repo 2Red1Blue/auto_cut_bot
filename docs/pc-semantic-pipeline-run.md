@@ -250,7 +250,7 @@ This does not overwrite a terminal success, denial, or failure.  A stale
 `expected_version` is rejected, which prevents two hosts from both claiming
 the same recovery transition.
 
-### 完整 VLM 阶段重跑（已实现）
+### 完整阶段与单集 VLM 重跑（已实现）
 
 `POST /v1/pipeline/recompute` 现在支持一个保守的首切片：从一个**终态**
 `semantic_only` run 创建新的完整 VLM run。新 run 先由 Kernel 的
@@ -260,8 +260,7 @@ Command/Attempt/Receipt，因此它是真正重跑，绝不改写父 Run。
 
 首切片的限制是有意的：当前运行时的冻结 execution profile 必须与父 Run **完全相同**，且
 该 semantic-only runtime 不得配置外部 Metadata Context（只允许 `video_only` Context Pack）。
-这避免动态 API 快照或模型策略变化被错误地称为“兼容重跑”。它也只接受 `full_stage`，不会
-把单集结果伪装成整剧 VLM Batch。
+这避免动态 API 快照或模型策略变化被错误地称为“兼容重跑”。
 
 ```bash
 curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
@@ -280,11 +279,32 @@ curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
 父 Run 状态或 SourcePrep Receipt 不闭合，服务拒绝创建可调度的目标 Run。不要复制旧
 Receipts、清空终态行或改写父 profile 作为替代方案。
 
-### 计划中的逐集重算
+单集检查使用 `selected_only`，一次只接受一个从 1 开始的用户集号：
 
-`selected_only`、改变 VLM 策略后的局部试跑、完整批次补齐、可持久化 inspection hold 以及
-lineage 预算 CAS 仍未实现。它们需要独立的 partial-result Aggregate，不能复用当前完整
-Batch finalizer。详见 [selective recompute design](pipeline-selective-recompute-design.md)。
+```bash
+curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
+  -H "Authorization: Bearer <server-api-key>" \
+  -H "Idempotency-Key: recompute-42000021919-episode-12-v1" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "base_run_id":"pipeline_run_...",
+    "expected_version":<base-status-version>,
+    "stage":"vlm",
+    "completion_scope":"selected_only",
+    "episode_numbers":[12]
+  }'
+```
+
+它创建新的持久化 Run，只对第 12 集创建一次正常 VLM Command/Attempt，并保存正常的
+模型输入输出 Debug。其他集不会调用 provider，且不会执行批次 Finalizer。目标 Run 成功只
+表示“所选单集生成成功”，不是整剧 `VlmSemanticPackSet`，不能进入 Stage 1。
+
+### 尚未实现的批次补齐
+
+改变 VLM 策略后的批量局部试跑、把“新单集 + 父 Run 成功集”闭合为新的完整批次、
+API-assisted Context Pack 跨 Job 绑定、可持久化 inspection hold 以及 lineage 预算 CAS
+仍未实现。不能通过跨 Job 直接引用成员来绕过当前 Finalizer/semantic reader 的同 Job 校验。
+详见 [selective recompute design](pipeline-selective-recompute-design.md)。
 
 ## Moving to calibrated media evidence
 

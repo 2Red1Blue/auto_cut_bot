@@ -59,6 +59,7 @@ class FakeRunStore:
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
+        recompute_request: VlmFullStageRecomputeRequest | None = None,
     ) -> RunClaim:
         existing_id = self.by_key.get(idempotency_key)
         if existing_id is not None:
@@ -67,7 +68,14 @@ class FakeRunStore:
                 raise IdempotencyConflictError("idempotency key already binds another request")
             return RunClaim(existing, replayed=True)
         # These are control-plane test plans, not semantic acceptance evidence.
-        stages = ("source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight")
+        stages = (
+            "source_prep",
+            "vlm",
+            "stage1_narrative",
+            "stage2_portfolio",
+            "stage3_blueprint",
+            "media_preflight",
+        )
         if execution_profile.is_semantic_only:
             stages = ("source_prep", "context_prepare", "vlm")
         elif execution_profile.schema_version == "pipeline-execution-profile-v2":
@@ -79,10 +87,13 @@ class FakeRunStore:
             request=request,
             request_hash=request_hash,
             status="accepted",
-            commands=tuple(PipelineCommand(f"command-{index}", stage, "pending")
-                           for index, stage in enumerate(stages, start=1)),
+            commands=tuple(
+                PipelineCommand(f"command-{index}", stage, "pending")
+                for index, stage in enumerate(stages, start=1)
+            ),
             version=0,
             execution_profile=execution_profile,
+            recompute_request=recompute_request,
         )
         self.by_key[idempotency_key] = run_id
         self.by_run_id[run_id] = snapshot
@@ -104,12 +115,15 @@ class FakeRunStore:
         elif snapshot.status == "awaiting_calibration":
             waiting = tuple(
                 replace(command, status="pending", version=command.version + 1)
-                if command.status == "awaiting_calibration" else command
+                if command.status == "awaiting_calibration"
+                else command
                 for command in snapshot.commands
             )
             if not any(command.status == "pending" for command in waiting):
                 raise ResumeNotAllowedError(run_id)
-            resumed = replace(snapshot, status="accepted", commands=waiting, version=snapshot.version + 1)
+            resumed = replace(
+                snapshot, status="accepted", commands=waiting, version=snapshot.version + 1
+            )
         else:
             raise ResumeNotAllowedError(run_id)
         self.by_run_id[run_id] = resumed
@@ -155,7 +169,14 @@ class FakeFullStageBinder:
     def __init__(self) -> None:
         self.calls: list[tuple[PipelineRunSnapshot, str]] = []
 
-    async def bind(self, *, base: PipelineRunSnapshot, target_run_id: str) -> None:
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: VlmFullStageRecomputeRequest,
+    ) -> None:
+        assert request.base_run_id == base.run_id
         self.calls.append((base, target_run_id))
 
 
@@ -224,11 +245,16 @@ async def test_persisted_v5_cannot_reenter_runtime_or_gain_a_stage1_default(oper
     persisted = await store.claim_run(
         run_id="pipeline_run_" + "e" * 32,
         idempotency_key="historical-v5",
-        request=request(), request_hash=request().request_hash, execution_profile=old_profile,
+        request=request(),
+        request_hash=request().request_hash,
+        execution_profile=old_profile,
     )
     scheduler = FakeScheduler()
     service = DurablePipelineRunService(
-        store, scheduler, FakeAuthorizer(), execution_profile=execution_profile(),
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=execution_profile(),
     )
     with pytest.raises(PipelineRunValidationError, match="frozen media-preflight"):
         if operation == "submit":
@@ -247,7 +273,10 @@ async def test_new_run_cannot_use_historical_v5_profile_before_persistence():
     store = FakeRunStore()
     scheduler = FakeScheduler()
     service = DurablePipelineRunService(
-        store, scheduler, FakeAuthorizer(), execution_profile=_v5_execution_profile(),
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=_v5_execution_profile(),
     )
     with pytest.raises(PipelineRunValidationError, match="frozen media-preflight"):
         await service.submit(request(), "historical-v5-new")
@@ -278,7 +307,12 @@ async def test_submit_is_durable_before_enqueue_and_replays_same_run() -> None:
     assert first.snapshot.execution_profile_hash == profile.canonical_hash
     assert first.snapshot.to_mapping()["execution_profile_hash"] == profile.canonical_hash
     assert tuple(command.stage for command in first.snapshot.commands) == (
-        "source_prep", "vlm", "stage1_narrative", "stage2_portfolio", "stage3_blueprint", "media_preflight",
+        "source_prep",
+        "vlm",
+        "stage1_narrative",
+        "stage2_portfolio",
+        "stage3_blueprint",
+        "media_preflight",
     )
 
 
@@ -317,7 +351,9 @@ async def test_full_vlm_recompute_creates_distinct_semantic_run_after_source_bin
     assert first.replayed is False and replay.replayed is True
     assert first.snapshot.run_id != base.run_id
     assert tuple(command.stage for command in first.snapshot.commands) == (
-        "source_prep", "context_prepare", "vlm",
+        "source_prep",
+        "context_prepare",
+        "vlm",
     )
     assert [target for _base, target in binder.calls] == [
         first.snapshot.run_id,
@@ -326,6 +362,73 @@ async def test_full_vlm_recompute_creates_distinct_semantic_run_after_source_bin
     # Recompute authorization is the exact successful source binding, not a
     # filesystem catalog lookup on the old host.
     assert scheduler.enqueued == [first.snapshot.run_id, first.snapshot.run_id]
+
+
+def test_selected_only_recompute_request_is_closed_and_canonical() -> None:
+    run_id = "pipeline_run_" + "e" * 32
+    request_value = VlmFullStageRecomputeRequest.from_mapping(
+        {
+            "base_run_id": run_id,
+            "expected_version": 7,
+            "stage": "vlm",
+            "completion_scope": "selected_only",
+            "episode_numbers": [12],
+        }
+    )
+
+    assert request_value.selected_episode_index == 11
+    assert request_value.to_mapping()["episode_numbers"] == [12]
+    assert VlmFullStageRecomputeRequest.from_mapping(request_value.to_mapping()) == request_value
+    with pytest.raises(PipelineRunValidationError, match="exactly one"):
+        VlmFullStageRecomputeRequest(
+            run_id, 7, completion_scope="selected_only", episode_numbers=()
+        )
+    with pytest.raises(PipelineRunValidationError, match="strictly increasing"):
+        VlmFullStageRecomputeRequest(
+            run_id,
+            7,
+            completion_scope="selected_only",
+            episode_numbers=(2, 2),
+        )
+
+
+@pytest.mark.asyncio
+async def test_selected_only_recompute_persists_exact_selection_on_target_run() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = semantic_execution_profile()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "f" * 32,
+        request(),
+        request().request_hash,
+        "failed",
+        (
+            PipelineCommand("source", "source_prep", "succeeded", uuid4()),
+            PipelineCommand("context", "context_prepare", "succeeded", uuid4()),
+            PipelineCommand("vlm", "vlm", "failed", uuid4()),
+        ),
+        9,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        full_stage_vlm_recompute_binder=FakeFullStageBinder(),
+    )
+    selected = VlmFullStageRecomputeRequest(
+        base.run_id,
+        9,
+        completion_scope="selected_only",
+        episode_numbers=(12,),
+    )
+
+    claim = await service.recompute_full_vlm_stage(selected, "recompute-episode-12")
+
+    assert claim.snapshot.recompute_request == selected
+    assert claim.snapshot.recompute_request.selected_episode_index == 11
 
 
 @pytest.mark.asyncio
@@ -349,18 +452,25 @@ async def test_full_vlm_recompute_rejects_base_profile_drift_before_binding() ->
     store.by_run_id[base.run_id] = base
     binder = FakeFullStageBinder()
     service = DurablePipelineRunService(
-        store, scheduler, FakeAuthorizer(), execution_profile=installed_profile,
+        store,
+        scheduler,
+        FakeAuthorizer(),
+        execution_profile=installed_profile,
         full_stage_vlm_recompute_binder=binder,
     )
 
     with pytest.raises(PipelineRunValidationError, match="installed execution profile differs"):
-        await service.recompute_full_vlm_stage(VlmFullStageRecomputeRequest(base.run_id, 1), "recompute-2")
+        await service.recompute_full_vlm_stage(
+            VlmFullStageRecomputeRequest(base.run_id, 1), "recompute-2"
+        )
     assert binder.calls == [] and scheduler.enqueued == []
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model_kind", ("vlm", "stage1", "stage2", "stage3"))
-async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default(model_kind) -> None:
+async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_default(
+    model_kind,
+) -> None:
     store = FakeRunStore()
     scheduler = FakeScheduler()
     first_profile = execution_profile(model_id="doubao-model-v1")
@@ -368,21 +478,30 @@ async def test_idempotency_replay_keeps_frozen_profile_while_new_key_uses_new_de
     if model_kind == "stage1":
         first_profile = execution_profile()
         policy = first_profile.build_stage1_command_policy()
-        changed_profile = frozen_execution_profile(stage1_policy=replace(
-            policy, generation=replace(policy.generation, model_id="different-stage1-model"),
-        ))
+        changed_profile = frozen_execution_profile(
+            stage1_policy=replace(
+                policy,
+                generation=replace(policy.generation, model_id="different-stage1-model"),
+            )
+        )
     elif model_kind == "stage2":
         first_profile = execution_profile()
         policy = first_profile.build_stage2_command_policy()
-        changed_profile = frozen_execution_profile(stage2_policy=replace(
-            policy, generation=replace(policy.generation, model_id="different-stage2-model"),
-        ))
+        changed_profile = frozen_execution_profile(
+            stage2_policy=replace(
+                policy,
+                generation=replace(policy.generation, model_id="different-stage2-model"),
+            )
+        )
     elif model_kind == "stage3":
         first_profile = execution_profile()
         policy = first_profile.build_stage3_command_policy()
-        changed_profile = frozen_execution_profile(stage3_policy=replace(
-            policy, generation=replace(policy.generation, model_id="different-stage3-model"),
-        ))
+        changed_profile = frozen_execution_profile(
+            stage3_policy=replace(
+                policy,
+                generation=replace(policy.generation, model_id="different-stage3-model"),
+            )
+        )
     first_service = DurablePipelineRunService(
         store,
         scheduler,
@@ -699,7 +818,10 @@ async def test_explicit_resume_wakes_only_awaiting_calibration_via_one_cas() -> 
     resumed = await service.resume(run_id, expected_version=4)
 
     assert resumed.status == "accepted" and resumed.version == 5
-    assert next(command for command in resumed.commands if command.stage == "media_preflight").status == "pending"
+    assert (
+        next(command for command in resumed.commands if command.stage == "media_preflight").status
+        == "pending"
+    )
     assert scheduler.enqueued == [run_id, run_id]
 
 
@@ -1120,7 +1242,8 @@ async def test_legacy_unresolved_profile_never_reconciles_vlm() -> None:
 @pytest.mark.parametrize("operation", ("execute", "reconcile"))
 async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(operation):
     command = PipelineCommand(
-        "command-stage1-history", "stage1_narrative",
+        "command-stage1-history",
+        "stage1_narrative",
         "pending" if operation == "execute" else "indeterminate",
     )
 
@@ -1137,11 +1260,14 @@ async def test_historical_stage1_fails_before_any_store_claim_or_stage_call(oper
     with pytest.raises(PipelineRunValidationError, match="profile v6, v7, v8 or v9"):
         if operation == "execute":
             runner = PipelineStageRunner(
-                PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)), store,
+                PipelineStageRegistry.from_ports(("stage1_narrative", execute_stage)),
+                store,
             )
             await runner.claim_and_execute(snapshot, lease_id="historical-lease")
         else:
-            reconciler = PipelineStageReconciler.from_ports(store, ("stage1_narrative", reconcile_stage))
+            reconciler = PipelineStageReconciler.from_ports(
+                store, ("stage1_narrative", reconcile_stage)
+            )
             await reconciler.reconcile(snapshot)
     assert execute_stage.commands == reconcile_stage.commands == []
 

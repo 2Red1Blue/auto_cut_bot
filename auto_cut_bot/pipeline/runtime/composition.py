@@ -890,7 +890,7 @@ def _compose_semantic_only_runtime(
     service = DurablePipelineRunService(
         control_store, scheduler, catalog, execution_profile=execution_profile,
         full_stage_vlm_recompute_binder=(
-            FullStageVlmRecomputeBinder(kernel_store)
+            FullStageVlmRecomputeBinder(kernel_store, context_policy=context_policy)
             if owner_maps is None and not include_story
             else None
         ),

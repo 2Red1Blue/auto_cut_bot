@@ -29,6 +29,7 @@ class PipelineRunStore(Protocol):
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
+        recompute_request: VlmFullStageRecomputeRequest | None = None,
     ) -> RunClaim: ...
 
     async def read_run(self, run_id: str) -> PipelineRunSnapshot | None: ...

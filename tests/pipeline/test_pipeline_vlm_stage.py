@@ -66,6 +66,7 @@ from auto_cut_bot.pipeline.runtime.models import (
     PipelineExecutionProfile,
     PipelineRunRequest,
     PipelineStageContext,
+    VlmFullStageRecomputeRequest,
 )
 from auto_cut_bot.pipeline.runtime.source_prep_stage import (
     source_prep_kernel_idempotency_key,
@@ -858,7 +859,12 @@ def test_vlm_context_rejects_historical_v3_execution_profile() -> None:
         historical.to_doubao_policy()
 
 
-def _context(stage: str = "vlm", *, status: str = "running") -> PipelineStageContext:
+def _context(
+    stage: str = "vlm",
+    *,
+    status: str = "running",
+    recompute_request: VlmFullStageRecomputeRequest | None = None,
+) -> PipelineStageContext:
     return PipelineStageContext(
         RUN_ID,
         PipelineRunRequest("test", source_reference="authorized-source"),
@@ -870,6 +876,7 @@ def _context(stage: str = "vlm", *, status: str = "running") -> PipelineStageCon
             lease_id="lease-1" if status == "running" else None,
         ),
         _profile(),
+        recompute_request,
     )
 
 
@@ -987,11 +994,15 @@ def _stage(
         indeterminate_first=indeterminate_first,
         deny_first=deny_first,
     )
-    return VlmPipelineStage(  # type: ignore[arg-type]
+    return (
+        VlmPipelineStage(  # type: ignore[arg-type]
+            store,
+            provider,
+            stop_after_probe=stop_after_probe,
+        ),
         store,
         provider,
-        stop_after_probe=stop_after_probe,
-    ), store, provider
+    )
 
 
 @pytest.mark.asyncio
@@ -1135,6 +1146,60 @@ async def test_committed_bundle_dispatches_every_episode_then_projects_batch_rec
 
 
 @pytest.mark.asyncio
+async def test_selected_only_recompute_dispatches_one_episode_without_batch_finalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(3)
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+    selected = VlmFullStageRecomputeRequest(
+        "pipeline_run_" + "b" * 32,
+        5,
+        completion_scope="selected_only",
+        episode_numbers=(2,),
+    )
+
+    result = await stage.execute(_context(recompute_request=selected))
+
+    assert result.outcome == "succeeded"
+    assert len(provider.dispatch_calls) == 1
+    payload = json.loads(provider.dispatch_calls[0].request_payload)
+    assert payload["window_manifest_sha256"] == (
+        bundle.prepared.episodes[1].manifest.canonical_hash
+    )
+    assert not any(
+        claim.command_name == "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
+    )
+
+
+@pytest.mark.asyncio
+async def test_selected_only_recompute_rejects_episode_outside_source_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(2)
+    stage, _store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+    )
+    selected = VlmFullStageRecomputeRequest(
+        "pipeline_run_" + "b" * 32,
+        5,
+        completion_scope="selected_only",
+        episode_numbers=(3,),
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="outside the committed source census"):
+        await stage.execute(_context(recompute_request=selected))
+    assert provider.dispatch_calls == []
+
+
+@pytest.mark.asyncio
 async def test_probe_inspection_runs_the_real_first_episode_then_holds_before_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1157,8 +1222,7 @@ async def test_probe_inspection_runs_the_real_first_episode_then_holds_before_ba
         bundle.prepared.episodes[0].manifest.canonical_hash
     )
     assert not any(
-        claim.command_name == "FinalizeVlmBatchCommand"
-        for claim, _outcome in store.claims.values()
+        claim.command_name == "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )
 
     # Restarting without the operational hold reconciles the same persisted
@@ -1197,7 +1261,11 @@ class _ProbeThenParallelCommand:
             assert self._release_probe.wait(timeout=2)
             return SimpleNamespace(
                 outcome=CommandOutcome(
-                    uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+                    uuid4(),
+                    "succeeded",
+                    receipt_id=uuid4(),
+                    artifact_set_id=uuid4(),
+                    job_id=uuid4(),
                 )
             )
         with self._lock:
@@ -1210,7 +1278,11 @@ class _ProbeThenParallelCommand:
             self.active -= 1
         return SimpleNamespace(
             outcome=CommandOutcome(
-                uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+                uuid4(),
+                "succeeded",
+                receipt_id=uuid4(),
+                artifact_set_id=uuid4(),
+                job_id=uuid4(),
             )
         )
 
@@ -1223,7 +1295,11 @@ class _ParallelBatchFinalizer:
         self.requests.append(request)
         return SimpleNamespace(
             outcome=CommandOutcome(
-                uuid4(), "succeeded", receipt_id=uuid4(), artifact_set_id=uuid4(), job_id=uuid4(),
+                uuid4(),
+                "succeeded",
+                receipt_id=uuid4(),
+                artifact_set_id=uuid4(),
+                job_id=uuid4(),
             )
         )
 
