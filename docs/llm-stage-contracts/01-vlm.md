@@ -87,3 +87,7 @@ ArtifactSet/Receipt。VLM 时间只能定位语义区间，Stage 4 必须结合 
 - cause/effect 不互逆、有环或自环；
 - candidate 的事件/fact/measurement 闭包不成立；
 - prompt、Schema、parser、context pack 或 source identity hash 不一致。
+
+响应解析失败不会被伪装成成功。当前策略可对这类结构/引用拒绝做最多 3 次有界重生成；每次
+仍使用同一不可变视频和 Context Pack，但拥有新的 Attempt 身份。耗尽后错误落到
+`RETRY_BUDGET_EXHAUSTED`，需要修复输入契约或选择性重跑。

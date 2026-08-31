@@ -95,5 +95,7 @@ Schema 根据冻结 Policy/目标 Story 动态生成，其 hash 写入 durable r
 Command 名 + Job + command idempotency key + request_hash + attempt_ordinal
 ```
 
-同一个 Attempt 结果未知时先用已持久化 response id 对账，不能盲目新发请求。只有明确标记为
-retryable 的 429、500、502、503、504 或等价 provider 错误，才消耗下一次 Attempt。
+同一个 Attempt 结果未知时先用已持久化 response id 对账，不能盲目新发请求。当前冻结策略允许
+两类情况消耗下一次 Attempt：明确标记为 `retryable` 的 429、500、502、503、504 等 provider
+错误，以及 VLM 响应已经返回但被 parser 判定为可重生成的结构/引用错误。后者仍重放同一份
+不可变输入，但使用新的 provider idempotency key；达到最多 3 次后必须终止，不能无限重复。

@@ -69,7 +69,10 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
 - `indeterminate`：外部结果未知或本地执行异常，优先 reconcile；不能盲目重复付费调用。
 - 明确的 429/5xx：按冻结 retry policy 最多 3 次，退避 2 秒、8 秒。
 - 400/401/403/404/409/422：通常为请求、鉴权或契约错误，不做无意义重试。
-- 解析/引用/业务 Admission 失败：重放相同输入不会改善；需要修 prompt/Schema/策略或选择性重算。
+- 当前 VLM `VlmResponseRejected` 会按冻结 retry policy 最多自动重生成 3 次，给随机模型输出
+  一次纠正机会；每次都有独立 Attempt、provider idempotency key 和失败原因。三次仍解析/引用
+  不闭合后，`RETRY_BUDGET_EXHAUSTED` 终止。此时继续重放相同输入不会改善，必须修 prompt、
+  Schema/策略或做选择性重算。
 
 ## 当前最后已知真实断点（2026-08-31）
 
