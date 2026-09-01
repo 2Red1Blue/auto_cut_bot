@@ -9,6 +9,7 @@ import shutil
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from autocut_kernel.context_pack import ContextSelectionPolicy, video_only_window_context_pack
@@ -25,14 +26,18 @@ from autocut_kernel.pipeline import (
 )
 from autocut_kernel.store import (
     ArtifactMember,
+    ArtifactScope,
     CommandClaim,
     CommandSuccess,
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
+    CommittedV4InspectionInput,
+    CommittedVlmSemanticInput,
     IdempotencyConflictError,
     Job,
     PersistedVlmSemanticPackV4,
     PostgresRuntimeStore,
+    SemanticInputUnavailableError,
     StoreValidationError,
 )
 from autocut_kernel.store.models import (
@@ -190,6 +195,123 @@ def _history(job: Job):
         return cursor.fetchone()
 
 
+def _forge_vlm_member_payload(
+    artifact_set_id: UUID,
+    artifact_type: str,
+    mutate: Any,
+) -> None:
+    """Simulate a storage attacker that also recomputes member/set hashes."""
+
+    assert DSN is not None
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT payload_json::text
+              FROM runtime.artifacts
+             WHERE artifact_set_id = %s AND artifact_type = %s
+            """,
+            (artifact_set_id, artifact_type),
+        )
+        row = cursor.fetchone()
+        assert row is not None and cursor.fetchone() is None
+        payload = json.loads(str(row[0]))
+        mutate(payload)
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        artifacts_triggers_disabled = False
+        artifact_sets_triggers_disabled = False
+        try:
+            cursor.execute("ALTER TABLE runtime.artifacts DISABLE TRIGGER USER")
+            artifacts_triggers_disabled = True
+            cursor.execute("ALTER TABLE runtime.artifact_sets DISABLE TRIGGER USER")
+            artifact_sets_triggers_disabled = True
+            cursor.execute(
+                """
+                UPDATE runtime.artifacts
+                   SET payload_json = %s::jsonb, content_hash = %s
+                 WHERE artifact_set_id = %s AND artifact_type = %s
+                """,
+                (
+                    payload_json,
+                    canonical_payload_hash(payload_json),
+                    artifact_set_id,
+                    artifact_type,
+                ),
+            )
+            assert cursor.rowcount == 1
+            cursor.execute(
+                """
+                SELECT artifact.artifact_type, artifact.logical_id,
+                       artifact.revision, artifact.namespace,
+                       artifact.scope_kind, artifact.scope_key,
+                       artifact.content_hash, artifact.payload_json::text
+                  FROM runtime.artifact_set_members AS member
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                   AND artifact.artifact_set_id = member.artifact_set_id
+                 WHERE member.artifact_set_id = %s
+                 ORDER BY member.ordinal
+                """,
+                (artifact_set_id,),
+            )
+            members = tuple(
+                ArtifactMember(
+                    str(row[0]),
+                    str(row[1]),
+                    int(row[2]),
+                    ArtifactScope(str(row[3]), str(row[4]), str(row[5])),
+                    str(row[6]),
+                    str(row[7]),
+                )
+                for row in cursor.fetchall()
+            )
+            cursor.execute(
+                "UPDATE runtime.artifact_sets SET set_hash = %s WHERE artifact_set_id = %s",
+                (artifact_set_hash(members), artifact_set_id),
+            )
+            assert cursor.rowcount == 1
+        finally:
+            if artifact_sets_triggers_disabled:
+                cursor.execute("ALTER TABLE runtime.artifact_sets ENABLE TRIGGER USER")
+            if artifacts_triggers_disabled:
+                cursor.execute("ALTER TABLE runtime.artifacts ENABLE TRIGGER USER")
+
+
+def _forge_vlm_request_identity(payload: dict[str, object]) -> None:
+    identity = payload["request_identity"]
+    assert isinstance(identity, dict)
+    identity["source_id"] = "forged-source"
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    payload["request_identity_sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _forge_vlm_member_ordinal(artifact_set_id: UUID) -> None:
+    assert DSN is not None
+    with psycopg.connect(DSN, autocommit=True) as connection, connection.cursor() as cursor:
+        cursor.execute("ALTER TABLE runtime.artifact_set_members DISABLE TRIGGER USER")
+        try:
+            cursor.execute(
+                """
+                UPDATE runtime.artifact_set_members
+                   SET ordinal = 3
+                 WHERE artifact_set_id = %s AND ordinal = 0
+                """,
+                (artifact_set_id,),
+            )
+            assert cursor.rowcount == 1
+        finally:
+            cursor.execute("ALTER TABLE runtime.artifact_set_members ENABLE TRIGGER USER")
+
+
 def test_source_v4_generation_batch_reopen_and_zero_provider_replay(prepared: Prepared) -> None:
     provider = FixtureProvider(_raw())
     first = GenerateVlmEvidenceCommand(prepared.store, provider).execute(prepared.request)
@@ -305,6 +427,246 @@ def test_v23_decision_set_commits_reopens_and_replays_without_provider(
     with pytest.raises(IdempotencyConflictError):
         CompileV23CandidateDecisionSetCommand(restarted).execute(changed_policy)
     assert _history(prepared.request.job) == before_replay
+
+
+def test_selected_episode_v4_child_reopens_as_inspection_without_batch(
+    prepared: Prepared,
+    tmp_path: Path,
+) -> None:
+    """One selected child is durable and useful, but never claims batch completeness."""
+
+    job = Job("v4-selected-episode-inspection", "test")
+    root = tmp_path / "selected-sources"
+    root.mkdir()
+    (root / "episode-01.mp4").write_bytes(b"synthetic episode one")
+    (root / "episode-02.mp4").write_bytes(b"synthetic episode two")
+    source_result = PrepareWholeSeriesSourcesCommand(
+        prepared.store,
+        builder=SyntheticSampleBuilder(SyntheticLayoutProbe()),
+    ).execute(
+        PrepareWholeSeriesSourcesRequest(
+            job,
+            "source-prep:selected-inspection",
+            canonical_recipe_scope(job),
+            1,
+            _source_root(root, expected_source_count=2),
+        )
+    )
+    assert source_result.outcome.state == "succeeded"
+    assert source_result.prepared is not None
+    assert source_result.outcome.artifact_set_id is not None
+    source = prepared.store.read_whole_series_source_manifest(
+        job,
+        source_result.outcome.artifact_set_id,
+    )
+    episode = source_result.prepared.episodes[1]
+    request = replace(
+        prepared.request,
+        job=job,
+        idempotency_key="vlm-child-v4:selected-episode-1",
+        episode_index=1,
+        artifact_scope=canonical_recipe_scope(job),
+        manifest=episode.manifest,
+        manifest_set=episode.manifest_set,
+        proxy_blob=episode.proxy_blob,
+        source_manifest_sha256=source.reference.content_hash,
+        source_provenance_sha256=source.canonical_hash,
+    )
+    provider = FixtureProvider(_raw())
+    generated = GenerateVlmEvidenceCommand(prepared.store, provider).execute(request)
+    assert generated.outcome.state == "succeeded"
+
+    with pytest.raises(SemanticInputUnavailableError):
+        prepared.store.read_committed_vlm_semantic_pack_set_reference(
+            job,
+            "vlm-batch:selected-inspection",
+        )
+    inspection = prepared.store.read_committed_v4_semantic_child_inspection(
+        job,
+        request.idempotency_key,
+    )
+    assert inspection.result_scope == "inspection"
+    assert type(inspection.semantic_input) is CommittedV4InspectionInput
+    assert not isinstance(inspection.semantic_input, CommittedVlmSemanticInput)
+    assert inspection.source_grant.policy.expected_source_count == 2
+    assert inspection.semantic_input.source_window.episode_index == 1
+    assert type(inspection.semantic_input.semantic_pack) is PersistedVlmSemanticPackV4
+    persisted_pack = inspection.semantic_input.semantic_pack
+    child = persisted_pack.source_child
+    assert generated.attempt is not None
+    assert generated.attempt.raw_response is not None
+    assert generated.outcome.receipt_id is not None
+    assert generated.outcome.artifact_set_id is not None
+    assert inspection.source_manifest.source_job == job
+    assert inspection.source_manifest.reference.content_hash == source.reference.content_hash
+    assert inspection.source_manifest.canonical_hash == source.canonical_hash
+    assert inspection.semantic_input.request_identity == request.request_identity
+    assert inspection.semantic_input.source_window.window_manifest_sha256 == (
+        episode.manifest.canonical_hash
+    )
+    assert persisted_pack.semantic_pack == generated.semantic_pack
+    assert persisted_pack.reference.content_hash == generated.artifacts[2].content_hash
+    assert child.request_hash == request.request_hash
+    assert child.receipt_id == generated.outcome.receipt_id
+    assert child.artifact_set_id == generated.outcome.artifact_set_id
+    assert inspection.semantic_input.response_record.member_ordinal == 1
+    assert inspection.semantic_input.response_record.content_hash == (
+        generated.artifacts[1].content_hash
+    )
+    assert canonical_payload_hash(inspection.semantic_input.response_payload_json) == (
+        generated.artifacts[1].content_hash
+    )
+    assert inspection.semantic_input.raw_response == generated.attempt.raw_response
+    with pytest.raises(StoreValidationError):
+        replace(
+            inspection,
+            source_grant=replace(
+                inspection.source_grant,
+                policy=replace(
+                    inspection.source_grant.policy,
+                    expected_source_count=1,
+                ),
+                sources=inspection.source_grant.sources[:1],
+            ),
+        )
+    with pytest.raises(StoreValidationError):
+        replace(
+            inspection,
+            source_grant=replace(
+                inspection.source_grant,
+                policy=replace(
+                    inspection.source_grant.policy,
+                    authorized_purposes=("render_source",),
+                ),
+            ),
+        )
+    for field_name, forged_value in (
+        (
+            "request_identity",
+            replace(inspection.semantic_input.request_identity, source_id="other-source"),
+        ),
+        (
+            "response_record",
+            replace(inspection.semantic_input.response_record, receipt_id=uuid4()),
+        ),
+        ("response_payload_json", "{}"),
+        (
+            "raw_response",
+            replace(
+                inspection.semantic_input.raw_response,
+                content_hash="sha256:" + "0" * 64,
+            ),
+        ),
+        (
+            "source_window",
+            replace(inspection.semantic_input.source_window, source_id="other-source"),
+        ),
+        ("provider_request_id", "forged-provider-request"),
+    ):
+        with pytest.raises(StoreValidationError, match="V4 inspection"):
+            replace(inspection.semantic_input, **{field_name: forged_value})
+
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    reopened = restarted.read_committed_v4_semantic_child_inspection(
+        job,
+        request.idempotency_key,
+    )
+    assert reopened == inspection
+    replay = GenerateVlmEvidenceCommand(restarted, provider).execute(request)
+    assert replay.outcome.receipt_id == generated.outcome.receipt_id
+    assert provider.calls == 1
+
+
+def test_v4_inspection_forge_helper_preserves_a_semantically_unchanged_set(
+    prepared: Prepared,
+) -> None:
+    """The tamper helper itself preserves canonical ordinal/set-hash semantics."""
+
+    generated = GenerateVlmEvidenceCommand(
+        prepared.store,
+        FixtureProvider(_raw()),
+    ).execute(prepared.request)
+    assert generated.outcome.state == "succeeded"
+    assert generated.outcome.artifact_set_id is not None
+    _forge_vlm_member_payload(
+        generated.outcome.artifact_set_id,
+        "vlm_request_record",
+        lambda _payload: None,
+    )
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    reopened = restarted.read_committed_v4_semantic_child_inspection(
+        prepared.request.job,
+        prepared.request.idempotency_key,
+    )
+    assert reopened.semantic_input.semantic_pack.semantic_pack == generated.semantic_pack
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "member_ordinal",
+        "request_identity",
+        "source_manifest",
+        "episode",
+        "provider_request_id",
+        "response_hash",
+    ),
+)
+def test_selected_episode_v4_inspection_rejects_forged_persistence(
+    prepared: Prepared,
+    tamper: str,
+) -> None:
+    """A restart rejects forged selected-child bindings; hashes are recomputed where applicable."""
+
+    provider = FixtureProvider(_raw())
+    generated = GenerateVlmEvidenceCommand(prepared.store, provider).execute(prepared.request)
+    assert generated.outcome.state == "succeeded"
+    assert generated.outcome.artifact_set_id is not None
+    artifact_set_id = generated.outcome.artifact_set_id
+    if tamper == "member_ordinal":
+        _forge_vlm_member_ordinal(artifact_set_id)
+    elif tamper == "request_identity":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_request_record",
+            _forge_vlm_request_identity,
+        )
+    elif tamper == "source_manifest":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_request_record",
+            lambda payload: payload.__setitem__(
+                "source_manifest_sha256", "sha256:" + "0" * 64
+            ),
+        )
+    elif tamper == "episode":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_request_record",
+            lambda payload: payload.__setitem__("episode_index", 99),
+        )
+    elif tamper == "provider_request_id":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_response_record",
+            lambda payload: payload.__setitem__(
+                "provider_request_id", "forged-provider-request"
+            ),
+        )
+    else:
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_response_record",
+            lambda payload: payload.__setitem__(
+                "raw_response_sha256", "sha256:" + "f" * 64
+            ),
+        )
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    with pytest.raises(StoreValidationError):
+        restarted.read_committed_v4_semantic_child_inspection(
+            prepared.request.job,
+            prepared.request.idempotency_key,
+        )
 
 
 def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> None:
@@ -491,6 +853,11 @@ def test_old_v3_batch_bytes_unchanged_and_v4_strategy_rejects_v3_child(prepared:
     before = _history(request.job)
     restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
     assert restarted.read_committed_vlm_generation_child(request.job, request.idempotency_key).semantic_schema_version == 3
+    with pytest.raises(StoreValidationError, match="V4 inspection"):
+        restarted.read_committed_v4_semantic_child_inspection(
+            request.job,
+            request.idempotency_key,
+        )
     assert GenerateVlmEvidenceCommand(restarted, NoProvider()).execute(request).outcome.receipt_id == result.outcome.receipt_id
     assert FinalizeVlmBatchCommand(restarted).execute(batch_request).outcome.receipt_id == batch.outcome.receipt_id
     assert _history(request.job) == before

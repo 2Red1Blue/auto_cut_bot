@@ -109,6 +109,8 @@ from .models import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedSemanticInputsRequest,
+    CommittedV4InspectionInput,
+    CommittedV4SemanticChildInspection,
     CommittedVlmInputReference,
     CommittedVlmSemanticInput,
     GenerationAttempt,
@@ -127,6 +129,7 @@ from .models import (
     PersistedShadowCalibrationMeasurement,
     PersistedVlmGenerationChild,
     PersistedVlmSemanticPack,
+    PersistedVlmSemanticPackV4,
     PersistedWholeSeriesSourceManifest,
     RecipeReference,
     ShadowLocalMeasurementAttempt,
@@ -1121,6 +1124,20 @@ class _DecodedSourceWindow:
             manifest.core_range.end_pts,
             manifest.canonical_hash,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedVlmGenerationChild:
+    """Internal exact child closure retained for typed downstream projections."""
+
+    child: PersistedVlmGenerationChild
+    semantic_pack: PersistedVlmSemanticPack | PersistedVlmSemanticPackV4
+    request_identity: VlmRequestIdentity | None
+    response_record: CommittedArtifactMemberReference
+    response_payload_json: str
+    provider_request_id: str | None
+    raw_response: BlobRef
+    source_manifest: PersistedWholeSeriesSourceManifest | None
 
 
 def _strict_source_windows(
@@ -5819,13 +5836,74 @@ class PostgresRuntimeStore:
         if type(idempotency_key) is not str or not idempotency_key.strip():  # noqa: E721
             raise StoreValidationError("idempotency_key must be a non-empty string")
 
-        return self._transaction(
+        verified = self._transaction(
             lambda cursor: self._read_committed_vlm_generation_child(cursor, job, idempotency_key)
         )
+        return verified.child
+
+    def read_committed_v4_semantic_child_inspection(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> CommittedV4SemanticChildInspection:
+        """Reread one V4 child without conferring complete-batch authority."""
+
+        if type(job) is not Job:  # noqa: E721
+            raise StoreValidationError("V4 inspection job must be an exact Job")
+        if type(idempotency_key) is not str or not idempotency_key.strip():  # noqa: E721
+            raise StoreValidationError(
+                "V4 inspection idempotency_key must be non-empty text"
+            )
+
+        def operation(cursor: DbCursor) -> CommittedV4SemanticChildInspection:
+            verified = self._read_committed_vlm_generation_child(
+                cursor,
+                job,
+                idempotency_key,
+            )
+            if (
+                type(verified.semantic_pack) is not PersistedVlmSemanticPackV4  # noqa: E721
+                or verified.source_manifest is None
+                or verified.request_identity is None
+            ):
+                raise StoreValidationError(
+                    "V4 inspection requires an exact committed V4 generation child"
+                )
+            source_grant, source_windows = _strict_source_windows(
+                verified.source_manifest
+            )
+            source_grant.require_purpose("semantic_analysis")
+            matches = tuple(
+                item
+                for item in source_windows
+                if item.identity.episode_index == verified.child.episode_index
+                and item.identity.window_manifest_sha256
+                == verified.child.window_manifest_sha256
+            )
+            if len(matches) != 1:
+                raise StoreValidationError(
+                    "V4 inspection child has no unique committed Source window"
+                )
+            semantic_input = CommittedV4InspectionInput(
+                source_window=matches[0].identity,
+                request_identity=verified.request_identity,
+                semantic_pack=verified.semantic_pack,
+                response_record=verified.response_record,
+                response_payload_json=verified.response_payload_json,
+                provider_request_id=verified.provider_request_id,
+                raw_response=verified.raw_response,
+            )
+            return CommittedV4SemanticChildInspection(
+                source_manifest=verified.source_manifest,
+                source_grant=source_grant,
+                semantic_input=semantic_input,
+            )
+
+        return self._transaction(operation)
 
     def _read_committed_vlm_generation_child(
         self, cursor: DbCursor, job: Job, idempotency_key: str,
-    ) -> PersistedVlmGenerationChild:
+    ) -> _VerifiedVlmGenerationChild:
         cursor.execute(
             "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
             (job.job_key,),
@@ -5906,6 +5984,11 @@ class PostgresRuntimeStore:
             set_hash,
             member_count,
         ) = row
+        durable_provider_request_id = (
+            None
+            if provider_request_id is None
+            else _text(provider_request_id)
+        )
         slot_id = UUID(str(command_slot_id))
         durable_attempt_id = UUID(str(attempt_id))
         durable_receipt_id = UUID(str(receipt_id))
@@ -5948,7 +6031,7 @@ class PostgresRuntimeStore:
         )
         cursor.execute(
             """
-            SELECT artifact.artifact_type, artifact.logical_id,
+            SELECT member.ordinal, artifact.artifact_type, artifact.logical_id,
                    artifact.revision, artifact.namespace,
                    artifact.scope_kind, artifact.scope_key,
                    artifact.content_hash, artifact.payload_json::text
@@ -5961,9 +6044,10 @@ class PostgresRuntimeStore:
             """,
             (durable_artifact_set_id,),
         )
-        artifacts: list[ArtifactMember] = []
+        artifacts: list[tuple[int, ArtifactMember]] = []
         while (artifact_row := cursor.fetchone()) is not None:
             (
+                member_ordinal,
                 artifact_type,
                 logical_id,
                 revision,
@@ -5979,28 +6063,35 @@ class PostgresRuntimeStore:
                     "VLM ArtifactSet member payload hash is invalid"
                 )
             artifacts.append(
-                ArtifactMember(
-                    _text(artifact_type),
-                    _text(logical_id),
-                    int(_text(revision)),
-                    ArtifactScope(
-                        _text(namespace),
-                        _text(scope_kind),
-                        _text(scope_key),
+                (
+                    int(_text(member_ordinal)),
+                    ArtifactMember(
+                        _text(artifact_type),
+                        _text(logical_id),
+                        int(_text(revision)),
+                        ArtifactScope(
+                            _text(namespace),
+                            _text(scope_kind),
+                            _text(scope_key),
+                        ),
+                        _text(content_hash),
+                        serialized,
                     ),
-                    _text(content_hash),
-                    serialized,
                 )
             )
-        artifact_tuple = tuple(artifacts)
-        if tuple(item.artifact_type for item in artifact_tuple) != (
-            "vlm_request_record",
-            "vlm_response_record",
-            "vlm_semantic_pack",
+        ordered_artifacts = tuple(artifacts)
+        if tuple(
+            (ordinal, artifact.artifact_type)
+            for ordinal, artifact in ordered_artifacts
+        ) != (
+            (0, "vlm_request_record"),
+            (1, "vlm_response_record"),
+            (2, "vlm_semantic_pack"),
         ):
             raise StoreValidationError(
                 "VLM ArtifactSet must exact-bind request, response, and Semantic Pack"
             )
+        artifact_tuple = tuple(artifact for _ordinal, artifact in ordered_artifacts)
         if any(
             item.scope != canonical_recipe_scope(job)
             or item.revision != artifact_tuple[0].revision
@@ -6011,6 +6102,7 @@ class PostgresRuntimeStore:
             )
         CommandSuccess(slot_id, _text(set_hash), artifact_tuple)
         record, response_record, semantic_pack_record = artifact_tuple
+        response_ordinal = ordered_artifacts[1][0]
         frozen_request = _strict_json_object(
             _exact_blob_bytes(cursor, request_payload, "VLM request payload").decode("utf-8", "strict"),
             "VLM provider request payload",
@@ -6054,28 +6146,53 @@ class PostgresRuntimeStore:
             semantic_schema_version=semantic_version,
         )
         try:
+            source_manifest: PersistedWholeSeriesSourceManifest | None = None
+            request_identity: VlmRequestIdentity | None = None
             if semantic_version == 4:
+                request_record_payload = _strict_json_object(
+                    record.payload_json,
+                    "VLM request record",
+                )
+                if "request_identity" not in request_record_payload:
+                    raise StoreValidationError(
+                        "V4 request record is missing request_identity"
+                    )
+                request_identity = _decode_request_identity(
+                    request_record_payload["request_identity"]
+                )
                 cursor.execute(
-                    "SELECT provider_id, retry_policy_hash FROM runtime.generation_attempts WHERE attempt_id = %s",
+                    """
+                    SELECT provider_id, retry_policy_hash, provider_request_id
+                      FROM runtime.generation_attempts
+                     WHERE attempt_id = %s
+                    """,
                     (child.attempt_id,),
                 )
                 policy_row = cursor.fetchone()
                 if policy_row is None or (
                     _text(policy_row[0]) != frozen_request.get("provider_id")
                     or _text(policy_row[1]) != frozen_request.get("retry_policy_sha256")
+                    or (
+                        None if policy_row[2] is None else _text(policy_row[2])
+                    )
+                    != durable_provider_request_id
                 ):
-                    raise StoreValidationError("V4 generation attempt differs from its frozen provider/retry policy")
-                persisted_v4 = verify_v4_semantic_pack(
+                    raise StoreValidationError(
+                        "V4 generation attempt differs from its frozen provider/retry identity"
+                    )
+                source_manifest = self._read_v4_source_owner(cursor, child)
+                semantic_pack: PersistedVlmSemanticPack | PersistedVlmSemanticPackV4
+                semantic_pack = verify_v4_semantic_pack(
                     child=child, artifact=semantic_pack_record,
-                    request_record=_strict_json_object(record.payload_json, "VLM request record"),
+                    request_record=request_record_payload,
                     request_payload=frozen_request, pack_payload=pack_payload,
                     raw_response=_exact_blob_bytes(cursor, raw_response, "VLM raw response"),
-                    source=self._read_v4_source_owner(cursor, child),
+                    source=source_manifest,
                 )
-                decoded_raw_hash = persisted_v4.semantic_pack.raw_response_sha256
+                decoded_raw_hash = semantic_pack.semantic_pack.raw_response_sha256
             else:
                 decoded = decode_vlm_semantic_pack(pack_payload)
-                PersistedVlmSemanticPack(
+                semantic_pack = PersistedVlmSemanticPack(
                     reference=VlmSemanticPackReference(
                         semantic_pack_record.scope,
                         semantic_pack_record.logical_id,
@@ -6126,7 +6243,25 @@ class PostgresRuntimeStore:
             raise StoreValidationError(
                 f"committed VLM ArtifactSet failed exact v{semantic_version} verification"
             ) from error
-        return child
+        return _VerifiedVlmGenerationChild(
+            child=child,
+            semantic_pack=semantic_pack,
+            request_identity=request_identity,
+            response_record=CommittedArtifactMemberReference(
+                receipt_id=durable_receipt_id,
+                artifact_set_id=durable_artifact_set_id,
+                member_ordinal=response_ordinal,
+                scope=response_record.scope,
+                artifact_type=response_record.artifact_type,
+                logical_id=response_record.logical_id,
+                revision=response_record.revision,
+                content_hash=response_record.content_hash,
+            ),
+            response_payload_json=response_record.payload_json,
+            provider_request_id=durable_provider_request_id,
+            raw_response=raw_response,
+            source_manifest=source_manifest,
+        )
 
     def read_committed_vlm_input_reference(
         self,
@@ -7053,7 +7188,11 @@ class PostgresRuntimeStore:
             )
             require_batch_child_version(decoded.strategy_version, parser_version, schema_version)
             if schema_version == 4:
-                verified = self._read_committed_vlm_generation_child(cursor, job, child.idempotency_key)
+                verified = self._read_committed_vlm_generation_child(
+                    cursor,
+                    job,
+                    child.idempotency_key,
+                ).child
                 if (
                     verified.receipt_id != child.request_record.receipt_id
                     or verified.artifact_set_id != child.request_record.artifact_set_id

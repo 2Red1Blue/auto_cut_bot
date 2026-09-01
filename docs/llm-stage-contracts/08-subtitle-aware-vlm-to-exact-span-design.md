@@ -366,6 +366,17 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
   文本排版，但拒绝语义、引用、顺序、哈希、scope、revision 或 producer identity 漂移。
 - 已用一次性本地 PostgreSQL 测试库验证首次提交、进程重启后精确重读、同键零 Provider 重放以及
   同键 Policy 漂移冲突。该 Command 是纯派生步骤，重跑不会再次调用 VLM。
+- 已实现 `read_committed_v4_semantic_child_inspection()`：对多集 Source 中单独成功的一个 V4 child，
+  重读同一 Job 的 Source owner、三成员 ArtifactSet、request/raw-response Blob、V4 Pack 与 Window
+  identity，并返回固定 `result_scope=inspection`。它不创建也不伪造 `vlm_semantic_pack_set`，V3 child
+  不能进入该入口。其内层值使用独立 `CommittedV4InspectionInput`，不是完整批次使用的
+  `CommittedVlmSemanticInput` 子类型，因而不能被只接受完整批次输入的编译入口结构性误接收；该值还
+  自校验 request identity、Source/Window、response artifact payload/hash 与 raw-response Blob 的闭包。
+- 已用真实双集 PostgreSQL 场景验证：只生成第 2 集 child、batch aggregate 明确不存在，Store 重启后
+  inspection 仍可精确恢复，Provider 只调用一次。另以重新计算 member/ArtifactSet hash 的持久化篡改
+  测试验证 ordinal、request identity、Source owner、episode、provider request identity 与 raw-response
+  绑定任一漂移都会拒绝；
+  完整批次 reader、旧 V3 bytes 与 V23 DecisionSet 提交回归同时通过。
 
 实现与测试：
 
@@ -378,10 +389,10 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
 - [`test_compile_v23_candidate_decision_set_command.py`](../../tests/pipeline/test_compile_v23_candidate_decision_set_command.py)
 - [`test_vlm_v4_store_postgres.py`](../../tests/pipeline/test_vlm_v4_store_postgres.py)
 
-当前尚未完成的是 Pipeline Runtime 调用、从多集任务的 selected-only V4 child 做精确语义重读、
-候选级 SenseVoice/FSMN 子命令和结果回填。现有 Command 只授权“完整已提交 V4 aggregate”路径；
-因此仍不能把本节表述为真实 pipeline 已跑通，也不能把多集任务中仅重跑一集的 inspection child
-冒充完整批次输入。
+当前尚未完成的是把 inspection reader 与完整 aggregate reader 作为两种显式 scope 接入 Pipeline
+Runtime、候选级 SenseVoice/FSMN 子命令和结果回填。现有 V23 Command 仍只授权“完整已提交 V4
+aggregate”路径；selected-only reader 的存在不等于它已经获得完整批次或下游发布权限，因此仍不能
+把本节表述为真实 pipeline 已跑通。
 
 ### Global P1B：分区恢复和 Rich VLM dual-run
 

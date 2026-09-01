@@ -17,7 +17,11 @@ from ..media.calibration_record import (
     runtime_calibration_profile_key,
 )
 from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
-from ..source_manifest import SourceOperationGrant
+from ..source_manifest import (
+    SourceManifestDecodeError,
+    SourceOperationGrant,
+    decode_source_manifest,
+)
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from ..vlm.semantic_pack_v4 import VlmSemanticPackV4
 from .errors import StoreValidationError
@@ -1386,6 +1390,253 @@ class CommittedVlmSemanticInput:
             raise StoreValidationError("VLM semantic response_record is invalid")
         if type(self.raw_response) is not BlobRef:  # noqa: E721
             raise StoreValidationError("VLM semantic raw_response is invalid")
+
+
+def _require_inspection_binding(
+    field_name: str,
+    actual: object,
+    expected: object,
+) -> None:
+    if actual != expected:
+        raise StoreValidationError(f"V4 inspection {field_name} mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedV4InspectionInput:
+    """One V4 child exposed only for inspection-scoped computation.
+
+    This deliberately is not a subtype of ``CommittedVlmSemanticInput``.  A
+    consumer that requires complete-batch semantic authority therefore cannot
+    accidentally accept a selected child merely because it carries the same
+    evidence fields.
+    """
+
+    source_window: SourceWindowIdentity
+    request_identity: VlmRequestIdentity
+    semantic_pack: PersistedVlmSemanticPackV4
+    response_record: CommittedArtifactMemberReference
+    response_payload_json: str
+    provider_request_id: str | None
+    raw_response: BlobRef
+
+    def __post_init__(self) -> None:
+        if type(self.source_window) is not SourceWindowIdentity:  # noqa: E721
+            raise StoreValidationError("V4 inspection source_window is invalid")
+        if type(self.request_identity) is not VlmRequestIdentity:  # noqa: E721
+            raise StoreValidationError("V4 inspection request_identity is invalid")
+        if type(self.semantic_pack) is not PersistedVlmSemanticPackV4:  # noqa: E721
+            raise StoreValidationError("V4 inspection requires an exact V4 Semantic Pack")
+        child = self.semantic_pack.source_child
+        if (
+            child.parser_strategy_version,
+            child.semantic_schema_version,
+        ) != ("strict-semantic-pack-v4", 4):
+            raise StoreValidationError(
+                "V4 inspection pack disagrees with its child version"
+            )
+        if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError("V4 inspection response_record is invalid")
+        if type(self.raw_response) is not BlobRef:  # noqa: E721
+            raise StoreValidationError("V4 inspection raw_response is invalid")
+        if self.provider_request_id is not None:
+            _text(self.provider_request_id, "V4 inspection provider_request_id")
+        identity = self.request_identity
+        pack = self.semantic_pack.semantic_pack
+        window = self.source_window
+        for field_name, actual, expected in (
+            (
+                "request_identity.child_hash",
+                identity.canonical_hash,
+                child.request_identity_sha256,
+            ),
+            (
+                "request_identity.pack_hash",
+                identity.canonical_hash,
+                pack.request_identity_sha256,
+            ),
+            (
+                "request_identity.child_window",
+                identity.window_manifest_sha256,
+                child.window_manifest_sha256,
+            ),
+            (
+                "request_identity.source_window",
+                identity.window_manifest_sha256,
+                window.window_manifest_sha256,
+            ),
+            (
+                "request_identity.child_window_set",
+                identity.window_manifest_set_sha256,
+                child.window_manifest_set_sha256,
+            ),
+            (
+                "request_identity.source_window_set",
+                identity.window_manifest_set_sha256,
+                window.window_manifest_set_sha256,
+            ),
+            ("request_identity.source_id", identity.source_id, window.source_id),
+            (
+                "request_identity.source_sha256",
+                identity.source_sha256,
+                window.source_sha256,
+            ),
+            (
+                "request_identity.source_clock_id",
+                identity.source_clock_id,
+                window.source_clock_id,
+            ),
+            (
+                "request_identity.request_payload",
+                identity.request_payload_sha256,
+                child.request_payload.content_hash,
+            ),
+        ):
+            _require_inspection_binding(field_name, actual, expected)
+        response = self.response_record
+        response_payload = _strict_json_mapping(
+            self.response_payload_json,
+            "V4 inspection response payload",
+        )
+        expected_response_fields = frozenset(
+            {
+                "attempt_id",
+                "provider_request_id",
+                "raw_response_blob",
+                "raw_response_sha256",
+            }
+        )
+        if frozenset(response_payload) != expected_response_fields:
+            raise StoreValidationError(
+                "V4 inspection response payload schema mismatch"
+            )
+        response_blob = _mapping_blob_ref(
+            response_payload["raw_response_blob"],
+            "V4 inspection raw_response_blob",
+        )
+        for field_name, actual, expected in (
+            ("response.receipt_id", response.receipt_id, child.receipt_id),
+            (
+                "response.artifact_set_id",
+                response.artifact_set_id,
+                child.artifact_set_id,
+            ),
+            ("response.member_ordinal", response.member_ordinal, 1),
+            (
+                "response.scope",
+                response.scope,
+                self.semantic_pack.reference.scope,
+            ),
+            ("response.artifact_type", response.artifact_type, "vlm_response_record"),
+            (
+                "response.logical_id",
+                response.logical_id,
+                f"vlm_response_{child.window_manifest_sha256[7:31]}",
+            ),
+            (
+                "response.revision",
+                response.revision,
+                self.semantic_pack.reference.revision,
+            ),
+            (
+                "response.content_hash",
+                canonical_payload_hash(self.response_payload_json),
+                response.content_hash,
+            ),
+            ("response.attempt_id", response_payload["attempt_id"], str(child.attempt_id)),
+            (
+                "response.provider_request_id",
+                response_payload["provider_request_id"],
+                self.provider_request_id,
+            ),
+            ("response.raw_response_blob", response_blob, self.raw_response),
+            (
+                "response.raw_response_sha256",
+                response_payload["raw_response_sha256"],
+                pack.raw_response_sha256,
+            ),
+            (
+                "response.raw_blob_content_hash",
+                self.raw_response.content_hash,
+                pack.raw_response_sha256,
+            ),
+        ):
+            _require_inspection_binding(field_name, actual, expected)
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedV4SemanticChildInspection:
+    """One exact V4 child with Source closure, without batch-completeness authority."""
+
+    source_manifest: PersistedWholeSeriesSourceManifest
+    source_grant: SourceOperationGrant
+    semantic_input: CommittedV4InspectionInput
+    result_scope: Literal["inspection"] = field(default="inspection", init=False)
+
+    def __post_init__(self) -> None:
+        if type(self.source_manifest) is not PersistedWholeSeriesSourceManifest:  # noqa: E721
+            raise StoreValidationError("V4 inspection source_manifest is invalid")
+        if type(self.source_grant) is not SourceOperationGrant:  # noqa: E721
+            raise StoreValidationError("V4 inspection source_grant is invalid")
+        if type(self.semantic_input) is not CommittedV4InspectionInput:  # noqa: E721
+            raise StoreValidationError("V4 inspection semantic_input is invalid")
+        try:
+            decoded_source = decode_source_manifest(
+                self.source_manifest.payload_json,
+                self.source_manifest.proxy_blobs,
+            )
+        except (SourceManifestDecodeError, TypeError, ValueError) as error:
+            raise StoreValidationError(
+                "V4 inspection SourceManifest cannot be decoded exactly"
+            ) from error
+        if decoded_source.census != self.source_grant:
+            raise StoreValidationError(
+                "V4 inspection source_grant differs from its SourceManifest"
+            )
+        decoded_windows = tuple(
+            SourceWindowIdentity(
+                episode_index=episode_index,
+                stream_index=episode.manifest.stream_index,
+                core_start_pts=episode.manifest.core_range.start_pts,
+                core_end_pts=episode.manifest.core_range.end_pts,
+                window_manifest_sha256=episode.manifest.canonical_hash,
+                source_id=episode.manifest.source_id,
+                source_sha256=episode.manifest.source_sha256,
+                source_clock_id=episode.manifest.source_clock_id,
+                window_manifest_set_sha256=episode.manifest_set.canonical_hash,
+                proxy_blob=proxy_blob,
+            )
+            for episode_index, (episode, proxy_blob) in enumerate(
+                zip(
+                    decoded_source.episodes,
+                    self.source_manifest.proxy_blobs,
+                    strict=True,
+                )
+            )
+        )
+        if decoded_windows.count(self.semantic_input.source_window) != 1:
+            raise StoreValidationError(
+                "V4 inspection source_window is not a unique SourceManifest member"
+            )
+        persisted = self.semantic_input.semantic_pack
+        if type(persisted) is not PersistedVlmSemanticPackV4:  # noqa: E721
+            raise StoreValidationError("V4 inspection requires an exact V4 Semantic Pack")
+        child = persisted.source_child
+        source_job = self.source_manifest.source_job
+        if (
+            source_job is None
+            or child.source_job != source_job
+            or child.kernel_job_id != self.source_manifest.job_id
+            or child.source_manifest_sha256
+            != self.source_manifest.reference.content_hash
+            or child.source_provenance_sha256 != self.source_manifest.canonical_hash
+            or child.episode_index != self.semantic_input.source_window.episode_index
+            or child.window_manifest_sha256
+            != self.semantic_input.source_window.window_manifest_sha256
+        ):
+            raise StoreValidationError(
+                "V4 inspection child does not bind its exact Source/Window owner"
+            )
+        self.source_grant.require_purpose("semantic_analysis")
 
 
 @dataclass(frozen=True, slots=True)
