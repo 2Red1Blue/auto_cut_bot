@@ -146,6 +146,15 @@ from .types import (
     TimeBase,
     ValidityIntervals,
 )
+from .v23_candidate_evidence_window import (
+    V23CandidateWindowCompileDecision,
+    V23CandidateWindowCompileOutcome,
+    V23CandidateWindowCompilePolicy,
+    V23CandidateWindowCompileReason,
+    V23DirectEventSupport,
+    compile_v23_candidate_evidence_window,
+    verify_v23_candidate_evidence_window_decision,
+)
 
 __all__ = [
     "CalibrationAnchor",
@@ -259,6 +268,13 @@ __all__ = [
     "plan_adaptive_evidence_window",
     "plan_candidate_evidence_window",
     "plan_candidate_window",
+    "V23CandidateWindowCompileDecision",
+    "V23CandidateWindowCompileOutcome",
+    "V23CandidateWindowCompilePolicy",
+    "V23CandidateWindowCompileReason",
+    "V23DirectEventSupport",
+    "compile_v23_candidate_evidence_window",
+    "verify_v23_candidate_evidence_window_decision",
     "CommittedVideoToAudioClockMapCertificate",
     "AVPresentationMapSegment",
     "PresentationNonOverlap",

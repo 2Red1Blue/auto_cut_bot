@@ -337,6 +337,27 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
    `episode_arc|indeterminate`，不送 ExactSpan；
 3. 建立 FramePts/AudioSample endpoint identity fencing；其他 producer 不得 mint endpoint。
 
+#### P1A 当前实现状态（2026-09-02）
+
+- 已实现纯 Kernel `compile_v23_candidate_evidence_window()`：只读取 anchor、supporting、payoff
+  Event，确定性去重；`context_event_refs` 和 Candidate 自身可能覆盖全窗的 support 不扩大物理窗口；
+- 已实现 `V23CandidateWindowCompileDecision`：绑定 Semantic Pack、direct Event dependency、Candidate、
+  Request、Source clock、WindowManifest、FramePtsIndex 和 Policy hash；可用独立复算入口拒绝篡改；
+- locality 在 mapping uncertainty hull 和 padding/frame-snap 后的最终物理窗口上各检查一次；分离的
+  direct regions 路由为 `episode_arc`，过宽、比例过大或帧 lattice 无法覆盖 direct hull 时路由为
+  `indeterminate`，均不产生 `CandidateEvidenceWindow`；
+- 完整 `FramePtsIndexSet` 中相邻 PTS 的时间间隔表示上一解码帧的 presentation duration，不解释为
+  “内部证据缺失”；无法形成非空范围或无法覆盖 direct hull 才失败关闭；
+- V3 `plan_candidate_evidence_window()` 保持原样，兼容路径为新增模块，不重解释历史 Artifact。
+
+实现与测试：
+
+- [`v23_candidate_evidence_window.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_evidence_window.py)
+- [`test_v23_candidate_evidence_window.py`](../../tests/media/test_v23_candidate_evidence_window.py)
+
+当前尚未完成的是 Decision 的 Artifact/DB 持久化、Pipeline Runtime 调用、候选级 SenseVoice/FSMN
+子命令和结果回填；这些属于下一批 P1A/P2 接线，不能把本节的纯编译器测试表述为真实 pipeline 已跑通。
+
 ### Global P1B：分区恢复和 Rich VLM dual-run
 
 1. 引入 `ScreenTextObservation`、`EvidenceAtom` 与对象级 `ContextAssistanceRef`；
