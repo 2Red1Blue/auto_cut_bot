@@ -7,7 +7,8 @@
 - 不改变的边界：Stage 4 精确 A/V 端点、Recipe、Render、QC 和发布准入均不得由 LLM 决定。
 - 当前执行事实仍以 `00`–`05` 和冻结的 runtime authority 为准。
 
-本设计解决的不是“怎样让模型更听话”，而是缩小模型可以犯错的范围。核心原则是：
+本设计解决的不是“怎样让模型更听话”，也不是单纯缩短 Prompt 或响应，而是在保持 VLM 富语义
+产出的前提下缩小模型可以犯错的范围。核心原则是：
 
 > 模型描述发生了什么、为什么重要、哪个已知候选更符合叙事意图；程序决定对象是谁、
 > 时间在哪里、引用是否存在、约束是否闭合、能否剪、怎样重跑以及能否发布。
@@ -33,13 +34,28 @@
 还有一类是混合责任：程序先冻结可选集合并分配短别名，模型只在集合内选择，程序再解析
 别名并验证闭包。模型不能自由发明引用。
 
+### 语义丰富度不是优化目标的牺牲项
+
+视频剪辑质量高度依赖 VLM 对整集内容的理解，因此不能为了降低 token 而把响应退化为几条摘要。
+应删除的是机械冗余和伪证明，不是有下游价值的语义信息：
+
+- 删除：长 ID/hash 回显、固定常量、重复 support、可由闭包派生的字段、授权和物理参数；
+- 保留并增强：人物、场景、动作、状态变化、关系、情绪、对白行为、事件、因果假设、冲突、
+  铺垫/回收、叙事 Beat、悬念、高光、反应镜头、视听语言和不确定性；
+- 每个新增字段必须声明消费者。Stage 1–3、Candidate、ExactSpan 候选生成或调试评测都不消费的
+  字段只能进入 shadow 试验，不能无限扩张生产 Schema；
+- 优化采用字典序目标：先满足 semantic coverage、grounding、rare-event recall 和下游质量下限，
+  在质量非劣前提下再优化 token、延迟和成本；不能用“语义/token”牺牲低频但关键的铺垫、
+  微表情、反应镜头和独立 support。
+
 ## 二、当前设计的主要浪费与风险
 
-### 1. VLM 同时承担观察图和候选图
+### 1. VLM 富语义输出缺少分区验收
 
-当前一次视频调用同时输出实体、事实、事件、连续性和候选假设，还要求模型维护多组跨数组
-引用。最近真实失败中的未知 `f049` 和 candidate measurement 越出候选闭包，都是这种耦合
-的直接结果：视频理解可能已经可用，但候选层的一处引用错误会让整次视频调用重跑。
+当前一次视频调用输出实体、事实、事件、连续性和候选假设，这个信息范围本身有价值；问题是
+所有分区共用一次全有或全无的语义验收，并要求模型维护多组跨数组字符串引用。最近真实失败
+中的未知 `f049` 和 candidate measurement 越出候选闭包，说明视频理解可能已经可用，但候选层
+的一处引用错误仍会让整次视频调用重跑。
 
 V23 还要求模型输出本轮固定为空的因果数组、固定 continuity 值、固定 schema version 和
 本地短 ID。这些不是智能判断，只增加 Schema、输出 token 和失败面。
@@ -81,11 +97,11 @@ Provider 原生 JSON Schema 能约束字段、类型和枚举，但不能证明�
 ```text
 source_prep (程序)
   -> context_prepare (程序)
-  -> VLM Observation Extractor (视频模型，小型语义 Schema)
-  -> Observation Compiler (程序：ID/引用/区间/事实事件图)
+  -> VLM Rich Semantic Extractor (视频模型，分区富语义 Schema)
+  -> Sectional Semantic Compiler (程序：分区验收、ID/引用/区间/事实事件图)
   -> Stage 1 Narrative Draft (文本模型)
   -> Narrative Compiler + Coverage (程序)
-  -> Candidate Enricher (文本模型，使用已准入 Narrative Context)
+  -> Candidate Enricher (文本模型，融合 VLM editorial signals 与已准入 Narrative Context)
   -> Candidate Compiler (程序)
   -> Stage 2 Proposal Draft (文本模型)
   -> Feasibility + Portfolio Optimizer (程序)
@@ -99,22 +115,44 @@ source_prep (程序)
 
 ## 四、逐阶段字段归属
 
-### 4.1 VLM Observation Extractor
+### 4.1 VLM Rich Semantic Extractor
 
 模型可见输入只包含：
 
 - 当前视频窗口；
 - 规范化后的窗口相对时间范围；
 - 有预算、无未来剧透的 `WindowContextPack`；
-- 本次观察任务和小型 response schema。
+- 本次富语义抽取任务和有界、分区的 response schema。
 
 不进入模型输入：Job/Command/Receipt、BlobRef、provider idempotency key、request hash、完整
 SourceManifest、授权信息、外部 API 原始响应、ASR/VAD、物理剪辑策略。
 
+ProviderCapability 必须用 canary 证明实际模态，而不是根据 `input_video` 名称猜测，至少记录
+`audio_track_consumed`、`audio_language`、`audio_sampling`、`video_fps/frame_sampling`、
+`screen_text/OCR`。未验证音轨能力时，声音、音乐、静默、对白行为均为 `not_evaluated`，不能
+标成 observed；可以由独立版本化 ASR/audio classifier 补充，但它们仍是独立 evidence source。
+
+VLM 输出建议分成五个具有明确消费者的语义区，而不是删减成单一 observation 数组：
+
+| 分区 | VLM 应返回的有效信息 | 主要消费者 |
+|---|---|---|
+| `perception` | evidence atoms、人物/物体/地点、场景、屏幕文字、镜头与已验证模态的声音线索 | 实体解析、Media 候选、Stage 1 |
+| `semantic_graph` | typed facts、events、状态变化、人物互动、关系观察、独立 evidence support | Stage 1、Candidate、Coverage |
+| `narrative_interpretation` | 情绪变化、人物目标/阻碍、冲突升级、铺垫/回收、反转、开放问题、因果假设 | Stage 1、Stage 2 |
+| `continuity` | 窗口首尾状态、跨窗未完事件、人物/场景延续、未知和冲突 | 跨窗口合并、Coverage |
+| `editorial_signals` | hook/highlight/reaction/reveal/transition 信号、叙事功能、为什么值得剪、粗时间支持 | Candidate Enricher、Stage 2/3 |
+
+逐字段责任如下：
+
 | 字段/判断 | 责任 | 说明 |
 |---|---|---|
 | 实体类型、视觉描述、未知人物标签 | VLM | 视频语义观察 |
-| 动作、状态、对话行为、事件摘要、开放问题 | VLM | 允许不确定，不要求猜名字 |
+| 场景地点、环境、时间氛围与场景变化 | VLM | 不等于精确 shot boundary |
+| 动作、状态、对白行为、事件摘要、开放问题 | VLM | 对白行为可描述意图，不伪造 ASR 原文 |
+| 人物目标、情绪变化、关系变化、冲突与反转 | VLM | 明确区分观察与解释 |
+| shot language、反应镜头、音乐/静默等视听信号 | VLM | 为编辑选择提供语义，不产生物理端点 |
+| 屏幕文字/标题卡/聊天界面/烧录字幕观察 | VLM 或独立 OCR | 返回文本或 unreadable、区域、类型和粗时间；未经独立验证不是 verified quote |
+| 铺垫、回收、悬念、hook/highlight 和叙事功能 | VLM | 保留为 `editorial_signals`，不是最终 CandidateCatalog |
 | 场景/事件粗粒度时间桶 | 混合 | 程序提供 `T0..Tn` 有界桶；VLM 只选首尾桶，程序映射到窗口 |
 | 人物与 Context Pack 角色的疑似匹配 | 混合 | VLM 选角色短别名；程序保留 `likely_match`，不得升级为事实 |
 | `local_entity_id/local_fact_id/local_event_id` | 程序 | 按数组 ordinal 或规范化内容生成 |
@@ -124,7 +162,89 @@ SourceManifest、授权信息、外部 API 原始响应、ASR/VAD、物理剪辑
 | fact support 与 event support | VLM 候选 + 程序校验 | 两者独立；仅注册 containment rule 可继承 |
 | continuity/causality 采集状态 | VLM/策略 | 区分 `observed_empty/not_evaluated/indeterminate` |
 | 数字 confidence | 不直接采用 | 模型输出 `high/medium/low/indeterminate`；数值只来自离线校准 |
-| hook/highlight/candidate 完整对象 | 移出本调用 | 避免候选失败导致视频重跑 |
+| canonical CandidateCatalog、物理剪辑端点 | 程序/后续节点 | VLM 只提供富语义信号和粗 support |
+
+当前 V23 字段的取舍不是“整组删除”，而是：
+
+| 当前字段 | 判断 | 目标处理 |
+|---|---|---|
+| `schema_version` | 必要但不需要模型生成 | 移入权威 envelope，decoder 由 request/schema hash 选择 |
+| `entities[]` | 核心，保留并增强 | 增加状态变化、场景内身份线索；Context 角色匹配单列为 hypothesis |
+| `facts[]` | 核心，保留 | 变成 typed atomic claims，保留 subject/object 与独立 support |
+| `events[]` | 核心，保留 | 保留 participants、temporal mode、open question；支持内嵌 claims |
+| `cause_event_refs/effect_event_refs` | 有价值，但当前固定为空不合理 | 改为 causality hypothesis + collection state，不能伪装成已证实因果 |
+| `window_summary` | 有价值，保留 | VLM 输出 summary 及其短 claim/event ordinal refs；程序只映射和验闭包 |
+| `continuity` | 核心，必须增强 | 返回首尾状态和未完事件；区分 unknown/not evaluated/observed empty |
+| `candidate_hypotheses[]` | 信息有价值，保留语义 | 重命名/投影为 `editorial_signals`；canonical candidate 在后续归并 |
+| `anchor_summary/reason/payoff_or_open_question` | 部分重复 | 保留不重复的“为什么值得剪”和悬念/回收，摘要从 event 投影 |
+| `dialogue_excerpt` | 有价值但易被当成逐字事实 | 改为 dialogue act/paraphrase；未经语音证据不得标成 verified quote |
+| `editing_modes/narrative_functions/tags` | 有明确下游价值 | 保留注册枚举，允许一项信号携带多种叙事功能 |
+| `measurements[]` | 六类信号均有价值 | 保存 ordinal、raw model score 和 evidence；只有 calibrated score 可驱动 predicate |
+| 每层 `support` | 防幻觉所必需 | 保留独立 evidence；删除的只是逐字重复复制，不删除 grounding |
+| `display_label` | 保留但降权 | 未知人物使用稳定视觉短标签；Context 名称另作 identity hypothesis |
+| `dominant_temporal_mode` | 保留 | 由 VLM 选择并引用 supporting events；程序验证枚举与闭包 |
+
+当前 Schema 还缺少但值得通过 fixture 试验后加入的字段包括：`scenes`、人物 state/goal、
+relationship observations、emotional turns、setup/payoff links、shot language、audio-visual cues、
+screen text、unresolved identities、contradictions 和 context-assisted interpretations。它们必须先有
+消费者和评测指标，再从 shadow 字段晋升为生产必选字段。
+
+#### 富输出下的防幻觉分层
+
+防幻觉不靠少返回，而靠把“看到的”和“解释的”分开：
+
+- `perception/semantic_graph.observed`：必须有视频时间桶和可描述的视觉/视听证据；
+- `context_assisted_interpretations`：只能解决名字、身份或关系解释，必须引用少量 Context alias，
+  不能凭 Context 单独创造视频事件；
+- `hypotheses`：人物动机、隐含关系、因果、未来回收等不能直接观察的内容，允许丰富，但必须是
+  `likely/possible/indeterminate`，不能进入事实闭包；
+- `contradictions/unresolved`：主动输出身份冲突、看不清、听不清、窗口缺上下文等未知，不能用
+  空数组代表没有问题。
+
+grounding 必须是一等对象，而不是在每个业务对象里复制一段 support：
+
+```json
+{
+  "evidence_atoms": [
+    {
+      "modality": "visual",
+      "bucket_refs": ["T3", "T4"],
+      "observable_description": "红发学生面向黑衣学生持续发言并做出质问手势",
+      "context_assisted": false
+    }
+  ]
+}
+```
+
+claim、event、interpretation 和 editorial signal 只引用 evidence atom ordinal。程序能验证 modality、
+bucket 和引用闭包，但仍不能证明模型观察绝对真实，因此权威名称应是 `model_observed_claim`，
+不能叫 `verified_fact`。独立 detector/ASR/OCR 可以生成另一类 evidence atom，并保持 producer 分离。
+
+为避免来源字段膨胀，provenance 放在语义对象层而不是每个 scalar 字段：同一 event 的 summary、
+participants 和 narrative interpretation 不重复抄来源。只有 context-assisted 或 hypothesis 对象
+额外携带 `context_refs/evidence_refs`。程序根据 section 和对象类别派生默认 evidence class。
+
+进入 Stage 1 的事实只能来自已验收 observed claims；interpretation/hypothesis 可以作为候选语义
+信号，但不能未经显式规则升级为 fact。这样可以让 VLM 大胆返回有用理解，同时不给推测授予
+事实或物理剪辑权力。
+
+五个分区必须有唯一 canonical owner，其他分区只能引用并追加解释，不能复制同义事实：
+
+| 概念 | canonical owner |
+|---|---|
+| evidence atom、entity、scene、screen text、可观察视听 cue | `perception` |
+| typed claim/event、observed state/relationship change、event open question | `semantic_graph` |
+| motive、tension、causality hypothesis、setup/payoff interpretation | `narrative_interpretation` |
+| boundary snapshot、continuation/contradiction hypothesis | `continuity` |
+| hook/highlight/reaction/reveal/transition 的编辑价值 | `editorial_signals` |
+
+例如 `open_question` 由 event 所有，narrative 区只能引用该 event 解释其 tension；editorial signal
+只能引用 event/interpretation，不再改写事实摘要。
+
+每个生产字段还必须在 `FieldConsumerRegistry` 登记：具体 consumer artifact/函数/predicate、
+是否 hard dependency、缺失或 indeterminate 行为、eval metric、retention/provenance。仅用于 debug
+或评测的字段进入 shadow sidecar，不能借“调试有用”成为生产必填字段；上线后用读取 telemetry
+验证字段确实被消费。
 
 建议模型输出紧凑、typed atomic observation，不生成字符串 ID。每个 event observation 内嵌
 其 claims，避免让程序从自然语言 summary 反推 fact kind、subject/object 或 open question。
@@ -133,31 +253,71 @@ SourceManifest、授权信息、外部 API 原始响应、ASR/VAD、物理剪辑
 
 ```json
 {
-  "observations": [
+  "perception": {
+    "evidence_atoms": [
+      {
+        "modality": "visual",
+        "bucket_refs": ["T3", "T4"],
+        "observable_description": "红发学生面向黑衣学生持续发言并做出质问手势"
+      }
+    ],
+    "entities": [
+      {"kind": "person", "visual_description": "红发女学生", "evidence_atom_indices": [0]},
+      {"kind": "person", "visual_description": "黑衣男学生", "evidence_atom_indices": [0]}
+    ],
+    "scenes": [
+      {"setting": "学院公共区域", "coarse_interval": {"start_bucket": "T2", "end_bucket": "T6"}}
+    ]
+  },
+  "semantic_graph": {
+    "events": [
+      {
+        "kind": "confrontation",
+        "summary": "一名学生当众质问另一名学生",
+        "participant_indices": [0, 1],
+        "coarse_interval": {"start_bucket": "T3", "end_bucket": "T5"},
+        "temporal_mode": "current",
+        "open_question": "被质问者是否会公开回应",
+        "evidence_atom_indices": [0],
+        "claims": [
+          {
+            "kind": "interaction",
+            "subject_index": 0,
+            "object_index": 1,
+            "summary": "红发学生公开质问黑衣学生",
+            "coarse_interval": {"start_bucket": "T3", "end_bucket": "T4"},
+            "evidence_atom_indices": [0]
+          }
+        ],
+        "certainty": "high"
+      }
+    ]
+  },
+  "narrative_interpretation": {
+    "items": [
+      {
+        "interpretation_kind": "emotional_turn",
+        "summary": "公开冲突使紧张关系升级",
+        "evidence_event_indices": [0],
+        "evidence_claim_indices": [0],
+        "certainty": "high",
+        "collection_state": "observed"
+      }
+    ]
+  },
+  "continuity": {"collection_state": "indeterminate"},
+  "editorial_signals": [
     {
-      "kind": "confrontation",
-      "summary": "一名学生当众质问另一名学生",
-      "participant_indices": [0, 1],
-      "coarse_interval": {"start_bucket": "T3", "end_bucket": "T5"},
-      "temporal_mode": "current",
-      "open_question": "被质问者是否会公开回应",
-      "claims": [
-        {
-          "kind": "interaction",
-          "subject_index": 0,
-          "object_index": 1,
-          "summary": "红发学生公开质问黑衣学生",
-          "coarse_interval": {"start_bucket": "T3", "end_bucket": "T4"}
-        }
-      ],
-      "certainty": "high"
+      "kind": "hook",
+      "anchor_event_index": 0,
+      "supporting_event_indices": [],
+      "context_event_indices": [],
+      "payoff_event_indices": [],
+      "narrative_function": "escalation",
+      "reason": "公开冲突快速建立人物矛盾",
+      "evidence_atom_indices": [0]
     }
-  ],
-  "entities": [
-    {"kind": "person", "visual_description": "红发女学生"},
-    {"kind": "person", "visual_description": "黑衣男学生"}
-  ],
-  "window_summary": "冲突公开升级。"
+  ]
 }
 ```
 
@@ -165,6 +325,14 @@ SourceManifest、授权信息、外部 API 原始响应、ASR/VAD、物理剪辑
 和观察数组的顺序冻结为该响应的 canonical ordering。局部 repair 不得单独插入、删除或重排
 任一数组；若必须改变 ordinal 集合，只能生成完整新响应并重跑全部引用校验。无法确认时用空
 列表或 `indeterminate`，不得发明 ID。
+
+`editorial_signals` 必须无损保留 V23 已有的 anchor/support/context/payoff 多事件角色和自己的
+evidence closure。Candidate Enricher 只负责跨窗口归并、结合 Stage 1 叙事上下文排序和补充，
+不能根据摘要重新猜测被 VLM 删除的窗口内角色关系。
+
+每项 salience/strength 同时保存：用于生产语义的 `ordinal_assessment`、仅作 shadow/校准训练的
+`raw_model_score`，以及只有绑定注册 CalibrationProfile 后才允许 predicate 使用的
+`calibrated_score`。未校准 raw score 不获得 Admission 权力。
 
 `T0..Tn` 由程序按实际视频投喂/抽帧分辨率生成并冻结，模型不直接声称毫秒精度。Compiled
 Observation 同时记录桶范围、桶分辨率和误差界；粗时间 IoU 按该分辨率计算，绝不能与 Stage 4
@@ -175,9 +343,54 @@ continuity 和 causality 不能靠程序填 `false/[]`。若本轮 Prompt 未采
 观察到关系时才是 `observed_empty`。任何依赖这些信息的 Admission predicate 遇到
 `not_evaluated/indeterminate` 都必须按策略 quarantine/indeterminate，不能当作 pass。
 
+continuity 至少包含进入/离开两个 boundary snapshot：direction、entity/scene refs、未完成动作
+或对白行为、人物状态、overlap bucket refs、continuation hypothesis、contradiction refs 和
+collection state。跨窗 merger 只能在 overlap evidence 和有限实体候选集合内判断；VLM 的连续性
+叙述本身不能直接升级为 durable relation。
+
 从数字 confidence 迁移到 ordinal certainty 也必须版本化。注册校准 profile 可将某模型/Prompt
 版本的 ordinal 映射为有误差界的数值；在 profile 可用前，所有依赖现有数值阈值的 predicate
 均返回 `indeterminate`，禁止把 `high/medium/low` 随意硬编码成 `0.9/0.6/0.3`。
+
+#### 分区验收，而不是减少信息
+
+一次 VLM 调用仍可以返回完整五区信息，但验收必须经过三层门：
+
+1. 完整 bytes、finish reason 和 root JSON decode；
+2. 每区 structural schema；
+3. 区内及跨区 business validation。
+
+只有第一层完整通过，才允许分区复用。`root_parse_failed`、截断、refusal 或无法定位完整 section
+raw bytes 时，所有分区都不得声称 `ready`。每区分别设置自适应 byte/token/item budget，并用
+fixture 覆盖尾部分区截断；事件密度或人物数增加时可提高预算或分调用，未返回不能解释为不存在。
+
+分区不是固定的整区依赖链，而是每个 item 显式绑定 dependency refs：视听 reaction signal 可只
+依赖 perception，叙事 hook/payoff 依赖 event/interpretation，continuity 的 scene/entity 与
+unfinished-event 分量分别验收。一个无关 fact 错误不能 taint 独立 reaction shot。
+
+- 原始响应始终作为一个不可变 Blob 保存，不能丢掉任何模型信息；
+- 每个分区产生独立 `SectionValidationResult`：`ready/indeterminate/blocked`、collection state、
+  completeness/cardinality、error severity/path、validator version、dependency section hashes、
+  canonical section hash 和允许的 consumer；
+- `ready` 要求该区所有 required 字段、引用和依赖闭合；`indeterminate` 表示结构有效但必需观察
+  未采集或证据不足；`blocked` 表示结构、引用、owner 或依赖冲突；
+- dependency `blocked` 时依赖 item 必须 blocked；dependency `indeterminate` 时依赖 item 至多
+  indeterminate；不依赖该对象的 item 可以独立 ready；
+- `editorial_signals` 引用错误时，保留同一 Attempt 已通过的其他分区，随后由 Candidate Enricher
+  基于这些数据重建候选；
+- `semantic_graph` 失败时可以保留 perception，但 Stage 1 不准继续，直到必需 graph items 闭合；
+- “可复用部分语义产物”不等于允许 partial Story/Recipe/publish，发布链仍按完整故事 all-or-nothing。
+
+跨 Attempt 禁止随意拼装新旧 section：
+
+- full VLM rerun 产生新的原子响应，所有 section 一起重新编译；旧 ready section 仅供审计/对照；
+- failed-section rerun 必须只请求目标 section，并使用旧已准入 section 编译出的冻结 AliasCatalog；
+  新 SectionArtifact 绑定 `base_section_hash` 和全部 `dependency_section_hashes`；
+- 只有依赖 hash 完全一致，或 compiler 证明 canonical dependency section 完全相等，才允许组合；
+  否则整体重编译依赖闭包，禁止把新 ordinal 指向旧响应中同位置的另一人物。
+
+这样既保留 VLM 尽可能丰富的首次理解，也避免某个候选引用错误导致所有有效视觉语义被一起
+淘汰和重新计费。
 
 ### 4.2 Candidate Enricher
 
@@ -188,12 +401,13 @@ continuity 和 causality 不能靠程序填 `false/[]`。若本轮 Prompt 未采
 
 程序输入给模型：
 
-- 当前窗口或相邻窗口的精简 event/fact 表；
+- 当前窗口或相邻窗口已验收的 event/fact 与 `editorial_signals`；
+- Stage 1 已准入的 beat、thread、obligation 和跨窗口上下文；
 - `E1/F1/...` 短别名及一句摘要；
 - 注册的 `candidate_kind`、`narrative_function`、`editing_mode`；
 - 每类候选数量和文本预算。
 
-模型只输出：
+模型只输出对 VLM 原始信号的跨窗口归并、补全和排序：
 
 - anchor/support/context/payoff 的短别名选择；
 - hook/highlight 类型；
@@ -411,7 +625,7 @@ committed predecessor pool 重算 alias projection hash、taint、source owner�
 | 层级 | 指标 |
 |---|---|
 | L0 结构 | first-pass schema pass、截断率、repair 次数、response bytes |
-| L1 引用/时间 | alias 解析率、引用闭包率、相对区间合法率、粗时间 IoU |
+| L1 引用/时间 | alias 解析率、引用闭包率、粗时间 IoU、support temporal localization、modality attribution accuracy |
 | L2 语义 | entity/event precision-recall、跨窗口一致性、候选召回与排序、abstention rate |
 | L3 编译 | Narrative/Portfolio/Blueprint compile pass、coverage、feasibility |
 | L4 下游 | ExactSpan/Render/QC pass、人工偏好、返工率 |
@@ -423,6 +637,19 @@ fixture 至少覆盖 Context Pack 未来信息泄漏、alias 顺序扰动、窗�
 密集/无对白、长尾剧种、repair 后质量及不同 provider/model slice；报告 cost-quality frontier，
 关键对比给出 bootstrap confidence interval。entity/event matching、candidate top-k 和标注者一致性
 必须有版本化定义。
+
+EvidenceAtom 还必须评测 claim -> atom 的真实支持关系，而不仅是引用存在：报告 evidence-support
+precision/recall 或盲人工 faithfulness、atom modality 归因准确率、支持片段时间覆盖，并设置生产
+晋升下限。合法但与 claim 无关的 atom 不能被算作 grounded。
+
+跨 Attempt 组合必须有对抗 fixture：full rerun 禁止复用旧 section、dependency hash mismatch
+必须拒绝、canonical-equality 允许路径、entity ordinal 重排，以及 blocked/indeterminate taint
+传播矩阵。设计上的 hash 约束必须由这些回归用例变成实现门禁。
+
+不能预设“一次五区 Rich Extractor”一定优于多阶段。必须对照至少三种方案：单次五区、视频模型
+只做 perception+graph 后由文本模型 enrichment、按 provider capability 拆成两次视频任务。比较
+observed claim precision、rare-event recall、跨区矛盾率、section/root 截断率、下游质量、成本和
+延迟；解释性/编辑任务不得反向诱导 perception 把推测写成观察。
 
 LLM judge 只能补充主观指标，不能与生成模型共同构成唯一裁判。具备稳定 gold/dev set 后，
 可以在离线分支使用 DSPy 一类工具优化 Prompt；生产运行时不得自行改 Prompt。
@@ -462,6 +689,36 @@ Video-RAG 一类工作会把 ASR/OCR 等辅助文本送入视频模型。当前�
 `video+ContextPack`、`video+ContextPack+去时间戳 ASR 语义文本`。即使第三臂语义指标更好，
 ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产需另立版本和污染测试。
 
+### 同类系统和使用经验
+
+公开实践支持“富信息、多分区、独立 evidence producer”，而不是把视频压成一条摘要：
+
+- Azure AI Video Indexer 运行多种模型并输出分类 JSON，覆盖 faces、objects、observed people、
+  OCR、scenes/shots/keyframes、audio effects、topics 和 emotions；每类 insight 都带时间实例。
+  可吸收：富语义按 canonical category 存储、每类保留时间 evidence。不能照搬：其很多 emotion、
+  topic 来自 transcript/OCR，不能伪装成豆包纯视频视觉结论。
+- Azure 的 Prompt Content 先按 scene 和其他 insight 切成 coherent sections，再把已索引的 objects、
+  faces、OCR、audio effects 等转成 prompt-ready content，支持后续 LLM 分析而无需重新索引视频。
+  这与“VLM/感知产物持久化，Stage 1–3 只读冻结投影”一致。
+- Google Video Intelligence 把 label、shot、face、speech、text、object、logo、person 分成显式
+  Feature，并允许 frame/shot/segment 粒度与 model version/threshold 配置。可吸收：不同 modality
+  和粒度由版本化算子承担，不让一个自由 Prompt 同时自证全部能力。
+- TwelveLabs 支持复用已上传 Asset 执行多个 analysis task，也支持 structured JSON、可定制
+  timestamped segment 类型和字段，以及 chapter/highlight 等任务。可吸收：同一媒体 Artifact 上
+  运行可独立缓存、重跑的语义任务；不能据此假设 Ark 也消费音轨或具有同样 timestamp 精度。
+- Gemini 官方明确其视频路径同时处理音频和视觉，但也公开默认约 1 FPS，快速动作可能漏细节。
+  这个经验说明 provider 的采样与模态能力必须进入 Profile 和误差预算，不能仅由 API 名称推断。
+- TimeExpert、TRACE 等 temporal grounding 工作把 timestamp、saliency、description/causal event
+  建模视为不同任务或专家。可吸收：VLM 富语义信号可以很多，但物理时间和显著性校准仍需独立
+  evaluator/专用模型。
+- 开源 Incident Lens 展示了一个相近工程模式：视频理解后生成 typed Scene/Event/Person/Object、
+  temporal edges 和可回放 timecode provenance，再落入知识图。它是可参考实现，不是经过生产
+  认证的标准，适合借数据模型，不适合直接作为发布门禁。
+
+这些实践共同指向：保留丰富语义是正确的，但必须按 modality、canonical owner、时间 evidence、
+producer version 和 consumer 分区；“一个大 Prompt 返回一个全能对象”不是唯一方案，也不能默认
+质量最好。
+
 参考：
 
 - [PydanticAI structured output](https://pydantic.dev/docs/ai/core-concepts/output/)
@@ -474,6 +731,14 @@ ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产�
 - [UniVTG](https://openaccess.thecvf.com/content/ICCV2023/papers/Lin_UniVTG_Towards_Unified_Video-Language_Temporal_Grounding_ICCV_2023_paper.pdf)
 - [Video-RAG](https://arxiv.org/abs/2411.13093)
 - [LongVU](https://arxiv.org/abs/2410.17434)
+- [Azure AI Video Indexer insights](https://learn.microsoft.com/en-us/azure/azure-video-indexer/insights-overview)
+- [Azure Video Indexer Prompt Content](https://learn.microsoft.com/en-us/azure/azure-video-indexer/prompt-overview)
+- [Google Video Intelligence annotate features](https://docs.cloud.google.com/video-intelligence/docs/reference/rest/v1/videos/annotate)
+- [TwelveLabs analyze videos](https://docs.twelvelabs.io/docs/guides/analyze-videos)
+- [Gemini video understanding](https://ai.google.dev/gemini-api/docs/video-understanding)
+- [TRACE](https://arxiv.org/abs/2410.05643)
+- [TimeExpert](https://openaccess.thecvf.com/content/ICCV2025/papers/Yang_TimeExpert_An_Expert-Guided_Video_LLM_for_Video_Temporal_Grounding_ICCV_2025_paper.pdf)
+- [Incident Lens](https://github.com/rukaiya2000/incident-lens)
 
 本次 Linux.do 检索未取得内容：浏览器中没有已登录并配置的 `https://linux.do` 标签页。该失败
 不应被误报为“Linux.do 没有相关方案”；上面的结论来自当前代码审计和公开官方/论文资料。
@@ -483,25 +748,31 @@ ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产�
 ### P0：先消除真实运行阻断和无意义全量重跑
 
 1. 冻结当前 V23 的单集 request/schema/raw-response/parser fixture 和成本 baseline；
-2. 对 Ark direct `json_schema` wire contract 做独立 canary，再统一并真实验证 Stage 1–3；
-3. 为现有 validator 输出稳定 error code + JSON path；
-4. 版本化改造 Candidate Enrichment，并补齐 Command/request/Attempt/Receipt、provider profile、
+2. 建立 V23 全字段 parity matrix：原样保留、等价重命名、程序无损派生或有指标证明删除；
+3. 对 Ark direct `json_schema`、视觉/音频/screen-text 实际 capability 做独立 canary，再统一并真实
+   验证 Stage 1–3；
+4. 为现有 validator 输出稳定 error code + JSON path；
+5. 版本化改造 Candidate Enrichment，并补齐 Command/request/Attempt/Receipt、provider profile、
    runtime authority、pipeline ordinal、registry、reconcile/resume、Artifact reader、Stage 2 binding、
    recompute fencing 和 debug stage；
-5. 以 shadow lifecycle 对照 V23 candidate，验证一致性和局部重跑后，才发布 observation-only VLM；
-6. 保留旧 V23 作为 shadow 对照，不直接覆盖已持久化产物。
+6. 以 shadow lifecycle 对照 V23 candidate，验证信息覆盖、分区验收和局部重跑后，才发布新的
+   rich-sectioned VLM contract；
+7. 保留旧 V23 作为 shadow 对照，不直接覆盖已持久化产物。
 
-### P1：收缩输入和输出
+### P1：重构责任、投影和富语义分区
 
 1. 引入每请求冻结的 `AliasCatalog`；
-2. 交付 exact Attempt -> compiler binding 后，再删除模型输出中的 ID/binding；常量空值改为显式
+2. 引入 first-class `EvidenceAtom`、`FieldConsumerRegistry` 和带 dependency hashes 的
+   `SectionValidationResult/SectionArtifact`；
+3. 交付 exact Attempt -> compiler binding 后，再删除模型输出中的 ID/binding；常量空值改为显式
    collection state，不得补成否定事实；
-3. Stage 1 输入改为别名化窗口语义投影，同时版本化拆分 Observation ledger 和 Narrative closure；
-4. 同步迁移 Coverage policy/ledger/dependency proof/Admission/Candidate compiler；
-5. Stage 2 移除 SourceGrant 明细、授权和物理模板输出；
-6. DurationCompiler 通过 fixture 后，再移除 Stage 2/3 数值时长和 tick 输出；
-7. Stage 3 仅瘦模型可见 projection；Kernel evaluator 继续用完整 predecessor pool 独立重建；
-8. 为每个新 schema 设置独立版本和兼容 decoder，不修改历史响应解释。
+4. Stage 1 输入改为别名化窗口语义投影，同时版本化拆分 Observation ledger 和 Narrative closure；
+5. 同步迁移 Coverage policy/ledger/dependency proof/Admission/Candidate compiler；
+6. Stage 2 移除 SourceGrant 明细、授权和物理模板输出；
+7. DurationCompiler 通过 fixture 后，再移除 Stage 2/3 数值时长和 tick 输出；
+8. Stage 3 只移除模型可见 projection 中的审计噪声和未选对象，保留当前故事所需的丰富语义；
+   Kernel evaluator 继续用完整 predecessor pool 独立重建；
+9. 为每个新 schema 设置独立版本和兼容 decoder，不修改历史响应解释。
 
 ### P2：局部 repair、评测和成本门禁
 
@@ -513,8 +784,9 @@ ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产�
 
 ### P3：离线优化
 
-在稳定数据集上评估 DSPy、模型切换、prompt 压缩和候选排序；只有指标提升且所有确定性门禁
-通过，才把新版本写入 runtime authority。框架级迁移不是当前前置条件。
+在稳定数据集上评估 DSPy、模型切换、机械冗余压缩和候选排序；只有语义覆盖与质量不下降、
+成本收益成立且所有确定性门禁通过，才把新版本写入 runtime authority。框架级迁移不是当前
+前置条件。
 
 ## 十、验收判断
 
@@ -522,8 +794,10 @@ ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产�
 
 1. 模型请求中不再出现无业务意义的 UUID/hash/Receipt/未选对象；
 2. 模型输出中不存在程序可派生的 ID、binding、授权和物理证明；
-3. 候选或 Stage 1–3 失败不会触发已成功视频观察的重新计费调用；
-4. 同一冻结输入、Prompt、Schema 和 provider profile 可得到可追踪 Attempt；
-5. unknown reference、越界时间和物理证据缺失仍 fail-closed；
-6. 单集真实运行通过后，扩批只增加数据量，不改变契约；
-7. Stage 3 成功仍不等于 Render 或 publish allow。
+3. perception、semantic graph、narrative、continuity、editorial signals 都有明确字段、消费者和
+   fixture 覆盖，不能以“省 token”为由删除有效信息；
+4. 候选或 Stage 1–3 失败不会触发已成功 VLM 分区的无意义重新计费调用；
+5. 同一冻结输入、Prompt、Schema 和 provider profile 可得到可追踪 Attempt；
+6. unknown reference、越界时间和物理证据缺失仍 fail-closed；
+7. 单集真实运行通过后，扩批只增加数据量，不改变契约；
+8. Stage 3 成功仍不等于 Render 或 publish allow。
