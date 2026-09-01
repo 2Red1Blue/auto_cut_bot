@@ -356,18 +356,32 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
 - DecisionSet 只保存上游哈希和 Source/Policy 绑定，不复制 SemanticPack、WindowManifest 或
   FramePtsIndex。codec 只恢复不可变值，不授予 Store authority；后续 committed reader 必须重新读取
   精确上游 Artifact 并调用 `verify_v23_candidate_decision_set()` 全量重算比对。
+- 已实现 `CompileV23CandidateDecisionSet@1`：只接受同一 Job 已提交并通过完整闭包重读的 V4
+  `vlm_semantic_pack_set`，在确定性 Command claim 后生成一个 DecisionSet Artifact，并通过现有通用
+  PostgreSQL ArtifactSet/Receipt/CAS 事务原子提交；Policy、选择器、完整上游引用和 payload byte cap
+  全部进入 request hash；Command 自身还复核 SourceManifest 每一集恰好对应一个有序 V4 输入，不能
+  依赖 Store 的隐含约定把 selected-only child 当成完整批次。
+- 已实现精确 committed reader：重读 SourceManifest、V4 Pack/Request/Window/FramePts 闭包和最终
+  Receipt/ArtifactSet，严格解码 DecisionSet 后独立全量复算；它允许 PostgreSQL `jsonb` 只改变 JSON
+  文本排版，但拒绝语义、引用、顺序、哈希、scope、revision 或 producer identity 漂移。
+- 已用一次性本地 PostgreSQL 测试库验证首次提交、进程重启后精确重读、同键零 Provider 重放以及
+  同键 Policy 漂移冲突。该 Command 是纯派生步骤，重跑不会再次调用 VLM。
 
 实现与测试：
 
 - [`v23_candidate_evidence_window.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_evidence_window.py)
 - [`v23_candidate_decision_set.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_decision_set.py)
 - [`v23_candidate_decision_set_codec.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_decision_set_codec.py)
+- [`compile_v23_candidate_decision_set_command.py`](../../packages/autocut-kernel/src/autocut_kernel/pipeline/compile_v23_candidate_decision_set_command.py)
 - [`test_v23_candidate_evidence_window.py`](../../tests/media/test_v23_candidate_evidence_window.py)
 - [`test_v23_candidate_decision_set.py`](../../tests/media/test_v23_candidate_decision_set.py)
+- [`test_compile_v23_candidate_decision_set_command.py`](../../tests/pipeline/test_compile_v23_candidate_decision_set_command.py)
+- [`test_vlm_v4_store_postgres.py`](../../tests/pipeline/test_vlm_v4_store_postgres.py)
 
-当前尚未完成的是 DecisionSet 的 Artifact/DB Command/Receipt 与 committed reader、Pipeline Runtime
-调用、候选级 SenseVoice/FSMN 子命令和结果回填；这些属于下一批 P1A/P2 接线，不能把本节的纯
-编译器和 codec 测试表述为真实 pipeline 已跑通。
+当前尚未完成的是 Pipeline Runtime 调用、从多集任务的 selected-only V4 child 做精确语义重读、
+候选级 SenseVoice/FSMN 子命令和结果回填。现有 Command 只授权“完整已提交 V4 aggregate”路径；
+因此仍不能把本节表述为真实 pipeline 已跑通，也不能把多集任务中仅重跑一集的 inspection child
+冒充完整批次输入。
 
 ### Global P1B：分区恢复和 Rich VLM dual-run
 

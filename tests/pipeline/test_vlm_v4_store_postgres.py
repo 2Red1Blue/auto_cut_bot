@@ -12,12 +12,16 @@ from typing import Any
 
 import pytest
 from autocut_kernel.context_pack import ContextSelectionPolicy, video_only_window_context_pack
+from autocut_kernel.media import V23CandidateWindowCompilePolicy
 from autocut_kernel.pipeline import (
+    CompileV23CandidateDecisionSetCommand,
+    CompileV23CandidateDecisionSetRequest,
     FinalizeVlmBatchCommand,
     FinalizeVlmBatchRequest,
     GenerateVlmEvidenceCommand,
     GenerateVlmEvidenceRequest,
     VlmBatchChildOutcome,
+    read_committed_v23_candidate_decision_set,
 )
 from autocut_kernel.store import (
     ArtifactMember,
@@ -25,6 +29,7 @@ from autocut_kernel.store import (
     CommandSuccess,
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
+    IdempotencyConflictError,
     Job,
     PersistedVlmSemanticPackV4,
     PostgresRuntimeStore,
@@ -215,6 +220,91 @@ def test_source_v4_generation_batch_reopen_and_zero_provider_replay(prepared: Pr
     assert len(committed.inputs) == 1
     assert type(committed.inputs[0].semantic_pack) is PersistedVlmSemanticPackV4
     assert type(committed.inputs[0].semantic_pack.semantic_pack) is VlmSemanticPackV4
+
+
+
+def test_v23_decision_set_commits_reopens_and_replays_without_provider(
+    prepared: Prepared,
+) -> None:
+    """A V23 compatibility decision is an exact derived Artifact, not process memory."""
+
+    provider = FixtureProvider(_raw())
+    child_result = GenerateVlmEvidenceCommand(prepared.store, provider).execute(
+        prepared.request
+    )
+    assert child_result.outcome.state == "succeeded"
+    batch_request = _batch(prepared)
+    batch = FinalizeVlmBatchCommand(prepared.store).execute(batch_request)
+    assert batch.outcome.state == "succeeded"
+
+    aggregate = prepared.store.read_committed_vlm_semantic_pack_set_reference(
+        prepared.request.job, batch_request.idempotency_key
+    )
+    semantic_request = CommittedSemanticInputsRequest(
+        prepared.request.job,
+        prepared.source_reference,
+        aggregate,
+    )
+    semantic = prepared.store.read_committed_semantic_inputs(semantic_request)
+    item = semantic.inputs[0]
+    persisted_pack = item.semantic_pack
+    assert type(persisted_pack) is PersistedVlmSemanticPackV4
+    source_time_base = (
+        persisted_pack.semantic_pack.events[0].support.manifest.source_time_base
+    )
+    compile_request = CompileV23CandidateDecisionSetRequest(
+        job=prepared.request.job,
+        idempotency_key="v23-decision-set:episode-0",
+        artifact_scope=canonical_recipe_scope(prepared.request.job),
+        artifact_revision=1,
+        semantic_inputs_request=semantic_request,
+        episode_index=0,
+        window_manifest_sha256=item.source_window.window_manifest_sha256,
+        semantic_pack_sha256=persisted_pack.semantic_pack.canonical_hash,
+        vlm_request_identity_sha256=item.request_identity.canonical_hash,
+        compile_policy=V23CandidateWindowCompilePolicy(
+            strategy_version="v23-direct-event-window-v1",
+            time_base=source_time_base,
+            initial_left_expansion_pts=5,
+            initial_right_expansion_pts=5,
+            max_direct_event_gap_pts=10,
+            max_seed_duration_pts=5_000,
+            max_source_coverage_ppm=1_000_000,
+        ),
+        max_payload_bytes=1_000_000,
+    )
+
+    compiled = CompileV23CandidateDecisionSetCommand(prepared.store).execute(
+        compile_request
+    )
+    assert compiled.outcome.state == "succeeded"
+    assert compiled.committed is not None
+    assert provider.calls == 1
+    before_replay = _history(prepared.request.job)
+
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    replay = CompileV23CandidateDecisionSetCommand(restarted).execute(compile_request)
+    assert replay.outcome.state == "succeeded"
+    assert replay.outcome.receipt_id == compiled.outcome.receipt_id
+    assert replay.committed is None
+    reopened = read_committed_v23_candidate_decision_set(
+        restarted, compile_request, replay.outcome
+    )
+    assert reopened.value == compiled.committed.value
+    assert reopened.record == compiled.committed.record
+    assert _history(prepared.request.job) == before_replay
+    assert provider.calls == 1
+
+    changed_policy = replace(
+        compile_request,
+        compile_policy=replace(
+            compile_request.compile_policy,
+            initial_left_expansion_pts=6,
+        ),
+    )
+    with pytest.raises(IdempotencyConflictError):
+        CompileV23CandidateDecisionSetCommand(restarted).execute(changed_policy)
+    assert _history(prepared.request.job) == before_replay
 
 
 def test_context_bound_v4_child_reopens_and_finalizes(prepared: Prepared) -> None:
