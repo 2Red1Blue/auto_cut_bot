@@ -1,0 +1,104 @@
+{
+  "schema_version": "ark-provider-capability-canary-manifest/v1",
+  "observed_at": "2026-09-01T21:13:37+08:00",
+  "authority_status": "observed_not_registered",
+  "capability_key": {
+    "provider": "ark",
+    "base_url_origin": "https://ark.cn-beijing.volces.com",
+    "model": "doubao-seed-2-1-pro-260628",
+    "adapter": "official-ark-sdk-direct-canary-v1",
+    "files_purpose": "user_data",
+    "input_type": "input_video",
+    "preprocess_video_fps": 1.0,
+    "sdk_distribution": "volcengine-python-sdk",
+    "sdk_version": "5.0.47",
+    "stream": false,
+    "store": true,
+    "thinking": {"type": "disabled"},
+    "temperature": 0,
+    "max_output_tokens": 1000,
+    "response_schema": null,
+    "prompt_sha256": "sha256:ce7eeb3aa58f56502511ac5c1631bba3e73c3e7614424d6366060968e6c1b360"
+  },
+  "request_profile_sha256": "sha256:9926c75fc64516e9b3fab731c8db71f37c278c7d66dc3158bcef18519f1b5642",
+  "prompt_text": "Audio capability test. The picture is uniform gray and has no visible text. Listen to the audio track. Return JSON only: {\"heard_speech\": true_or_false, \"transcript\": \"exact phrase or empty\", \"evidence_modality\": \"audio or none\"}. Never infer from visuals or filename.",
+  "visual_control": {
+    "description": "uniform gray 640x360 H.264 video at 24 fps with no visible text",
+    "file_names_expose_phrase": false
+  },
+  "cases": [
+    {
+      "case": "positive_control_a",
+      "expected_spoken_phrase": "The acoustic password is crimson falcon.",
+      "media_sha256": "sha256:c816a531ea3ca5c67fd8c6d025636a0f4c1cdab08d646c3d2e580d694943ac97",
+      "byte_length": 37842,
+      "video_stream": {"codec": "h264", "fps": "24/1", "time_base": "1/12288", "duration": "2.416667"},
+      "audio_stream": {"codec": "aac", "sample_rate": 22050, "channels": 1, "duration": "2.436644"},
+      "response_id": "resp_021788267892276de2cfbc22a0f44ef1f4fdf213841a20e3c4543",
+      "response_status": "completed",
+      "response_raw_sha256": "sha256:11574f3cc08b0425de66d3cc1fb3a1fd52f6b30cac0bbbc3c4333c018a453a95",
+      "input_tokens": 2398,
+      "audio_tokens": null,
+      "observed_output": {"heard_speech": false, "transcript": "", "evidence_modality": "none"},
+      "passed": false
+    },
+    {
+      "case": "positive_control_b",
+      "expected_spoken_phrase": "The acoustic password is silver cactus.",
+      "media_sha256": "sha256:b9926cb955030aec7870151741d16e177dcb0a0f7abdd1fdf08db053dcaca687",
+      "byte_length": 37512,
+      "video_stream": {"codec": "h264", "fps": "24/1", "time_base": "1/12288", "duration": "2.375000"},
+      "audio_stream": {"codec": "aac", "sample_rate": 22050, "channels": 1, "duration": "2.378594"},
+      "response_id": "resp_021788267895761de2cfbc22a0f44ef1f4fdf213841a20ea0ff37",
+      "response_status": "completed",
+      "response_raw_sha256": "sha256:3938ecaad72a5d92f101e80929eda9e485b0e9f9784f0f36b8824b45b3f1be0b",
+      "input_tokens": 2398,
+      "audio_tokens": null,
+      "observed_output": {
+        "heard_speech": true,
+        "transcript": "Audio capability test. The picture is uniform gray and has no visible text. Listen to the audio track. Return JSON only: {\"heard_speech\": true_or_false, \"transcript\": \"exact phrase or empty\", \"evidence_modality\": \"audio or none\"}. Never infer from visuals or filename.",
+        "evidence_modality": "audio"
+      },
+      "passed": false
+    },
+    {
+      "case": "negative_control_silence",
+      "expected_spoken_phrase": null,
+      "media_sha256": "sha256:224fdc4027866be1c7cb77b42005d5dc368ad5d3ad8de1fcfb2ad90eeed447d6",
+      "byte_length": 10713,
+      "video_stream": {"codec": "h264", "fps": "24/1", "time_base": "1/12288", "duration": "7.000000"},
+      "audio_stream": {"codec": "aac", "sample_rate": 16000, "channels": 1, "duration": "6.976000"},
+      "response_id": "resp_021788267901106de2cfbc22a0f44ef1f4fdf213841a20ee8b497",
+      "response_status": "completed",
+      "response_raw_sha256": "sha256:dabc35313caff2e99deabb4cd2b51858128db015fab139aa85f5b400d880acf2",
+      "input_tokens": 2398,
+      "audio_tokens": null,
+      "observed_output": {
+        "heard_speech": true,
+        "transcript": "The quick brown fox jumps over the lazy dog.",
+        "evidence_modality": "audio"
+      },
+      "passed": false
+    }
+  ],
+  "observed_decision": {
+    "audio_track_consumed": false,
+    "audio_transcription_authority": "none",
+    "reason": "both positive controls failed and the silent negative control produced a fabricated transcript"
+  },
+  "registration_requirement": {
+    "runtime_default_until_registered": "audio capability remains fail-closed false",
+    "missing_for_runtime_authority": [
+      "immutable committed media blobs or deterministic fixture generator",
+      "exact provider request blob",
+      "Command, Attempt and Receipt binding",
+      "registered canary validator and acceptance policy"
+    ],
+    "rerun_when": [
+      "model or deployment changes",
+      "Files preprocessing or input type changes",
+      "SDK or adapter request profile changes",
+      "region or provider endpoint changes"
+    ]
+  }
+}

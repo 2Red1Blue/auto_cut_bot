@@ -1,7 +1,8 @@
 # 当前 Pipeline 的 LLM 阶段契约
 
-本文档集只描述 `feat/v213-contract-codegen` 当前代码。历史任务计划、旧 25-stage、旧
-ArtifactBus、旧 HITL 和旧 `ac_auto_cut` 复用方式均不是实现依据。
+本文档集面向 `feat/v213-contract-codegen`：`00`–`05` 描述当前代码，`06`–`08` 描述目标设计与
+迁移账本。历史任务计划、旧 25-stage、旧 ArtifactBus、旧 HITL 和旧 `ac_auto_cut` 复用方式均不是
+实现依据。
 
 ## 当前真实 HTTP 流程
 
@@ -56,10 +57,29 @@ source_prep
 - [05 错误、重试、Debug 与当前状态](./05-errors-debug-status.md)
 - [06 LLM 与程序责任边界重设计](./06-llm-program-responsibility-redesign.md)
 - [07 V23 全字段 Parity Matrix 与外部参考](./07-v23-field-parity-and-external-references.md)
+- [08 字幕感知 VLM 到 ExactSpan 的融合设计](./08-subtitle-aware-vlm-to-exact-span-design.md)
 
 其中 `00`–`05` 描述当前代码，`06` 是经过现状审查和外部方案调研后的目标设计，`07` 是
-V23 到目标契约的逐字段防丢失账本与参考资料索引；在对应迁移项完成并通过 fixture/真实单集
-验证前，`06`–`07` 不能被解释为已经上线的执行事实。
+V23 到目标契约的逐字段防丢失账本与参考资料索引，`08` 定义烧录字幕感知 VLM 与
+SenseVoiceSmall/FSMN/Frame/Subtitle/ExactSpan 的融合边界；在对应迁移项完成并通过 fixture/真实
+单集验证前，`06`–`08` 不能被解释为已经上线的执行事实。
+
+## 唯一迁移依赖图
+
+`06`–`08` 统一使用以下 Global Phase ID，不得各自定义另一套 P0/P1：
+
+```text
+Global P0  冻结 V23 / Inventory / Provider canary / 稳定错误路径
+    ├── Global P1A  现有 V23 -> bounded CandidateEvidenceWindow + endpoint identity fencing
+    │       └── Global P2  Candidate-local ASR/VAD/Frame/Subtitle -> ExactSpan shadow -> Render/QC
+    └── Global P1B  Section lineage + Candidate Enricher + Rich VLM dual-run
+            └── Global P3  Rich VLM 与 Stage 1–3 语义 authority 切换
+
+Global P4  在已冻结 fixture 上做离线 Prompt/模型/采样优化
+```
+
+P1A 与 P1B 可以并行，P2 不等待 Rich VLM Schema 大迁移。这保证当前已经准确的 V23 语义可以先接入
+真实精切验证，同时把分区恢复和富输出升级作为独立兼容路径推进。
 
 ## 权威代码
 

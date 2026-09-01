@@ -50,7 +50,7 @@ support 规范化成 first-class `EvidenceAtom`，但不能删除 grounding。
 | `support.support_kind` | 固定 `video_observation` | `PROGRAM_DERIVE` producer/modality class | producer 和请求允许的 capability 可复算；对象是否实际借助 Context 必须由模型返回闭合 assistance refs，不能从请求是否携带 Context 推断 |
 | `support.interval_ms.start_ms` | 窗口相对开始毫秒 | `DUAL_RUN`，目标使用冻结时间桶/粗区间 | 与 V23 粗定位 IoU 非劣；不得当作物理端点 |
 | `support.interval_ms.end_ms` | 窗口相对结束毫秒 | `DUAL_RUN` | 半开区间、范围和源映射全部有 fixture |
-| `support.interval_ms.uncertainty_ms` | 模型声明的合并时间误差，当前上限 `5000` ms | `ENHANCE` 为 `sampling_error_ms`、`model_localization_uncertainty_ms`、`timeline_mapping_error_ms`，再由程序按 Policy 合成 conservative bound | 分项误差及合成值的覆盖率校准；禁止固定为零或重复叠加同一误差 |
+| `support.interval_ms.uncertainty_ms` | 模型声明的合并时间误差，当前上限 `5000` ms；真实 run 大量返回 `0`，不具测量意义 | `DUAL_RUN -> REMOVE_MODEL_NUMERIC`；目标由程序生成 `sampling_error_ms`、`model_localization_uncertainty_ms`、`timeline_mapping_error_ms`，再按 Policy 合成 conservative bound | 分项误差及合成值覆盖率校准；VLM 生产路径不得以全零 sampling/localization bound 晋升，ExactSpan 不消费模型自报误差 |
 | `support.confidence` | 模型原始数值自评；当前 Coverage/material-support 直接消费 | `DUAL_RUN`：ordinal + raw score shadow + calibrated score | 原子切换完成后 raw 不再驱动 Admission；注册 profile 后 calibrated score 才可使用 |
 | `EvidenceAtom.modality` | V23 无一等字段 | 新增 `SHADOW -> KEEP` | 只允许 `visual/audio/screen_text` 等可观察模态；逐模态归因准确率达到下限 |
 | `EvidenceAtom.observable_description` | V23 分散在 summary/support | 新增 `SHADOW -> KEEP` | claim->atom faithfulness 与人工盲评通过 |
@@ -145,18 +145,23 @@ continuation hypothesis 和 contradiction refs。
 | `candidate_kind` | highlight/hook | `KEEP` | 两类判定与空候选召回 |
 | `anchor_event_ref` | 候选核心事件 | `RENAME_EQUIV` 为 Event ordinal | 不允许后续文本模型重新猜窗口内 anchor |
 | `supporting_event_refs` | 直接支撑事件 | `RENAME_EQUIV` | V23 多事件角色无损 |
-| `context_event_refs` | 理解所需背景事件 | `RENAME_EQUIV` | 不能和 support 混用 |
+| `context_event_refs` | 理解所需背景事件 | `RENAME_EQUIV` | 不能和 support 混用，也不能扩大 Candidate physical search window |
 | `payoff_event_refs` | 回报/揭示事件 | `RENAME_EQUIV` | hook 为空、highlight 闭合规则保留 |
 | `open_question` | Hook 的具体未解问题 | `KEEP`，优先引用 Event open question | 不能出现已在窗口回答的问题 |
 | `reason` | 为什么值得剪 | `KEEP` | 与 Candidate kind 和 evidence 一致 |
 | `anchor_summary` | anchor 文本摘要 | `PROGRAM_DERIVE` 候选；切换前 `DUAL_RUN` | 证明从 Event summary 无损派生后才能删除模型字段 |
 | `payoff_or_open_question` | payoff 或悬念摘要 | `KEEP/RENAME_EQUIV` | 不得因压缩丢失 setup-payoff 语义 |
-| `dialogue_excerpt` | 对白语义摘记 | `ENHANCE` 为 dialogue act/paraphrase + quote status | 未经音频能力/ASR 不得标 verified quote |
+| `dialogue_excerpt` | 对白语义摘记；真实 Doubao 输出可准确读取烧录字幕 | `ENHANCE` 为 dialogue act/paraphrase + `quote_status` | 允许 `model_read_screen_text` 直接进入语义链；`asr_transcript/reconciled` 必须绑定相应 producer。字幕不能单独证明 speaker、音频逐字或物理端点 |
 | `editing_modes[]` | dialogue/action | `KEEP` | Canonical enum/order；provider 无音轨时 dialogue 需 evidence 限制 |
 | `narrative_functions[]` | hook/setup/escalation/confrontation/reveal/reversal/payoff/aftermath | `KEEP` | 八类 parity 与多标签召回 |
 | `tags[]` | `dialogue/action/emotion/suspense/conflict/reveal/reversal/visual_spectacle/character_moment/relationship_moment` | `KEEP` | 十类 exact literals parity；读取 telemetry 证明消费者 |
-| `measurements[]` | 候选多维语义评分 | `KEEP+ENHANCE` | 六维、evidence closure 和排序质量保留 |
-| `support` | Candidate 自身时间支持 | `RENAME_EQUIV` | 必须分别与 anchor、每个 supporting、每个 payoff Event overlap；不能以 anchor interval 简单替代或只检查引用存在 |
+| `measurements[]` | 候选多维语义评分 | `KEEP+ENHANCE` | 六维、最小充分 evidence closure 和排序质量保留；禁止用闭包内全部 Fact/Event 填满引用 |
+| `support` | Candidate 自身时间支持；当前可合法退化为全窗 envelope | `RENAME_EQUIV` 为 scope + 稀疏 inclusion refs + focus regions | 必须分别覆盖 anchor/direct/payoff；报告 support/episode duration ratio、clip-inclusion selectivity，Context refs 不扩窗，episode-arc 不进入 ExactSpan |
+
+目标 Editorial Signal 增加 `scope_kind=local_moment|multi_beat_arc|episode_arc`、
+`clip_inclusion_event_refs`、`arc_context_refs` 和 `focus_regions`。程序只从 anchor、direct support、payoff
+和 clip-inclusion 的粗证据编译 `candidate_evidence_window`；一个故事包含多个远距离事件时生成多个
+material requirements/SourceSpanRefs，不生成一个整集物理 clip。
 
 ### Measurements
 
@@ -188,7 +193,8 @@ material-support evaluator 也会直接比较 Candidate support 与 measurement 
 | 新字段组 | 初始状态 | 晋升条件 |
 |---|---|---|
 | `scenes`、shot language、reaction shots | shadow | Stage 3/ExactSpan consumer + scene/reaction fixture |
-| `screen_text` | shadow | Provider/OCR capability canary + unreadable 状态 + temporal support |
+| V23 `fact_kind=screen_text` / `screen_text_source` | keep | 字幕语义 recall、文本 faithfulness 和 Stage 1/Candidate consumer 保持非劣 |
+| 结构化 `ScreenTextObservation` 增强 | dual-run/shadow -> keep | text role、readability、verbatim-model-read/paraphrase、粗 bucket、ASR-screen agreement、speaker-attribution precision 达标 |
 | entity state / relationship observations | shadow | Stage 1 consumer + identity/relationship P/R |
 | goal/motive/causality hypotheses | shadow | evidence closure + 不进入 Fact 的类型门禁 |
 | emotional turns、setup/payoff links | shadow | Candidate/Stage 2 consumer + rare-event recall/faithfulness |
@@ -230,6 +236,12 @@ CI 在 schema、Prompt 或 parser 任一 hash 改变而 Inventory 未产生可�
    `HIT@1`，Summarization 使用 F1/事实一致性；
 10. 所有指标采用 paired non-inferiority，比对同一冻结样本，并分别为 rare-event、modality、provider、
     长短窗口设 margin 和最低召回线；aggregate 通过不能掩盖某一 slice 退化。
+11. 冻结真实 run `pipeline_run_694567bc4b4e456a98aa939f71f24f84`：保留 8 Entity/48 Fact/24 Event
+    与字幕剧情理解；验证 enum/ref/measurement 错误只阻断 Editorial section，不重做已通过观察图；
+12. 对该 run 验证 Candidate `0..241320` 被路由为 episode arc 或稀疏 focus regions、全零
+    `uncertainty_ms` 被程序重算、局部 ASR/VAD window ratio 受 Policy 限制；
+13. 增加字幕密集、花字/遮挡、字幕延迟、无音轨但有字幕、ASR 与字幕冲突、旁白/画外音、同屏多人
+    speaker attribution、字幕跨 shot 和 ExactSpan 不截断对白/字幕/稳定镜头 fixture。
 
 ## 十四、外部项目与参考资料
 
@@ -237,12 +249,12 @@ CI 在 schema、Prompt 或 parser 任一 hash 改变而 Inventory 未产生可�
 
 | 项目/资料 | 相似经验 | 本项目吸收 | 不可直接照搬 |
 |---|---|---|---|
-| [Azure AI Video Indexer insights](https://learn.microsoft.com/en-us/azure/azure-video-indexer/insights-overview) | 多模型输出 faces、objects、OCR、scenes/shots、audio effects、topics、emotions 等分类 JSON，并带时间 instances | Rich semantic categories、独立 producer、temporal evidence | 其 emotion/topic 常依赖 transcript/OCR，不能冒充豆包纯视觉输出 |
+| [Azure AI Video Indexer insights](https://learn.microsoft.com/en-us/azure/azure-video-indexer/insights-overview) | 多模型输出 faces、objects、OCR、scenes/shots、audio effects、topics、emotions 等分类 JSON，并带时间 instances | Rich semantic categories、独立 producer、temporal evidence | 其 emotion/topic 常依赖 transcript/OCR；timed insight 用于索引，不等价于本项目物理安全端点 |
 | [Azure Prompt Content](https://learn.microsoft.com/en-us/azure/azure-video-indexer/prompt-overview) | 先索引，再按 scene 生成 prompt-ready sections，后续无需重新索引视频 | 冻结 VLM/感知 Artifact，Stage 1–3 只读投影 | Azure preset 与本项目 WindowPolicy 不等价 |
-| [Google Video Intelligence](https://docs.cloud.google.com/video-intelligence/docs/reference/rest/v1/videos/annotate) | label/shot/face/speech/text/object/person 独立 Feature，支持 frame/shot/segment 粒度 | 版本化 modality operator、EvidenceAtom、不同时间粒度 | 专用 detector 输出不能当通用 VLM narrative interpretation |
-| [TwelveLabs Analyze](https://docs.twelvelabs.io/docs/guides/analyze-videos) | 复用 Asset 多次分析，支持 structured JSON、自定义 timestamped segments、chapter/highlight | 媒体 Artifact 复用、独立可缓存语义任务、丰富 editorial signals | 不能假设 Ark 同样消费音轨或具有同等时间精度 |
+| [Google Video Intelligence](https://docs.cloud.google.com/video-intelligence/docs/reference/rest/v1/videos/annotate) | label/shot/face/speech/text/object/person 是独立 Feature，各自具有适用的输出粒度和 feature-specific config；frame/shot mode 不能外推到全部 Feature | 版本化 modality operator、EvidenceAtom、不同时间粒度 | 专用 detector 输出不能当通用 VLM narrative interpretation |
+| [TwelveLabs Analyze](https://docs.twelvelabs.io/docs/guides/analyze-videos) | 复用 Asset 多次分析，支持 structured JSON、自定义 timestamped segments、chapter/highlight | 媒体 Artifact 复用、独立可缓存语义任务、丰富 editorial signals | 不能假设 Ark 同样消费音轨或具有同等时间精度；其 segment 也不自动成为 ExactSpan proof |
 | [Gemini Video Understanding](https://ai.google.dev/gemini-api/docs/video-understanding) | 官方公开音频/视觉处理、约 1 FPS、快速动作可能漏细节 | ProviderCapability、采样 profile、rare-event fixture | Gemini 能力不能外推到 Doubao Ark |
-| [Incident Lens](https://github.com/rukaiya2000/incident-lens) | 开源示例把视频变成 typed Scene/Event/Person/Object 与 timecode provenance 图 | Typed temporal graph、claim/evidence 关系 | 示例项目不是生产安全或发布标准 |
+| [Incident Lens](https://github.com/rukaiya2000/incident-lens) | 开源示例把视频变成 typed Scene/Event/Person/Object 与 timecode provenance 图 | Typed temporal graph、claim/evidence 关系 | playable timecode 主要是 provenance/UI，不是剪辑安全证明；示例项目不是发布标准 |
 
 ### B. 结构化输出、编排和评测
 
@@ -294,3 +306,7 @@ Parity 完成不是“新 Schema 字段更多”，而是：
    Measurement 对所有引用对象的 existence、closure 与 temporal overlap 均 fail closed。
 8. `V23ContractInventory` 与 schema/Prompt/parser exact hashes 一致；任何条件、枚举、cardinality 或
    consumer cutover 漏记都视为 parity 未完成。
+9. `video_endpoint_ref` 必须指向带 stream/timebase 的 `FramePtsIndex` member，`audio_endpoint_ref` 必须
+   指向带 sample clock 的 `AudioSampleBoundarySet` member；ASR/VAD/Shot/Subtitle/VisualValidity 只能
+   作为 proposal/protection/clearance/feasibility evidence。Shot edge 必须吸附到 FramePts member，
+   ASR/VAD edge 必须解析到 AudioSampleBoundary member；VLM interval 只能用于 semantic envelope。
