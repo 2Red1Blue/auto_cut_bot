@@ -54,6 +54,10 @@ source_prep
 - [03 Stage 2：故事设计/组合](./03-stage2-portfolio.md)
 - [04 Stage 3：编辑蓝图](./04-stage3-blueprint.md)
 - [05 错误、重试、Debug 与当前状态](./05-errors-debug-status.md)
+- [06 LLM 与程序责任边界重设计](./06-llm-program-responsibility-redesign.md)
+
+其中 `00`–`05` 描述当前代码，`06` 是经过现状审查和外部方案调研后的目标设计；在对应
+迁移项完成并通过 fixture/真实单集验证前，`06` 不能被解释为已经上线的执行事实。
 
 ## 权威代码
 
