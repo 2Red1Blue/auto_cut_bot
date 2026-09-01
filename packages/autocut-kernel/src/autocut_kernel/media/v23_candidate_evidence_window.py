@@ -304,6 +304,31 @@ def _source_range(
     return result
 
 
+def validate_v23_candidate_window_compile_context(
+    semantic_pack: VlmSemanticPackV4,
+    window_manifest: WindowManifest,
+    frame_pts_index: FramePtsIndexSet,
+    policy: V23CandidateWindowCompilePolicy,
+) -> TickRange:
+    """Close the shared compile context, including valid zero-candidate packs."""
+
+    if type(semantic_pack) is not VlmSemanticPackV4:  # noqa: E721
+        raise TimedEvidenceValidationError("semantic_pack must be a VlmSemanticPackV4")
+    if type(window_manifest) is not WindowManifest:  # noqa: E721
+        raise TimedEvidenceValidationError("window_manifest must be a WindowManifest")
+    if type(frame_pts_index) is not FramePtsIndexSet:  # noqa: E721
+        raise TimedEvidenceValidationError("frame_pts_index must be a FramePtsIndexSet")
+    if type(policy) is not V23CandidateWindowCompilePolicy:  # noqa: E721
+        raise TimedEvidenceValidationError("policy must be a V23CandidateWindowCompilePolicy")
+    if semantic_pack.window_manifest_sha256 != window_manifest.canonical_hash:
+        raise TimedEvidenceValidationError(
+            "semantic pack does not bind the supplied window manifest"
+        )
+    if policy.time_base != window_manifest.source_time_base:
+        raise TimedEvidenceValidationError("policy time base does not match the video clock")
+    return _source_range(window_manifest, frame_pts_index)
+
+
 def _merge_regions(
     ranges: tuple[TickRange, ...],
     max_gap: int,
@@ -398,21 +423,13 @@ def compile_v23_candidate_evidence_window(
 
     if type(candidate) is not VlmCandidateHypothesisV4:  # noqa: E721
         raise TimedEvidenceValidationError("candidate must be a VlmCandidateHypothesisV4")
-    if type(semantic_pack) is not VlmSemanticPackV4:  # noqa: E721
-        raise TimedEvidenceValidationError("semantic_pack must be a VlmSemanticPackV4")
-    if type(policy) is not V23CandidateWindowCompilePolicy:  # noqa: E721
-        raise TimedEvidenceValidationError("policy must be a V23CandidateWindowCompilePolicy")
-    if semantic_pack.window_manifest_sha256 != window_manifest.canonical_hash:
-        raise TimedEvidenceValidationError(
-            "semantic pack does not bind the supplied window manifest"
-        )
+    source_range = validate_v23_candidate_window_compile_context(
+        semantic_pack, window_manifest, frame_pts_index, policy
+    )
     if candidate not in semantic_pack.candidate_hypotheses:
         raise TimedEvidenceValidationError(
             "candidate is not a member of the supplied semantic pack"
         )
-    if policy.time_base != window_manifest.source_time_base:
-        raise TimedEvidenceValidationError("policy time base does not match the video clock")
-    source_range = _source_range(window_manifest, frame_pts_index)
     events_by_id = {event.event_id: event for event in semantic_pack.events}
     direct_refs = tuple(
         sorted(

@@ -349,14 +349,25 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
 - 完整 `FramePtsIndexSet` 中相邻 PTS 的时间间隔表示上一解码帧的 presentation duration，不解释为
   “内部证据缺失”；无法形成非空范围或无法覆盖 direct hull 才失败关闭；
 - V3 `plan_candidate_evidence_window()` 保持原样，兼容路径为新增模块，不重解释历史 Artifact。
+- 已实现规范化 `V23CandidateDecisionSet` 与严格 codec：对 Semantic Pack 中每个 Candidate
+  恰好保留一个按 `candidate_id` 排序的 `eligible|episode_arc|indeterminate` Decision；空 Candidate
+  集仍验证 Pack、Manifest、FramePtsIndex、Source clock 与 Policy；缺失、重复、乱序、替换、跨绑定
+  篡改、未知字段、浮点/布尔伪整数、重复 JSON key 和超限输入均失败关闭；
+- DecisionSet 只保存上游哈希和 Source/Policy 绑定，不复制 SemanticPack、WindowManifest 或
+  FramePtsIndex。codec 只恢复不可变值，不授予 Store authority；后续 committed reader 必须重新读取
+  精确上游 Artifact 并调用 `verify_v23_candidate_decision_set()` 全量重算比对。
 
 实现与测试：
 
 - [`v23_candidate_evidence_window.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_evidence_window.py)
+- [`v23_candidate_decision_set.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_decision_set.py)
+- [`v23_candidate_decision_set_codec.py`](../../packages/autocut-kernel/src/autocut_kernel/media/v23_candidate_decision_set_codec.py)
 - [`test_v23_candidate_evidence_window.py`](../../tests/media/test_v23_candidate_evidence_window.py)
+- [`test_v23_candidate_decision_set.py`](../../tests/media/test_v23_candidate_decision_set.py)
 
-当前尚未完成的是 Decision 的 Artifact/DB 持久化、Pipeline Runtime 调用、候选级 SenseVoice/FSMN
-子命令和结果回填；这些属于下一批 P1A/P2 接线，不能把本节的纯编译器测试表述为真实 pipeline 已跑通。
+当前尚未完成的是 DecisionSet 的 Artifact/DB Command/Receipt 与 committed reader、Pipeline Runtime
+调用、候选级 SenseVoice/FSMN 子命令和结果回填；这些属于下一批 P1A/P2 接线，不能把本节的纯
+编译器和 codec 测试表述为真实 pipeline 已跑通。
 
 ### Global P1B：分区恢复和 Rich VLM dual-run
 
