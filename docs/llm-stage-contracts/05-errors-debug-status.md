@@ -130,3 +130,11 @@ shape 也尚未完成真实 Ark 验证。这是下一个阶段的显式验证项
 3. Stage 1、2、3 各自产生成功 Receipt 和完整成员集；
 4. 不把 Stage 3 成功误报为“已渲染/已发布”；
 5. 单集通过后再扩大集数，失败时使用选择性重算而不是新建全量 VLM run。
+
+## 2026-09-02 实现进度补充
+
+已提交 `MediaPreflightRecomputeRequest`、显式 `stage` 分派和媒体单阶段
+`pipeline_commands` 计划。它们只建立并保护重跑契约，不代表媒体单集重跑已经可执行。
+跨 Run 的 source/VLM evidence binder、成功集 exact reuse、mixed aggregate finalizer
+仍是后续实现项；在这些组件完成前，HTTP 对 `stage=media_preflight` 保持 422，禁止
+误走 VLM 路径或伪造完整媒体批次。
