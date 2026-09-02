@@ -22,6 +22,7 @@ from loguru import logger
 from auto_cut_bot.config.paths import get_media_dir
 from auto_cut_bot.pipeline.runtime import (
     IdempotencyConflictError,
+    MediaPreflightRecomputeRequest,
     PipelineRunNotFoundError,
     PipelineRunRequest,
     PipelineRunService,
@@ -29,7 +30,7 @@ from auto_cut_bot.pipeline.runtime import (
     ResumeNotAllowedError,
     SourceDeniedError,
     StaleRunVersionError,
-    VlmFullStageRecomputeRequest,
+    parse_recompute_request,
     validate_idempotency_key,
     validate_run_id,
 )
@@ -747,11 +748,17 @@ async def handle_pipeline_recompute(request: web.Request) -> web.Response:
         return _error_json(400, "JSON body must be an object")
     idempotency_key = request.headers.get("Idempotency-Key", "")
     try:
-        recompute_request = VlmFullStageRecomputeRequest.from_mapping(cast(dict[str, object], body))
+        recompute_request = parse_recompute_request(cast(dict[str, object], body))
         validate_idempotency_key(idempotency_key)
     except PipelineRunValidationError as error:
         return _error_json(400, str(error))
     try:
+        if isinstance(recompute_request, MediaPreflightRecomputeRequest):
+            return _error_json(
+                422,
+                "media_preflight recompute is not enabled in this runtime slice",
+                "unprocessable_entity",
+            )
         claim = await service.recompute_full_vlm_stage(recompute_request, idempotency_key)
     except PipelineRunNotFoundError as error:
         return _error_json(404, f"Pipeline run not found: {error}")

@@ -95,7 +95,12 @@ from auto_cut_bot.pipeline.vlm.request_factory import (
 
 from .context_prepare_stage import context_prepare_kernel_idempotency_key
 from .errors import PipelineRunValidationError
-from .models import PipelineStageContext, PipelineStageResult, validate_run_id
+from .models import (
+    PipelineStageContext,
+    PipelineStageResult,
+    VlmFullStageRecomputeRequest,
+    validate_run_id,
+)
 from .source_prep_stage import (
     require_committed_source_operation,
     source_prep_kernel_idempotency_key,
@@ -309,6 +314,12 @@ class VlmPipelineStage:
         ]
         | None
     ):
+        if context.recompute_request is not None and type(  # noqa: E721
+            context.recompute_request
+        ) is not VlmFullStageRecomputeRequest:
+            raise PipelineRunValidationError(
+                "VLM stage does not accept a media-preflight recompute request"
+            )
         job = self._job(context)
         policy = context.execution_profile.to_doubao_policy()
         retry_policy = context.execution_profile.to_generation_retry_policy()

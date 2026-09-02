@@ -193,6 +193,30 @@ async def test_recompute_is_closed_and_reports_when_runtime_capability_is_disabl
 
 
 @pytest.mark.asyncio
+async def test_media_preflight_recompute_is_explicitly_not_authorized_yet(aiohttp_client) -> None:
+    service, _, _ = _service()
+    service.recompute_full_vlm_stage = AsyncMock()  # type: ignore[method-assign]
+    client = await aiohttp_client(create_app(_agent(), pipeline_run_service=service))
+
+    response = await client.post(
+        "/v1/pipeline/recompute",
+        headers={"Idempotency-Key": "media-recompute-1"},
+        json={
+            "base_run_id": "pipeline_run_" + "a" * 32,
+            "expected_version": 0,
+            "stage": "media_preflight",
+            "completion_scope": "selected_only",
+            "episode_numbers": [3],
+            "retry_budget": 1,
+        },
+    )
+
+    assert response.status == 422
+    assert (await response.json())["error"]["code"] == "unprocessable_entity"
+    service.recompute_full_vlm_stage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_endpoints_fail_closed_without_service(aiohttp_client) -> None:
     client = await aiohttp_client(create_app(_agent()))
 

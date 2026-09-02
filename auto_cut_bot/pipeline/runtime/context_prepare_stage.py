@@ -24,7 +24,12 @@ from auto_cut_bot.pipeline.source_prep import (
 )
 
 from .errors import PipelineRunValidationError
-from .models import PipelineStageContext, PipelineStageResult, validate_run_id
+from .models import (
+    PipelineStageContext,
+    PipelineStageResult,
+    VlmFullStageRecomputeRequest,
+    validate_run_id,
+)
 from .source_prep_stage import source_prep_kernel_idempotency_key
 
 _CONTEXT_PREP_IDEMPOTENCY_VERSION = "context-prepare-kernel-v1"
@@ -113,6 +118,12 @@ class ContextPreparePipelineStage:
         return job, source_bundle
 
     def _request(self, context: PipelineStageContext) -> PrepareWindowContextRequest | None:
+        if context.recompute_request is not None and type(  # noqa: E721
+            context.recompute_request
+        ) is not VlmFullStageRecomputeRequest:
+            raise PipelineRunValidationError(
+                "context preparation does not accept a media-preflight recompute request"
+            )
         resolved = self._source_bundle(context)
         if resolved is None:
             return None

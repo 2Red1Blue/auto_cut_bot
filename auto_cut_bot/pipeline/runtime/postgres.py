@@ -20,14 +20,17 @@ from .errors import (
     StaleRunVersionError,
 )
 from .models import (
+    MediaPreflightRecomputeRequest,
     OutboxLease,
     PipelineCommand,
     PipelineExecutionProfile,
+    PipelineRecomputeRequest,
     PipelineRunRequest,
     PipelineRunSnapshot,
     PipelineStageResult,
     RunClaim,
     VlmFullStageRecomputeRequest,
+    parse_recompute_request,
 )
 
 
@@ -195,7 +198,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
-        recompute_request: VlmFullStageRecomputeRequest | None = None,
+        recompute_request: PipelineRecomputeRequest | None = None,
     ) -> RunClaim:
         return await asyncio.to_thread(
             self._claim_run_sync,
@@ -214,7 +217,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
-        recompute_request: VlmFullStageRecomputeRequest | None = None,
+        recompute_request: PipelineRecomputeRequest | None = None,
     ) -> RunClaim:
         if type(execution_profile) is not PipelineExecutionProfile:  # noqa: E721
             raise PipelineRunValidationError("claim_run requires a PipelineExecutionProfile")
@@ -224,10 +227,10 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             )
         if (
             recompute_request is not None
-            and type(  # noqa: E721
-                recompute_request
+            and type(recompute_request) not in (  # noqa: E721
+                VlmFullStageRecomputeRequest,
+                MediaPreflightRecomputeRequest,
             )
-            is not VlmFullStageRecomputeRequest
         ):
             raise PipelineRunValidationError("claim_run recompute_request must be canonical")
         if execution_profile.has_media_preflight_policy:
@@ -1166,7 +1169,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             execution_profile_json,
             execution_profile_hash,
         )
-        frozen_recompute_request: VlmFullStageRecomputeRequest | None = None
+        frozen_recompute_request: PipelineRecomputeRequest | None = None
         if recompute_request_json is not None:
             if isinstance(recompute_request_json, Mapping):
                 recompute_mapping = cast(Mapping[str, object], recompute_request_json)
@@ -1177,7 +1180,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                         "persisted recompute request must be an object"
                     )
                 recompute_mapping = cast(Mapping[str, object], decoded_recompute)
-            frozen_recompute_request = VlmFullStageRecomputeRequest.from_mapping(recompute_mapping)
+            frozen_recompute_request = parse_recompute_request(recompute_mapping)
             if recompute_request_hash is None or frozen_recompute_request.request_hash != _text(
                 recompute_request_hash
             ):

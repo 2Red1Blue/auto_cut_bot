@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from auto_cut_bot.pipeline.runtime.errors import PipelineRunValidationError
-from auto_cut_bot.pipeline.runtime.models import MediaPreflightRecomputeRequest
+from auto_cut_bot.pipeline.runtime.models import (
+    MediaPreflightRecomputeRequest,
+    VlmFullStageRecomputeRequest,
+    parse_recompute_request,
+)
 
 RUN_ID = "pipeline_run_" + "a" * 32
 
@@ -119,3 +123,25 @@ def test_media_preflight_recompute_request_rejects_non_object_json() -> None:
         MediaPreflightRecomputeRequest.from_mapping(  # type: ignore[arg-type]
             ["base_run_id", "completion_scope", "episode_numbers", "expected_version", "retry_budget", "stage"]
         )
+
+
+def test_parse_recompute_request_dispatches_explicit_stage() -> None:
+    media = parse_recompute_request(_mapping())
+    assert type(media) is MediaPreflightRecomputeRequest  # noqa: E721
+
+    vlm = parse_recompute_request(
+        {
+            "base_run_id": RUN_ID,
+            "expected_version": 4,
+            "stage": "vlm",
+            "completion_scope": "selected_only",
+            "episode_numbers": [3],
+        }
+    )
+    assert type(vlm) is VlmFullStageRecomputeRequest  # noqa: E721
+
+
+@pytest.mark.parametrize("value", ([], {"stage": "unknown"}, {"stage": None}))
+def test_parse_recompute_request_rejects_unknown_or_non_object_stage(value: object) -> None:
+    with pytest.raises(PipelineRunValidationError):
+        parse_recompute_request(value)  # type: ignore[arg-type]

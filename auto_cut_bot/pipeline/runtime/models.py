@@ -1900,6 +1900,21 @@ class MediaPreflightRecomputeRequest:
         return _canonical_request_hash(self.to_mapping())
 
 
+PipelineRecomputeRequest = VlmFullStageRecomputeRequest | MediaPreflightRecomputeRequest
+
+
+def parse_recompute_request(value: Mapping[str, object]) -> PipelineRecomputeRequest:
+    """Dispatch the closed recompute contract by its explicit stage tag."""
+    if not isinstance(value, Mapping):
+        raise PipelineRunValidationError("recompute body must be a JSON object")
+    stage = value.get("stage")
+    if stage == "vlm":
+        return VlmFullStageRecomputeRequest.from_mapping(value)
+    if stage == "media_preflight":
+        return MediaPreflightRecomputeRequest.from_mapping(value)
+    raise PipelineRunValidationError("recompute stage must be 'vlm' or 'media_preflight'")
+
+
 @dataclass(frozen=True, slots=True)
 class PipelineCommand:
     """Persisted command status and optional durable Receipt identity."""
@@ -1984,7 +1999,7 @@ class PipelineRunSnapshot:
     commands: tuple[PipelineCommand, ...]
     version: int
     execution_profile: PipelineExecutionProfile = _LEGACY_UNRESOLVED_EXECUTION_PROFILE
-    recompute_request: VlmFullStageRecomputeRequest | None = None
+    recompute_request: PipelineRecomputeRequest | None = None
 
     def __post_init__(self) -> None:
         validate_run_id(self.run_id)
@@ -1994,10 +2009,10 @@ class PipelineRunSnapshot:
             raise PipelineRunValidationError("execution_profile must be a PipelineExecutionProfile")
         if (
             self.recompute_request is not None
-            and type(  # noqa: E721
-                self.recompute_request
+            and type(self.recompute_request) not in (  # noqa: E721
+                VlmFullStageRecomputeRequest,
+                MediaPreflightRecomputeRequest,
             )
-            is not VlmFullStageRecomputeRequest
         ):
             raise PipelineRunValidationError("recompute_request must be canonical")
         if self.request_hash != self.request.request_hash:
@@ -2155,7 +2170,7 @@ class PipelineStageContext:
     request: PipelineRunRequest
     command: PipelineCommand
     execution_profile: PipelineExecutionProfile = _LEGACY_UNRESOLVED_EXECUTION_PROFILE
-    recompute_request: VlmFullStageRecomputeRequest | None = None
+    recompute_request: PipelineRecomputeRequest | None = None
 
     def __post_init__(self) -> None:
         validate_run_id(self.run_id)
@@ -2167,10 +2182,10 @@ class PipelineStageContext:
             raise PipelineRunValidationError("stage context execution_profile must be persisted")
         if (
             self.recompute_request is not None
-            and type(  # noqa: E721
-                self.recompute_request
+            and type(self.recompute_request) not in (  # noqa: E721
+                VlmFullStageRecomputeRequest,
+                MediaPreflightRecomputeRequest,
             )
-            is not VlmFullStageRecomputeRequest
         ):
             raise PipelineRunValidationError("stage context recompute_request must be canonical")
         if self.command.stage == "vlm" and self.execution_profile.is_legacy_unresolved:
