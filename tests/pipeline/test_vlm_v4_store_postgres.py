@@ -21,6 +21,7 @@ from autocut_kernel.pipeline import (
     FinalizeVlmBatchRequest,
     GenerateVlmEvidenceCommand,
     GenerateVlmEvidenceRequest,
+    V23InspectionSemanticInputsRequest,
     VlmBatchChildOutcome,
     read_committed_v23_candidate_decision_set,
 )
@@ -32,6 +33,7 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputsRequest,
     CommittedV4InspectionInput,
+    CommittedV4SemanticChildInspection,
     CommittedVlmSemanticInput,
     IdempotencyConflictError,
     Job,
@@ -175,6 +177,45 @@ def _batch(prepared: Prepared) -> FinalizeVlmBatchRequest:
             "succeeded", child.receipt_id, child.artifact_set_id,
         ),),
         strategy_version=VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4,
+    )
+
+
+def _v23_inspection_compile_request(
+    job: Job,
+    source_reference: CommittedArtifactMemberReference,
+    inspection: CommittedV4SemanticChildInspection,
+    *,
+    idempotency_key: str,
+) -> CompileV23CandidateDecisionSetRequest:
+    item = inspection.semantic_input
+    persisted_pack = item.semantic_pack
+    source_time_base = (
+        persisted_pack.semantic_pack.events[0].support.manifest.source_time_base
+    )
+    return CompileV23CandidateDecisionSetRequest(
+        job=job,
+        idempotency_key=idempotency_key,
+        artifact_scope=canonical_recipe_scope(job),
+        artifact_revision=1,
+        semantic_inputs_request=V23InspectionSemanticInputsRequest(
+            job,
+            inspection.child_idempotency_key,
+            source_reference,
+        ),
+        episode_index=item.source_window.episode_index,
+        window_manifest_sha256=item.source_window.window_manifest_sha256,
+        semantic_pack_sha256=persisted_pack.semantic_pack.canonical_hash,
+        vlm_request_identity_sha256=item.request_identity.canonical_hash,
+        compile_policy=V23CandidateWindowCompilePolicy(
+            strategy_version="v23-direct-event-window-v1",
+            time_base=source_time_base,
+            initial_left_expansion_pts=5,
+            initial_right_expansion_pts=5,
+            max_direct_event_gap_pts=10,
+            max_seed_duration_pts=5_000,
+            max_source_coverage_ppm=1_000_000,
+        ),
+        max_payload_bytes=1_000_000,
     )
 
 
@@ -486,6 +527,7 @@ def test_selected_episode_v4_child_reopens_as_inspection_without_batch(
         request.idempotency_key,
     )
     assert inspection.result_scope == "inspection"
+    assert inspection.child_idempotency_key == request.idempotency_key
     assert type(inspection.semantic_input) is CommittedV4InspectionInput
     assert not isinstance(inspection.semantic_input, CommittedVlmSemanticInput)
     assert inspection.source_grant.policy.expected_source_count == 2
@@ -517,6 +559,65 @@ def test_selected_episode_v4_child_reopens_as_inspection_without_batch(
         generated.artifacts[1].content_hash
     )
     assert inspection.semantic_input.raw_response == generated.attempt.raw_response
+
+    source_reference = CommittedArtifactMemberReference(
+        source.receipt_id,
+        source.artifact_set_id,
+        0,
+        source.reference.scope,
+        source.reference.artifact_type,
+        source.reference.logical_id,
+        source.reference.revision,
+        source.reference.content_hash,
+    )
+    compile_request = _v23_inspection_compile_request(
+        job,
+        source_reference,
+        inspection,
+        idempotency_key="v23-inspection:selected-episode-1",
+    )
+    compiled = CompileV23CandidateDecisionSetCommand(prepared.store).execute(
+        compile_request
+    )
+    assert compiled.outcome.state == "succeeded"
+    assert compiled.committed is not None
+    assert compiled.committed.result_scope == "inspection"
+    assert compiled.committed.record.members[0].reference.artifact_type == (
+        "v23_inspection_candidate_decision_set"
+    )
+    assert compiled.committed.record.members[0].reference.logical_id.startswith(
+        "v23_inspection_candidate_decision_set_"
+    )
+    inspection_payload = json.loads(
+        compiled.committed.record.members[0].payload_json
+    )
+    assert inspection_payload["result_scope"] == "inspection"
+    assert inspection_payload["schema_version"] == (
+        "v23-inspection-candidate-decision-set/v1"
+    )
+    assert inspection_payload["decision_set"] == compiled.committed.value.to_mapping()
+    before_compile_replay = _history(job)
+    compile_restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    compile_replay = CompileV23CandidateDecisionSetCommand(compile_restarted).execute(
+        compile_request
+    )
+    assert compile_replay.outcome.state == "succeeded"
+    assert compile_replay.outcome.receipt_id == compiled.outcome.receipt_id
+    assert compile_replay.committed is None
+    compile_reopened = read_committed_v23_candidate_decision_set(
+        compile_restarted,
+        compile_request,
+        compile_replay.outcome,
+    )
+    assert compile_reopened == compiled.committed
+    assert _history(job) == before_compile_replay
+    assert provider.calls == 1
+    with pytest.raises(SemanticInputUnavailableError):
+        compile_restarted.read_committed_vlm_semantic_pack_set_reference(
+            job,
+            "vlm-batch:selected-inspection",
+        )
+
     with pytest.raises(StoreValidationError):
         replace(
             inspection,
@@ -574,6 +675,88 @@ def test_selected_episode_v4_child_reopens_as_inspection_without_batch(
     assert reopened == inspection
     replay = GenerateVlmEvidenceCommand(restarted, provider).execute(request)
     assert replay.outcome.receipt_id == generated.outcome.receipt_id
+    assert provider.calls == 1
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "request_identity",
+        "source_manifest",
+        "provider_request_id",
+        "response_hash",
+    ),
+)
+def test_v23_inspection_reader_rejects_postcommit_v4_dependency_forgery(
+    prepared: Prepared,
+    tamper: str,
+) -> None:
+    """A durable V23 result never outlives the exact V4 closure it proves."""
+
+    provider = FixtureProvider(_raw())
+    generated = GenerateVlmEvidenceCommand(prepared.store, provider).execute(
+        prepared.request
+    )
+    assert generated.outcome.state == "succeeded"
+    assert generated.outcome.artifact_set_id is not None
+    inspection = prepared.store.read_committed_v4_semantic_child_inspection(
+        prepared.request.job,
+        prepared.request.idempotency_key,
+    )
+    compile_request = _v23_inspection_compile_request(
+        prepared.request.job,
+        prepared.source_reference,
+        inspection,
+        idempotency_key="v23-inspection:postcommit-forgery",
+    )
+    compiled = CompileV23CandidateDecisionSetCommand(prepared.store).execute(
+        compile_request
+    )
+    assert compiled.outcome.state == "succeeded"
+    assert compiled.committed is not None
+
+    artifact_set_id = generated.outcome.artifact_set_id
+    if tamper == "request_identity":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_request_record",
+            _forge_vlm_request_identity,
+        )
+    elif tamper == "source_manifest":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_request_record",
+            lambda payload: payload.__setitem__(
+                "source_manifest_sha256",
+                "sha256:" + "0" * 64,
+            ),
+        )
+    elif tamper == "provider_request_id":
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_response_record",
+            lambda payload: payload.__setitem__(
+                "provider_request_id",
+                "forged-provider-request",
+            ),
+        )
+    else:
+        _forge_vlm_member_payload(
+            artifact_set_id,
+            "vlm_response_record",
+            lambda payload: payload.__setitem__(
+                "raw_response_sha256",
+                "sha256:" + "f" * 64,
+            ),
+        )
+
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    with pytest.raises(StoreValidationError):
+        read_committed_v23_candidate_decision_set(
+            restarted,
+            compile_request,
+            compiled.outcome,
+        )
     assert provider.calls == 1
 
 

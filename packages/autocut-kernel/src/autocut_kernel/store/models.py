@@ -1570,6 +1570,7 @@ class CommittedV4SemanticChildInspection:
     source_manifest: PersistedWholeSeriesSourceManifest
     source_grant: SourceOperationGrant
     semantic_input: CommittedV4InspectionInput
+    child_idempotency_key: str
     result_scope: Literal["inspection"] = field(default="inspection", init=False)
 
     def __post_init__(self) -> None:
@@ -1579,6 +1580,14 @@ class CommittedV4SemanticChildInspection:
             raise StoreValidationError("V4 inspection source_grant is invalid")
         if type(self.semantic_input) is not CommittedV4InspectionInput:  # noqa: E721
             raise StoreValidationError("V4 inspection semantic_input is invalid")
+        if (
+            type(self.child_idempotency_key) is not str  # noqa: E721
+            or not self.child_idempotency_key
+            or self.child_idempotency_key != self.child_idempotency_key.strip()
+        ):
+            raise StoreValidationError(
+                "V4 inspection child_idempotency_key is not canonical text"
+            )
         try:
             decoded_source = decode_source_manifest(
                 self.source_manifest.payload_json,
@@ -1624,6 +1633,7 @@ class CommittedV4SemanticChildInspection:
         source_job = self.source_manifest.source_job
         if (
             source_job is None
+            or child.idempotency_key != self.child_idempotency_key
             or child.source_job != source_job
             or child.kernel_job_id != self.source_manifest.job_id
             or child.source_manifest_sha256

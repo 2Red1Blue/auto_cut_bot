@@ -137,7 +137,9 @@ ProviderCapability 必须用 canary 证明实际模态，而不是根据 `input_
 `screen_text/OCR`。音轨能力与烧录字幕能力必须分开：未验证音轨能力时，声音、音乐、静默和
 “音频实际说出某句”均为 `not_evaluated`；但清晰烧录字幕仍是视频帧中的一等 `screen_text`
 语义证据，可以支持对白含义、冲突和揭示。字幕不能单独证明 speaker、原声逐字一致或物理切点。
-独立版本化 ASR/VAD/audio classifier 继续产生另一条 evidence 轨，不与 VLM 观察互相覆盖。
+独立版本化 SenseVoice/FSMN 继续产生物理时序轨，不与 VLM 观察互相覆盖：SenseVoice token 只参与
+词句边界、utterance 和 sentence-completeness，FSMN 只参与语音活动/静音边界；二者都不能产生或
+修正 Fact、Event、Candidate、人物关系、对白含义或字幕正文。
 
 2026-09-01 的三臂 SDK-direct canary 对当前 `doubao-seed-2-1-pro-260628` + Ark Files `input_video`
 profile 支持 fail-closed `audio_track_consumed=false`：两条不同口令音轨均未被正确识别，静音对照反而产生了
@@ -163,8 +165,8 @@ VLM 输出建议分成五个具有明确消费者的语义区，而不是删减�
 | 场景地点、环境、时间氛围与场景变化 | VLM | 不等于精确 shot boundary |
 | 动作、状态、对白行为、事件摘要、开放问题 | VLM | 对白含义可由烧录字幕+画面支持；区分 exact visible text、paraphrase、speaker hypothesis，不伪造 ASR 原文 |
 | 人物目标、情绪变化、关系变化、冲突与反转 | VLM | 明确区分观察与解释 |
-| shot language、反应镜头、音乐/静默等视听信号 | VLM | 为编辑选择提供语义，不产生物理端点 |
-| 屏幕文字/标题卡/聊天界面/烧录字幕观察 | VLM；必要时独立 OCR | V23 已有 screen-text 语义继续生产使用；返回 verbatim-model-read/normalized/paraphrase/unreadable、类型和粗时间。verbatim model read 只表示模型声称准确读到帧上文字，不证明音频逐字或 speaker |
+| shot language、反应镜头等视觉编辑信号 | VLM | 为编辑选择提供语义，不产生物理端点；当前 Ark profile 不赋予音乐、音效或静默观察权 |
+| 屏幕文字/标题卡/聊天界面/烧录字幕观察 | VLM | V23 已有 screen-text 语义继续生产使用；返回 verbatim-model-read/normalized/paraphrase/unreadable、类型和粗时间。SubtitleCueSet 可独立检测占用/clearance，但不识别正文；VLM 的 verbatim model read 也不证明音频逐字或 speaker |
 | 铺垫、回收、悬念、hook/highlight 和叙事功能 | VLM | 保留为 `editorial_signals`，不是最终 CandidateCatalog |
 | 场景/事件粗粒度时间桶 | 混合 | 程序提供 `T0..Tn` 有界桶；VLM 只选首尾桶，程序映射到窗口 |
 | 人物与 Context Pack 角色的疑似匹配 | 混合 | VLM 选角色短别名；程序保留 `likely_match`，不得升级为事实 |
@@ -190,7 +192,7 @@ VLM 输出建议分成五个具有明确消费者的语义区，而不是删减�
 | `continuity` | 核心，必须增强 | 返回首尾状态和未完事件；区分 unknown/not evaluated/observed empty |
 | `candidate_hypotheses[]` | 信息有价值，保留语义 | 重命名/投影为 `editorial_signals`；canonical candidate 在后续归并 |
 | `anchor_summary/reason/payoff_or_open_question` | 部分重复 | 保留不重复的“为什么值得剪”和悬念/回收，摘要从 event 投影 |
-| `dialogue_excerpt` | 有价值但易把字幕、转述和原声逐字混为一谈 | 改为 dialogue act/paraphrase + `quote_status`；允许 `model_read_screen_text` 表示 VLM 准确读取了画面字幕，只有绑定 ASR producer 的 `asr_transcript` 或跨模态一致的 `reconciled` 才能声明音频逐字依据；任何状态都不能单独证明 speaker 或物理端点 |
+| `dialogue_excerpt` | 有价值但易把字幕、转述和原声逐字混为一谈 | 改为 dialogue act/paraphrase + `quote_status`；允许 `model_read_screen_text` 表示 VLM 准确读取了画面字幕。当前生产架构不从 SenseVoice token 生成 `asr_transcript/reconciled` 语义字段；任何状态都不能单独证明 speaker 或物理端点 |
 | `editing_modes/narrative_functions/tags` | 有明确下游价值 | 保留注册枚举，允许一项信号携带多种叙事功能 |
 | `measurements[]` | 六类信号均有价值 | 保存 ordinal、raw model score 和 evidence；只有 calibrated score 可驱动 predicate |
 | 每层 `support` | 防幻觉所必需 | 保留独立 evidence；删除的只是逐字重复复制，不删除 grounding |
@@ -791,11 +793,11 @@ input/output/cached/reasoning tokens, latency, cache_hit
 - Video temporal grounding：吸收“语义、显著性、时间边界由不同任务/算子处理”的分工；VLM
   给语义候选，专用证据与 ExactSpan Compiler 决定物理端点。
 
-Video-RAG 一类工作会把 ASR/OCR 等辅助文本送入视频模型。当前生产设计仍选择不把 ASR/VAD
-送入 VLM Prompt，以保持“视觉语义观察”和“物理音频证据”的独立性；这是一项工程取舍，不是
-断言辅助文本没有语义价值。应在离线 fixture 上做三臂 ablation：`video-only`、
-`video+ContextPack`、`video+ContextPack+去时间戳 ASR 语义文本`。即使第三臂语义指标更好，
-ASR timestamp 也不得升级为 VLM 的物理剪辑证明，是否进入生产需另立版本和污染测试。
+Video-RAG 一类工作会把 ASR/OCR 等辅助文本送入视频模型。当前产品目标明确不采用这条生产路径：
+烧录字幕正文和对白含义由 VLM 从画面读取，SenseVoice/FSMN 只生成物理时序保护证据，二者不回灌
+VLM Prompt 或 Stage 1–3。未来若要研究 ASR 语义增强，只能在离线 fixture 上另立实验版本；即使
+指标更好，也不能复用当前 producer identity、污染既有 Artifact，或把 ASR timestamp 升级为最终
+物理端点。
 
 ### 同类系统和使用经验
 

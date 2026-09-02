@@ -1,4 +1,4 @@
-"""Deterministic committed command for the exact V4 candidate aggregate."""
+"""Deterministic committed command for complete and inspection V4 inputs."""
 
 from __future__ import annotations
 
@@ -12,13 +12,14 @@ from autocut_kernel.contracts.compiler.canonical import (
     canonical_json_bytes,
     canonical_json_hash,
 )
-from autocut_kernel.media import V23CandidateWindowCompilePolicy
+from autocut_kernel.media import MediaValidationError, V23CandidateWindowCompilePolicy
 from autocut_kernel.pipeline.compile_v23_candidate_decision_set_command import (
     COMPILE_V23_CANDIDATE_DECISION_SET_COMMAND,
     CompileV23CandidateDecisionSetCommand,
     CompileV23CandidateDecisionSetError,
     CompileV23CandidateDecisionSetRequest,
     PersistedV23CandidateDecisionSet,
+    V23InspectionSemanticInputsRequest,
     read_committed_v23_candidate_decision_set,
 )
 from autocut_kernel.store import (
@@ -31,6 +32,8 @@ from autocut_kernel.store import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedSemanticInputsRequest,
+    CommittedV4InspectionInput,
+    CommittedV4SemanticChildInspection,
     CommittedVlmSemanticInput,
     PersistedVlmGenerationChild,
     PersistedVlmSemanticPackV4,
@@ -55,12 +58,18 @@ from tests.vlm.test_semantic_pack_v4 import _raw, _v4_context, _wire
 
 
 class _Store:
-    def __init__(self, inputs: CommittedSemanticInputs) -> None:
+    def __init__(
+        self,
+        inputs: CommittedSemanticInputs,
+        inspection: CommittedV4SemanticChildInspection | None = None,
+    ) -> None:
         self.inputs = inputs
+        self.inspection = inspection
         self.claims: list[CommandClaim] = []
         self.successes: list[CommandSuccess] = []
         self.rejections: list[CommandRejection] = []
         self.semantic_reads = 0
+        self.inspection_reads = 0
         self.artifact_reads = 0
         self.next_claim: CommandOutcome | None = None
         self.record: PersistedCommittedArtifactSet | None = None
@@ -74,6 +83,16 @@ class _Store:
     ) -> CommittedSemanticInputs:
         self.semantic_reads += 1
         return self.inputs
+
+    def read_committed_v4_semantic_child_inspection(
+        self, job, idempotency_key: str
+    ) -> CommittedV4SemanticChildInspection:
+        self.inspection_reads += 1
+        if self.inspection is None:
+            raise AssertionError(
+                f"complete-input fixture cannot serve inspection {job!r}/{idempotency_key}"
+            )
+        return self.inspection
 
     def claim_command(self, claim: CommandClaim) -> CommandOutcome:
         self.claims.append(claim)
@@ -275,6 +294,41 @@ def _real_v4_inputs() -> CommittedSemanticInputs:
     )
 
 
+def _inspection_from_inputs(
+    inputs: CommittedSemanticInputs,
+) -> CommittedV4SemanticChildInspection:
+    item = inputs.inputs[0]
+    persisted = item.semantic_pack
+    assert type(persisted) is PersistedVlmSemanticPackV4
+    child = persisted.source_child
+    response_payload_json = canonical_json_bytes(
+        {
+            "attempt_id": str(child.attempt_id),
+            "provider_request_id": None,
+            "raw_response_blob": _blob_mapping(item.raw_response),
+            "raw_response_sha256": persisted.semantic_pack.raw_response_sha256,
+        }
+    ).decode("utf-8")
+    inspection_input = CommittedV4InspectionInput(
+        source_window=item.source_window,
+        request_identity=item.request_identity,
+        semantic_pack=persisted,
+        response_record=replace(
+            item.response_record,
+            content_hash=canonical_payload_hash(response_payload_json),
+        ),
+        response_payload_json=response_payload_json,
+        provider_request_id=None,
+        raw_response=item.raw_response,
+    )
+    return CommittedV4SemanticChildInspection(
+        source_manifest=inputs.source_manifest,
+        source_grant=inputs.source_grant,
+        semantic_input=inspection_input,
+        child_idempotency_key=child.idempotency_key,
+    )
+
+
 def _semantic_request(inputs: CommittedSemanticInputs) -> CommittedSemanticInputsRequest:
     source = inputs.source_manifest
     source_ref = CommittedArtifactMemberReference(
@@ -323,6 +377,37 @@ def _request(
             else policy
         ),
         max_payload_bytes=max_payload_bytes,
+    )
+
+
+def _inspection_request(
+    inputs: CommittedSemanticInputs,
+    inspection: CommittedV4SemanticChildInspection,
+) -> CompileV23CandidateDecisionSetRequest:
+    item = inspection.semantic_input
+    persisted = item.semantic_pack
+    source = inspection.source_manifest
+    assert source.source_job is not None
+    source_reference = _semantic_request(inputs).source_manifest
+    return CompileV23CandidateDecisionSetRequest(
+        job=source.source_job,
+        idempotency_key="v23-inspection:episode-0",
+        artifact_scope=source.reference.scope,
+        artifact_revision=3,
+        semantic_inputs_request=V23InspectionSemanticInputsRequest(
+            source.source_job,
+            inspection.child_idempotency_key,
+            source_reference,
+        ),
+        episode_index=item.source_window.episode_index,
+        window_manifest_sha256=item.source_window.window_manifest_sha256,
+        semantic_pack_sha256=persisted.semantic_pack.canonical_hash,
+        vlm_request_identity_sha256=item.request_identity.canonical_hash,
+        compile_policy=replace(
+            _policy(max_duration=50),
+            time_base=persisted.semantic_pack.events[0].support.manifest.source_time_base,
+        ),
+        max_payload_bytes=1_000_000,
     )
 
 
@@ -392,9 +477,183 @@ def test_fresh_success_binds_full_request_and_rereads_exact_value() -> None:
     assert artifact.payload_json == canonical_json_bytes(committed.value.to_mapping()).decode(
         "utf-8"
     )
+    assert committed.result_scope == "complete"
     assert committed.record.set_hash == artifact_set_hash((artifact,))
     assert store.semantic_reads == 2
     assert store.artifact_reads == 1
+
+
+def test_inspection_scope_commits_self_describing_artifact_and_rereads_exactly() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    store = _Store(inputs, inspection)
+    request = _inspection_request(inputs, inspection)
+
+    result = CompileV23CandidateDecisionSetCommand(store).execute(request)
+
+    assert result.outcome.state == "succeeded"
+    assert result.committed is not None
+    assert result.committed.result_scope == "inspection"
+    member = result.committed.record.members[0]
+    assert member.reference.artifact_type == "v23_inspection_candidate_decision_set"
+    assert member.reference.logical_id.startswith(
+        "v23_inspection_candidate_decision_set_"
+    )
+    payload = json.loads(member.payload_json)
+    assert payload == {
+        "decision_set": result.committed.value.to_mapping(),
+        "result_scope": "inspection",
+        "schema_version": "v23-inspection-candidate-decision-set/v1",
+    }
+    assert store.semantic_reads == 0
+    assert store.inspection_reads == 2
+    assert store.artifact_reads == 1
+
+
+def test_inspection_store_cannot_substitute_another_child_identity() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    request = _inspection_request(inputs, inspection)
+    object.__setattr__(inspection, "child_idempotency_key", "another-child")
+    store = _Store(inputs, inspection)
+
+    with pytest.raises(CompileV23CandidateDecisionSetError, match="requested Source owner"):
+        CompileV23CandidateDecisionSetCommand(store).execute(request)
+
+    assert not store.claims
+
+
+def test_inspection_store_cannot_retype_the_child_as_complete() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    request = _inspection_request(inputs, inspection)
+    object.__setattr__(inspection, "result_scope", "complete")
+    store = _Store(inputs, inspection)
+
+    with pytest.raises(CompileV23CandidateDecisionSetError, match="requested Source owner"):
+        CompileV23CandidateDecisionSetCommand(store).execute(request)
+
+    assert not store.claims
+
+
+def test_distinct_inspection_child_keys_have_distinct_logical_ids() -> None:
+    inputs = _real_v4_inputs()
+    first_inspection = _inspection_from_inputs(inputs)
+    first_store = _Store(inputs, first_inspection)
+    first_request = _inspection_request(inputs, first_inspection)
+    first = CompileV23CandidateDecisionSetCommand(first_store).execute(first_request)
+    assert first.committed is not None
+
+    second_inspection = _inspection_from_inputs(inputs)
+    second_child = second_inspection.semantic_input.semantic_pack.source_child
+    object.__setattr__(second_child, "idempotency_key", "vlm-child-v4:episode-0:second")
+    object.__setattr__(
+        second_inspection,
+        "child_idempotency_key",
+        "vlm-child-v4:episode-0:second",
+    )
+    second_request = replace(
+        _inspection_request(inputs, second_inspection),
+        idempotency_key="v23-inspection:episode-0:second",
+    )
+    second_store = _Store(inputs, second_inspection)
+    second = CompileV23CandidateDecisionSetCommand(second_store).execute(second_request)
+    assert second.committed is not None
+
+    assert (
+        first.committed.record.members[0].reference.logical_id
+        != second.committed.record.members[0].reference.logical_id
+    )
+
+
+def test_complete_request_cannot_reread_an_inspection_artifact() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    store = _Store(inputs, inspection)
+    request = _inspection_request(inputs, inspection)
+    result = CompileV23CandidateDecisionSetCommand(store).execute(request)
+    assert result.committed is not None
+    complete_request = replace(
+        request,
+        semantic_inputs_request=_semantic_request(inputs),
+    )
+
+    with pytest.raises(CompileV23CandidateDecisionSetError, match="identity"):
+        read_committed_v23_candidate_decision_set(
+            store,
+            complete_request,
+            result.outcome,
+        )
+
+
+def test_inspection_reader_rejects_member_retyped_as_complete() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    store = _Store(inputs, inspection)
+    request = _inspection_request(inputs, inspection)
+    result = CompileV23CandidateDecisionSetCommand(store).execute(request)
+    assert result.committed is not None and store.record is not None
+    member = store.record.members[0]
+    object.__setattr__(
+        member.reference,
+        "artifact_type",
+        "v23_candidate_decision_set",
+    )
+
+    with pytest.raises(CompileV23CandidateDecisionSetError, match="identity"):
+        read_committed_v23_candidate_decision_set(store, request, result.outcome)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("result_scope", "complete"),
+        ("schema_version", "v23-inspection-candidate-decision-set/v2"),
+    ],
+)
+def test_inspection_reader_rejects_rehashed_foreign_wrapper(
+    field: str,
+    value: str,
+) -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    store = _Store(inputs, inspection)
+    request = _inspection_request(inputs, inspection)
+    result = CompileV23CandidateDecisionSetCommand(store).execute(request)
+    assert result.committed is not None and store.record is not None
+    payload = json.loads(store.record.members[0].payload_json)
+    payload[field] = value
+    _replace_record_payload(
+        store,
+        canonical_json_bytes(payload).decode("utf-8"),
+    )
+
+    with pytest.raises(CompileV23CandidateDecisionSetError, match="strict DecisionSet"):
+        read_committed_v23_candidate_decision_set(store, request, result.outcome)
+
+
+def test_inspection_reader_rejects_rehashed_valid_but_foreign_decision_set() -> None:
+    inputs = _real_v4_inputs()
+    inspection = _inspection_from_inputs(inputs)
+    store = _Store(inputs, inspection)
+    request = _inspection_request(inputs, inspection)
+    result = CompileV23CandidateDecisionSetCommand(store).execute(request)
+    assert result.committed is not None and store.record is not None
+    wrapper = cast(dict[str, object], json.loads(store.record.members[0].payload_json))
+    decision_set = cast(dict[str, object], wrapper["decision_set"])
+    candidate_ids = cast(list[str], decision_set["candidate_ids"])
+    decisions = cast(list[dict[str, object]], decision_set["decisions"])
+    assert len(candidate_ids) == len(decisions) == 1
+    foreign_candidate_id = "sha256:" + "0" * 64
+    candidate_ids[0] = foreign_candidate_id
+    decisions[0]["candidate_id"] = foreign_candidate_id
+    _replace_record_payload(
+        store,
+        canonical_json_bytes(wrapper).decode("utf-8"),
+    )
+
+    with pytest.raises(MediaValidationError, match="independent recomputation"):
+        read_committed_v23_candidate_decision_set(store, request, result.outcome)
 
 
 def test_empty_candidate_pack_commits_one_closed_empty_set() -> None:
@@ -784,3 +1043,37 @@ def test_request_requires_canonical_scope_positive_revision_and_byte_cap() -> No
         replace(request, max_payload_bytes=True)
     with pytest.raises(CompileV23CandidateDecisionSetError):
         replace(request, artifact_scope=replace(request.artifact_scope, key="foreign"))
+
+
+def test_inspection_selector_is_explicit_and_rejects_noncanonical_source_identity() -> None:
+    inputs = _real_v4_inputs()
+    complete = _semantic_request(inputs)
+    selector = V23InspectionSemanticInputsRequest(
+        complete.job,
+        "vlm-child-v4:episode-0",
+        complete.source_manifest,
+    )
+
+    assert selector.child_idempotency_key == "vlm-child-v4:episode-0"
+    assert selector.source_manifest == complete.source_manifest
+    assert selector.job == complete.job
+    with pytest.raises(CompileV23CandidateDecisionSetError):
+        replace(selector, child_idempotency_key=" vlm-child-v4:episode-0")
+    with pytest.raises(CompileV23CandidateDecisionSetError):
+        replace(
+            selector,
+            source_manifest=replace(selector.source_manifest, member_ordinal=1),
+        )
+    with pytest.raises(CompileV23CandidateDecisionSetError):
+        replace(
+            selector,
+            source_manifest=replace(
+                selector.source_manifest,
+                artifact_type="vlm_semantic_pack_set",
+            ),
+        )
+    with pytest.raises(CompileV23CandidateDecisionSetError):
+        replace(
+            selector,
+            source_manifest=replace(selector.source_manifest, logical_id="foreign"),
+        )

@@ -13,7 +13,9 @@ VLM 降级为纯视觉检测器，也不是让 ASR 重做剧情理解，而是�
 
 ```text
 Doubao VLM：画面 + 烧录字幕 -> 富语义、剧情事件、候选价值、粗时间区域
-SenseVoiceSmall/FSMN/Shot/Subtitle：局部物理证据、受保护区间与端点约束
+SenseVoiceSmall：仅生成候选局部语音/词句时间锚点和句尾保护区，不承担对白语义
+FSMN：仅生成语音活动与静音边界，不承担文本、人物或事件语义
+Shot/Subtitle：仅生成视觉稳定区和字幕占用/clearance；字幕内容仍由 VLM 识别
 FramePtsIndex/AudioSampleBoundarySet：合法视频/音频端点身份
 ExactSpanCompiler：在冻结 Policy 下确定性求交并选择最终 A/V span
 ```
@@ -97,7 +99,9 @@ video window + burned-in subtitles + bounded WindowContextPack
 ```
 
 语义链回答：发生了什么、谁参与、为什么重要、属于什么叙事功能、哪些区域值得进一步处理。
-VLM 可读取画面字幕；ASR 文本默认不输入 Stage 1–3，也不替代 VLM 的剧情理解。
+VLM 读取画面字幕并拥有其语义解释权。SenseVoice 产生的识别 token 即使存在，也只用于词句边界、
+utterance 聚合和 sentence-completeness 物理校验：不进入 VLM Prompt、Stage 1–3、Event/Fact、
+Candidate 或 Story，不替代或修正 VLM 的字幕/剧情理解。
 
 ### 4.2 物理链：专用 producer 拥有端点和保护区间
 
@@ -111,8 +115,9 @@ selected Candidate/Blueprint material requirement
   -> feasible video-in/out and audio-in/out endpoint relation
 ```
 
-物理链回答：哪里存在词、语音活动、真实帧、稳定镜头、字幕显示和可渲染 sample endpoint。
-它不重新判断剧情高潮，也不能改变 Story。
+物理链回答：哪里存在词句边界、语音活动、真实帧、稳定镜头、字幕占用和可渲染 sample endpoint。
+SubtitleCueSet 只需证明字幕显示区间和 clearance，不识别字幕正文。整条物理链不重新判断字幕含义、
+剧情高潮或人物关系，也不能改变 Story。
 
 ### 4.3 唯一汇合点：ExactSpanCompiler
 
@@ -158,8 +163,9 @@ V23 的 `fact_kind=screen_text` 已经是有价值的生产语义，不是待删
 - `verbatim_model_read` 只表示模型声称逐字读到清晰帧上文字，不表示独立 OCR 已验证，也不表示与
   原声音频逐字一致；
 - `semantic_paraphrase` 可以用于剧情理解，但不能标成 quote；
-- `quote_status` 在 VLM 原始输出中只能是 `model_read_screen_text|paraphrase|unreadable`；程序与
-  独立 ASR 对齐后才可生成 `asr_transcript|reconciled|conflict`，模型不得自填这些状态；
+- `quote_status` 在 VLM 原始输出中只能是 `model_read_screen_text|paraphrase|unreadable`；当前生产
+  架构不使用 ASR 文本生成 `asr_transcript|reconciled` 语义状态，SenseVoice token 只留在物理时序
+  producer 的受限证据中；
 - 字幕与人物的关联使用独立 `SpeakerAttributionHypothesis`，不能因为镜头对着某人就强绑定 speaker；
 - Context Pack 的角色名只能形成 identity assistance ref，不能单独创造字幕或对白 Claim。
 
@@ -266,8 +272,9 @@ original ordinal 与 item hash，blocked slot 使用 tombstone，不能从不同
 
 保留历史已验证的确定性原则，但不复用旧浮点业务函数：
 
-1. SenseVoiceSmall `output_timestamp=True` 产生版本化、带校准误差界的文件相对逐词时间估计；它只用于
-   dialogue protection/proposal，不是 sample-accurate endpoint；
+1. SenseVoiceSmall `output_timestamp=True` 产生版本化、带校准误差界的文件相对逐词时间估计；识别
+   token 只用于对齐词/句边界、utterance 分组和 sentence-completeness，不能进入语义链；其时间也只
+   用于 dialogue protection/proposal，不是 sample-accurate endpoint；
 2. 相邻 word gap 按冻结 Policy 聚合 utterance protected ranges；
 3. FSMN-VAD 独立补充无词或 ASR 漏识别的声学活动保护范围，可能覆盖哭声、尖叫、叹气，但 VAD
    不负责事件分类、文本或 speaker；
@@ -356,11 +363,19 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
 - DecisionSet 只保存上游哈希和 Source/Policy 绑定，不复制 SemanticPack、WindowManifest 或
   FramePtsIndex。codec 只恢复不可变值，不授予 Store authority；后续 committed reader 必须重新读取
   精确上游 Artifact 并调用 `verify_v23_candidate_decision_set()` 全量重算比对。
-- 已实现 `CompileV23CandidateDecisionSet@1`：只接受同一 Job 已提交并通过完整闭包重读的 V4
-  `vlm_semantic_pack_set`，在确定性 Command claim 后生成一个 DecisionSet Artifact，并通过现有通用
-  PostgreSQL ArtifactSet/Receipt/CAS 事务原子提交；Policy、选择器、完整上游引用和 payload byte cap
-  全部进入 request hash；Command 自身还复核 SourceManifest 每一集恰好对应一个有序 V4 输入，不能
-  依赖 Store 的隐含约定把 selected-only child 当成完整批次。
+- 已实现 `CompileV23CandidateDecisionSet@1` 的两个封闭输入 scope：`complete` 只接受同一 Job 已提交
+  并通过完整闭包重读的 V4 `vlm_semantic_pack_set`；`inspection` 只接受显式
+  `V23InspectionSemanticInputsRequest`，以 child idempotency key 和完整 SourceManifest member reference
+  重读一个已提交 V4 child。两者在确定性 Command claim 后通过现有 PostgreSQL
+  ArtifactSet/Receipt/CAS 事务原子提交；Policy、scope、选择器、完整上游引用和 payload byte cap 全部
+  进入 request hash。`complete` 仍复核 SourceManifest 每一集恰好对应一个有序 V4 输入；
+  `inspection` 不创建或冒充 aggregate。
+- 两种结果使用不可混淆且无前缀重叠的持久化身份：完整结果是 `v23_candidate_decision_set`，单集
+  检查结果是 `v23_inspection_candidate_decision_set`；inspection payload 还显式保存
+  `result_scope=inspection` 和独立 schema version，精确 reader 返回值也保留
+  `result_scope=complete|inspection`。inspection Artifact 只供局部重算、调试和后续候选级证据任务，
+  不授予完整批次、渲染或发布权限。`max_payload_bytes` 约束最终持久化 payload；因此 inspection 的
+  预算包含 `decision_set/result_scope/schema_version` wrapper 的固定开销，而不是只计算内层 DecisionSet。
 - 已实现精确 committed reader：重读 SourceManifest、V4 Pack/Request/Window/FramePts 闭包和最终
   Receipt/ArtifactSet，严格解码 DecisionSet 后独立全量复算；它允许 PostgreSQL `jsonb` 只改变 JSON
   文本排版，但拒绝语义、引用、顺序、哈希、scope、revision 或 producer identity 漂移。
@@ -373,10 +388,15 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
   `CommittedVlmSemanticInput` 子类型，因而不能被只接受完整批次输入的编译入口结构性误接收；该值还
   自校验 request identity、Source/Window、response artifact payload/hash 与 raw-response Blob 的闭包。
 - 已用真实双集 PostgreSQL 场景验证：只生成第 2 集 child、batch aggregate 明确不存在，Store 重启后
-  inspection 仍可精确恢复，Provider 只调用一次。另以重新计算 member/ArtifactSet hash 的持久化篡改
-  测试验证 ordinal、request identity、Source owner、episode、provider request identity 与 raw-response
-  绑定任一漂移都会拒绝；
+  inspection 仍可精确恢复，并能编译、提交和精确重读独立的 inspection DecisionSet；同 key 重放不再
+  编译或调用 Provider，Provider 总调用次数保持一次，aggregate 在编译前后均不存在。另以重新计算
+  member/ArtifactSet hash 的持久化篡改测试验证 ordinal、request identity、Source owner、episode、
+  provider request identity 与 raw-response 绑定任一漂移都会拒绝；inspection wrapper 内层 DecisionSet
+  即使被替换为结构有效值并同步重算 member/ArtifactSet hash，也会被独立复算拒绝；
   完整批次 reader、旧 V3 bytes 与 V23 DecisionSet 提交回归同时通过。
+  `CommittedV4SemanticChildInspection` 与 `V23CandidateDecisionSetStore` 是 Kernel 内部的精确投影接口；
+  child idempotency key 是强制字段，仓库内所有构造点和 Store 实现必须显式提供它，旧的无 key 投影不得
+  通过兼容默认值继续运行。
 
 实现与测试：
 
@@ -389,10 +409,9 @@ non-inferiority；结构通过率和 token 成本不能替代剪辑质量。
 - [`test_compile_v23_candidate_decision_set_command.py`](../../tests/pipeline/test_compile_v23_candidate_decision_set_command.py)
 - [`test_vlm_v4_store_postgres.py`](../../tests/pipeline/test_vlm_v4_store_postgres.py)
 
-当前尚未完成的是把 inspection reader 与完整 aggregate reader 作为两种显式 scope 接入 Pipeline
-Runtime、候选级 SenseVoice/FSMN 子命令和结果回填。现有 V23 Command 仍只授权“完整已提交 V4
-aggregate”路径；selected-only reader 的存在不等于它已经获得完整批次或下游发布权限，因此仍不能
-把本节表述为真实 pipeline 已跑通。
+当前尚未完成的是把这两个已经进入 V23 Command 的显式 scope 接入 Pipeline Runtime、候选级
+SenseVoice/FSMN 子命令和结果回填。selected-only 路径虽然已经获得局部 DecisionSet 的持久化能力，
+但仍没有完整批次、渲染或发布权限，因此仍不能把本节表述为真实 pipeline 已跑通。
 
 ### Global P1B：分区恢复和 Rich VLM dual-run
 

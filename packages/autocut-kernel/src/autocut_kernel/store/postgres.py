@@ -5897,6 +5897,7 @@ class PostgresRuntimeStore:
                 source_manifest=verified.source_manifest,
                 source_grant=source_grant,
                 semantic_input=semantic_input,
+                child_idempotency_key=idempotency_key,
             )
 
         return self._transaction(operation)
