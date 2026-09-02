@@ -260,9 +260,9 @@ material requirements/SourceSpanRefs，而不是一个 0–241 秒巨型 clip。
 
 ### 6.1 批次暂停、单集重试与断点续跑
 
-以下是目标控制契约；截至当前版本，VLM 已有选择性入口，Media Preflight 的等价入口仍在实现中。
-“失败立即停止”只表示**停止接纳尚未启动的后续 episode**，不表示删除已成功的 Artifact，
-也不表示禁止恢复失败 episode。必须把三种动作分开：
+以下是目标控制契约。episode 之间没有业务依赖，因此采用**有界并发计算 + 聚合失败关闭**：
+单集失败不会取消兄弟集，也不会阻止尚未派发的独立 episode；它只阻止完整批次 Finalizer
+和下游 Stage。已成功 Artifact 保持不可变并可被后续显式恢复计划复用。必须把三种动作分开：
 
 - **Child retry**：同一个冻结 Request/输入，创建新的 Attempt，消耗该 child 的 retry/attempt
   budget；不能覆盖旧 Attempt 或 Receipt。
@@ -275,18 +275,18 @@ material requirements/SourceSpanRefs，而不是一个 0–241 秒巨型 clip。
 
 ```text
 episode[i] = required child failed | denied | indeterminate
-  → freeze new admissions after i
+  → continue bounded execution of independent sibling episodes
+  → block aggregate finalization and every downstream Stage
 optional child failed | denied | indeterminate
-  → record OPTIONAL_CHILD_OMITTED when policy allows; do not freeze required lane
+  → record OPTIONAL_CHILD_OMITTED when policy allows
   → indeterminate: reconcile first; failed: retry only when failure policy allows
   → selected recompute, if explicitly admitted, uses a new lineage-linked Request and budget
-  → if episode[i] succeeds, resume from i+1 and reuse earlier successes  # same-batch retry/reconcile only
+  → if episode[i] succeeds, reuse all compatible sibling successes and close the aggregate
   → if non-recoverable or a closed budget is exhausted, terminalize the original batch as failed/denied
 ```
 
-上图的“恢复成功后从 `i+1` 继续”仅适用于同一批次内的 child retry/reconcile 收敛；selected
-recompute 路径先创建 successor Batch 并导入可 exact-hash 复用的成功 episode，再在 successor
-Batch 中从 `i+1` 继续。原批次永远不重新打开。
+selected recompute 路径创建 successor Batch，导入可 exact-hash 复用的成功 episode，只执行
+失败或显式选择的 episode，再由 successor Finalizer 重新验证全集闭包。原批次永远不重新打开。
 
 这里的 `episode[i]` 是**持久化 child 状态**，不是进程内变量。状态补充定义如下：
 
@@ -401,27 +401,16 @@ successor 创建失败时
   入口，不自动提供上述预算、supersession 或批次收敛保证。
 - 批次 Finalizer 仍采用 all-or-nothing：任何目标 episode 没有成功的完整证据集，就不能生成
   可供 Render/Publish 的批次结果。单集 inspection/recompute 结果不能冒充 aggregate。
-- 如果未来启用并发，失败被观察时已经处于 in-flight 的兄弟可以完成，但必须各自持久化终态
-  child Receipt；兄弟失败按同一 failure policy 处理。只有当 Receipt 的 source、episode、
+- 并发窗口内和后续尚未派发的独立兄弟都可以完成，但必须各自持久化终态 child Receipt；
+  兄弟失败按同一 failure policy 处理。只有当 Receipt 的 source、episode、
   `semantic_execution_hash`、effective policy 和依赖哈希与续跑目标完全一致时，Finalizer 才能复用
   该兄弟成功结果；Request identity/parent ordinal 仅用于 lineage 与命令去重，不作为语义复用条件；否则
   必须显式标记 superseded/invalidated 并重跑。Finalizer 必须逐 Receipt 决定收敛、取代或失效，
-  不能静默丢弃或把 speculative 结果当作批次成功。有效 admission frontier 是**所有已接纳但
-  尚未收敛且会阻断发布的 required child 中最小 episode index**；optional child 若策略允许省略，
-  必须从 required-lane frontier 排除（其独立 lane 另算 frontier）。若没有未收敛 required child，frontier 退化为
-  `next_unadmitted_index`，表示当前 lane 没有 barrier。并发只允许发生在显式声明的独立 lane
-  （例如不同 source/portfolio）或未来定义的 bounded window 内；同一顺序 lane 不允许越过
-  unresolved barrier 进行并行 admission。顺序 lane 中
-  `next_unadmitted_index = 1 + max(admitted episode index)`（空 lane 为首集）。新的 episode
-  `j` 只有在事务中同时满足 `j == next_unadmitted_index`、不存在 `k < j` 的未收敛 required child、且提交时的
-  `admission_epoch` 仍等于读取值时才可被接纳；失败 episode 的 retry/recompute 只能针对当前
-  frontier/barrier index（不得针对任意更后的 required index）；optional child 的 retry/recompute
-  不占用 required frontier，但仍必须通过同一 Admission、预算和幂等检查。失败观察、frontier 冻结、
-  frontier 前移和新 child admission 都必须在同一
-  持久化 admission epoch 上 CAS，并在每次 frontier 变化时递增 epoch；新 child admission 的
-  CAS 失败就重读并放弃本次 admission。失败观察或 frontier 冻结的 CAS 失败则先重读当前
-  epoch/frontier 后可安全重试；不能用旧快照强行推进。以数据库事务提交顺序判定 child 是“已在途”
-  还是“被 barrier 拦截”。在该收敛契约实现前，生产实现保持逐集串行。
+  不能静默丢弃或把 speculative 结果当作批次成功。调度器只维护持久化的 expected episode census、
+  每集最新 Attempt/Receipt 和一个有界并发上限；它不建立虚假的 episode 顺序 frontier。
+  Admission barrier 位于 aggregate：任一 required episode 没有兼容成功 Receipt 时，完整批次不可提交。
+  相同 episode 的 retry/recompute 仍需通过 CAS、预算和幂等检查，避免重复调用；不同 episode 不共享
+  这把锁。进程重启后从持久化 child 状态重建待执行集合，成功集只读复用，未收敛集才重新进入调度。
 
 原批次一旦进入 `failed`、`denied`、`cancelled` 或 `superseded` 的终态投影不可逆；这里的不可逆只表示既有
 终态结果不会被改写，终态批次仍允许 append-only 追加 lineage 投影事件。child 级 `blocked` 不是
@@ -490,9 +479,12 @@ side-effect-free producer 的明确证明支持，不能以“没查到记录”
 `ABANDONED_BEFORE_INVOCATION` 记账；这样重启不会重置 child budget。只有在新的 Attempt
 复用原 provider 幂等键或 producer 明确无副作用时，才能继续尝试。
 
-当前实现状态（截至 2026-09-02）：VLM 已提供 `selected_only` 执行入口，但它本身不等于完整的批次暂停/恢复
-控制器；Media Preflight 目前仍使用逐集 Command，尚未接入等价的 selected-only recompute API。
-因此 Media Preflight 的下一项实现不是重新跑整批，而是新增带 source/policy/episode 精确绑定的
+当前实现状态（截至 2026-09-02）：VLM 已提供 `selected_only` 执行入口；VLM 在 probe 的 retry
+链未收敛时保留成本保护，但 probe 一旦终态，其他独立 episode 仍继续执行，aggregate 保持关闭。
+Media Preflight 已按默认最多 3 集有界并发执行（该运行参数不进入证据身份），并在 Stage adapter
+中支持 `selected_only` 过滤；但正式
+HTTP successor 仍缺少跨 Run source/VLM binder、媒体 child 持久化 Attempt 预算和 mixed aggregate
+Finalizer。因此 Media Preflight 的下一项实现不是重新跑整批，而是新增带 source/policy/episode 精确绑定的
 单集重跑与断点续跑入口，并补齐上述 child/batch 收敛规则。
 
 真实运行中的 `f049`、measurement closure 或 enum ordering 错误不应抹掉已经准确生成的 Entity、Fact、

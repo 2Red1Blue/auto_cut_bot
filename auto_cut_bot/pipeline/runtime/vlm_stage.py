@@ -522,6 +522,8 @@ class VlmPipelineStage:
                 children=(child,),
             )
         children: list[VlmBatchChildOutcome] = []
+        unresolved: GenerateVlmEvidenceResult | None = None
+        terminal: GenerateVlmEvidenceResult | None = None
         selection_strategy, max_concurrency = _episode_selection_strategy(policy)
         chunks = (
             (requests[:1],)
@@ -539,12 +541,12 @@ class VlmPipelineStage:
             results = await asyncio.gather(
                 *(asyncio.to_thread(self._execute_child, context, request) for request in chunk),
             )
-            unresolved: GenerateVlmEvidenceResult | None = None
-            terminal: GenerateVlmEvidenceResult | None = None
+            chunk_unresolved: GenerateVlmEvidenceResult | None = None
+            chunk_terminal: GenerateVlmEvidenceResult | None = None
             for request, (result, reused) in zip(chunk, results, strict=True):
                 outcome = result.outcome
                 if outcome.state in ("pending", "running"):
-                    unresolved = unresolved or result
+                    chunk_unresolved = chunk_unresolved or result
                     continue
                 if outcome.state not in ("succeeded", "denied", "failed"):
                     raise PipelineRunValidationError(
@@ -553,7 +555,7 @@ class VlmPipelineStage:
                 if outcome.receipt_id is None:
                     raise PipelineRunValidationError("terminal Kernel VLM child lost its Receipt")
                 if outcome.state in ("denied", "failed"):
-                    terminal = terminal or result
+                    chunk_terminal = chunk_terminal or result
                     continue
                 children.append(
                     self._succeeded_batch_child(
@@ -564,13 +566,18 @@ class VlmPipelineStage:
                         source_bundle=source_bundle,
                     )
                 )
-            # A chunk is intentionally the most work that can already have
-            # escaped to Ark when one child fails.  Never dispatch a later
-            # chunk after a terminal or indeterminate child outcome.
-            if terminal is not None:
-                return terminal
-            if unresolved is not None:
-                return unresolved
+            terminal = terminal or chunk_terminal
+            unresolved = unresolved or chunk_unresolved
+            # Keep the first request as a cost-control probe only while its
+            # bounded retry chain remains open. Once terminal, its failure is
+            # an aggregate admission barrier, not a cancellation signal for
+            # independent later episodes.
+            if (
+                chunk_unresolved is not None
+                and selection_strategy == VLM_EPISODE_SELECTION_STRATEGY_VERSION
+                and chunk_index == 0
+            ):
+                return chunk_unresolved
             if self._stop_after_probe and chunk_index == 0:
                 # The registered v3 policy always makes this first chunk the
                 # single episode-zero probe. Never reinterpret another policy
@@ -584,6 +591,10 @@ class VlmPipelineStage:
                         "probe inspection requires the registered single-episode probe strategy"
                     )
                 return None
+        if unresolved is not None:
+            return unresolved
+        if terminal is not None:
+            return terminal
         return await self._finalize_batch(
             context=context,
             source_bundle=source_bundle,

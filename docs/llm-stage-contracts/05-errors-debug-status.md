@@ -90,10 +90,10 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
 
 批次的“停止”是 admission barrier，不是删除历史或强制全量重跑。完整的 child retry、
 selected recompute、reconcile、`blocked`、预算累计、Receipt 收尾、断点续跑和未来并发
-frontier 契约，以 [字幕感知 VLM 到 ExactSpan 设计 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)
-为唯一规范来源；本节只保留排障摘要。当前代码事实（以 `VlmFullStageRecomputeRequest`、
-`FullStageVlmRecomputeBinder` 及其测试为准）是：VLM 提供 `selected_only` 执行过滤入口，但
-尚不是完整的批次恢复控制器；Media Preflight 仍未提供等价入口。
+并发契约，以 [字幕感知 VLM 到 ExactSpan 设计 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)
+为唯一规范来源；本节只保留排障摘要。当前代码事实是：VLM 提供 `selected_only` 执行过滤入口；
+Media Preflight adapter 也已支持单集过滤，但正式 HTTP successor 仍因缺少跨 Run binder 而保持关闭。
+两者都不能把单集成功冒充完整 aggregate。
 
 ## 当前最后已知真实断点（2026-09-01 更新）
 
@@ -157,8 +157,10 @@ exact reuse、mixed aggregate finalizer 仍是后续实现项；在这些组件�
   重试，防止留下未绑定的运行。但 `MediaPreflightRecomputeRequest.retry_budget` 目前
   **尚未**驱动 `PrepareTimedMediaEvidenceCommand` 的子任务 Attempt 链；因此它不能被
   解读为 ASR/VAD/视觉证据已经支持自动重试。
-- Media 子任务若返回终态失败，当前批次会停止接纳后续集并保留失败 Receipt。要重跑该集，
-  现阶段只能等待媒体单集 successor 的正式 binder/inspection/mixed-aggregate 实现；
+- Media Stage 默认以最多 3 集有界并发执行（运行时可调整，且不改变证据身份）；某集终态失败
+  不会取消或阻止其他独立集，成功 child
+  会保留，但 aggregate 与下游继续 fail-closed。要重跑失败集，现阶段仍需等待媒体单集 successor
+  的正式 binder/inspection/mixed-aggregate 实现；
   不允许通过 `/resume` 重开终态命令，也不能把 `retry_budget` 当作已消费的持久化计数器。
 
 后续实现必须先补齐媒体子任务的持久化 Attempt/失败分类/预算 CAS，再开放

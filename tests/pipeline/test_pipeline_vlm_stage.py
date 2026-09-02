@@ -665,10 +665,13 @@ class Provider:
         *,
         indeterminate_first: bool = False,
         deny_first: bool = False,
+        deny_first_episode_always: bool = False,
     ) -> None:
         self.frame_ids = frame_ids
         self.indeterminate_first = indeterminate_first
         self.deny_first = deny_first
+        self.deny_first_episode_always = deny_first_episode_always
+        self.first_manifest_hash = next(iter(frame_ids))
         self.dispatch_calls: list[ProviderDispatchRequest] = []
         self.reconcile_calls: list[ProviderReconcileQuery] = []
 
@@ -771,7 +774,9 @@ class Provider:
         self.dispatch_calls.append(request)
         manifest_hash = cast(str, json.loads(request.request_payload)["window_manifest_sha256"])
         request_id = f"provider-request-{len(self.dispatch_calls)}"
-        if self.deny_first and len(self.dispatch_calls) == 1:
+        if (
+            self.deny_first and len(self.dispatch_calls) == 1
+        ) or self.deny_first_episode_always and manifest_hash == self.first_manifest_hash:
             return ProviderCompleted(
                 b'{"schema_version":3,"candidate_hypotheses":[]}',
                 request_id,
@@ -978,6 +983,7 @@ def _stage(
     source_outcome: CommandOutcome | None,
     indeterminate_first: bool = False,
     deny_first: bool = False,
+    deny_first_episode_always: bool = False,
     stop_after_probe: bool = False,
 ) -> tuple[VlmPipelineStage, KernelStore, Provider]:
     monkeypatch.setattr(
@@ -993,6 +999,7 @@ def _stage(
         frame_ids,
         indeterminate_first=indeterminate_first,
         deny_first=deny_first,
+        deny_first_episode_always=deny_first_episode_always,
     )
     return (
         VlmPipelineStage(  # type: ignore[arg-type]
@@ -1460,7 +1467,7 @@ async def test_known_provider_request_id_reconciles_same_attempt_without_redispa
 
 
 @pytest.mark.asyncio
-async def test_invalid_episode_starts_bounded_retry_and_blocks_later_batches(
+async def test_invalid_probe_retries_before_bulk_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY + 1)
@@ -1493,3 +1500,41 @@ async def test_invalid_episode_starts_bounded_retry_and_blocks_later_batches(
     assert any(
         claim.command_name == "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )
+
+
+@pytest.mark.asyncio
+async def test_terminal_probe_failure_does_not_cancel_independent_episodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, blobs = _bundle(VLM_EPISODE_MAX_CONCURRENCY + 1)
+    stage, store, provider = _stage(
+        monkeypatch,
+        bundle=bundle,
+        blobs=blobs,
+        source_outcome=_source_success(),
+        deny_first_episode_always=True,
+    )
+
+    first = await stage.execute(_context())
+    second = await stage.reconcile(_context(status="indeterminate"))
+    terminal = await stage.reconcile(_context(status="indeterminate"))
+
+    assert first.outcome == "indeterminate"
+    assert second is None
+    assert terminal is not None and terminal.outcome == "failed"
+    assert len(provider.dispatch_calls) == len(bundle.prepared.episodes) + 2
+    assert sum(
+        1
+        for request in provider.dispatch_calls
+        if json.loads(request.request_payload)["window_manifest_sha256"]
+        == provider.first_manifest_hash
+    ) == 3
+    assert all(
+        claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
+    )
+    succeeded_children = tuple(
+        outcome
+        for claim, outcome in store.claims.values()
+        if claim.command_name == "GenerateVlmEvidenceCommand" and outcome.state == "succeeded"
+    )
+    assert len(succeeded_children) == len(bundle.prepared.episodes) - 1

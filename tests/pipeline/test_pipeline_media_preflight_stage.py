@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -37,7 +39,9 @@ from auto_cut_bot.pipeline.runtime import (
     PostgresPipelineRunStore,
 )
 from auto_cut_bot.pipeline.runtime.media_preflight_stage import (
+    MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY,
     MediaPreflightPipelineStage,
+    _execute_independent_requests,
     media_preflight_vlm_batch_kernel_idempotency_key,
 )
 from auto_cut_bot.pipeline.runtime.semantic_authority import (
@@ -76,6 +80,36 @@ AUTHORITY_SNAPSHOT = AuthorityRegistrySnapshot(
     "sha256:" + "a" * 64,
     TimedSpeechProfileKey("sensevoice_word_guard_v1", "1"),
 )
+
+
+@pytest.mark.asyncio
+async def test_media_episode_scheduler_runs_all_children_with_bounded_concurrency() -> None:
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def execute(value: int) -> tuple[int, str]:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.02)
+            return value, "failed" if value == 1 else "succeeded"
+        finally:
+            with lock:
+                active -= 1
+
+    results = await _execute_independent_requests(
+        tuple(range(8)),
+        execute,
+        max_concurrency=MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY,
+    )
+
+    assert results == tuple(
+        (value, "failed" if value == 1 else "succeeded") for value in range(8)
+    )
+    assert peak == MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY
 
 
 def test_contextual_media_preflight_reproduces_exact_vlm_batch_identity() -> None:
@@ -767,6 +801,14 @@ def test_media_preflight_stage_constructor_requires_an_explicit_resolver() -> No
                 object(),  # type: ignore[arg-type]
                 object(),  # type: ignore[arg-type]
                 invalid,  # type: ignore[arg-type]
+            )
+    for invalid_concurrency in (0, -1, True):
+        with pytest.raises(PipelineRunValidationError, match="episode_max_concurrency"):
+            MediaPreflightPipelineStage(
+                object(),  # type: ignore[arg-type]
+                object(),  # type: ignore[arg-type]
+                resolver,
+                episode_max_concurrency=invalid_concurrency,
             )
 
 

@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Protocol, cast
+from collections.abc import Callable
+from typing import Protocol, TypeVar, cast
 
 from autocut_kernel.context_pack import WindowContextPack
 from autocut_kernel.media.runtime_measurement_identity import (
@@ -99,6 +100,7 @@ from auto_cut_bot.pipeline.vlm.policy_binding import (
 
 from .errors import PipelineRunValidationError
 from .models import (
+    MediaPreflightRecomputeRequest,
     PipelineExecutionProfile,
     PipelineStageContext,
     PipelineStageResult,
@@ -110,9 +112,40 @@ from .source_prep_stage import (
 )
 from .vlm_stage import requires_window_context_pack, vlm_batch_kernel_idempotency_key
 
+# These historical strings remain part of committed command identity. Dispatch
+# concurrency is operational and cannot invalidate deterministic evidence, so
+# changing the scheduler must not rotate them and force a media recomputation.
 MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-local-evidence-sequential-v1"
 RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION = "all-episodes-pc-cuda-evidence-sequential-v1"
+MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY = 3
 _ARTIFACT_REVISION = 1
+
+_RequestT = TypeVar("_RequestT")
+_ResultT = TypeVar("_ResultT")
+
+
+async def _execute_independent_requests(
+    requests: tuple[_RequestT, ...],
+    execute: Callable[[_RequestT], _ResultT],
+    *,
+    max_concurrency: int,
+) -> tuple[_ResultT, ...]:
+    """Run every independent episode while bounding native resource pressure.
+
+    A child outcome is data returned by ``execute``; it never cancels siblings.
+    Unexpected implementation exceptions still abort the invocation because
+    they do not carry a durable per-episode Receipt.
+    """
+
+    if type(max_concurrency) is not int or max_concurrency < 1:  # noqa: E721
+        raise PipelineRunValidationError("media-preflight concurrency must be positive")
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def run_one(request: _RequestT) -> _ResultT:
+        async with semaphore:
+            return await asyncio.to_thread(execute, request)
+
+    return tuple(await asyncio.gather(*(run_one(request) for request in requests)))
 
 
 def media_preflight_vlm_batch_kernel_idempotency_key(
@@ -425,6 +458,7 @@ class MediaPreflightPipelineStage:
         authority_profile_resolver: InstalledLocalRunProfileResolver,
         runtime_authority_resolver: InstalledRuntimeTimedSpeechAuthorityResolver | None = None,
         runtime_measurement_port: RuntimeMeasurementIdentityPort | None = None,
+        episode_max_concurrency: int = MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY,
     ) -> None:
         self._store = store
         self._port = port
@@ -446,6 +480,11 @@ class MediaPreflightPipelineStage:
             )
         self._runtime_authority_resolver = runtime_authority_resolver
         self._runtime_measurement_port = runtime_measurement_port
+        if type(episode_max_concurrency) is not int or episode_max_concurrency < 1:  # noqa: E721
+            raise PipelineRunValidationError(
+                "media-preflight episode_max_concurrency must be positive"
+            )
+        self._episode_max_concurrency = episode_max_concurrency
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -464,6 +503,12 @@ class MediaPreflightPipelineStage:
         policy: LocalMediaPreflightPolicy,
         runtime: _RuntimeCudaAuthority | None,
     ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
+        if context.recompute_request is not None and type(  # noqa: E721
+            context.recompute_request
+        ) is not MediaPreflightRecomputeRequest:
+            raise PipelineRunValidationError(
+                "media-preflight stage does not accept a VLM recompute request"
+            )
         materialization_limits = self._validate_execution_profile(context, policy)
         job = self._job(context)
 
@@ -617,6 +662,14 @@ class MediaPreflightPipelineStage:
             raise PipelineRunValidationError(
                 "media-preflight requires at least one committed episode"
             )
+        recompute = context.recompute_request
+        if recompute is not None:
+            selected_index = recompute.selected_episode_index
+            if selected_index >= len(requests):
+                raise PipelineRunValidationError(
+                    "selected media episode is outside the committed source census"
+                )
+            return source_bundle, (requests[selected_index],)
         return source_bundle, tuple(requests)
 
     def _validate_execution_profile(
@@ -750,12 +803,19 @@ class MediaPreflightPipelineStage:
             ),
             StoreAnchoredTimedSpeechProfileResolver(resolver.snapshot),
         )
+        results = await _execute_independent_requests(
+            requests,
+            command.execute,
+            max_concurrency=self._episode_max_concurrency,
+        )
         children: list[TimedMediaEvidenceBatchChild] = []
-        for request in requests:
-            result = await asyncio.to_thread(command.execute, request)
+        unresolved: PrepareTimedMediaEvidenceResult | None = None
+        terminal: PrepareTimedMediaEvidenceResult | None = None
+        for request, result in zip(requests, results, strict=True):
             outcome = result.outcome
             if outcome.state in ("pending", "running"):
-                return result
+                unresolved = unresolved or result
+                continue
             if outcome.state not in ("succeeded", "denied", "failed"):
                 raise PipelineRunValidationError(
                     "Kernel returned an unsupported media-preflight child outcome"
@@ -763,12 +823,25 @@ class MediaPreflightPipelineStage:
             if outcome.receipt_id is None:
                 raise PipelineRunValidationError("terminal media-preflight child lost its Receipt")
             if outcome.state in ("denied", "failed"):
-                return result
+                terminal = terminal or result
+                continue
             if outcome.artifact_set_id is None:
                 raise PipelineRunValidationError(
                     "succeeded media-preflight child lost its ArtifactSet"
                 )
             children.append(TimedMediaEvidenceBatchChild(request, outcome))
+        if unresolved is not None:
+            return unresolved
+        if terminal is not None:
+            return terminal
+        if context.recompute_request is not None and len(source_bundle.prepared.episodes) != 1:
+            # A selected child is a durable inspection/recovery result. It is
+            # not a complete-series aggregate and cannot cross the Stage gate.
+            if len(children) != 1:
+                raise PipelineRunValidationError(
+                    "selected media recompute must settle exactly one episode"
+                )
+            return results[0]
         job = Job(context.run_id, context.request.profile)
         finalizer = FinalizeTimedMediaEvidenceBatchRequest(
             job,
@@ -800,13 +873,23 @@ class MediaPreflightPipelineStage:
             _ClaimOwnedRuntimeCudaProducer(self._port, policy, runtime.policy),
             resolver,
         )
+        runtime_requests = tuple(
+            PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
+            for base in requests
+        )
+        results = await _execute_independent_requests(
+            runtime_requests,
+            command.execute,
+            max_concurrency=self._episode_max_concurrency,
+        )
         children: list[RuntimeTimedMediaEvidenceBatchChild] = []
-        for base in requests:
-            request = PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
-            result = await asyncio.to_thread(command.execute, request)
+        unresolved: PrepareRuntimeTimedMediaEvidenceResult | None = None
+        terminal: PrepareRuntimeTimedMediaEvidenceResult | None = None
+        for request, result in zip(runtime_requests, results, strict=True):
             outcome = result.outcome
             if outcome.state in ("pending", "running"):
-                return result
+                unresolved = unresolved or result
+                continue
             if outcome.state not in ("succeeded", "denied", "failed"):
                 raise PipelineRunValidationError(
                     "Kernel returned an unsupported CUDA media-preflight child outcome"
@@ -814,10 +897,21 @@ class MediaPreflightPipelineStage:
             if outcome.receipt_id is None:
                 raise PipelineRunValidationError("terminal CUDA child lost its Receipt")
             if outcome.state in ("denied", "failed"):
-                return result
+                terminal = terminal or result
+                continue
             if outcome.artifact_set_id is None:
                 raise PipelineRunValidationError("succeeded CUDA child lost its ArtifactSet")
             children.append(RuntimeTimedMediaEvidenceBatchChild(request, outcome))
+        if unresolved is not None:
+            return unresolved
+        if terminal is not None:
+            return terminal
+        if context.recompute_request is not None and len(source_bundle.prepared.episodes) != 1:
+            if len(children) != 1:
+                raise PipelineRunValidationError(
+                    "selected CUDA media recompute must settle exactly one episode"
+                )
+            return results[0]
         job = Job(context.run_id, context.request.profile)
         finalizer = FinalizeRuntimeTimedMediaEvidenceBatchRequest(
             job,
@@ -895,6 +989,7 @@ class MediaPreflightPipelineStage:
 
 
 __all__ = (
+    "MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY",
     "MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION",
     "MediaPreflightPipelineStage",
     "MediaPreflightPipelineStore",
