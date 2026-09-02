@@ -52,7 +52,7 @@ from .ports import (
     SourceAuthorizationPort,
 )
 from .postgres import PostgresPipelineRunStore, PostgresPipelineScheduler
-from .recompute import FullStageVlmRecomputeBinder
+from .recompute import FullStageVlmRecomputeBinder, MediaPreflightRecomputeBinderPort
 from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage, SourcePrepRootResolver
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
@@ -102,6 +102,7 @@ __all__ = (
     "VlmFullStageRecomputeRequest",
     "parse_recompute_request",
     "FullStageVlmRecomputeBinder",
+    "MediaPreflightRecomputeBinderPort",
     "SourceAuthorizationPort",
     "SourceCatalogEntry",
     "SourceDeniedError",

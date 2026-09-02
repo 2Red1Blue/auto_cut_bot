@@ -30,6 +30,7 @@ from auto_cut_bot.pipeline.source_prep import (
 
 from .errors import PipelineRunValidationError
 from .models import (
+    MediaPreflightRecomputeRequest,
     PipelineRunSnapshot,
     VlmFullStageRecomputeRequest,
     validate_run_id,
@@ -55,6 +56,18 @@ class FullStageVlmRecomputeBinderPort(Protocol):
         base: PipelineRunSnapshot,
         target_run_id: str,
         request: VlmFullStageRecomputeRequest,
+    ) -> None: ...
+
+
+class MediaPreflightRecomputeBinderPort(Protocol):
+    """Bind exact source/semantic/media predecessors for a media successor Run."""
+
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
     ) -> None: ...
 
 
@@ -176,5 +189,6 @@ class FullStageVlmRecomputeBinder:
 __all__ = (
     "FullStageVlmRecomputeBinder",
     "FullStageVlmRecomputeBinderPort",
+    "MediaPreflightRecomputeBinderPort",
     "VlmRecomputeSourceStore",
 )

@@ -212,7 +212,10 @@ async def test_media_preflight_recompute_is_explicitly_not_authorized_yet(aiohtt
     )
 
     assert response.status == 422
-    assert (await response.json())["error"]["code"] == "unprocessable_entity"
+    assert (await response.json())["error"]["message"] == (
+        "media-preflight recompute is not enabled for this runtime"
+    )
+    assert (await response.json())["error"]["code"] == 422
     service.recompute_full_vlm_stage.assert_not_awaited()
 
 

@@ -18,6 +18,7 @@ from auto_cut_bot.pipeline.runtime import (
     DurablePipelineWorker,
     FullStageVlmRecomputeBinder,
     IdempotencyConflictError,
+    MediaPreflightRecomputeRequest,
     OutboxLease,
     PipelineCommand,
     PipelineExecutionProfile,
@@ -69,12 +70,16 @@ class FakeRunStore:
         request: PipelineRunRequest,
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
-        recompute_request: VlmFullStageRecomputeRequest | None = None,
+        recompute_request: VlmFullStageRecomputeRequest | MediaPreflightRecomputeRequest | None = None,
+        defer_activation: bool = False,
     ) -> RunClaim:
         existing_id = self.by_key.get(idempotency_key)
         if existing_id is not None:
             existing = self.by_run_id[existing_id]
-            if existing.request_hash != request_hash:
+            if (
+                existing.request_hash != request_hash
+                or existing.recompute_request != recompute_request
+            ):
                 raise IdempotencyConflictError("idempotency key already binds another request")
             return RunClaim(existing, replayed=True)
         # These are control-plane test plans, not semantic acceptance evidence.
@@ -86,7 +91,9 @@ class FakeRunStore:
             "stage3_blueprint",
             "media_preflight",
         )
-        if execution_profile.is_semantic_only:
+        if type(recompute_request) is MediaPreflightRecomputeRequest:  # noqa: E721
+            stages = ("media_preflight",)
+        elif execution_profile.is_semantic_only:
             stages = ("source_prep", "context_prepare", "vlm")
         elif execution_profile.is_semantic_story:
             stages = (
@@ -101,15 +108,22 @@ class FakeRunStore:
             stages = ("source_prep", "vlm")
         elif execution_profile.schema_version == "pipeline-execution-profile-v5":
             stages = ("source_prep", "vlm", "media_preflight")
+        command_status = "awaiting_binding" if defer_activation else "pending"
+        commands = tuple(
+            PipelineCommand(
+                f"command-{index}",
+                stage,
+                command_status,
+                blocking_command_id=None,
+            )
+            for index, stage in enumerate(stages, start=1)
+        )
         snapshot = PipelineRunSnapshot(
             run_id=run_id,
             request=request,
             request_hash=request_hash,
             status="accepted",
-            commands=tuple(
-                PipelineCommand(f"command-{index}", stage, "pending")
-                for index, stage in enumerate(stages, start=1)
-            ),
+            commands=commands,
             version=0,
             execution_profile=execution_profile,
             recompute_request=recompute_request,
@@ -117,6 +131,81 @@ class FakeRunStore:
         self.by_key[idempotency_key] = run_id
         self.by_run_id[run_id] = snapshot
         return RunClaim(snapshot, replayed=False)
+
+    async def activate_recompute(
+        self, run_id: str, *, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        snapshot = self.by_run_id.get(run_id)
+        if snapshot is None:
+            raise PipelineRunNotFoundError(run_id)
+        if snapshot.version != expected_version:
+            raise StaleRunVersionError(run_id)
+        commands = tuple(
+            replace(
+                command,
+                status="pending",
+                version=command.version + 1,
+                blocking_command_id=None,
+                lease_id=None,
+            )
+            if command.stage == "media_preflight"
+            and command.status == "binding"
+            and command.lease_id == binding_id
+            else command
+            for command in snapshot.commands
+        )
+        if commands == snapshot.commands:
+            raise PipelineRunValidationError("media recompute is already active or not bind-pending")
+        activated = replace(snapshot, commands=commands, version=snapshot.version + 1)
+        self.by_run_id[run_id] = activated
+        return activated
+
+    async def claim_recompute_binding(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        binding_id: str,
+        lease_seconds: int = 300,
+    ) -> PipelineRunSnapshot | None:
+        snapshot = self.by_run_id.get(run_id)
+        if snapshot is None:
+            raise PipelineRunNotFoundError(run_id)
+        if snapshot.version != expected_version:
+            raise StaleRunVersionError(run_id)
+        commands = tuple(
+            replace(command, status="binding", lease_id=binding_id, version=command.version + 1)
+            if command.stage == "media_preflight" and command.status == "awaiting_binding"
+            else command
+            for command in snapshot.commands
+        )
+        if commands == snapshot.commands:
+            return None
+        claimed = replace(snapshot, commands=commands, version=snapshot.version + 1)
+        self.by_run_id[run_id] = claimed
+        return claimed
+
+    async def release_recompute_binding(
+        self, run_id: str, *, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        snapshot = self.by_run_id.get(run_id)
+        if snapshot is None:
+            raise PipelineRunNotFoundError(run_id)
+        if snapshot.version != expected_version:
+            raise StaleRunVersionError(run_id)
+        commands = tuple(
+            replace(command, status="awaiting_binding", lease_id=None, version=command.version + 1)
+            if command.stage == "media_preflight"
+            and command.status == "binding"
+            and command.lease_id == binding_id
+            else command
+            for command in snapshot.commands
+        )
+        if commands == snapshot.commands:
+            raise PipelineRunValidationError("binding lease is not owned by this retry")
+        released = replace(snapshot, commands=commands, version=snapshot.version + 1)
+        self.by_run_id[run_id] = released
+        return released
 
     async def read_run(self, run_id: str) -> PipelineRunSnapshot | None:
         return self.by_run_id.get(run_id)
@@ -197,6 +286,59 @@ class FakeFullStageBinder:
     ) -> None:
         assert request.base_run_id == base.run_id
         self.calls.append((base, target_run_id))
+
+
+class FakeMediaPreflightBinder:
+    def __init__(self) -> None:
+        self.calls: list[tuple[PipelineRunSnapshot, str, int]] = []
+
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
+    ) -> None:
+        assert request.base_run_id == base.run_id
+        self.calls.append((base, target_run_id, request.selected_episode_index))
+
+
+class FailOnceMediaPreflightBinder(FakeMediaPreflightBinder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed = False
+
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
+    ) -> None:
+        if not self.failed:
+            self.failed = True
+            raise RuntimeError("media evidence provider unavailable")
+        await super().bind(base=base, target_run_id=target_run_id, request=request)
+
+
+class ConcurrentMediaPreflightBinder(FakeMediaPreflightBinder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.active_calls = 0
+
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
+    ) -> None:
+        self.active_calls += 1
+        self.started.set()
+        await self.release.wait()
+        await super().bind(base=base, target_run_id=target_run_id, request=request)
 
 
 def request(source_root: str = "/authorized/source") -> PipelineRunRequest:
@@ -392,6 +534,201 @@ async def test_full_vlm_recompute_creates_distinct_semantic_run_after_source_bin
     # Recompute authorization is the exact successful source binding, not a
     # filesystem catalog lookup on the old host.
     assert scheduler.enqueued == [first.snapshot.run_id, first.snapshot.run_id]
+
+
+@pytest.mark.asyncio
+async def test_media_recompute_creates_media_only_successor_and_replays_idempotently() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = execution_profile()
+    base_request = request()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "c" * 32,
+        base_request,
+        base_request.request_hash,
+        "failed",
+        (
+            PipelineCommand("source", "source_prep", "succeeded", uuid4()),
+            PipelineCommand("vlm", "vlm", "succeeded", uuid4()),
+            PipelineCommand("media", "media_preflight", "failed", uuid4()),
+        ),
+        7,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FakeMediaPreflightBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        media_preflight_recompute_binder=binder,
+    )
+    recompute = MediaPreflightRecomputeRequest(
+        base.run_id,
+        7,
+        (3,),
+        retry_budget=1,
+    )
+
+    first = await service.recompute_media_preflight_stage(recompute, "media-recompute-1")
+    replay = await service.recompute_media_preflight_stage(recompute, "media-recompute-1")
+
+    assert first.replayed is False and replay.replayed is True
+    assert first.snapshot.run_id != base.run_id
+    assert tuple(command.stage for command in first.snapshot.commands) == ("media_preflight",)
+    assert binder.calls == [(base, first.snapshot.run_id, 2)]
+    assert scheduler.enqueued == [first.snapshot.run_id, first.snapshot.run_id]
+
+
+@pytest.mark.asyncio
+async def test_media_recompute_same_idempotency_key_cannot_rebind_selection() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = execution_profile()
+    base_request = request()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "4" * 32,
+        base_request,
+        base_request.request_hash,
+        "failed",
+        (PipelineCommand("media", "media_preflight", "failed", uuid4()),),
+        2,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FakeMediaPreflightBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        media_preflight_recompute_binder=binder,
+    )
+    first = MediaPreflightRecomputeRequest(base.run_id, 2, (1,))
+    second = MediaPreflightRecomputeRequest(base.run_id, 2, (2,))
+
+    await service.recompute_media_preflight_stage(first, "media-recompute-conflict")
+    with pytest.raises(IdempotencyConflictError):
+        await service.recompute_media_preflight_stage(second, "media-recompute-conflict")
+    assert len(binder.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_media_recompute_binding_failure_leaves_retryable_reservation() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = execution_profile()
+    base_request = request()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "5" * 32,
+        base_request,
+        base_request.request_hash,
+        "failed",
+        (PipelineCommand("media", "media_preflight", "failed", uuid4()),),
+        3,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FailOnceMediaPreflightBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        media_preflight_recompute_binder=binder,
+    )
+    recompute = MediaPreflightRecomputeRequest(base.run_id, 3, (1,))
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await service.recompute_media_preflight_stage(recompute, "media-recompute-retry")
+    reserved = next(
+        snapshot
+        for snapshot in store.by_run_id.values()
+        if snapshot.recompute_request == recompute
+    )
+    assert reserved.status == "accepted"
+    assert reserved.commands[0].status == "awaiting_binding"
+    assert scheduler.enqueued == []
+
+    retry = await service.recompute_media_preflight_stage(recompute, "media-recompute-retry")
+    assert retry.replayed is True
+    assert retry.snapshot.commands[0].status == "pending"
+    assert scheduler.enqueued == [reserved.run_id]
+
+
+@pytest.mark.asyncio
+async def test_media_recompute_concurrent_exact_replays_converge_on_one_activation() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = execution_profile()
+    base_request = request()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "6" * 32,
+        base_request,
+        base_request.request_hash,
+        "failed",
+        (PipelineCommand("media", "media_preflight", "failed", uuid4()),),
+        5,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = ConcurrentMediaPreflightBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        media_preflight_recompute_binder=binder,
+    )
+    recompute = MediaPreflightRecomputeRequest(base.run_id, 5, (1,))
+    first = asyncio.create_task(
+        service.recompute_media_preflight_stage(recompute, "media-recompute-race")
+    )
+    second = asyncio.create_task(
+        service.recompute_media_preflight_stage(recompute, "media-recompute-race")
+    )
+    await asyncio.wait_for(binder.started.wait(), timeout=1)
+    binder.release.set()
+    claims = await asyncio.gather(first, second)
+
+    assert all(claim.snapshot.run_id == claims[0].snapshot.run_id for claim in claims)
+    assert {claim.snapshot.commands[0].status for claim in claims} == {"binding", "pending"}
+    assert len(binder.calls) == 1
+    assert scheduler.enqueued == [claims[0].snapshot.run_id]
+
+
+@pytest.mark.asyncio
+async def test_media_recompute_rejects_semantic_only_profile_before_binding() -> None:
+    store = FakeRunStore()
+    scheduler = FakeScheduler()
+    profile = semantic_execution_profile()
+    base_request = request()
+    base = PipelineRunSnapshot(
+        "pipeline_run_" + "9" * 32,
+        base_request,
+        base_request.request_hash,
+        "failed",
+        (PipelineCommand("vlm", "vlm", "failed", uuid4()),),
+        4,
+        profile,
+    )
+    store.by_run_id[base.run_id] = base
+    binder = FakeMediaPreflightBinder()
+    service = DurablePipelineRunService(
+        store,
+        scheduler,
+        FakeAuthorizer(False),
+        execution_profile=profile,
+        media_preflight_recompute_binder=binder,
+    )
+
+    with pytest.raises(PipelineRunValidationError, match="media-preflight policy"):
+        await service.recompute_media_preflight_stage(
+            MediaPreflightRecomputeRequest(base.run_id, 4, (1,)), "media-recompute-2"
+        )
+    assert binder.calls == []
+    assert scheduler.enqueued == []
 
 
 def test_selected_only_recompute_request_is_closed_and_canonical() -> None:

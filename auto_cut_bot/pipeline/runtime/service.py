@@ -13,6 +13,7 @@ from .errors import (
     StaleRunVersionError,
 )
 from .models import (
+    MediaPreflightRecomputeRequest,
     PipelineExecutionProfile,
     PipelineRunRequest,
     PipelineRunSnapshot,
@@ -22,7 +23,7 @@ from .models import (
     validate_run_id,
 )
 from .ports import PipelineRunStore, PipelineSchedulerPort, SourceAuthorizationPort
-from .recompute import FullStageVlmRecomputeBinderPort
+from .recompute import FullStageVlmRecomputeBinderPort, MediaPreflightRecomputeBinderPort
 
 
 class DurablePipelineRunService:
@@ -41,6 +42,7 @@ class DurablePipelineRunService:
         *,
         execution_profile: PipelineExecutionProfile | None = None,
         full_stage_vlm_recompute_binder: FullStageVlmRecomputeBinderPort | None = None,
+        media_preflight_recompute_binder: MediaPreflightRecomputeBinderPort | None = None,
     ) -> None:
         self._store = store
         self._scheduler = scheduler
@@ -57,6 +59,11 @@ class DurablePipelineRunService:
         ):
             raise TypeError("full_stage_vlm_recompute_binder must implement bind")
         self._full_stage_vlm_recompute_binder = full_stage_vlm_recompute_binder
+        if media_preflight_recompute_binder is not None and not callable(
+            getattr(media_preflight_recompute_binder, "bind", None)
+        ):
+            raise TypeError("media_preflight_recompute_binder must implement bind")
+        self._media_preflight_recompute_binder = media_preflight_recompute_binder
 
     async def submit(self, request: PipelineRunRequest, idempotency_key: str) -> RunClaim:
         if type(request) is not PipelineRunRequest:  # noqa: E721
@@ -176,6 +183,210 @@ class DurablePipelineRunService:
         await self._scheduler.enqueue(target_run_id)
         return claim
 
+    async def recompute_media_preflight_stage(
+        self,
+        request: MediaPreflightRecomputeRequest,
+        idempotency_key: str,
+    ) -> RunClaim:
+        """Create or replay a media-only successor Run.
+
+        The target is reserved with an ``awaiting_binding`` command before the binder is
+        called.  A failed bind therefore leaves a durable, retryable target
+        instead of creating an untracked evidence side effect.  The binder is
+        required to be idempotent for the deterministic target identity.
+        """
+        if type(request) is not MediaPreflightRecomputeRequest:  # noqa: E721
+            raise TypeError("media recompute accepts an exact MediaPreflightRecomputeRequest")
+        validate_idempotency_key(idempotency_key)
+        binder = self._media_preflight_recompute_binder
+        # Media targets are keyed by the idempotency key alone.  Probe first so
+        # an exact replay does not depend on mutable base-run or local-profile
+        # state.  The store remains the authority for the race with a writer
+        # that inserts the target after this probe.
+        target_run_id = _recompute_run_id(
+            idempotency_key, "", namespace="media-preflight"
+        )
+        existing = await self._store.read_run(target_run_id)
+        if existing is not None:
+            return await self._replay_or_activate_media(
+                existing, request, replayed=True
+            )
+
+        if binder is None:
+            raise PipelineRunValidationError(
+                "media-preflight recompute is not enabled for this runtime"
+            )
+        base = await self._validated_media_base(request)
+        claim = await self._store.claim_run(
+            run_id=target_run_id,
+            idempotency_key=idempotency_key,
+            request=base.request,
+            request_hash=base.request.request_hash,
+            execution_profile=self._execution_profile,
+            recompute_request=request,
+            defer_activation=True,
+        )
+        if claim.snapshot.recompute_request != request:
+            raise IdempotencyConflictError(
+                "idempotency key already binds another media recompute request"
+            )
+        if claim.replayed:
+            return await self._replay_or_activate_media(
+                claim.snapshot, request, replayed=True
+            )
+
+        return await self._bind_and_activate_media(
+            claim.snapshot, request, base=base, replayed=False
+        )
+
+    async def _validated_media_base(
+        self, request: MediaPreflightRecomputeRequest
+    ) -> PipelineRunSnapshot:
+        base = await self.status(request.base_run_id)
+        if base.version != request.expected_version:
+            raise StaleRunVersionError(request.base_run_id)
+        if base.status not in ("succeeded", "denied", "failed"):
+            raise PipelineRunValidationError("base run must be terminal before media recompute")
+        if base.execution_profile != self._execution_profile:
+            raise PipelineRunValidationError(
+                "installed execution profile differs from the base run; exact recompute is unsafe"
+            )
+        if not base.execution_profile.has_media_preflight_policy:
+            raise PipelineRunValidationError(
+                "media-preflight recompute requires an execution profile with a media-preflight policy"
+            )
+        return base
+
+    async def _replay_or_activate_media(
+        self,
+        existing: PipelineRunSnapshot,
+        request: MediaPreflightRecomputeRequest,
+        *,
+        replayed: bool,
+    ) -> RunClaim:
+        if existing.recompute_request != request:
+            raise IdempotencyConflictError(
+                "idempotency key already binds another media recompute request"
+            )
+        media_commands = tuple(
+            command for command in existing.commands if command.stage == "media_preflight"
+        )
+        if len(media_commands) != 1:
+            raise PipelineRunValidationError(
+                "media recompute target must contain exactly one media-preflight command"
+            )
+        command = media_commands[0]
+        if command.status == "awaiting_binding":
+            binder = self._media_preflight_recompute_binder
+            if binder is None:
+                raise PipelineRunValidationError(
+                    "media-preflight recompute is not enabled for this runtime"
+                )
+            base = await self._validated_media_base(request)
+            return await self._bind_and_activate_media(
+                existing, request, base=base, replayed=replayed
+            )
+
+        if command.status == "binding":
+            # Try the same atomic claim operation: an unexpired lease returns
+            # without provider work, while an expired lease is safely
+            # reclaimed after a crashed binder.
+            return await self._bind_and_activate_media(
+                existing, request, base=None, replayed=replayed
+            )
+
+        if command.status not in (
+            "pending",
+            "running",
+            "succeeded",
+            "denied",
+            "failed",
+            "indeterminate",
+            "awaiting_calibration",
+            "recompute_needed",
+            "awaiting_binding",
+            "binding",
+        ):
+            raise PipelineRunValidationError(
+                "media recompute target has an unsupported command state"
+            )
+        # Re-enqueue every exact replay to repair a claim-success/enqueue-
+        # failure window.  The durable scheduler collapses duplicate work.
+        await self._scheduler.enqueue(existing.run_id)
+        return RunClaim(existing, replayed=replayed)
+
+    async def _bind_and_activate_media(
+        self,
+        reserved: PipelineRunSnapshot,
+        request: MediaPreflightRecomputeRequest,
+        *,
+        base: PipelineRunSnapshot | None,
+        replayed: bool,
+    ) -> RunClaim:
+        binder = self._media_preflight_recompute_binder
+        if binder is None:
+            raise PipelineRunValidationError(
+                "media-preflight recompute is not enabled for this runtime"
+            )
+        binding_id = "media-binding-" + uuid4().hex
+        try:
+            bound = await self._store.claim_recompute_binding(
+                reserved.run_id,
+                expected_version=reserved.version,
+                binding_id=binding_id,
+            )
+        except StaleRunVersionError:
+            refreshed = await self._store.read_run(reserved.run_id)
+            if refreshed is None or refreshed.recompute_request != request:
+                raise IdempotencyConflictError(
+                    "idempotency key already binds another media recompute request"
+                )
+            return await self._replay_or_activate_media(
+                refreshed, request, replayed=True
+            )
+        if bound is None:
+            refreshed = await self._store.read_run(reserved.run_id)
+            return RunClaim(refreshed or reserved, replayed=True)
+        if base is None:
+            base = await self._validated_media_base(request)
+        try:
+            await binder.bind(base=base, target_run_id=reserved.run_id, request=request)
+        except Exception:
+            try:
+                await self._store.release_recompute_binding(
+                    reserved.run_id,
+                    expected_version=bound.version,
+                    binding_id=binding_id,
+                )
+            except (StaleRunVersionError, PipelineRunValidationError):
+                # A lease may have expired and been reclaimed while the
+                # provider was failing.  Keep the provider failure as the
+                # primary diagnostic; the durable owner will settle the run.
+                pass
+            raise
+        try:
+            activated = await self._store.activate_recompute(
+                reserved.run_id,
+                expected_version=bound.version,
+                binding_id=binding_id,
+            )
+        except StaleRunVersionError:
+            refreshed = await self._store.read_run(reserved.run_id)
+            if refreshed is None or refreshed.recompute_request != request:
+                raise IdempotencyConflictError(
+                    "idempotency key already binds another media recompute request"
+                )
+            active_command = next(
+                command
+                for command in refreshed.commands
+                if command.stage == "media_preflight"
+            )
+            if active_command.status in ("awaiting_binding", "binding"):
+                raise
+            activated = refreshed
+        await self._scheduler.enqueue(activated.run_id)
+        return RunClaim(activated, replayed=replayed)
+
     async def reconstruct(self) -> tuple[str, ...]:
         snapshots = await self._store.list_reconstructible_runs()
         run_ids: list[str] = []
@@ -194,8 +405,12 @@ class DurablePipelineRunService:
         return tuple(run_ids)
 
 
-def _recompute_run_id(idempotency_key: str, request_hash: str) -> str:
+def _recompute_run_id(
+    idempotency_key: str, request_hash: str, *, namespace: str = "vlm"
+) -> str:
     """Make binding and control-plane replay converge on one target Job."""
 
-    encoded = ("vlm-recompute-v2\0" + idempotency_key + "\0" + request_hash).encode("utf-8")
+    encoded = (namespace + "-recompute-v2\0" + idempotency_key + "\0" + request_hash).encode(
+        "utf-8"
+    )
     return "pipeline_run_" + hashlib.sha256(encoded).hexdigest()[:32]

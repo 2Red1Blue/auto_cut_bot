@@ -134,7 +134,13 @@ shape 也尚未完成真实 Ark 验证。这是下一个阶段的显式验证项
 ## 2026-09-02 实现进度补充
 
 已提交 `MediaPreflightRecomputeRequest`、显式 `stage` 分派和媒体单阶段
-`pipeline_commands` 计划。它们只建立并保护重跑契约，不代表媒体单集重跑已经可执行。
-跨 Run 的 source/VLM evidence binder、成功集 exact reuse、mixed aggregate finalizer
-仍是后续实现项；在这些组件完成前，HTTP 对 `stage=media_preflight` 保持 422，禁止
-误走 VLM 路径或伪造完整媒体批次。
+`pipeline_commands` 计划。媒体 successor 现在先以 `awaiting_binding` 状态原子占位，
+再由持有持久化 `binding` lease 的幂等 evidence binder 绑定不可变源证据，最后通过版本
+CAS 激活为 `pending` 并入队。
+绑定失败会保留该占位，下一次使用同一 `Idempotency-Key` 可继续绑定；不会留下无控制面
+记录的媒体 Blob，也不会让未绑定的命令被 worker 执行。精确请求重放会重新入队以修复
+“claim 成功但 enqueue 失败”的窗口；更换同一 key 的集号或策略会被拒绝。
+
+这仍不等于媒体单集重跑已具备生产 binder：跨 Run 的 source/VLM evidence binder、成功集
+exact reuse、mixed aggregate finalizer 仍是后续实现项；在这些组件完成前，HTTP 对
+`stage=media_preflight` 保持 422，禁止误走 VLM 路径或伪造完整媒体批次。

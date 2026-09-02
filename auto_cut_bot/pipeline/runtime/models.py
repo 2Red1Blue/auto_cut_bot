@@ -42,6 +42,8 @@ PipelineCommandStatus = Literal[
     "indeterminate",
     "awaiting_calibration",
     "recompute_needed",
+    "awaiting_binding",
+    "binding",
     "blocked",
 ]
 PipelineStageOutcome = Literal[
@@ -1939,6 +1941,8 @@ class PipelineCommand:
             "indeterminate",
             "awaiting_calibration",
             "recompute_needed",
+            "awaiting_binding",
+            "binding",
             "blocked",
         ):
             raise PipelineRunValidationError("command status is unsupported")
@@ -1960,15 +1964,17 @@ class PipelineCommand:
                 "indeterminate",
                 "awaiting_calibration",
                 "recompute_needed",
+                "awaiting_binding",
+                "binding",
                 "blocked",
             )
             and self.receipt_id is not None
         ):
             raise PipelineRunValidationError("nonterminal command cannot claim a Receipt")
-        if self.status == "running" and self.lease_id is None:
-            raise PipelineRunValidationError("running command requires a lease")
-        if self.status != "running" and self.lease_id is not None:
-            raise PipelineRunValidationError("only a running command may hold a lease")
+        if self.status in ("running", "binding") and self.lease_id is None:
+            raise PipelineRunValidationError(f"{self.status} command requires a lease")
+        if self.status not in ("running", "binding") and self.lease_id is not None:
+            raise PipelineRunValidationError("only running or binding commands may hold a lease")
         if self.status == "blocked":
             _required_text(self.blocking_command_id, "blocking_command_id")
             if self.blocking_command_id == self.command_id:
@@ -2088,7 +2094,14 @@ class PipelineRunSnapshot:
                     "calibration/recompute run cannot retain executable commands"
                 )
         elif not any(
-            command.status in ("pending", "running", "indeterminate") for command in self.commands
+            command.status in (
+                "pending",
+                "running",
+                "indeterminate",
+                "awaiting_binding",
+                "binding",
+            )
+            for command in self.commands
         ):
             raise PipelineRunValidationError(
                 "nonterminal run requires at least one nonterminal command"

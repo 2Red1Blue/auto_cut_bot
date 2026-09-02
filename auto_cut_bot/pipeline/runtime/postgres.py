@@ -31,6 +31,7 @@ from .models import (
     RunClaim,
     VlmFullStageRecomputeRequest,
     parse_recompute_request,
+    validate_run_id,
 )
 
 
@@ -87,15 +88,27 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
     states = [state for _stage, state in command_rows]
     if "recompute_needed" in states:
         if any(
-            state in ("pending", "running", "indeterminate", "awaiting_calibration")
+            state in (
+                "pending",
+                "running",
+                "indeterminate",
+                "awaiting_calibration",
+                "awaiting_binding",
+                "binding",
+            )
             for state in states
         ):
             return "running"
         return "recompute_needed"
     if "awaiting_calibration" in states:
-        if any(state in ("pending", "running", "indeterminate") for state in states):
+        if any(
+            state in ("pending", "running", "indeterminate", "awaiting_binding", "binding")
+            for state in states
+        ):
             return "running"
         return "awaiting_calibration"
+    if "awaiting_binding" in states or "binding" in states:
+        return "running"
     terminal_states = {"succeeded", "denied", "failed", "blocked"}
     if not states or any(state not in terminal_states for state in states):
         return "running"
@@ -200,6 +213,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
         recompute_request: PipelineRecomputeRequest | None = None,
+        defer_activation: bool = False,
     ) -> RunClaim:
         return await asyncio.to_thread(
             self._claim_run_sync,
@@ -209,6 +223,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             request_hash,
             execution_profile,
             recompute_request,
+            defer_activation,
         )
 
     def _claim_run_sync(
@@ -219,6 +234,7 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
         recompute_request: PipelineRecomputeRequest | None = None,
+        defer_activation: bool = False,
     ) -> RunClaim:
         if type(execution_profile) is not PipelineExecutionProfile:  # noqa: E721
             raise PipelineRunValidationError("claim_run requires a PipelineExecutionProfile")
@@ -237,6 +253,10 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         ):
             raise PipelineRunValidationError(
                 "media-preflight recompute requires an execution profile with a media-preflight policy"
+            )
+        if defer_activation and type(recompute_request) is not MediaPreflightRecomputeRequest:  # noqa: E721
+            raise PipelineRunValidationError(
+                "deferred activation is only valid for media-preflight recompute"
             )
         if execution_profile.has_media_preflight_policy:
             execution_profile.build_stage1_command_policy()
@@ -329,11 +349,21 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                     cursor.execute(
                         """
                         INSERT INTO runtime.pipeline_commands
-                            (command_id, run_id, ordinal, stage, state, version)
-                        VALUES (%s, %s, 0, 'media_preflight', 'pending', 0)
+                            (command_id, run_id, ordinal, stage, state, version, blocking_command_id)
+                        VALUES (%s, %s, 0, 'media_preflight', 'pending', 0, NULL)
                         """,
                         (uuid4(), run_id),
                     )
+                    if defer_activation:
+                        cursor.execute(
+                            """
+                            UPDATE runtime.pipeline_commands
+                               SET state = 'awaiting_binding', version = version + 1,
+                                   updated_at = transaction_timestamp()
+                             WHERE run_id = %s AND stage = 'media_preflight'
+                            """,
+                            (run_id,),
+                        )
                 elif execution_profile.is_semantic_only:
                     cursor.execute(
                         """
@@ -402,8 +432,185 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             run_id,
                         ),
                     )
-                self._insert_outbox(cursor, run_id)
+                if not defer_activation:
+                    self._insert_outbox(cursor, run_id)
             return RunClaim(self._read_snapshot(cursor, effective_run_id), replayed)
+
+        return self._transaction(operation)
+
+    async def claim_recompute_binding(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        binding_id: str,
+        lease_seconds: int = 300,
+    ) -> PipelineRunSnapshot | None:
+        return await asyncio.to_thread(
+            self._claim_recompute_binding_sync,
+            run_id,
+            expected_version,
+            binding_id,
+            lease_seconds,
+        )
+
+    def _claim_recompute_binding_sync(
+        self, run_id: str, expected_version: int, binding_id: str, lease_seconds: int
+    ) -> PipelineRunSnapshot | None:
+        validate_run_id(run_id)
+        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if type(binding_id) is not str or not binding_id.strip():  # noqa: E721
+            raise PipelineRunValidationError("binding_id must be non-empty")
+        if type(lease_seconds) is not int or lease_seconds <= 0:  # noqa: E721
+            raise PipelineRunValidationError("lease_seconds must be positive")
+
+        def operation(cursor: DbCursor) -> PipelineRunSnapshot | None:
+            cursor.execute(
+                "SELECT version FROM runtime.pipeline_runs WHERE run_id = %s FOR UPDATE",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise PipelineRunNotFoundError(run_id)
+            if int(_text(row[0])) != expected_version:
+                raise StaleRunVersionError(run_id)
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET state = 'binding', lease_id = %s,
+                       lease_expires_at = transaction_timestamp() + (interval '1 second' * %s),
+                       version = version + 1, updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND stage = 'media_preflight'
+                   AND (
+                       state = 'awaiting_binding'
+                       OR (state = 'binding' AND lease_expires_at < transaction_timestamp())
+                   )
+                 RETURNING command_id
+                """,
+                (binding_id, lease_seconds, run_id),
+            )
+            if cursor.fetchone() is None:
+                return None
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_runs
+                   SET version = version + 1, updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND version = %s
+                """,
+                (run_id, expected_version),
+            )
+            return self._read_snapshot(cursor, run_id)
+
+        return self._transaction(operation)
+
+    async def release_recompute_binding(
+        self, run_id: str, *, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        return await asyncio.to_thread(
+            self._release_recompute_binding_sync, run_id, expected_version, binding_id
+        )
+
+    def _release_recompute_binding_sync(
+        self, run_id: str, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        validate_run_id(run_id)
+        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if type(binding_id) is not str or not binding_id.strip():  # noqa: E721
+            raise PipelineRunValidationError("binding_id must be non-empty")
+
+        def operation(cursor: DbCursor) -> PipelineRunSnapshot:
+            cursor.execute(
+                "SELECT version FROM runtime.pipeline_runs WHERE run_id = %s FOR UPDATE",
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise PipelineRunNotFoundError(run_id)
+            if int(_text(row[0])) != expected_version:
+                raise StaleRunVersionError(run_id)
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET state = 'awaiting_binding', lease_id = NULL,
+                       lease_expires_at = NULL, version = version + 1,
+                       updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND stage = 'media_preflight'
+                   AND state = 'binding' AND lease_id = %s
+                 RETURNING command_id
+                """,
+                (run_id, binding_id),
+            )
+            if cursor.fetchone() is None:
+                raise PipelineRunValidationError("binding lease is not owned by this retry")
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_runs
+                   SET version = version + 1, updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND version = %s
+                """,
+                (run_id, expected_version),
+            )
+            return self._read_snapshot(cursor, run_id)
+
+        return self._transaction(operation)
+
+    async def activate_recompute(
+        self, run_id: str, *, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        return await asyncio.to_thread(
+            self._activate_recompute_sync, run_id, expected_version, binding_id
+        )
+
+    def _activate_recompute_sync(
+        self, run_id: str, expected_version: int, binding_id: str
+    ) -> PipelineRunSnapshot:
+        validate_run_id(run_id)
+        if type(expected_version) is not int or expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if type(binding_id) is not str or not binding_id.strip():  # noqa: E721
+            raise PipelineRunValidationError("binding_id must be non-empty")
+
+        def operation(cursor: DbCursor) -> PipelineRunSnapshot:
+            cursor.execute(
+                """
+                SELECT state, version FROM runtime.pipeline_runs
+                 WHERE run_id = %s FOR UPDATE
+                """,
+                (run_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise PipelineRunNotFoundError(run_id)
+            if int(_text(row[1])) != expected_version:
+                raise StaleRunVersionError(run_id)
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_commands
+                   SET state = 'pending', lease_id = NULL, lease_expires_at = NULL,
+                       blocking_command_id = NULL,
+                       version = version + 1, updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND stage = 'media_preflight'
+                   AND state = 'binding' AND lease_id = %s
+                   AND lease_expires_at > transaction_timestamp()
+                RETURNING command_id
+                """,
+                (run_id, binding_id),
+            )
+            if cursor.fetchone() is None:
+                raise PipelineRunValidationError("media recompute is already active or not bind-pending")
+            cursor.execute(
+                """
+                UPDATE runtime.pipeline_runs
+                   SET version = version + 1, state = 'accepted',
+                       updated_at = transaction_timestamp()
+                 WHERE run_id = %s AND version = %s
+                """,
+                (run_id, expected_version),
+            )
+            _ensure_pending_outbox(cursor, run_id)
+            return self._read_snapshot(cursor, run_id)
 
         return self._transaction(operation)
 

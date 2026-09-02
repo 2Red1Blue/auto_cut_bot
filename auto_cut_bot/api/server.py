@@ -754,12 +754,11 @@ async def handle_pipeline_recompute(request: web.Request) -> web.Response:
         return _error_json(400, str(error))
     try:
         if isinstance(recompute_request, MediaPreflightRecomputeRequest):
-            return _error_json(
-                422,
-                "media_preflight recompute is not enabled in this runtime slice",
-                "unprocessable_entity",
+            claim = await service.recompute_media_preflight_stage(
+                recompute_request, idempotency_key
             )
-        claim = await service.recompute_full_vlm_stage(recompute_request, idempotency_key)
+        else:
+            claim = await service.recompute_full_vlm_stage(recompute_request, idempotency_key)
     except PipelineRunNotFoundError as error:
         return _error_json(404, f"Pipeline run not found: {error}")
     except (IdempotencyConflictError, StaleRunVersionError) as error:

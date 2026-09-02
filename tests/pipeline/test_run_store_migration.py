@@ -32,6 +32,20 @@ CANDIDATE_CORE_PROFILE_MIGRATION = Path(
 ISOLATION_RECEIPT_MIGRATION = Path(
     "packages/autocut-kernel/migrations/0050_pipeline_stage_isolation_receipts.sql"
 )
+BINDING_WAIT_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0052_media_recompute_binding_wait.sql"
+)
+
+
+def test_media_recompute_binding_wait_is_lease_guarded_and_media_scoped() -> None:
+    sql = BINDING_WAIT_MIGRATION.read_text(encoding="utf-8")
+
+    assert "awaiting_binding" in sql
+    assert "state = 'binding'" in sql
+    assert "lease_expires_at" in sql
+    assert "run.recompute_request->>'stage' = 'media_preflight'" in sql
+    assert "OLD.state = 'binding' AND NEW.state IN ('binding', 'pending', 'awaiting_binding')" in sql
+    assert "OLD.lease_expires_at < transaction_timestamp()" in sql
 
 
 def test_isolation_receipt_migration_is_closed_and_legacy_compatible() -> None:
@@ -277,7 +291,7 @@ def test_new_run_sql_has_ordered_stage3_and_current_profile_claim_predicates() -
     assert "elif execution_profile.is_semantic_story:" in source
     assert "5, 'stage3_blueprint', 'pending', 0" in insert
     # Count generated command identities, independent of formatter line wraps.
-    assert insert.count("uuid4()") == 15
+    assert insert.count("uuid4()") == 16
     assert "candidate.stage NOT IN ('vlm', 'stage1_narrative', 'stage2_portfolio', 'stage3_blueprint')" in source
     assert "profile_run.execution_profile ? 'evidence_read_limits'" in source
     assert "profile_run.execution_profile ? 'stage1_command_policy'" in source

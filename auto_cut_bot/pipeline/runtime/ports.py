@@ -6,6 +6,7 @@ from typing import Protocol
 
 from .errors import PipelineStageIsolationError
 from .models import (
+    MediaPreflightRecomputeRequest,
     OutboxLease,
     PipelineCommand,
     PipelineExecutionProfile,
@@ -31,7 +32,33 @@ class PipelineRunStore(Protocol):
         request_hash: str,
         execution_profile: PipelineExecutionProfile,
         recompute_request: PipelineRecomputeRequest | None = None,
+        defer_activation: bool = False,
     ) -> RunClaim: ...
+
+    async def claim_recompute_binding(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        binding_id: str,
+        lease_seconds: int = 300,
+    ) -> PipelineRunSnapshot | None: ...
+
+    async def release_recompute_binding(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        binding_id: str,
+    ) -> PipelineRunSnapshot: ...
+
+    async def activate_recompute(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        binding_id: str,
+    ) -> PipelineRunSnapshot: ...
 
     async def read_run(self, run_id: str) -> PipelineRunSnapshot | None: ...
 
@@ -81,6 +108,12 @@ class PipelineRunService(Protocol):
     async def recompute_full_vlm_stage(
         self,
         request: VlmFullStageRecomputeRequest,
+        idempotency_key: str,
+    ) -> RunClaim: ...
+
+    async def recompute_media_preflight_stage(
+        self,
+        request: MediaPreflightRecomputeRequest,
         idempotency_key: str,
     ) -> RunClaim: ...
 
