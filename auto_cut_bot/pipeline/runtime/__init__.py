@@ -20,6 +20,8 @@ from .errors import (
     StaleRunVersionError,
 )
 from .models import (
+    MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET,
+    MediaPreflightRecomputeRequest,
     OutboxLease,
     PipelineCommand,
     PipelineCommandStatus,
@@ -92,6 +94,8 @@ __all__ = (
     "PostgresPipelineScheduler",
     "ResumeNotAllowedError",
     "RunClaim",
+    "MediaPreflightRecomputeRequest",
+    "MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET",
     "VlmFullStageRecomputeRequest",
     "FullStageVlmRecomputeBinder",
     "SourceAuthorizationPort",
