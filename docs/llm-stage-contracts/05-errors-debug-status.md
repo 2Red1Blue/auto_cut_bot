@@ -93,7 +93,9 @@ selected recompute、reconcile、`blocked`、预算累计、Receipt 收尾、断
 并发契约，以 [字幕感知 VLM 到 ExactSpan 设计 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)
 为唯一规范来源；本节只保留排障摘要。当前代码事实是：VLM 提供 `selected_only` 执行过滤入口；
 Media Preflight adapter 也已支持单集过滤，但正式 HTTP successor 仍因缺少跨 Run binder 而保持关闭。
-两者都不能把单集成功冒充完整 aggregate。
+两者都不能把单集成功冒充完整 aggregate。`selected_only` successor 的计划本身恰好只有一个
+Stage command；该 Run 可以终态 `succeeded` 表示“所选集检查/重算成功”，但没有任何下游 command，
+且其状态必须与 `completion_scope=selected_only` 一起展示，不能解释为全剧 Stage 成功。
 
 ## 当前最后已知真实断点（2026-09-01 更新）
 

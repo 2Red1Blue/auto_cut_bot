@@ -10,14 +10,19 @@ import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from autocut_kernel.context_pack import ContextSelectionPolicy, video_only_window_context_pack
+from autocut_kernel.pipeline import (
+    PrepareTimedMediaEvidenceRequest,
+    PrepareTimedMediaEvidenceResult,
+)
 from autocut_kernel.registry import AuthorityRegistrySnapshot, TimedSpeechProfileKey
 from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileResolver
 from autocut_kernel.registry.timed_speech import StoreAnchoredTimedSpeechProfileResolver
-from autocut_kernel.store import PostgresRuntimeStore, SemanticInputIntegrityError
+from autocut_kernel.store import CommandOutcome, PostgresRuntimeStore, SemanticInputIntegrityError
 from autocut_kernel.store.models import canonical_payload_hash
 from autocut_kernel.vlm import ProviderCompleted, ProviderDispatchRequest, ProviderReconcileQuery
 
@@ -30,6 +35,7 @@ from auto_cut_bot.pipeline.media_preflight import (
     LocalMediaPreflightResult,
 )
 from auto_cut_bot.pipeline.runtime import (
+    MediaPreflightRecomputeRequest,
     PipelineCommand,
     PipelineExecutionProfile,
     PipelineRunRequest,
@@ -110,6 +116,191 @@ async def test_media_episode_scheduler_runs_all_children_with_bounded_concurrenc
         (value, "failed" if value == 1 else "succeeded") for value in range(8)
     )
     assert peak == MEDIA_PREFLIGHT_EPISODE_MAX_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_media_episode_scheduler_settles_siblings_before_raising() -> None:
+    settled: list[int] = []
+    lock = threading.Lock()
+
+    def execute(value: int) -> int:
+        try:
+            time.sleep(0.005 * (5 - value))
+            if value == 1:
+                raise RuntimeError("unexpected adapter bug")
+            return value
+        finally:
+            with lock:
+                settled.append(value)
+
+    with pytest.raises(RuntimeError, match="unexpected adapter bug"):
+        await _execute_independent_requests(
+            tuple(range(5)),
+            execute,
+            max_concurrency=2,
+        )
+
+    assert sorted(settled) == list(range(5))
+
+
+def _unvalidated_media_request(episode_index: int) -> PrepareTimedMediaEvidenceRequest:
+    """Build a type-exact sentinel used only before any Kernel validation seam."""
+
+    request = object.__new__(PrepareTimedMediaEvidenceRequest)
+    object.__setattr__(request, "episode_index", episode_index)
+    return request
+
+
+def _stage_context(
+    run_id: str,
+    profile: PipelineExecutionProfile,
+    recompute: MediaPreflightRecomputeRequest | None = None,
+) -> PipelineStageContext:
+    return PipelineStageContext(
+        run_id,
+        PipelineRunRequest("test", source_reference="authorized-source"),
+        PipelineCommand(
+            "media-command",
+            "media_preflight",
+            "running",
+            lease_id="media-test-lease",
+        ),
+        profile,
+        recompute,
+    )
+
+
+@pytest.mark.asyncio
+async def test_media_stage_settles_all_children_but_never_finalizes_mixed_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _blobs = _bundle(3)
+    requests = tuple(_unvalidated_media_request(index) for index in range(3))
+    calls: list[int] = []
+    finalizer_calls = 0
+
+    class FakeCommand:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def execute(self, request: PrepareTimedMediaEvidenceRequest):
+            calls.append(request.episode_index)
+            state = "failed" if request.episode_index == 1 else "succeeded"
+            return PrepareTimedMediaEvidenceResult(
+                CommandOutcome(
+                    uuid4(),
+                    state,
+                    receipt_id=uuid4(),
+                    artifact_set_id=uuid4() if state == "succeeded" else None,
+                    job_id=uuid4(),
+                )
+            )
+
+    class ForbiddenFinalizer:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            nonlocal finalizer_calls
+            finalizer_calls += 1
+
+    resolver = SimpleNamespace(
+        snapshot=AUTHORITY_SNAPSHOT,
+        resource=SimpleNamespace(
+            local_run=SimpleNamespace(
+                native_timed_speech=SimpleNamespace(native_port_identity_sha256="sha256:" + "f" * 64)
+            )
+        ),
+        resolve=lambda _store: None,
+    )
+    stage = object.__new__(MediaPreflightPipelineStage)
+    stage._store = object()  # pyright: ignore[reportPrivateUsage]
+    stage._port = object()  # pyright: ignore[reportPrivateUsage]
+    stage._authority_profile_resolver = resolver  # pyright: ignore[reportPrivateUsage]
+    stage._episode_max_concurrency = 2  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.media_preflight_stage.PrepareTimedMediaEvidenceCommand",
+        FakeCommand,
+    )
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.media_preflight_stage.FinalizeTimedMediaEvidenceBatchCommand",
+        ForbiddenFinalizer,
+    )
+
+    result = await stage._execute_batch(  # pyright: ignore[reportPrivateUsage]
+        _stage_context(bundle.source_job.job_key, execution_profile()),
+        bundle,
+        requests,
+        _fixture_policy(),
+    )
+
+    assert result.outcome.state == "failed"
+    assert sorted(calls) == [0, 1, 2]
+    assert finalizer_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_selected_media_success_is_inspection_only_and_skips_finalizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, _blobs = _bundle(2)
+    selected_request = _unvalidated_media_request(1)
+    finalizer_calls = 0
+
+    class FakeCommand:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def execute(self, _request: PrepareTimedMediaEvidenceRequest):
+            return PrepareTimedMediaEvidenceResult(
+                CommandOutcome(
+                    uuid4(),
+                    "succeeded",
+                    receipt_id=uuid4(),
+                    artifact_set_id=uuid4(),
+                    job_id=uuid4(),
+                )
+            )
+
+    class ForbiddenFinalizer:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            nonlocal finalizer_calls
+            finalizer_calls += 1
+
+    resolver = SimpleNamespace(
+        snapshot=AUTHORITY_SNAPSHOT,
+        resource=SimpleNamespace(
+            local_run=SimpleNamespace(
+                native_timed_speech=SimpleNamespace(native_port_identity_sha256="sha256:" + "f" * 64)
+            )
+        ),
+        resolve=lambda _store: None,
+    )
+    stage = object.__new__(MediaPreflightPipelineStage)
+    stage._store = object()  # pyright: ignore[reportPrivateUsage]
+    stage._port = object()  # pyright: ignore[reportPrivateUsage]
+    stage._authority_profile_resolver = resolver  # pyright: ignore[reportPrivateUsage]
+    stage._episode_max_concurrency = 2  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.media_preflight_stage.PrepareTimedMediaEvidenceCommand",
+        FakeCommand,
+    )
+    monkeypatch.setattr(
+        "auto_cut_bot.pipeline.runtime.media_preflight_stage.FinalizeTimedMediaEvidenceBatchCommand",
+        ForbiddenFinalizer,
+    )
+    recompute = MediaPreflightRecomputeRequest(
+        "pipeline_run_" + "b" * 32,
+        1,
+        (2,),
+    )
+
+    result = await stage._execute_batch(  # pyright: ignore[reportPrivateUsage]
+        _stage_context(bundle.source_job.job_key, execution_profile(), recompute),
+        bundle,
+        (selected_request,),
+        _fixture_policy(),
+    )
+
+    assert result.outcome.state == "succeeded"
+    assert finalizer_calls == 0
 
 
 def test_contextual_media_preflight_reproduces_exact_vlm_batch_identity() -> None:

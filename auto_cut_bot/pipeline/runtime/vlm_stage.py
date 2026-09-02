@@ -573,11 +573,15 @@ class VlmPipelineStage:
             # an aggregate admission barrier, not a cancellation signal for
             # independent later episodes.
             if (
-                chunk_unresolved is not None
-                and selection_strategy == VLM_EPISODE_SELECTION_STRATEGY_VERSION
+                selection_strategy == VLM_EPISODE_SELECTION_STRATEGY_VERSION
                 and chunk_index == 0
             ):
-                return chunk_unresolved
+                if len(chunk) != 1 or chunk[0].episode_index != 0:
+                    raise PipelineRunValidationError(
+                        "registered probe strategy must start with episode zero only"
+                    )
+                if chunk_unresolved is not None:
+                    return chunk_unresolved
             if self._stop_after_probe and chunk_index == 0:
                 # The registered v3 policy always makes this first chunk the
                 # single episode-zero probe. Never reinterpret another policy

@@ -145,7 +145,16 @@ async def _execute_independent_requests(
         async with semaphore:
             return await asyncio.to_thread(execute, request)
 
-    return tuple(await asyncio.gather(*(run_one(request) for request in requests)))
+    settled = await asyncio.gather(
+        *(run_one(request) for request in requests),
+        return_exceptions=True,
+    )
+    failure = next((item for item in settled if isinstance(item, BaseException)), None)
+    if failure is not None:
+        # Every submitted sibling has settled before control is returned, so
+        # the worker cannot immediately overlap a retry with an old thread.
+        raise failure
+    return cast(tuple[_ResultT, ...], tuple(settled))
 
 
 def media_preflight_vlm_batch_kernel_idempotency_key(
@@ -665,7 +674,7 @@ class MediaPreflightPipelineStage:
         recompute = context.recompute_request
         if recompute is not None:
             selected_index = recompute.selected_episode_index
-            if selected_index >= len(requests):
+            if type(selected_index) is not int or not 0 <= selected_index < len(requests):  # noqa: E721
                 raise PipelineRunValidationError(
                     "selected media episode is outside the committed source census"
                 )
