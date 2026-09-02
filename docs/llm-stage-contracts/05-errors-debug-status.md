@@ -144,3 +144,23 @@ CAS 激活为 `pending` 并入队。
 这仍不等于媒体单集重跑已具备生产 binder：跨 Run 的 source/VLM evidence binder、成功集
 exact reuse、mixed aggregate finalizer 仍是后续实现项；在这些组件完成前，HTTP 对
 `stage=media_preflight` 保持 422，禁止误走 VLM 路径或伪造完整媒体批次。
+
+### 重试能力的边界（重要澄清）
+
+当前代码中“失败重试”不是一个跨阶段的泛化开关，而是按命令类型分别实现：
+
+- VLM `GenerateVlmEvidenceCommand` 已有持久化 `GenerationAttempt` 链。429/5xx、结果
+  未知以及可重生成的结构解析拒绝会按冻结 `GenerationRetryPolicy` 创建新的 Attempt；
+  预算耗尽后写入最终 `RETRY_BUDGET_EXHAUSTED` Receipt。`selected_only` 是新的
+  successor Run，不会改写原始失败 Run。
+- Media Preflight 的 successor reservation/binding lease 已可在绑定失败后用同一幂等键
+  重试，防止留下未绑定的运行。但 `MediaPreflightRecomputeRequest.retry_budget` 目前
+  **尚未**驱动 `PrepareTimedMediaEvidenceCommand` 的子任务 Attempt 链；因此它不能被
+  解读为 ASR/VAD/视觉证据已经支持自动重试。
+- Media 子任务若返回终态失败，当前批次会停止接纳后续集并保留失败 Receipt。要重跑该集，
+  现阶段只能等待媒体单集 successor 的正式 binder/inspection/mixed-aggregate 实现；
+  不允许通过 `/resume` 重开终态命令，也不能把 `retry_budget` 当作已消费的持久化计数器。
+
+后续实现必须先补齐媒体子任务的持久化 Attempt/失败分类/预算 CAS，再开放
+`retry_budget` 的自动重试语义；在此之前，接口与运行文档必须把它标为“预留字段”，不得
+声称 Media Preflight 已具备与 VLM 等价的失败恢复能力。
