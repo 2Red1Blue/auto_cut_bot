@@ -12,6 +12,14 @@ import certifi
 import pytest
 from loguru import logger
 
+# ``autocut_core`` is an explicitly retained compatibility package used by
+# the Agent Native runtime and a small set of pipeline helpers.  The root
+# project intentionally does not install it as a separate dependency, so make
+# its checkout source visible during test collection.
+_AUTOCUT_CORE = str(Path(__file__).resolve().parent / "packages/autocut-core")
+if _AUTOCUT_CORE not in sys.path:
+    sys.path.insert(0, _AUTOCUT_CORE)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_auto_cut_bot_log_activation() -> Iterator[None]:

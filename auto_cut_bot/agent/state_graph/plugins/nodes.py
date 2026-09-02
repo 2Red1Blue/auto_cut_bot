@@ -1,6 +1,7 @@
 """Graph node plugins for the StateGraph Engine.
 
-Each plugin implements INodePlugin from autocut_core.agent.ports and
+Each plugin implements INodePlugin from the current Agent Native state-graph
+package and
 handles a specific node type. New node types can be added by creating
 new plugin classes without modifying the engine — satisfying OCP.
 
@@ -15,13 +16,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from autocut_core.agent.entities import NodeResult
-from autocut_core.agent.ports import INodePlugin, ISubAgent
-
 from auto_cut_bot.agent.tools.pipeline._domain_result import (
     DomainContext,
     DomainStatus,
 )
+
+from ..entities import NodeResult
+from ..ports import INodePlugin, ISubAgent
 
 logger = logging.getLogger(__name__)
 

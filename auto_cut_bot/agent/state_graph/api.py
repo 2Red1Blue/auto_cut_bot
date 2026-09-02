@@ -12,18 +12,18 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from autocut_core import get_logger
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from autocut_core import get_logger
-from autocut_core.agent.engine import StateGraphEngine
-from autocut_core.agent.entities import (
+from .engine import StateGraphEngine
+from .entities import (
     Checkpoint,
     HumanDecision,
     Session,
     SessionStatus,
 )
-from autocut_core.agent.ports import ICheckpointRepository, ISessionStore
+from .ports import ICheckpointRepository, ISessionStore
 
 logger = get_logger(__name__)
 

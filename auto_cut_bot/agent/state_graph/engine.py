@@ -8,23 +8,19 @@ The engine is stateless — all state is in Session + Checkpoint entities.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 import time
-from typing import Any
 from uuid import UUID
 
-from autocut_core.agent.entities import (
+from .entities import (
     Checkpoint,
     HumanDecision,
-    NodeResult,
     NodeType,
     Session,
     SessionStatus,
     StateGraph,
 )
-from autocut_core.agent.ports import (
+from .ports import (
     ICheckpointRepository,
     IEventEmitter,
     INodePlugin,

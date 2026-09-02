@@ -18,17 +18,16 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from autocut_core.agent.entities import (
+from ..entities import (
     Checkpoint,
     Session,
     SessionStatus,
 )
-from autocut_core.agent.ports import (
+from ..ports import (
     ICheckpointRepository,
     IEventEmitter,
     ISessionStore,
 )
-
 
 # ---------------------------------------------------------------------------
 # InMemoryCheckpointRepository

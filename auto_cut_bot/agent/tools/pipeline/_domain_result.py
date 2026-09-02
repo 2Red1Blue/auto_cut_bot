@@ -1,8 +1,8 @@
 """DomainResult and DomainContext — shared data types for domain agent execution.
 
-DomainStatus and DomainContext are defined in autocut_core.agent.ports (DIP).
-This module re-exports them for backward compatibility and adds auto_cut_bot
-specific types: Artifact and DomainResult.
+DomainStatus and DomainContext are defined in the current Agent Native
+state-graph ports (DIP).  This module re-exports them for callers and adds
+auto_cut_bot-specific types: Artifact and DomainResult.
 """
 
 from __future__ import annotations
@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# Re-export from autocut_core (DIP-compliant)
-from state_graph.agent.ports import DomainContext, DomainStatus  # noqa: F401
+# Re-export from the current package; the legacy ``autocut_core`` package is
+# intentionally not part of the Agent Native state-graph dependency.
+from ...state_graph.ports import DomainContext, DomainStatus  # noqa: F401
 
 __all__ = ["DomainStatus", "DomainContext", "Artifact", "DomainResult"]
 

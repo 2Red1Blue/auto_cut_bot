@@ -45,7 +45,10 @@ def test_root_wheel_installs_pipeline_server_with_postgres_dependency(tmp_path: 
             name for name in names if name.endswith(".dist-info/METADATA")
         )
         metadata = archive.read(metadata_name).decode("utf-8")
-    assert "Requires-Dist: psycopg<4.0.0,>=3.0.0" in metadata
+    # The root package deliberately requests psycopg's binary extra so a clean
+    # wheel install includes the libpq driver needed by the pipeline server.
+    # Hatch normalizes the requirement ordering in wheel metadata.
+    assert "Requires-Dist: psycopg[binary]<4.0.0,>=3.0.0" in metadata
     assert "autocut_kernel/__init__.py" in names
 
     environment = tmp_path / "clean-environment"

@@ -13,13 +13,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from autocut_core.agent.entities import (
+from .entities import (
     Checkpoint,
     NodeResult,
     Session,
     SessionStatus,
 )
-
 
 # ── Domain Agent shared types (defined here to satisfy DIP) ──────────────────
 
