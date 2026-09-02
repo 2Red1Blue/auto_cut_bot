@@ -62,7 +62,7 @@ from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_r
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService, PipelineStagePort, PipelineStageReconcilePort
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
-from .recompute import FullStageVlmRecomputeBinder
+from .recompute import FullStageVlmRecomputeBinder, MediaPreflightRecomputeBinder
 from .semantic_authority import (
     SemanticRunAuthority,
     SemanticRunAuthorityError,
@@ -684,6 +684,7 @@ def compose_pipeline_runtime_from_environment(
         scheduler,
         catalog,
         execution_profile=execution_profile,
+        media_preflight_recompute_binder=MediaPreflightRecomputeBinder(kernel_store),
     )
     worker = DurablePipelineWorker(
         worker_id=f"pipeline-http-{os.getpid()}",

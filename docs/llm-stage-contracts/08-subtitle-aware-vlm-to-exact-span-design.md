@@ -481,11 +481,13 @@ side-effect-free producer 的明确证明支持，不能以“没查到记录”
 
 当前实现状态（截至 2026-09-02）：VLM 已提供 `selected_only` 执行入口；VLM 在 probe 的 retry
 链未收敛时保留成本保护，但 probe 一旦终态，其他独立 episode 仍继续执行，aggregate 保持关闭。
-Media Preflight 已按默认最多 3 集有界并发执行（该运行参数不进入证据身份），并在 Stage adapter
-中支持 `selected_only` 过滤；但正式
-HTTP successor 仍缺少跨 Run source/VLM binder、媒体 child 持久化 Attempt 预算和 mixed aggregate
-Finalizer。因此 Media Preflight 的下一项实现不是重新跑整批，而是新增带 source/policy/episode 精确绑定的
-单集重跑与断点续跑入口，并补齐上述 child/batch 收敛规则。
+Media Preflight 已按默认最多 3 集有界并发执行（该运行参数不进入证据身份），正式 Runtime 已接入
+跨 Run Source/VLM binder、单集 successor、成功兄弟集 exact reuse 和标准 mixed aggregate
+Finalizer；其中 exact reuse 只接受 producer/runtime authority、策略和依赖哈希完全兼容的 child。
+`retry_budget` 已用于所选 child 的 `TIMED_SPEECH_BUSY` 进程内有限重试。尚未闭合的是跨 CPU/CUDA
+或 runtime policy 变化的复用、跨进程持久化 Attempt/预算 CAS、结果未知 reconcile 及多失败集跨多个 successor 的累积 frontier；
+因此批次有多个失败集时，每次单集成功可保留为 inspection，但当前不会自动把多个 successor 的
+成功结果拼成新的完整 aggregate。
 
 真实运行中的 `f049`、measurement closure 或 enum ordering 错误不应抹掉已经准确生成的 Entity、Fact、
 Event 和字幕理解。冻结 run `pipeline_run_694567bc4b4e456a98aa939f71f24f84` 作为强制分区恢复

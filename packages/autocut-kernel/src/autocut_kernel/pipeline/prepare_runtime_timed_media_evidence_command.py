@@ -54,7 +54,6 @@ from ..store.models import (
 )
 from .prepare_timed_media_evidence_command import (
     RUNTIME_CUDA_MEDIA_PRODUCER_PROVENANCE_SCHEMA,
-    TIMED_SPEECH_BUSY_RETRY_COUNT,
     TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS,
     CommittedMediaInputsStore,
     PrepareTimedMediaEvidenceRequest,
@@ -269,7 +268,7 @@ class PrepareRuntimeTimedMediaEvidenceCommand:
                     "committed source exceeds the frozen effective source-byte limit",
                 )
             source = self._store.materialize_immutable_blob(
-                request.job, base.source_blob, base.materialization_limits
+                base.evidence_job, base.source_blob, base.materialization_limits
             )
             attempts = 0
             while True:
@@ -279,7 +278,7 @@ class PrepareRuntimeTimedMediaEvidenceCommand:
                 except TimedMediaEvidenceProducerError as error:
                     if (
                         error.code != "TIMED_SPEECH_BUSY"
-                        or attempts >= TIMED_SPEECH_BUSY_RETRY_COUNT
+                        or attempts >= base.transient_retry_budget
                     ):
                         raise
                     attempts += 1

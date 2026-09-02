@@ -117,12 +117,11 @@ class FinalizeRuntimeTimedMediaEvidenceBatchRequest:
             raise RuntimeTimedMediaEvidenceBatchError("runtime batch children must be exact values")
         bases = tuple(item.request.timed_media_request for item in children)
         if any(
-            base.job != self.job
-            or base.artifact_scope != self.artifact_scope
+            base.artifact_scope != canonical_recipe_scope(base.job)
             or base.artifact_revision != self.artifact_revision
             for base in bases
         ):
-            raise RuntimeTimedMediaEvidenceBatchError("runtime child Job/scope/revision differs")
+            raise RuntimeTimedMediaEvidenceBatchError("runtime child scope/revision differs")
         if tuple(base.episode_index for base in bases) != tuple(range(len(bases))):
             raise RuntimeTimedMediaEvidenceBatchError("runtime batch must cover ordered episode indexes")
         for values, label in (
@@ -133,8 +132,10 @@ class FinalizeRuntimeTimedMediaEvidenceBatchRequest:
         ):
             if len(values) != len(set(values)):
                 raise RuntimeTimedMediaEvidenceBatchError(f"runtime batch duplicates child {label}")
-        if len({item.outcome.job_id for item in children}) != 1:
-            raise RuntimeTimedMediaEvidenceBatchError("runtime child outcomes must share one Kernel Job")
+        if len({base.evidence_job for base in bases}) != 1:
+            raise RuntimeTimedMediaEvidenceBatchError(
+                "runtime children must share one immutable evidence Job"
+            )
         measurement_hashes = {
             item.request.runtime_measurement_identity.canonical_sha256 for item in children
         }
@@ -300,14 +301,14 @@ def _assert_complete_source_coverage(
     first = request.children[0].request.timed_media_request
     try:
         persisted = store.read_whole_series_source_manifest(
-            request.job, first.source_manifest_artifact_set_id
+            first.evidence_job, first.source_manifest_artifact_set_id
         )
         if (
             persisted.reference != first.source_manifest_reference
             or persisted.receipt_id != first.source_manifest_receipt_id
             or persisted.artifact_set_id != first.source_manifest_artifact_set_id
             or persisted.command_slot_id != first.source_manifest_command_slot_id
-            or persisted.source_job != request.job
+            or persisted.source_job != first.evidence_job
         ):
             raise RuntimeTimedMediaEvidenceBatchError("runtime source manifest differs from child")
         source = decode_source_manifest(persisted.payload_json, persisted.proxy_blobs)
@@ -319,6 +320,7 @@ def _assert_complete_source_coverage(
         item = child.request.timed_media_request
         if (
             item.source_manifest_reference != first.source_manifest_reference
+            or item.evidence_job != first.evidence_job
             or item.source_manifest_receipt_id != first.source_manifest_receipt_id
             or item.source_manifest_artifact_set_id != first.source_manifest_artifact_set_id
             or item.source_manifest_command_slot_id != first.source_manifest_command_slot_id
@@ -388,7 +390,6 @@ def _assert_final_record(
         or outcome.artifact_set_id is None
         or outcome.failure_code is not None
         or outcome.failure_detail_json is not None
-        or outcome.job_id != request.children[0].outcome.job_id
     ):
         raise RuntimeTimedMediaEvidenceBatchError("runtime finalizer did not produce a succeeded Receipt")
     record = store.read_committed_artifact_set(

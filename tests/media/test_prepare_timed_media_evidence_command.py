@@ -361,6 +361,24 @@ class _UnknownResultProducer(_Producer):
         )
 
 
+class _BusyThenSuccessProducer(_Producer):
+    def __init__(self, root: RootMediaEvidenceBundle, failures: int) -> None:
+        super().__init__(root)
+        self._failures = failures
+
+    def prepare(
+        self,
+        request: PrepareTimedMediaEvidenceRequest,
+        source: _Lease,
+    ) -> ProducedTimedMediaEvidence:
+        if self.calls < self._failures:
+            self.calls += 1
+            raise TimedMediaEvidenceProducerError(
+                "TIMED_SPEECH_BUSY", "admission capacity is full", outcome="failed"
+            )
+        return super().prepare(request, source)
+
+
 class _CancellingProducer(_Producer):
     def prepare(
         self,
@@ -1620,6 +1638,31 @@ def test_command_retries_busy_once_but_never_retries_unknown_result(
     assert len(busy_store.materializations) == 1
     assert busy_store.closed_materializations == 1
     assert unknown_store.closed_materializations == 1
+
+
+def test_selected_recompute_uses_its_frozen_transient_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waits: list[float] = []
+    monkeypatch.setattr(command_module.time, "sleep", waits.append)
+    store = _Store()
+    producer = _BusyThenSuccessProducer(_bundle(), failures=3)
+    request = replace(_request(store), transient_retry_budget=3)
+
+    result = _command(store, producer).execute(request)
+
+    assert result.outcome.state == "succeeded"
+    assert producer.calls == 4
+    assert waits == [1, 1, 1]
+    assert request.canonical_payload()["transient_retry_budget"] == 3
+
+    zero_store = _Store()
+    zero = _BusyThenSuccessProducer(_bundle(), failures=1)
+    zero_request = replace(_request(zero_store), transient_retry_budget=0)
+    zero_result = _command(zero_store, zero).execute(zero_request)
+    assert zero_result.outcome.state == "failed"
+    assert zero.calls == 1
+    assert zero_request.canonical_payload()["transient_retry_budget"] == 0
 
 
 def test_declared_oversize_is_rejected_before_materialization_or_producer() -> None:

@@ -13,7 +13,11 @@ from autocut_kernel.store import (
     ArtifactScope,
     CommandOutcome,
     CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedSemanticInputs,
+    CommittedSemanticInputsRequest,
     Job,
+    PersistedVlmSemanticPack,
     SourceReuseBinding,
 )
 
@@ -29,6 +33,7 @@ from auto_cut_bot.pipeline.source_prep import (
 )
 
 from .errors import PipelineRunValidationError
+from .media_preflight_stage import media_preflight_vlm_batch_kernel_idempotency_key
 from .models import (
     MediaPreflightRecomputeRequest,
     PipelineRunSnapshot,
@@ -36,6 +41,7 @@ from .models import (
     validate_run_id,
 )
 from .source_prep_stage import source_prep_kernel_idempotency_key
+from .vlm_stage import requires_window_context_pack
 
 
 class VlmRecomputeSourceStore(SourcePrepStore, ContextPrepareStore, Protocol):
@@ -69,6 +75,21 @@ class MediaPreflightRecomputeBinderPort(Protocol):
         target_run_id: str,
         request: MediaPreflightRecomputeRequest,
     ) -> None: ...
+
+
+class MediaPreflightRecomputeStore(SourcePrepStore, ContextPrepareStore, Protocol):
+    """Read-only exact predecessor capabilities needed before activation."""
+
+    def read_committed_vlm_semantic_pack_set_reference(
+        self,
+        job: Job,
+        idempotency_key: str,
+    ) -> CommittedArtifactMemberReference: ...
+
+    def read_committed_semantic_inputs(
+        self,
+        request: CommittedSemanticInputsRequest,
+    ) -> CommittedSemanticInputs: ...
 
 
 class FullStageVlmRecomputeBinder:
@@ -186,9 +207,154 @@ class FullStageVlmRecomputeBinder:
             )
 
 
+class MediaPreflightRecomputeBinder:
+    """Admit a target that reads exact Source/VLM evidence from its base Run.
+
+    Media recompute deliberately does not copy or relabel VLM Artifacts.  The
+    target request persists ``base_run_id`` and the Kernel child declares that
+    Job as its immutable input owner.  This binder proves the complete Source
+    and VLM aggregate are readable before the target command is activated.
+    """
+
+    def __init__(self, store: MediaPreflightRecomputeStore) -> None:
+        self._store = store
+
+    async def bind(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
+    ) -> None:
+        await asyncio.to_thread(
+            self._bind_sync,
+            base=base,
+            target_run_id=target_run_id,
+            request=request,
+        )
+
+    def _bind_sync(
+        self,
+        *,
+        base: PipelineRunSnapshot,
+        target_run_id: str,
+        request: MediaPreflightRecomputeRequest,
+    ) -> None:
+        validate_run_id(target_run_id)
+        if type(request) is not MediaPreflightRecomputeRequest:  # noqa: E721
+            raise PipelineRunValidationError(
+                "media recompute binding requires a canonical request"
+            )
+        if request.base_run_id != base.run_id:
+            raise PipelineRunValidationError("media recompute base identity changed")
+        source_command = next(
+            (command for command in base.commands if command.stage == "source_prep"), None
+        )
+        if source_command is None or source_command.status != "succeeded":
+            raise PipelineRunValidationError(
+                "base run lacks a succeeded source_prep command"
+            )
+        origin_job = Job(base.run_id, base.request.profile)
+        source_outcome = self._store.read_outcome(
+            origin_job,
+            source_prep_kernel_idempotency_key(base.run_id),
+        )
+        if source_outcome is None or source_outcome.state != "succeeded":
+            raise PipelineRunValidationError(
+                "base source-prep Kernel Receipt is unavailable"
+            )
+        source_bundle = read_persisted_prepared_sources_bundle(
+            self._store,
+            job=origin_job,
+            outcome=source_outcome,
+            artifact_scope=ArtifactScope("pipeline", "job", base.run_id),
+            artifact_revision=1,
+        )
+        selected_index = request.selected_episode_index
+        if not 0 <= selected_index < len(source_bundle.prepared.episodes):
+            raise PipelineRunValidationError(
+                "selected media episode is outside the committed source census"
+            )
+        vlm_policy = base.execution_profile.to_doubao_policy()
+        context_packs = None
+        if requires_window_context_pack(vlm_policy):
+            committed_context = find_committed_window_context_packs(
+                self._store,
+                job=origin_job,
+                artifact_scope=ArtifactScope("pipeline", "job", base.run_id),
+                artifact_revision=1,
+                source_bundle=source_bundle,
+            )
+            if committed_context is None:
+                raise PipelineRunValidationError(
+                    "base run lacks a committed WindowContextPackSet"
+                )
+            context_packs = committed_context.packs
+        batch_key = media_preflight_vlm_batch_kernel_idempotency_key(
+            run_id=base.run_id,
+            source_bundle=source_bundle,
+            policy=vlm_policy,
+            execution_profile_hash=base.execution_profile_hash,
+            context_packs=context_packs,
+        )
+        aggregate_ref = self._store.read_committed_vlm_semantic_pack_set_reference(
+            origin_job,
+            batch_key,
+        )
+        source_ref = source_bundle.artifact_reference
+        semantic_request = CommittedSemanticInputsRequest(
+            origin_job,
+            CommittedArtifactMemberReference(
+                source_bundle.receipt_id,
+                source_bundle.artifact_set_id,
+                0,
+                source_ref.scope,
+                source_ref.artifact_type,
+                source_ref.logical_id,
+                source_ref.revision,
+                source_ref.content_hash,
+            ),
+            aggregate_ref,
+        )
+        semantic = self._store.read_committed_semantic_inputs(semantic_request)
+        episodes = source_bundle.prepared.episodes
+        if (
+            semantic.source_manifest.reference != source_ref
+            or semantic.source_manifest.source_job != origin_job
+            or semantic.vlm_semantic_pack_set != aggregate_ref
+            or len(semantic.inputs) != len(episodes)
+        ):
+            raise PipelineRunValidationError(
+                "base Source/VLM predecessor closure is incomplete"
+            )
+        for episode_index, (semantic_input, episode) in enumerate(
+            zip(semantic.inputs, episodes, strict=True)
+        ):
+            persisted = semantic_input.semantic_pack
+            child = persisted.source_child
+            if (
+                type(persisted) is not PersistedVlmSemanticPack  # noqa: E721
+                or semantic_input.source_window.episode_index != episode_index
+                or semantic_input.source_window.window_manifest_sha256
+                != episode.manifest.canonical_hash
+                or semantic_input.source_window.proxy_blob != episode.proxy_blob
+                or child.source_job != origin_job
+                or child.episode_index != episode_index
+                or child.source_manifest_sha256 != source_ref.content_hash
+                or child.source_provenance_sha256 != source_bundle.canonical_hash
+                or child.window_manifest_sha256 != episode.manifest.canonical_hash
+                or child.window_manifest_set_sha256 != episode.manifest_set.canonical_hash
+            ):
+                raise PipelineRunValidationError(
+                    "base Source/VLM predecessor closure is incomplete"
+                )
+
+
 __all__ = (
     "FullStageVlmRecomputeBinder",
     "FullStageVlmRecomputeBinderPort",
     "MediaPreflightRecomputeBinderPort",
+    "MediaPreflightRecomputeBinder",
+    "MediaPreflightRecomputeStore",
     "VlmRecomputeSourceStore",
 )

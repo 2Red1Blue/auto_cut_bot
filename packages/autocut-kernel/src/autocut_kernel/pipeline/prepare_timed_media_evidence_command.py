@@ -75,6 +75,7 @@ from ..vlm import VlmSemanticPack, WindowManifest
 PREPARE_TIMED_MEDIA_EVIDENCE_COMMAND = "PrepareTimedMediaEvidence@2.1.3"
 TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION = "whole-episode-conjunctive-evidence-v1"
 TIMED_SPEECH_BUSY_RETRY_COUNT = 1
+TIMED_SPEECH_BUSY_MAX_RETRY_COUNT = 3
 TIMED_SPEECH_BUSY_RETRY_DELAY_SECONDS = 1
 LOCAL_MEDIA_PRODUCER_PROVENANCE_SCHEMA = "local-media-producer-provenance-v1"
 RUNTIME_CUDA_MEDIA_PRODUCER_PROVENANCE_SCHEMA = "runtime-cuda-media-producer-provenance-v2"
@@ -231,10 +232,21 @@ class PrepareTimedMediaEvidenceRequest:
     adaptive_policy: AdaptiveEvidenceWindowPolicy
     producer_policy_sha256: str
     materialization_limits: MaterializationLimits
+    input_job: Job | None = None
+    transient_retry_budget: int = TIMED_SPEECH_BUSY_RETRY_COUNT
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job or type(self.source_blob) is not BlobRef:  # noqa: E721
             raise TimedMediaEvidenceCommandError("job/source_blob has an invalid type")
+        if self.input_job is not None and type(self.input_job) is not Job:  # noqa: E721
+            raise TimedMediaEvidenceCommandError("input_job must be an exact Job when present")
+        if (
+            type(self.transient_retry_budget) is not int  # noqa: E721
+            or not 0 <= self.transient_retry_budget <= TIMED_SPEECH_BUSY_MAX_RETRY_COUNT
+        ):
+            raise TimedMediaEvidenceCommandError(
+                "transient_retry_budget must be an integer from zero through three"
+            )
         if not self.idempotency_key or self.idempotency_key != self.idempotency_key.strip():
             raise TimedMediaEvidenceCommandError("idempotency_key must be canonical text")
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
@@ -267,9 +279,9 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError("materialization_limits must be exact")
         if type(self.source_manifest_reference) is not WholeSeriesSourceManifestReference:  # noqa: E721
             raise TimedMediaEvidenceCommandError("source manifest reference must be exact")
-        if self.source_manifest_reference.scope != canonical_recipe_scope(self.job):
+        if self.source_manifest_reference.scope != canonical_recipe_scope(self.evidence_job):
             raise TimedMediaEvidenceCommandError(
-                "source manifest reference has a non-canonical Job scope"
+                "source manifest reference has a non-canonical evidence Job scope"
             )
         for field_name in (
             "source_manifest_receipt_id",
@@ -282,7 +294,7 @@ class PrepareTimedMediaEvidenceRequest:
         if type(semantic) is not CommittedSemanticInputsRequest:  # noqa: E721
             raise TimedMediaEvidenceCommandError("semantic_inputs_request must be exact")
         source = self.source_manifest_reference
-        if semantic.job != self.job or semantic.source_manifest != CommittedArtifactMemberReference(
+        if semantic.job != self.evidence_job or semantic.source_manifest != CommittedArtifactMemberReference(
             self.source_manifest_receipt_id,
             self.source_manifest_artifact_set_id,
             0,
@@ -295,9 +307,9 @@ class PrepareTimedMediaEvidenceRequest:
             raise TimedMediaEvidenceCommandError(
                 "semantic inputs must bind the exact Source member and Job"
             )
-        if semantic.vlm_semantic_pack_set.scope != canonical_recipe_scope(self.job):
+        if semantic.vlm_semantic_pack_set.scope != canonical_recipe_scope(self.evidence_job):
             raise TimedMediaEvidenceCommandError(
-                "semantic VLM aggregate must bind the canonical Job scope"
+                "semantic VLM aggregate must bind the canonical evidence Job scope"
             )
         manifest = self.window_manifest
         if (
@@ -314,6 +326,18 @@ class PrepareTimedMediaEvidenceRequest:
     @property
     def source_manifest_sha256(self) -> str:
         return self.source_manifest_reference.content_hash
+
+    @property
+    def evidence_job(self) -> Job:
+        """Owner of immutable Source/VLM predecessors.
+
+        Ordinary commands read and write within one Job.  A selected recompute
+        may read the exact predecessor Job while committing new media evidence
+        under ``job``.  Keeping these identities explicit avoids copying or
+        relabelling VLM GenerationAttempts.
+        """
+
+        return self.job if self.input_job is None else self.input_job
 
     def root_input_manifest_sha256(self, presentation_timeline_probe: object) -> str:
         canonical_hash = getattr(presentation_timeline_probe, "canonical_hash", None)
@@ -345,7 +369,7 @@ class PrepareTimedMediaEvidenceRequest:
         )
 
     def canonical_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "artifact_revision": self.artifact_revision,
             "artifact_scope": _scope_mapping(self.artifact_scope),
             "audio_sample_boundary_set_sha256": self.audio_sample_boundaries.canonical_hash,
@@ -387,6 +411,14 @@ class PrepareTimedMediaEvidenceRequest:
             "strategy_version": TIMED_MEDIA_EVIDENCE_STRATEGY_VERSION,
             "window_manifest_sha256": self.window_manifest.canonical_hash,
         }
+        if self.input_job is not None:
+            payload["input_job"] = {
+                "job_key": self.input_job.job_key,
+                "profile": self.input_job.profile,
+            }
+        if self.transient_retry_budget != TIMED_SPEECH_BUSY_RETRY_COUNT:
+            payload["transient_retry_budget"] = self.transient_retry_budget
+        return payload
 
     @property
     def request_hash(self) -> str:
@@ -548,7 +580,7 @@ class PrepareTimedMediaEvidenceCommand:
                     "committed source exceeds the frozen effective source-byte limit",
                 )
             source = self._store.materialize_immutable_blob(
-                resolved_request.job,
+                resolved_request.request.evidence_job,
                 resolved_request.source_blob,
                 resolved_request.materialization_limits,
             )
@@ -560,7 +592,8 @@ class PrepareTimedMediaEvidenceCommand:
                 except TimedMediaEvidenceProducerError as error:
                     if (
                         error.code != "TIMED_SPEECH_BUSY"
-                        or busy_attempts >= TIMED_SPEECH_BUSY_RETRY_COUNT
+                        or busy_attempts
+                        >= resolved_request.request.transient_retry_budget
                     ):
                         raise
                     busy_attempts += 1
@@ -794,7 +827,7 @@ def resolve_committed_timed_media_request(
         raise TimedMediaEvidenceCommandError("timed media request must be exact")
     try:
         persisted = store.read_whole_series_source_manifest(
-            request.job,
+            request.evidence_job,
             request.source_manifest_artifact_set_id,
         )
         if (
@@ -802,7 +835,7 @@ def resolve_committed_timed_media_request(
             or persisted.receipt_id != request.source_manifest_receipt_id
             or persisted.artifact_set_id != request.source_manifest_artifact_set_id
             or persisted.command_slot_id != request.source_manifest_command_slot_id
-            or persisted.source_job != request.job
+            or persisted.source_job != request.evidence_job
         ):
             raise TimedMediaEvidenceCommandError(
                 "committed source manifest member does not match the requested immutable handle"
@@ -881,7 +914,7 @@ def resolve_committed_timed_media_request(
             or window.source_clock_id != episode.manifest.source_clock_id
             or window.window_manifest_set_sha256 != episode.manifest_set.canonical_hash
             or window.proxy_blob != request.source_blob
-            or child.source_job != request.job
+            or child.source_job != request.evidence_job
             or child.kernel_job_id != persisted.job_id
             or child.episode_index != request.episode_index
             or child.source_manifest_sha256 != request.source_manifest_sha256
@@ -895,7 +928,7 @@ def resolve_committed_timed_media_request(
             or _json(pack.semantic_pack.to_mapping()) != _json(request.semantic_pack.to_mapping())
             or selected.response_record.receipt_id != child.receipt_id
             or selected.response_record.artifact_set_id != child.artifact_set_id
-            or selected.response_record.scope != request.artifact_scope
+            or selected.response_record.scope != canonical_recipe_scope(request.evidence_job)
             or (
                 selected.response_record.member_ordinal,
                 selected.response_record.artifact_type,

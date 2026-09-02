@@ -112,12 +112,11 @@ class FinalizeTimedMediaEvidenceBatchRequest:
         if any(type(item) is not TimedMediaEvidenceBatchChild for item in children):  # noqa: E721
             raise TimedMediaEvidenceBatchError("batch children must be exact typed values")
         if any(
-            item.request.job != self.job
-            or item.request.artifact_scope != self.artifact_scope
+            item.request.artifact_scope != canonical_recipe_scope(item.request.job)
             or item.request.artifact_revision != self.artifact_revision
             for item in children
         ):
-            raise TimedMediaEvidenceBatchError("batch child scope, revision, or Job differs")
+            raise TimedMediaEvidenceBatchError("batch child scope or revision differs")
         if tuple(item.request.episode_index for item in children) != tuple(range(len(children))):
             raise TimedMediaEvidenceBatchError("batch children must cover ordered episode indexes")
         for value, label in (
@@ -128,8 +127,8 @@ class FinalizeTimedMediaEvidenceBatchRequest:
         ):
             if len(value) != len(set(value)):
                 raise TimedMediaEvidenceBatchError(f"batch contains duplicate child {label}")
-        if len({item.outcome.job_id for item in children}) != 1:
-            raise TimedMediaEvidenceBatchError("batch children must share one Kernel Job identity")
+        if len({item.request.evidence_job for item in children}) != 1:
+            raise TimedMediaEvidenceBatchError("batch children must share one immutable evidence Job")
 
     def canonical_payload(
         self,
@@ -307,14 +306,14 @@ def _assert_complete_source_coverage(
     first = request.children[0].request
     try:
         persisted = store.read_whole_series_source_manifest(
-            request.job, first.source_manifest_artifact_set_id
+            first.evidence_job, first.source_manifest_artifact_set_id
         )
         if (
             persisted.reference != first.source_manifest_reference
             or persisted.receipt_id != first.source_manifest_receipt_id
             or persisted.artifact_set_id != first.source_manifest_artifact_set_id
             or persisted.command_slot_id != first.source_manifest_command_slot_id
-            or persisted.source_job != request.job
+            or persisted.source_job != first.evidence_job
         ):
             raise TimedMediaEvidenceBatchError("batch Source manifest differs from child identity")
         source = decode_source_manifest(persisted.payload_json, persisted.proxy_blobs)
@@ -326,6 +325,7 @@ def _assert_complete_source_coverage(
         item = child.request
         if (
             item.source_manifest_reference != first.source_manifest_reference
+            or item.evidence_job != first.evidence_job
             or item.source_manifest_receipt_id != first.source_manifest_receipt_id
             or item.source_manifest_artifact_set_id != first.source_manifest_artifact_set_id
             or item.source_manifest_command_slot_id != first.source_manifest_command_slot_id
@@ -432,7 +432,6 @@ def _assert_final_record(
         or type(outcome.artifact_set_id) is not UUID  # noqa: E721
         or outcome.failure_code is not None
         or outcome.failure_detail_json is not None
-        or outcome.job_id != request.children[0].outcome.job_id
     ):
         raise TimedMediaEvidenceBatchError("batch finalizer did not produce a succeeded Receipt")
     record = store.read_committed_artifact_set(
@@ -456,7 +455,9 @@ def _assert_final_record(
         or record.execution_kind != "deterministic"
         or len(record.members) != 1
     ):
-        raise TimedMediaEvidenceBatchError("batch final Store record differs from exact finalizer identity")
+        raise TimedMediaEvidenceBatchError(
+            "batch succeeded Receipt/final Store record differs from exact finalizer identity"
+        )
     member = record.members[0]
     if (
         member.reference.member_ordinal != 0

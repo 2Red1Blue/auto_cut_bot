@@ -14,7 +14,11 @@ from autocut_kernel.registry.installed_runtime import InstalledLocalRunProfileRe
 from autocut_kernel.source_manifest import SourceOperationPolicy
 from psycopg import OperationalError
 
-from auto_cut_bot.pipeline.runtime import PipelineRunRequest, PipelineRunValidationError
+from auto_cut_bot.pipeline.runtime import (
+    MediaPreflightRecomputeBinder,
+    PipelineRunRequest,
+    PipelineRunValidationError,
+)
 from auto_cut_bot.pipeline.runtime.composition import (
     PIPELINE_ARK_API_KEY_ENV,
     PIPELINE_ARK_BASE_URL_ENV,
@@ -258,6 +262,9 @@ def test_environment_composes_only_doubao_profile_and_defaults_kernel_dsn(
     )
     assert runtime.execution_profile.to_media_preflight_policy().to_mapping() == _media_policy(
         tmp_path
+    )
+    assert type(runtime.service._media_preflight_recompute_binder) is (  # pyright: ignore[reportPrivateUsage]
+        MediaPreflightRecomputeBinder
     )
     assert "qwen" not in runtime.execution_profile.canonical_json.casefold()
     assert str(tmp_path / "verified-media-staging") not in runtime.execution_profile.canonical_json

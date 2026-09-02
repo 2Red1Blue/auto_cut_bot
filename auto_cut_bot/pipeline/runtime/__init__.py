@@ -52,7 +52,11 @@ from .ports import (
     SourceAuthorizationPort,
 )
 from .postgres import PostgresPipelineRunStore, PostgresPipelineScheduler
-from .recompute import FullStageVlmRecomputeBinder, MediaPreflightRecomputeBinderPort
+from .recompute import (
+    FullStageVlmRecomputeBinder,
+    MediaPreflightRecomputeBinder,
+    MediaPreflightRecomputeBinderPort,
+)
 from .service import DurablePipelineRunService
 from .source_prep_stage import SourcePrepPipelineStage, SourcePrepRootResolver
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
@@ -98,6 +102,7 @@ __all__ = (
     "ResumeNotAllowedError",
     "RunClaim",
     "MediaPreflightRecomputeRequest",
+    "MediaPreflightRecomputeBinder",
     "MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET",
     "VlmFullStageRecomputeRequest",
     "parse_recompute_request",

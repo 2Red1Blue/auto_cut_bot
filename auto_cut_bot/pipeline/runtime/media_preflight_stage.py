@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol, TypeVar, cast
 
 from autocut_kernel.context_pack import WindowContextPack
@@ -511,7 +512,11 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
         runtime: _RuntimeCudaAuthority | None,
-    ) -> tuple[PersistedPreparedSources, tuple[PrepareTimedMediaEvidenceRequest, ...]] | None:
+    ) -> tuple[
+        PersistedPreparedSources,
+        tuple[PrepareTimedMediaEvidenceRequest, ...],
+        tuple[PrepareTimedMediaEvidenceRequest, ...],
+    ] | None:
         if context.recompute_request is not None and type(  # noqa: E721
             context.recompute_request
         ) is not MediaPreflightRecomputeRequest:
@@ -520,10 +525,15 @@ class MediaPreflightPipelineStage:
             )
         materialization_limits = self._validate_execution_profile(context, policy)
         job = self._job(context)
+        recompute = context.recompute_request
+        evidence_run_id = (
+            context.run_id if recompute is None else recompute.base_run_id
+        )
+        evidence_job = Job(evidence_run_id, context.request.profile)
 
         source_outcome = self._store.read_outcome(
-            job,
-            source_prep_kernel_idempotency_key(context.run_id),
+            evidence_job,
+            source_prep_kernel_idempotency_key(evidence_run_id),
         )
         if source_outcome is None or source_outcome.state in ("pending", "running"):
             return None
@@ -533,9 +543,9 @@ class MediaPreflightPipelineStage:
             raise PipelineRunValidationError("source preparation outcome is unsupported")
         source_bundle = read_persisted_prepared_sources_bundle(
             self._store,
-            job=job,
+            job=evidence_job,
             outcome=source_outcome,
-            artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+            artifact_scope=ArtifactScope("pipeline", "job", evidence_run_id),
             artifact_revision=_ARTIFACT_REVISION,
         )
         validate_installed_source_sampling(source_bundle)
@@ -547,8 +557,8 @@ class MediaPreflightPipelineStage:
             committed_context = (
                 find_committed_window_context_packs(
                     cast(ContextPrepareStore, self._store),
-                    job=job,
-                    artifact_scope=ArtifactScope("pipeline", "job", context.run_id),
+                    job=evidence_job,
+                    artifact_scope=ArtifactScope("pipeline", "job", evidence_run_id),
                     artifact_revision=_ARTIFACT_REVISION,
                     source_bundle=source_bundle,
                 )
@@ -565,7 +575,7 @@ class MediaPreflightPipelineStage:
             )
         context_packs = None if committed_context is None else committed_context.packs
         vlm_batch_key = media_preflight_vlm_batch_kernel_idempotency_key(
-            run_id=context.run_id,
+            run_id=evidence_run_id,
             source_bundle=source_bundle,
             policy=vlm_policy,
             execution_profile_hash=context.execution_profile_hash,
@@ -573,7 +583,7 @@ class MediaPreflightPipelineStage:
         )
         try:
             vlm_semantic_pack_set = self._store.read_committed_vlm_semantic_pack_set_reference(
-                job,
+                evidence_job,
                 vlm_batch_key,
             )
         except SemanticInputUnavailableError as error:
@@ -582,7 +592,7 @@ class MediaPreflightPipelineStage:
             ) from error
         source_reference = source_bundle.artifact_reference
         semantic_inputs_request = CommittedSemanticInputsRequest(
-            job=job,
+            job=evidence_job,
             source_manifest=CommittedArtifactMemberReference(
                 receipt_id=source_bundle.receipt_id,
                 artifact_set_id=source_bundle.artifact_set_id,
@@ -600,6 +610,7 @@ class MediaPreflightPipelineStage:
             item.source_window.window_manifest_sha256: item for item in committed.inputs
         }
         requests: list[PrepareTimedMediaEvidenceRequest] = []
+        semantic_packs: list[PersistedVlmSemanticPack] = []
         for episode_index, episode in enumerate(source_bundle.prepared.episodes):
             try:
                 semantic_input = inputs_by_window[episode.manifest.canonical_hash]
@@ -607,7 +618,13 @@ class MediaPreflightPipelineStage:
                 raise PipelineRunValidationError(
                     "exact committed semantic inputs lost a source window"
                 ) from error
-            persisted = semantic_input.semantic_pack
+            persisted_value = semantic_input.semantic_pack
+            if type(persisted_value) is not PersistedVlmSemanticPack:  # noqa: E721
+                raise PipelineRunValidationError(
+                    "media-preflight requires the registered V3 timed-media semantic predecessor"
+                )
+            persisted = persisted_value
+            semantic_packs.append(persisted)
             child = persisted.source_child
             if (
                 child.episode_index != episode_index
@@ -622,7 +639,7 @@ class MediaPreflightPipelineStage:
             adaptive = policy.adaptive_window_policy(episode.manifest.source_time_base)
             if runtime is None:
                 key = media_preflight_kernel_idempotency_key(
-                    run_id=context.run_id,
+                    run_id=evidence_run_id,
                     episode_index=episode_index,
                     source_bundle=source_bundle,
                     semantic_pack=persisted,
@@ -633,7 +650,7 @@ class MediaPreflightPipelineStage:
                 producer_policy_sha256 = policy.canonical_hash
             else:
                 key = runtime_media_preflight_kernel_idempotency_key(
-                    run_id=context.run_id,
+                    run_id=evidence_run_id,
                     episode_index=episode_index,
                     source_bundle=source_bundle,
                     semantic_pack=persisted,
@@ -644,11 +661,11 @@ class MediaPreflightPipelineStage:
                 producer_policy_sha256 = runtime.policy.canonical_hash
             requests.append(
                 PrepareTimedMediaEvidenceRequest(
-                    job=job,
+                    job=evidence_job,
                     idempotency_key=key,
                     semantic_inputs_request=semantic_inputs_request,
                     episode_index=episode_index,
-                    artifact_scope=canonical_recipe_scope(job),
+                    artifact_scope=canonical_recipe_scope(evidence_job),
                     artifact_revision=_ARTIFACT_REVISION,
                     source_blob=episode.proxy_blob,
                     source_manifest_reference=source_bundle.artifact_reference,
@@ -671,15 +688,46 @@ class MediaPreflightPipelineStage:
             raise PipelineRunValidationError(
                 "media-preflight requires at least one committed episode"
             )
-        recompute = context.recompute_request
         if recompute is not None:
             selected_index = recompute.selected_episode_index
             if type(selected_index) is not int or not 0 <= selected_index < len(requests):  # noqa: E721
                 raise PipelineRunValidationError(
                     "selected media episode is outside the committed source census"
                 )
-            return source_bundle, (requests[selected_index],)
-        return source_bundle, tuple(requests)
+            origin = requests[selected_index]
+            if runtime is None:
+                target_key = media_preflight_kernel_idempotency_key(
+                    run_id=context.run_id,
+                    episode_index=selected_index,
+                    source_bundle=source_bundle,
+                    semantic_pack=semantic_packs[selected_index],
+                    producer_policy_sha256=policy.canonical_hash,
+                    adaptive_policy_sha256=origin.adaptive_policy.canonical_hash,
+                    materialization_policy_sha256=materialization_limits.policy_sha256,
+                )
+            else:
+                target_key = runtime_media_preflight_kernel_idempotency_key(
+                    run_id=context.run_id,
+                    episode_index=selected_index,
+                    source_bundle=source_bundle,
+                    semantic_pack=semantic_packs[selected_index],
+                    runtime_policy=runtime.policy,
+                    adaptive_policy_sha256=origin.adaptive_policy.canonical_hash,
+                    materialization_policy_sha256=materialization_limits.policy_sha256,
+                )
+            selected = replace(
+                origin,
+                job=job,
+                idempotency_key=target_key,
+                artifact_scope=canonical_recipe_scope(job),
+                input_job=evidence_job,
+                transient_retry_budget=recompute.retry_budget,
+            )
+            aggregate = list(requests)
+            aggregate[selected_index] = selected
+            return source_bundle, (selected,), tuple(aggregate)
+        complete = tuple(requests)
+        return source_bundle, complete, complete
 
     def _validate_execution_profile(
         self,
@@ -713,7 +761,15 @@ class MediaPreflightPipelineStage:
         prepared = await asyncio.to_thread(self._requests, context, policy, authority)
         if prepared is None:
             return PipelineStageResult(context.command.command_id, "indeterminate")
-        result = await self._execute_batch(context, *prepared, policy, authority)
+        source_bundle, requests, aggregate_requests = prepared
+        result = await self._execute_batch(
+            context,
+            source_bundle,
+            requests,
+            policy,
+            authority,
+            aggregate_requests=aggregate_requests,
+        )
         return self._project(context, result.outcome)
 
     async def reconcile(self, context: PipelineStageContext) -> PipelineStageResult | None:
@@ -725,7 +781,15 @@ class MediaPreflightPipelineStage:
         prepared = await asyncio.to_thread(self._requests, context, policy, authority)
         if prepared is None:
             return None
-        result = await self._execute_batch(context, *prepared, policy, authority)
+        source_bundle, requests, aggregate_requests = prepared
+        result = await self._execute_batch(
+            context,
+            source_bundle,
+            requests,
+            policy,
+            authority,
+            aggregate_requests=aggregate_requests,
+        )
         projected = self._project(context, result.outcome)
         return None if projected.outcome == "indeterminate" else projected
 
@@ -789,15 +853,27 @@ class MediaPreflightPipelineStage:
         requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
         policy: LocalMediaPreflightPolicy,
         runtime: _RuntimeCudaAuthority | None = None,
+        *,
+        aggregate_requests: tuple[PrepareTimedMediaEvidenceRequest, ...] | None = None,
     ) -> (
         FinalizeTimedMediaEvidenceBatchResult
         | PrepareTimedMediaEvidenceResult
         | FinalizeRuntimeTimedMediaEvidenceBatchResult
         | PrepareRuntimeTimedMediaEvidenceResult
     ):
+        selected_inspection_only = (
+            aggregate_requests is None and context.recompute_request is not None
+        )
+        if aggregate_requests is None:
+            aggregate_requests = requests
         if runtime is not None:
             return await self._execute_runtime_cuda_batch(
-                context, source_bundle, requests, policy, runtime
+                context,
+                source_bundle,
+                requests,
+                policy,
+                runtime,
+                aggregate_requests=aggregate_requests,
             )
         resolver = self._authority_profile_resolver
         # Check accepted installation before claim-owned detector work. The
@@ -838,18 +914,37 @@ class MediaPreflightPipelineStage:
                 raise PipelineRunValidationError(
                     "succeeded media-preflight child lost its ArtifactSet"
                 )
-            children.append(TimedMediaEvidenceBatchChild(request, outcome))
         if unresolved is not None:
             return unresolved
         if terminal is not None:
             return terminal
-        if context.recompute_request is not None and len(source_bundle.prepared.episodes) != 1:
-            # A selected child is a durable inspection/recovery result. It is
-            # not a complete-series aggregate and cannot cross the Stage gate.
-            if len(children) != 1:
+        if selected_inspection_only:
+            return results[0]
+        executed = {
+            request.episode_index: result
+            for request, result in zip(requests, results, strict=True)
+        }
+        aggregate_unavailable = False
+        for request in aggregate_requests:
+            result = executed.get(request.episode_index)
+            outcome = (
+                result.outcome
+                if result is not None
+                else self._store.read_outcome(request.job, request.idempotency_key)
+            )
+            if outcome is None or outcome.state != "succeeded":
+                aggregate_unavailable = True
+                continue
+            children.append(TimedMediaEvidenceBatchChild(request, outcome))
+        if aggregate_unavailable:
+            if context.recompute_request is None:
                 raise PipelineRunValidationError(
-                    "selected media recompute must settle exactly one episode"
+                    "ordinary media batch lost a settled child before finalization"
                 )
+            # A selected child is a durable inspection/recovery result. It is
+            # retained even when another failed sibling still prevents a
+            # complete aggregate. Multi-successor accumulation requires the
+            # separate persisted recovery-frontier implementation.
             return results[0]
         job = Job(context.run_id, context.request.profile)
         finalizer = FinalizeTimedMediaEvidenceBatchRequest(
@@ -873,6 +968,8 @@ class MediaPreflightPipelineStage:
         requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
         policy: LocalMediaPreflightPolicy,
         runtime: _RuntimeCudaAuthority,
+        *,
+        aggregate_requests: tuple[PrepareTimedMediaEvidenceRequest, ...] | None = None,
     ) -> FinalizeRuntimeTimedMediaEvidenceBatchResult | PrepareRuntimeTimedMediaEvidenceResult:
         resolver = self._runtime_authority_resolver
         if resolver is None:
@@ -886,11 +983,21 @@ class MediaPreflightPipelineStage:
             PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
             for base in requests
         )
+        if aggregate_requests is None:
+            aggregate_requests = requests
+        aggregate_runtime_requests = tuple(
+            PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
+            for base in aggregate_requests
+        )
         results = await _execute_independent_requests(
             runtime_requests,
             command.execute,
             max_concurrency=self._episode_max_concurrency,
         )
+        executed = {
+            request.timed_media_request.episode_index: result
+            for request, result in zip(runtime_requests, results, strict=True)
+        }
         children: list[RuntimeTimedMediaEvidenceBatchChild] = []
         unresolved: PrepareRuntimeTimedMediaEvidenceResult | None = None
         terminal: PrepareRuntimeTimedMediaEvidenceResult | None = None
@@ -910,15 +1017,26 @@ class MediaPreflightPipelineStage:
                 continue
             if outcome.artifact_set_id is None:
                 raise PipelineRunValidationError("succeeded CUDA child lost its ArtifactSet")
-            children.append(RuntimeTimedMediaEvidenceBatchChild(request, outcome))
         if unresolved is not None:
             return unresolved
         if terminal is not None:
             return terminal
-        if context.recompute_request is not None and len(source_bundle.prepared.episodes) != 1:
-            if len(children) != 1:
+        aggregate_unavailable = False
+        for request in aggregate_runtime_requests:
+            result = executed.get(request.timed_media_request.episode_index)
+            outcome = (
+                result.outcome
+                if result is not None
+                else self._store.read_outcome(request.job, request.idempotency_key)
+            )
+            if outcome is None or outcome.state != "succeeded":
+                aggregate_unavailable = True
+                continue
+            children.append(RuntimeTimedMediaEvidenceBatchChild(request, outcome))
+        if aggregate_unavailable:
+            if context.recompute_request is None:
                 raise PipelineRunValidationError(
-                    "selected CUDA media recompute must settle exactly one episode"
+                    "ordinary CUDA media batch lost a settled child before finalization"
                 )
             return results[0]
         job = Job(context.run_id, context.request.profile)

@@ -92,10 +92,11 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
 selected recompute、reconcile、`blocked`、预算累计、Receipt 收尾、断点续跑和未来并发
 并发契约，以 [字幕感知 VLM 到 ExactSpan 设计 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)
 为唯一规范来源；本节只保留排障摘要。当前代码事实是：VLM 提供 `selected_only` 执行过滤入口；
-Media Preflight adapter 也已支持单集过滤，但正式 HTTP successor 仍因缺少跨 Run binder 而保持关闭。
-两者都不能把单集成功冒充完整 aggregate。`selected_only` successor 的计划本身恰好只有一个
-Stage command；该 Run 可以终态 `succeeded` 表示“所选集检查/重算成功”，但没有任何下游 command，
-且其状态必须与 `completion_scope=selected_only` 一起展示，不能解释为全剧 Stage 成功。
+Media Preflight 的正式 Runtime 已接入跨 Run evidence binder 和单集 successor。所选集重算成功后，
+Finalizer 会精确重读原 Run 已成功的兄弟集与 successor 的新结果；只有两者共同覆盖完整 source
+census，且 producer/runtime authority、策略和依赖哈希完全兼容时，才在 successor 下生成标准
+`timed_media_evidence_batch`。若仍有其他失败集或执行身份已经改变，所选集成功
+会作为可审计的 inspection/recovery 结果保留，但不会冒充完整 aggregate，也不会进入下游。
 
 ## 当前最后已知真实断点（2026-09-01 更新）
 
@@ -143,9 +144,10 @@ CAS 激活为 `pending` 并入队。
 记录的媒体 Blob，也不会让未绑定的命令被 worker 执行。精确请求重放会重新入队以修复
 “claim 成功但 enqueue 失败”的窗口；更换同一 key 的集号或策略会被拒绝。
 
-这仍不等于媒体单集重跑已具备生产 binder：跨 Run 的 source/VLM evidence binder、成功集
-exact reuse、mixed aggregate finalizer 仍是后续实现项；在这些组件完成前，HTTP 对
-`stage=media_preflight` 保持 422，禁止误走 VLM 路径或伪造完整媒体批次。
+正式 Runtime 已接入跨 Run source/VLM evidence binder：它先证明 base Run 的 SourceManifest、
+VLM aggregate 和完整 episode census 可被精确重读，再激活 successor。成功集 exact reuse 与
+mixed aggregate finalizer 也已实现；HTTP `stage=media_preflight` 不再因为“功能未接线”固定返回
+422。绑定缺失、引用不闭合或目标集越界仍会 fail-closed，且不会误走 VLM recompute 路径。
 
 ### 重试能力的边界（重要澄清）
 
@@ -156,15 +158,17 @@ exact reuse、mixed aggregate finalizer 仍是后续实现项；在这些组件�
   预算耗尽后写入最终 `RETRY_BUDGET_EXHAUSTED` Receipt。`selected_only` 是新的
   successor Run，不会改写原始失败 Run。
 - Media Preflight 的 successor reservation/binding lease 已可在绑定失败后用同一幂等键
-  重试，防止留下未绑定的运行。但 `MediaPreflightRecomputeRequest.retry_budget` 目前
-  **尚未**驱动 `PrepareTimedMediaEvidenceCommand` 的子任务 Attempt 链；因此它不能被
-  解读为 ASR/VAD/视觉证据已经支持自动重试。
+  重试，防止留下未绑定的运行。`MediaPreflightRecomputeRequest.retry_budget` 已被冻结进所选
+  child Request，并驱动 `TIMED_SPEECH_BUSY` 的有限自动重试；预算范围为 0–3。它目前是一次
+  Command 执行内的有界重试，还不是跨进程持久化 Attempt/CAS 预算，因此进程崩溃后不能声称
+  已具备与 VLM GenerationAttempt 相同的恢复证明。
 - Media Stage 默认以最多 3 集有界并发执行（运行时可调整，且不改变证据身份）；某集终态失败
-  不会取消或阻止其他独立集，成功 child
-  会保留，但 aggregate 与下游继续 fail-closed。要重跑失败集，现阶段仍需等待媒体单集 successor
-  的正式 binder/inspection/mixed-aggregate 实现；
-  不允许通过 `/resume` 重开终态命令，也不能把 `retry_budget` 当作已消费的持久化计数器。
+  不会取消或阻止其他独立集，成功 child 会保留，但 aggregate 与下游继续 fail-closed。失败集可
+  通过媒体单集 successor 重跑；若其余集均已成功且执行身份兼容，mixed aggregate 会复用它们并
+  闭合新批次。跨 CPU/CUDA 或 runtime policy 变化的复用还未接入持久化 recovery frontier，当前只
+  保留所选集 inspection 结果并要求显式重算缺失身份，不能静默视为完整批次。
+  不允许通过 `/resume` 重开终态命令，也不能把当前 `retry_budget` 当作跨重启累计的持久化计数器。
 
-后续实现必须先补齐媒体子任务的持久化 Attempt/失败分类/预算 CAS，再开放
-`retry_budget` 的自动重试语义；在此之前，接口与运行文档必须把它标为“预留字段”，不得
-声称 Media Preflight 已具备与 VLM 等价的失败恢复能力。
+后续仍需补齐媒体子任务的持久化 Attempt、完整失败分类和预算 CAS，才能把当前进程内 BUSY 重试
+升级为与 VLM 等价的崩溃安全恢复能力。当前接口可以声明“有限瞬态重试 + 单集 successor”，不能
+声明“所有失败都会重试”或“重启不会重置剩余预算”。

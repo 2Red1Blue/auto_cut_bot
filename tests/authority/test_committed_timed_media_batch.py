@@ -31,12 +31,14 @@ from autocut_kernel.store.models import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedVlmSemanticInput,
+    Job,
     PersistedCommittedArtifactMember,
     PersistedCommittedArtifactSet,
     PersistedVlmSemanticPack,
     SourceWindowIdentity,
     VlmRequestRecordReference,
     canonical_payload_hash,
+    canonical_recipe_scope,
 )
 
 import tests.media.test_prepare_timed_media_evidence_command as media_fixture
@@ -398,6 +400,57 @@ def test_batch_requires_every_actual_source_episode_and_retains_only_five_refs_e
     with pytest.raises(TimedMediaEvidenceBatchError, match="every committed Source episode"):
         command.execute(missing)
     assert len(store.claims) == before_claims
+
+
+def test_mixed_batch_reuses_origin_child_and_rereads_selected_successor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, request, resolver, origin_batch = _two_episode_batch_case(tmp_path, monkeypatch)
+    origin_job = request.job
+    target_job = Job("media-recompute-successor", origin_job.profile)
+    selected_origin = origin_batch.children[1].request
+    selected_target = replace(
+        selected_origin,
+        job=target_job,
+        idempotency_key="media-preflight:episode:1:successor",
+        artifact_scope=canonical_recipe_scope(target_job),
+        input_job=origin_job,
+    )
+    selected_outcome, _ = _record(store, selected_target, resolver.resource)
+    assert store.record is not None
+    store.child_records[
+        (
+            selected_outcome.command_slot_id,
+            selected_outcome.receipt_id,
+            selected_outcome.artifact_set_id,
+        )
+    ] = store.record
+    mixed = FinalizeTimedMediaEvidenceBatchRequest(
+        target_job,
+        "media-preflight:batch:successor",
+        canonical_recipe_scope(target_job),
+        1,
+        (
+            origin_batch.children[0],
+            TimedMediaEvidenceBatchChild(selected_target, selected_outcome),
+        ),
+    )
+
+    result = FinalizeTimedMediaEvidenceBatchCommand(
+        store, resolver, _limits(request)
+    ).execute(mixed)
+
+    assert result.outcome.state == "succeeded"
+    assert result.artifact is not None
+    assert result.artifact.scope == canonical_recipe_scope(target_job)
+    assert tuple(child.request.job for child in mixed.children) == (
+        origin_job,
+        target_job,
+    )
+    assert all(
+        child.request.evidence_job == origin_job for child in mixed.children
+    )
+    assert len(result.child_member_references) == 2
 
 
 def test_two_episode_batch_cumulative_limit_rejects_before_any_materialization(
