@@ -1482,3 +1482,14 @@ async def test_invalid_episode_starts_bounded_retry_and_blocks_later_batches(
     assert all(
         claim.command_name != "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
     )
+
+    # The admission barrier is released after the durable child retry
+    # converges.  It must not be mistaken for a permanent stop: the failed
+    # probe gets a new GenerationAttempt, then the bounded later batch may run.
+    recovered = await stage.reconcile(_context(status="indeterminate"))
+
+    assert recovered is not None and recovered.outcome == "succeeded"
+    assert len(provider.dispatch_calls) == len(bundle.prepared.episodes) + 1
+    assert any(
+        claim.command_name == "FinalizeVlmBatchCommand" for claim, _outcome in store.claims.values()
+    )
