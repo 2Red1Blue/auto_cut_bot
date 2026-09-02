@@ -1796,7 +1796,7 @@ def test_openai_codex_oauth_login_reports_missing_oauth_cli_kit(
 
     assert str(exc.value) == (
         "This auto_cut_bot installation is missing the required oauth-cli-kit package. "
-        "Reinstall or upgrade auto_cut_bot-ai using the same installation method."
+        "Reinstall or upgrade auto-cut-bot-ai using the same installation method."
     )
 
 
@@ -1821,7 +1821,7 @@ def test_github_copilot_oauth_login_reports_missing_oauth_cli_kit(
 
     assert str(exc.value) == (
         "This auto_cut_bot installation is missing the required oauth-cli-kit package. "
-        "Reinstall or upgrade auto_cut_bot-ai using the same installation method."
+        "Reinstall or upgrade auto-cut-bot-ai using the same installation method."
     )
 
 

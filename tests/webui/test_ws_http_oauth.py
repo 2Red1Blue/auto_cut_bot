@@ -32,7 +32,7 @@ def test_mcp_oauth_callback_uses_safe_forwarded_request_origin() -> None:
     handler = _handler(WebSocketConfig(path="/ws", host="127.0.0.1", port=8765))
 
     redirect_uri = handler._mcp_oauth_redirect_uri(
-        _request(Host="auto_cut_bot.example:9443", **{"X-Forwarded-Proto": "https"})
+        _request(Host="autocutbot.example:9443", **{"X-Forwarded-Proto": "https"})
     )
 
-    assert redirect_uri == "https://auto_cut_bot.example:9443/auth/mcp/callback"
+    assert redirect_uri == "https://autocutbot.example:9443/auth/mcp/callback"

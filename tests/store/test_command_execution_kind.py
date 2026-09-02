@@ -118,6 +118,6 @@ def test_every_store_owned_slot_insert_sets_execution_kind() -> None:
     source = Path("packages/autocut-kernel/src/autocut_kernel/store/postgres.py").read_text()
     inserts = source.split("INSERT INTO runtime.command_slots")[1:]
 
-    assert len(inserts) == 2
+    assert len(inserts) == 3
     assert all("execution_kind" in insert.split("VALUES", maxsplit=1)[0] for insert in inserts)
     assert "'deterministic', 'running'" in inserts[1]

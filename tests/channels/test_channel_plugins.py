@@ -2561,9 +2561,9 @@ def test_enable_bootstraps_pip_with_ensurepip(monkeypatch):
 
     assert optional_features.install_extra("bedrock", None, runner=_run).ok is True
     assert calls == [
-        [sys.executable, "-m", "pip", "install", "auto_cut_bot-ai[bedrock]"],
+        [sys.executable, "-m", "pip", "install", "auto-cut-bot-ai[bedrock]"],
         [sys.executable, "-m", "ensurepip", "--upgrade"],
-        [sys.executable, "-m", "pip", "install", "auto_cut_bot-ai[bedrock]"],
+        [sys.executable, "-m", "pip", "install", "auto-cut-bot-ai[bedrock]"],
     ]
 
 
