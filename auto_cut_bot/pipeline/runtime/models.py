@@ -56,6 +56,7 @@ PipelineExecutionProfileKind = Literal["doubao_vlm", "legacy_unresolved"]
 
 _RUN_ID = re.compile(r"pipeline_run_[0-9a-f]{32}\Z")
 _IDEMPOTENCY_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET = 3
 
 
 def validate_run_id(run_id: str) -> None:
@@ -77,6 +78,14 @@ def _required_text(value: object, field_name: str) -> str:
     if type(value) is not str or not value.strip():  # noqa: E721
         raise PipelineRunValidationError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _canonical_request_hash(mapping: Mapping[str, object]) -> str:
+    """Hash the exact closed request mapping used for persistence and CAS."""
+    encoded = json.dumps(
+        mapping, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _profile_text(value: object, field_name: str) -> str:
@@ -1799,10 +1808,96 @@ class VlmFullStageRecomputeRequest:
 
     @property
     def request_hash(self) -> str:
-        encoded = json.dumps(
-            self.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        return "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return _canonical_request_hash(self.to_mapping())
+
+
+@dataclass(frozen=True, slots=True)
+class MediaPreflightRecomputeRequest:
+    """Closed request for a selected media-preflight episode recompute.
+
+    Version one intentionally supports only a single selected episode.  The
+    episode number is the persisted one-based source episode number (the
+    runtime derives a zero-based worker index only at execution time).  The
+    retry budget is request-owned and bounded independently from the frozen
+    generation retry policy used by a pipeline execution profile.
+    """
+
+    base_run_id: str
+    expected_version: int
+    episode_numbers: tuple[int, ...]
+    stage: Literal["media_preflight"] = "media_preflight"
+    completion_scope: Literal["selected_only"] = "selected_only"
+    retry_budget: int = 0
+
+    def __post_init__(self) -> None:
+        validate_run_id(self.base_run_id)
+        if type(self.expected_version) is not int or self.expected_version < 0:  # noqa: E721
+            raise PipelineRunValidationError("expected_version must be a non-negative integer")
+        if self.stage != "media_preflight":
+            raise PipelineRunValidationError("recompute stage must be 'media_preflight'")
+        if self.completion_scope != "selected_only":
+            raise PipelineRunValidationError(
+                "media_preflight recompute completion_scope must be 'selected_only'"
+            )
+        if type(self.episode_numbers) is not tuple or any(  # noqa: E721
+            type(number) is not int or number < 1  # noqa: E721
+            for number in self.episode_numbers
+        ):
+            raise PipelineRunValidationError("episode_numbers must be a tuple of positive integers")
+        if tuple(sorted(set(self.episode_numbers))) != self.episode_numbers:
+            raise PipelineRunValidationError(
+                "episode_numbers must be strictly increasing without duplicates"
+            )
+        if len(self.episode_numbers) != 1:
+            raise PipelineRunValidationError("selected_only v1 requires exactly one episode number")
+        if type(self.retry_budget) is not int or not 0 <= self.retry_budget <= MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET:  # noqa: E721
+            raise PipelineRunValidationError(
+                "retry_budget must be a non-negative integer no greater than three"
+            )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> MediaPreflightRecomputeRequest:
+        expected = {
+            "base_run_id",
+            "expected_version",
+            "stage",
+            "completion_scope",
+            "episode_numbers",
+            "retry_budget",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise PipelineRunValidationError(
+                "media_preflight recompute body fields do not match the closed contract"
+            )
+        raw_numbers = value["episode_numbers"]
+        if type(raw_numbers) is not list:  # noqa: E721
+            raise PipelineRunValidationError("episode_numbers must be a JSON array")
+        return cls(
+            base_run_id=cast(str, value["base_run_id"]),
+            expected_version=cast(int, value["expected_version"]),
+            episode_numbers=tuple(cast(list[int], raw_numbers)),
+            stage=cast(Literal["media_preflight"], value["stage"]),
+            completion_scope=cast(Literal["selected_only"], value["completion_scope"]),
+            retry_budget=cast(int, value["retry_budget"]),
+        )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "base_run_id": self.base_run_id,
+            "completion_scope": self.completion_scope,
+            "episode_numbers": list(self.episode_numbers),
+            "expected_version": self.expected_version,
+            "retry_budget": self.retry_budget,
+            "stage": self.stage,
+        }
+
+    @property
+    def selected_episode_index(self) -> int:
+        return self.episode_numbers[0] - 1
+
+    @property
+    def request_hash(self) -> str:
+        return _canonical_request_hash(self.to_mapping())
 
 
 @dataclass(frozen=True, slots=True)
