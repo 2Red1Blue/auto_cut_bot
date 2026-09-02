@@ -1147,6 +1147,10 @@ async def test_connect_mcp_servers_http_clients_reject_unsafe_redirect_targets(
 
     monkeypatch.setattr(mcp_mod, "validate_url_target", _validate)
     monkeypatch.setattr(mcp_mod, "_probe_http_url", _reachable)
+    # Machine-level proxies (e.g. macOS SystemConfiguration) yield httpx
+    # mounts that take precedence over transport=, which would send these
+    # requests to the real network instead of the MockTransport below.
+    monkeypatch.setattr(mcp_mod, "httpx_env_proxy_mounts", lambda: {})
     monkeypatch.setattr(
         mcp_mod,
         "PinnedDNSAsyncTransport",

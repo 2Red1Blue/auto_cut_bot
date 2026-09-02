@@ -264,6 +264,11 @@ async def test_web_fetch_does_not_fallback_after_pinned_dns_rebind_rejection(mon
         async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
             raise AssertionError("rebound target must be rejected before transport")
 
+    # Keep machine-level proxy mounts from shadowing transport= and hitting
+    # the real network; this test pins the transport explicitly.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.httpx_env_proxy_mounts", lambda: {}
+    )
     monkeypatch.setattr(
         web_module,
         "_pinned_dns_transport",
@@ -456,6 +461,11 @@ async def test_web_fetch_blocks_private_redirect_before_readability_request(monk
 @pytest.mark.asyncio
 async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypatch):
     tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
+    # Machine-level proxy mounts would shadow transport= and hit the real
+    # network; pin this test to the explicit MockTransport below.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.httpx_env_proxy_mounts", lambda: {}
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         if str(request.url) == "https://example.com/image.png":
@@ -501,6 +511,12 @@ async def test_web_fetch_blocks_private_redirect_before_returning_image(monkeypa
 @pytest.mark.asyncio
 async def test_web_fetch_does_not_request_private_redirect_target(monkeypatch):
     tool = WebFetchTool(config=WebFetchConfig(use_jina_reader=False))
+
+    # Machine-level proxy mounts would shadow transport= and hit the real
+    # network; pin this test to the explicit MockTransport below.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.httpx_env_proxy_mounts", lambda: {}
+    )
     requested: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

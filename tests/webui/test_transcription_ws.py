@@ -22,6 +22,9 @@ async def test_webui_transcribe_audio_rejects_unconfigured_provider(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Ambient provider credentials (e.g. GROQ_API_KEY) would make an
+    # unconfigured config resolve as configured and trigger a real API call.
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     config_path = tmp_path / "config.json"
     config = Config()
     config.transcription.provider = "groq"
@@ -46,6 +49,9 @@ async def test_webui_transcription_uses_explicit_gateway_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Ambient provider credentials (e.g. GROQ_API_KEY) would make an
+    # unconfigured config resolve as configured and trigger a real API call.
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     default_path = tmp_path / "default.json"
     gateway_path = tmp_path / "gateway.json"
     default = Config()
