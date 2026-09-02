@@ -106,6 +106,7 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
     if "blocked" in states:
         return "failed"
     if tuple(stage for stage, _state in command_rows) in {
+        ("media_preflight",),
         ("source_prep", "vlm"),
         ("source_prep", "context_prepare", "vlm"),
         (
@@ -225,14 +226,18 @@ class PostgresPipelineRunStore(_PostgresTransactions):
             raise PipelineRunValidationError(
                 "claim_run request_hash does not bind the canonical request"
             )
-        if (
-            recompute_request is not None
-            and type(recompute_request) not in (  # noqa: E721
-                VlmFullStageRecomputeRequest,
-                MediaPreflightRecomputeRequest,
-            )
+        if recompute_request is not None and type(recompute_request) not in (  # noqa: E721
+            VlmFullStageRecomputeRequest,
+            MediaPreflightRecomputeRequest,
         ):
             raise PipelineRunValidationError("claim_run recompute_request must be canonical")
+        if (
+            type(recompute_request) is MediaPreflightRecomputeRequest  # noqa: E721
+            and not execution_profile.has_media_preflight_policy
+        ):
+            raise PipelineRunValidationError(
+                "media-preflight recompute requires an execution profile with a media-preflight policy"
+            )
         if execution_profile.has_media_preflight_policy:
             execution_profile.build_stage1_command_policy()
             execution_profile.build_stage2_command_policy()
@@ -320,7 +325,16 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                         "idempotency key already binds another pipeline request"
                     )
             else:
-                if execution_profile.is_semantic_only:
+                if type(recompute_request) is MediaPreflightRecomputeRequest:  # noqa: E721
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES (%s, %s, 0, 'media_preflight', 'pending', 0)
+                        """,
+                        (uuid4(), run_id),
+                    )
+                elif execution_profile.is_semantic_only:
                     cursor.execute(
                         """
                         INSERT INTO runtime.pipeline_commands

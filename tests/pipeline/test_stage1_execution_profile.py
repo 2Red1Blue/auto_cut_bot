@@ -245,6 +245,13 @@ def test_partial_six_stage_plan_still_cannot_claim_whole_run_success():
     assert all(command.status == "succeeded" for command in snapshot.commands)
 
 
+def test_media_recompute_single_stage_can_terminalize_success():
+    assert postgres._terminal_run_state([("media_preflight", "succeeded")]) == "succeeded"
+    assert postgres._terminal_run_state([("media_preflight", "failed")]) == "failed"
+    assert postgres._terminal_run_state([("media_preflight", "pending")]) == "running"
+    assert postgres._terminal_run_state([("media_preflight", "running")]) == "running"
+
+
 def test_historical_v6_four_stage_completion_remains_fail_closed_history():
     _wire, historical = _historical_v6()
     stages = ("source_prep", "vlm", "stage1_narrative", "media_preflight")
