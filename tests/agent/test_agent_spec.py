@@ -1,7 +1,8 @@
 
 import pytest
-from auto_cut_bot.agents.spec import AgentSpec, ToolMount, EDITOR_SPEC, REVIEWER_SPEC
-from auto_cut_bot.agents.registry import AgentRegistry, AgentBuilder, AgentInstance
+
+from auto_cut_bot.agents.registry import AgentBuilder, AgentInstance, AgentRegistry
+from auto_cut_bot.agents.spec import EDITOR_SPEC, REVIEWER_SPEC, AgentSpec
 
 
 class TestAgentSpec:
@@ -15,7 +16,9 @@ class TestAgentSpec:
 
     def test_editor_has_rules(self):
         assert len(EDITOR_SPEC.rules) > 50
-        assert "reviewer" in EDITOR_SPEC.rules.lower()
+        # The reviewer is declared as a sub-agent; the editor's rules use the
+        # localized review term rather than the registry code name.
+        assert "审核" in EDITOR_SPEC.rules
 
     def test_reviewer_has_rules(self):
         assert len(REVIEWER_SPEC.rules) > 50

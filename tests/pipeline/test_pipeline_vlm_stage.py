@@ -667,11 +667,15 @@ class Provider:
         deny_first: bool = False,
         deny_first_episode_always: bool = False,
     ) -> None:
-        self.frame_ids = frame_ids
+        # Some policy-gate tests must prove that no provider call occurs and
+        # therefore do not need a real frame manifest. Keep the double
+        # constructible without weakening the assertion that dispatch lists
+        # remain empty.
+        self.frame_ids = frame_ids or {"synthetic-manifest": "synthetic-frame"}
         self.indeterminate_first = indeterminate_first
         self.deny_first = deny_first
         self.deny_first_episode_always = deny_first_episode_always
-        self.first_manifest_hash = next(iter(frame_ids))
+        self.first_manifest_hash = next(iter(self.frame_ids))
         self.dispatch_calls: list[ProviderDispatchRequest] = []
         self.reconcile_calls: list[ProviderReconcileQuery] = []
 

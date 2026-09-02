@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import jsonschema
+import pytest
 from autocut_kernel.contracts.f_authority_intake.verify_inputs import verify_input_manifest
 from autocut_kernel.contracts.f_authority_intake.verify_ledger import verify_ledger
+
+
+def _authority_repository() -> Path:
+    value = os.environ.get("AUTOCUT_AUTHORITY_REPOSITORY")
+    if not value or not (Path(value) / ".git").exists():
+        pytest.skip(
+            "set AUTOCUT_AUTHORITY_REPOSITORY to run authority intake tests"
+        )
+    return Path(value)
 
 
 def test_packaged_f0_authority_intake_is_git_pinned_and_closed() -> None:
@@ -56,7 +67,7 @@ def test_packaged_f0_authority_intake_is_git_pinned_and_closed() -> None:
         },
     ]
     verify_input_manifest(
-        manifest, {"kernel": root, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")}
+        manifest, {"kernel": root, "authority": _authority_repository()}
     )
     verify_ledger(
         source / "f-unresolved-authority-ledger.json",

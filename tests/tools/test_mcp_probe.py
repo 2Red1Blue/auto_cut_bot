@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +22,26 @@ _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "http
 def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (*_PROXY_ENV_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
+
+    # urllib's ``getproxies`` also consults macOS SystemConfiguration.  That
+    # machine-level setting makes a unit test that clears environment proxy
+    # variables nondeterministic.  Keep the production resolver unchanged and
+    # make this suite observe only the explicitly controlled environment.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.getproxies",
+        lambda: {
+            **{
+                scheme: os.environ[name]
+                for scheme, name in (
+                    ("http", "HTTP_PROXY"),
+                    ("https", "HTTPS_PROXY"),
+                    ("all", "ALL_PROXY"),
+                )
+                if os.environ.get(name)
+            },
+            **({"no": os.environ["NO_PROXY"]} if os.environ.get("NO_PROXY") else {}),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

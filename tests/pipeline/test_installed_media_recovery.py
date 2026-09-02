@@ -134,7 +134,9 @@ async def test_media_batch_delegates_same_snapshot_only_after_installed_resolve(
     resolver = InstalledLocalRunProfileResolver(resource)
     store = object()
     events = []
-    request = object()
+    # The batch executor indexes requests by episode even though this test
+    # replaces the command with a capture-only double.
+    request = SimpleNamespace(episode_index=0)
     expected_result = SimpleNamespace(outcome=CommandOutcome(UUID(int=40), "pending"))
 
     def fake_resolve(self, actual_store):

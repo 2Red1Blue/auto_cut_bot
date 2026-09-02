@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import jsonschema
@@ -14,6 +15,15 @@ SOURCE = (
     ROOT
     / "packages/autocut-kernel/src/autocut_kernel/contracts/source/2_1_3/commands/f-authority-intake"
 )
+
+
+def _repositories() -> dict[str, Path]:
+    value = os.environ.get("AUTOCUT_AUTHORITY_REPOSITORY")
+    if not value or not (Path(value) / ".git").exists():
+        pytest.skip(
+            "set AUTOCUT_AUTHORITY_REPOSITORY to run authority intake tests"
+        )
+    return {"kernel": ROOT, "authority": Path(value)}
 
 
 def _write(tmp_path: Path, name: str, payload: object) -> Path:
@@ -47,14 +57,14 @@ def test_rejects_missing_or_arbitrary_profile(tmp_path: Path) -> None:
     with pytest.raises(IntakeError):
         verify_input_manifest(
             _write(tmp_path, "manifest.json", payload),
-            {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+            _repositories(),
         )
 
 
 def test_accepts_only_d_and_e_owner_absence_records(tmp_path: Path) -> None:
     verify_input_manifest(
         _write(tmp_path, "accepted.json", _manifest()),
-        {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+        _repositories(),
     )
     payload = _manifest()
     errata = next(pin for pin in payload["inputs"] if pin["pin_id"] == "errata.execution")
@@ -71,7 +81,7 @@ def test_accepts_only_d_and_e_owner_absence_records(tmp_path: Path) -> None:
     with pytest.raises(IntakeError):
         verify_input_manifest(
             _write(tmp_path, "errata-availability.json", payload),
-            {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+            _repositories(),
         )
 
 
@@ -82,7 +92,7 @@ def test_rejects_fixed_identity_and_errata_census_tampering(tmp_path: Path) -> N
     with pytest.raises(IntakeError):
         verify_input_manifest(
             _write(tmp_path, "identity.json", payload),
-            {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+            _repositories(),
         )
     payload = _manifest()
     errata = next(pin for pin in payload["inputs"] if pin["pin_id"] == "errata.execution")
@@ -90,7 +100,7 @@ def test_rejects_fixed_identity_and_errata_census_tampering(tmp_path: Path) -> N
     with pytest.raises(IntakeError):
         verify_input_manifest(
             _write(tmp_path, "errata.json", payload),
-            {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+            _repositories(),
         )
 
 
@@ -108,7 +118,7 @@ def test_rejects_incomplete_or_substituted_b_source_census(tmp_path: Path, opera
     with pytest.raises(IntakeError):
         verify_input_manifest(
             _write(tmp_path, f"b-{operation}.json", payload),
-            {"kernel": ROOT, "authority": Path("/private/tmp/ac-auto-cut-v213-source-span")},
+            _repositories(),
         )
 
 
