@@ -67,12 +67,33 @@ cookie、password、secret、token 会被脱敏。真正用于恢复的是数据
 
 - `failed/denied`：有终态 Receipt，不会自动当成功继续。
 - `indeterminate`：外部结果未知或本地执行异常，优先 reconcile；不能盲目重复付费调用。
+- `blocked`（目标状态；当前运行时仍以 `indeterminate` + admission barrier 承载）：单个 child 的持久化恢复屏障；不是成功，也不等于批次终态。它表示 indeterminate
+  无法在 reconcile 预算/截止时间内收敛，或策略/Request 级预算禁止新 Attempt；需走显式
+  recompute、裁决或取消（完整语义见 [08 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)）。
 - 明确的 429/5xx：按冻结 retry policy 最多 3 次，退避 2 秒、8 秒。
 - 400/401/403/404/409/422：通常为请求、鉴权或契约错误，不做无意义重试。
 - 当前 VLM `VlmResponseRejected` 会按冻结 retry policy 最多自动重生成 3 次，给随机模型输出
   一次纠正机会；每次都有独立 Attempt、provider idempotency key 和失败原因。三次仍解析/引用
   不闭合后，`RETRY_BUDGET_EXHAUSTED` 终止。此时继续重放相同输入不会改善，必须修 prompt、
   Schema/策略或做选择性重算。
+
+排障时常见的恢复记账 code：
+
+- `RETRY_BUDGET_EXHAUSTED`：required child 的 `child_retry_budget`（不是 recompute Request 的 `request_attempt_budget`）耗尽，必须将当前 active 批次终态化为 `failed`；可选 child 按 `OPTIONAL_CHILD_OMITTED` 规则处理；
+- `RECOMPUTE_BUDGET_EXHAUSTED`：lineage selected-recompute budget 耗尽；
+- `DENIED_NON_RETRYABLE`：确定性的契约/策略拒绝，不得把它当作瞬态失败重试；
+- `ABANDONED_BEFORE_INVOCATION`：Claim 已写入但调用前崩溃，Attempt ordinal 已记账；
+- `CANCELLED_BY_OPERATOR`：操作员取消事件；批次投影为 `cancelled`，与 `denied` 分开审计；
+- `OPTIONAL_CHILD_OMITTED`：明确声明的可选 child 未纳入 successor 发布目标，不得用于掩盖 required child 缺失。
+
+### 批次失败与选择性恢复
+
+批次的“停止”是 admission barrier，不是删除历史或强制全量重跑。完整的 child retry、
+selected recompute、reconcile、`blocked`、预算累计、Receipt 收尾、断点续跑和未来并发
+frontier 契约，以 [字幕感知 VLM 到 ExactSpan 设计 §6.1](08-subtitle-aware-vlm-to-exact-span-design.md#61-批次暂停单集重试与断点续跑)
+为唯一规范来源；本节只保留排障摘要。当前代码事实（以 `VlmFullStageRecomputeRequest`、
+`FullStageVlmRecomputeBinder` 及其测试为准）是：VLM 提供 `selected_only` 执行过滤入口，但
+尚不是完整的批次恢复控制器；Media Preflight 仍未提供等价入口。
 
 ## 当前最后已知真实断点（2026-09-01 更新）
 

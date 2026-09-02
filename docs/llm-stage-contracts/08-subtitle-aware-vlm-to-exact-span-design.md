@@ -258,6 +258,243 @@ material requirements/SourceSpanRefs，而不是一个 0–241 秒巨型 clip。
 | Local Media Evidence | 保留 VLM/Story | 只重跑对应集、候选和 producer |
 | ExactSpan infeasible | 保留 Story 和证据 | 尝试已注册 variant/替代素材；不能返回未验证 VLM 时间 |
 
+### 6.1 批次暂停、单集重试与断点续跑
+
+以下是目标控制契约；截至当前版本，VLM 已有选择性入口，Media Preflight 的等价入口仍在实现中。
+“失败立即停止”只表示**停止接纳尚未启动的后续 episode**，不表示删除已成功的 Artifact，
+也不表示禁止恢复失败 episode。必须把三种动作分开：
+
+- **Child retry**：同一个冻结 Request/输入，创建新的 Attempt，消耗该 child 的 retry/attempt
+  budget；不能覆盖旧 Attempt 或 Receipt。
+- **Selected recompute**：创建新的、与原 child lineage 关联的 Request/Command（可绑定新策略或
+  新输入），拥有独立的 Attempt/预算；原始失败历史保持不可变，不能把新结果改写成旧 Receipt。
+- **Batch finalization**：只读取每个 episode 最终选定且完全绑定的成功 child；不修改任何 child
+  历史，也不把 inspection/recompute 结果伪装成旧 aggregate。
+
+批次控制状态按以下规则解释：
+
+```text
+episode[i] = required child failed | denied | indeterminate
+  → freeze new admissions after i
+optional child failed | denied | indeterminate
+  → record OPTIONAL_CHILD_OMITTED when policy allows; do not freeze required lane
+  → indeterminate: reconcile first; failed: retry only when failure policy allows
+  → selected recompute, if explicitly admitted, uses a new lineage-linked Request and budget
+  → if episode[i] succeeds, resume from i+1 and reuse earlier successes  # same-batch retry/reconcile only
+  → if non-recoverable or a closed budget is exhausted, terminalize the original batch as failed/denied
+```
+
+上图的“恢复成功后从 `i+1` 继续”仅适用于同一批次内的 child retry/reconcile 收敛；selected
+recompute 路径先创建 successor Batch 并导入可 exact-hash 复用的成功 episode，再在 successor
+Batch 中从 `i+1` 继续。原批次永远不重新打开。
+
+这里的 `episode[i]` 是**持久化 child 状态**，不是进程内变量。状态补充定义如下：
+
+- `not_started`：没有持久化 Claim/Attempt；进程崩溃时保持此状态，不得凭空重试一个可能已经
+  产生外部副作用的调用。规范要求 **Claim/Attempt intent 先于任何外部副作用持久化**；
+  若实现无法保证 write-ahead 顺序，出现“无 Claim 但有调度/lease/调用迹象”的崩溃窗口时，
+  必须按 `indeterminate` 保守处理，而不能按 `not_started` 重发。
+- `indeterminate`：已有 Claim/Attempt 或外部调用迹象，但结果未知（包括 lease 过期、超时和
+  worker 崩溃）；必须先进入 reconcile。
+- `blocked`：`indeterminate` 在规定次数/截止时间内仍不能确认，或策略/Request 级预算禁止新
+  Attempt。它是
+  child 级的持久化 admission barrier（不是可改写的批次终态），重启后可重现；不会自动发布，
+  退出路径只有获准的 recompute、明确人工裁决或取消。取消不修改原 `blocked` 记录，而是追加
+  一个 lineage 级的 `CANCELLED_BY_OPERATOR` 事件并把批次投影为独立的 `cancelled`；基础设施不可恢复
+  错误追加 `failed` 投影。`cancelled`、确定性策略 `denied` 和基础设施 `failed` 都是批次终态，
+  下游必须按投影值和事件 code 双重区分，不能把取消当作策略拒绝。取消后 recompute 出口关闭，
+  这是有意的终态语义。当前运行时尚未把该目标状态完整投影为独立枚举，
+  在此之前以 `indeterminate` + admission barrier 保守承载，绝不能把它当作成功。
+
+- 已成功 episode 的 Request/Attempt/Receipt/Artifact 是不可变的，恢复时必须复用，不能因为
+  后续 episode 失败而全量重跑。
+- `indeterminate` 先执行 reconcile；只有无法确认外部结果且 retry policy 明确允许时才创建新
+  Attempt，否则保持 admission barrier，等待明确的 recompute/人工裁决，绝不自动发布。
+  `failed` 是否可重试由 failure policy 决定；确定性契约/策略拒绝才是 `denied`，并终止原
+  child/request lineage。若要修订策略，必须创建显式的新 lineage-linked Request，不能重新
+  打开或改写原 `denied` 记录；来源不确定的拒绝必须先归入 `indeterminate` 走 reconcile。
+- reconcile 若确认外部调用已成功，必须由 Store 幂等写入一条带
+  `reconcile_evidence_hash`、原 Attempt/Provider identity 和完整 source/policy 绑定的正式
+  成功 Receipt；若采用“完成原 Attempt 的确定性收尾”路径，也必须写入同一个 evidence hash
+  和 Provider identity。幂等键必须是领域隔离的复合键
+  `(lineage_id, child_id, attempt_id, provider_identity, reconcile_evidence_hash)`（或证明这些身份已
+  被规范化纳入 evidence hash），不得仅以裸 evidence hash 跨 child/Attempt/Provider 复用 Receipt；
+  `reconcile_evidence_hash` 必须是 provider result identity/内容摘要的确定性函数，不得包含查询
+  方法、查询时间或 worker identity；
+  重复 reconcile 只能得到同一 Receipt；
+  该 Receipt 才能被 Batch Finalizer 选用，禁止用内存结果或伪造 `succeeded` 字段替代。
+- 每个 child 的 Attempt/Retry 计数、最后一次 failure code、reconcile 次数和截止时间都必须
+  持久化并跨重启累计。`closed budget` 仅指 child 级 `child_retry_budget` 与 lineage 级
+  `selected_recompute_budget`；`reconcile_budget` 和单个 Request 的 `request_attempt_budget`
+  明确不属于 closed budget。每个 recompute Request 可以有自己的 `request_attempt_budget`，
+  但每次获准的 recompute 还必须原子递减持久化的 lineage 级 `selected_recompute_budget`；后者不能
+  因换 Request、重启、换 worker 或更换 idempotency key 重置。任何一个 required child 被判定
+  不可恢复，或在仍需要恢复时再次请求但已无可用的
+  `child_retry_budget`/`selected_recompute_budget`，**必须**终止原批次：child
+  retry 耗尽使用 `RETRY_BUDGET_EXHAUSTED`，lineage recompute 耗尽使用
+  `RECOMPUTE_BUDGET_EXHAUSTED`，确定性拒绝使用 `DENIED_NON_RETRYABLE`。本节的批次终态化针对
+  lineage 中当前 active、尚未被 `superseded` 的那一代批次（初始批次或任一 successor）；已
+  `superseded` 的旧批次不再接收新的失败终态投影。最后一个已获准的
+  recompute 会把剩余 lineage 预算降为零，但不会在其结果尚未收敛时提前发出 exhaustion；只有
+  后续仍需新的 recompute admission 且剩余预算为零时，才发出 `RECOMPUTE_BUDGET_EXHAUSTED`。
+  单个 recompute Request 的 `request_attempt_budget` 耗尽只关闭该 Request，并把 child 保持为
+  `blocked`（不再额外递减任何预算，包括 lineage 级 `selected_recompute_budget`，也不终止原批次）；`reconcile_budget` 耗尽
+  同样只形成 child barrier。上述批次终态结果不可改写，但允许追加后文定义的 lineage 投影事件。
+
+预算记账必须按以下原子转移执行，避免把“Attempt ordinal”误当成某一种预算：
+
+| 结果 | Attempt ordinal | `child_retry_budget` | `request_attempt_budget` | `preinvoke_recovery_budget` | `selected_recompute_budget` | child/批次结果 |
+|---|---:|---:|---:|---:|---:|---|
+| 原始 Request 的初始 Attempt | +1 | — | — | — | — | 成功则 `succeeded`，失败则按 policy 进入 `failed` |
+| 普通 child retry Attempt（含 transient failure） | +1 | -1 | — | — | — | 成功则 `succeeded`，失败仍 `failed`，可继续按 policy retry |
+| 初始原始 Request 的 Attempt 在调用前崩溃，并经 reconcile 确认未调用 | +1 | -1 | — | -1 | — | 预留给随后唯一 recovery Attempt；不得自动开启第二个 recovery 循环 |
+| 已在 Claim 事务中预扣预算的 retry/recompute Attempt 在调用前崩溃 | +1 | —（Claim 已扣） | —（Claim 已扣） | -1 | — | 仅记录 `ABANDONED_BEFORE_INVOCATION`；不得再次扣已预留预算 |
+| 上述原始 child 初始崩溃预留的 recovery Attempt | +1 | —（崩溃行已预留） | — | — | — | 成功则 `succeeded`，失败按 child policy；再次调用前崩溃按 `preinvoke_recovery_budget` 再扣，耗尽时进入 `blocked` |
+| recompute 崩溃 Request 的 recovery | — | — | — | — | +1（reconcile CAS 退还；随后新 admission -1） | 关闭旧 Request；新 Request/command 重新按 admission 与 Claim 规则计费 |
+| recompute Request 获准 | — | — | 初始化为该 Request 上限 | — | -1（仅 admission） | 创建 successor/child Request |
+| recompute Request 的一次 Attempt | +1 | — | -1（Claim 时） | — | — | 成功则收敛，否则按 Request policy |
+| reconcile 查询 | 不新增 | — | — | — | — | 只增加 `reconcile_count`，不消耗 retry/recompute budget |
+
+表中 `child_retry_budget` 表示初始 Attempt 之外的同一 child retry 槽位。所有已获准的 retry/recompute
+Attempt 都必须在 Claim 写前事务中预扣其适用预算；只有**未预扣预算的原始初始 Attempt**在
+reconcile 确认未调用时，才按保守策略额外占用一个 retry 槽位，该槽位对应随后唯一 recovery Attempt。
+`preinvoke_recovery_budget` 是持久化的 child 级崩溃恢复上限，必须是有限非负整数且由 policy
+明确初始化；当前首版 policy **固定为 1**，因此每个 child 最多自动获得一次 recovery Attempt。
+每次确认的调用前崩溃扣减一次，耗尽后 child 进入 `blocked`，不得自动创建下一轮 recovery，
+避免无外部副作用的崩溃循环。未来若将该值提高，必须同时定义每个新增 recovery admission 的
+child retry 预算扣减和 frontier 规则，不能沿用本版的“唯一 recovery Attempt”语义。selected recompute admission 不得
+重置该计数器或任何已持久化的累计计数。
+若原始 child 的 `child_retry_budget=0`，初始 Attempt 的调用前崩溃不得产生 recovery Attempt；
+reconcile 只记录 `ABANDONED_BEFORE_INVOCATION` 并将 child 置为 `blocked`，后续必须走显式 recompute。
+recompute Request 的 `request_attempt_budget` 一律在其 Attempt Claim 时预扣；崩溃收尾不再重复扣。
+若 recompute Request 经 reconcile 确认在 provider 调用前已 abandoned，则其 admission 预留的
+lineage `selected_recompute_budget` 必须在同一 reconcile CAS 中**恰好退还一次**；该 Request
+自身已消耗的 `request_attempt_budget` 不退还。退款与该 Request 的关闭必须在同一 reconcile CAS
+事务中完成；后续 recovery Attempt
+需由新的 recompute admission 原子重新取得一个 lineage 预算槽位；不能在旧 successor 上无预算续跑。
+这样无外部副作用的崩溃不会吞掉 lineage 重算额度，但仍受 Request/child 的 Attempt 上限约束。
+Claim/admission-event 的写前转移必须在调用前同一事务/CAS 中完成；仅初始 Attempt 的崩溃预算扣减与
+`ABANDONED_BEFORE_INVOCATION` 在 reconcile 的独立 CAS 事务中完成；外部调用后的 terminal
+Receipt 由独立的 CAS 保护收尾事务写入，不能在调用前预创建成功 Receipt。若某转移
+涉及 frontier 变化，epoch 更新必须与该转移同一事务完成；
+重启不得重新初始化已持久化的计数器。selected recompute 的
+`selected_recompute_budget` 递减、原批次 `SUPERSEDED_BY_RECOMPUTE`/`superseded` 投影、successor
+Batch 及其 pending Request/command 占位（或已存在 successor 的幂等指向），也必须在同一事务提交；
+successor 创建失败时
+整体回滚，原批次不得留下孤立的 `superseded` 投影。
+- reconcile 后若仍无法确认结果，新 Attempt 只有在复用原 Attempt 的 provider 幂等键，或 producer
+  已注册为 side-effect-free 时才允许；否则保持 `indeterminate`/`blocked`。reconcile 本身有
+  独立的次数/截止时间上限，但确认后新 Attempt 仍消耗 child 的 Attempt budget，不能用双重计数
+  绕过预算。
+- reconcile 次数/截止时间属于 `reconcile_budget`，耗尽只把 child 推导为 `blocked`，不自动终止
+  原批次；后续必须经显式 recompute、人工裁决或取消形成新的批次级投影。只有
+  `child_retry_budget` 或 lineage 级 `selected_recompute_budget` 耗尽，才按上一条规则强制终止原批次。
+- reconcile 若确认调用已发生且确定性失败，必须持久化带 evidence hash/Provider identity 的失败
+  记录，再按 `failed` 的 failure policy 决定 retry 或终止；不能继续保持无原因的 `indeterminate`。
+- 默认触发者是 Pipeline Recovery Controller：启动/lease 过期触发 reconcile，明确可恢复的
+  transient failure 自动 retry；selected recompute、策略修订、人工裁决和取消必须由带幂等键的
+  显式 operator/Agent command 触发，并经过同一 Admission。相同 command idempotency key 是
+  同一命令的幂等重放；新的合法 recompute 必须创建新的 command key，并由新的 canonical
+  `request_hash`（至少含新 Request id/parent attempt ordinal）区分，不能被前一个失败 Request 吞掉。
+  恢复入口的去重域为 `(lineage_id, episode, effective_policy_hash, command_idempotency_key)`。
+  当前 VLM 的 `selected_only` 是执行过滤
+  入口，不自动提供上述预算、supersession 或批次收敛保证。
+- 批次 Finalizer 仍采用 all-or-nothing：任何目标 episode 没有成功的完整证据集，就不能生成
+  可供 Render/Publish 的批次结果。单集 inspection/recompute 结果不能冒充 aggregate。
+- 如果未来启用并发，失败被观察时已经处于 in-flight 的兄弟可以完成，但必须各自持久化终态
+  child Receipt；兄弟失败按同一 failure policy 处理。只有当 Receipt 的 source、episode、
+  `semantic_execution_hash`、effective policy 和依赖哈希与续跑目标完全一致时，Finalizer 才能复用
+  该兄弟成功结果；Request identity/parent ordinal 仅用于 lineage 与命令去重，不作为语义复用条件；否则
+  必须显式标记 superseded/invalidated 并重跑。Finalizer 必须逐 Receipt 决定收敛、取代或失效，
+  不能静默丢弃或把 speculative 结果当作批次成功。有效 admission frontier 是**所有已接纳但
+  尚未收敛且会阻断发布的 required child 中最小 episode index**；optional child 若策略允许省略，
+  必须从 required-lane frontier 排除（其独立 lane 另算 frontier）。若没有未收敛 required child，frontier 退化为
+  `next_unadmitted_index`，表示当前 lane 没有 barrier。并发只允许发生在显式声明的独立 lane
+  （例如不同 source/portfolio）或未来定义的 bounded window 内；同一顺序 lane 不允许越过
+  unresolved barrier 进行并行 admission。顺序 lane 中
+  `next_unadmitted_index = 1 + max(admitted episode index)`（空 lane 为首集）。新的 episode
+  `j` 只有在事务中同时满足 `j == next_unadmitted_index`、不存在 `k < j` 的未收敛 required child、且提交时的
+  `admission_epoch` 仍等于读取值时才可被接纳；失败 episode 的 retry/recompute 只能针对当前
+  frontier/barrier index（不得针对任意更后的 required index）；optional child 的 retry/recompute
+  不占用 required frontier，但仍必须通过同一 Admission、预算和幂等检查。失败观察、frontier 冻结、
+  frontier 前移和新 child admission 都必须在同一
+  持久化 admission epoch 上 CAS，并在每次 frontier 变化时递增 epoch；新 child admission 的
+  CAS 失败就重读并放弃本次 admission。失败观察或 frontier 冻结的 CAS 失败则先重读当前
+  epoch/frontier 后可安全重试；不能用旧快照强行推进。以数据库事务提交顺序判定 child 是“已在途”
+  还是“被 barrier 拦截”。在该收敛契约实现前，生产实现保持逐集串行。
+
+原批次一旦进入 `failed`、`denied`、`cancelled` 或 `superseded` 的终态投影不可逆；这里的不可逆只表示既有
+终态结果不会被改写，终态批次仍允许 append-only 追加 lineage 投影事件。child 级 `blocked` 不是
+原批次的终态，但它也不能被原地改写。获准的 selected recompute 或人工裁决必须在原批次上追加不可逆的
+`SUPERSEDED_BY_RECOMPUTE` / `RESOLVED_BY_ADJUDICATION` 投影（并将原批次投影为 `superseded`），然后创建或指向一个新的
+lineage 级 Batch 及 pending Request/command（最终 Receipt 只能在外部调用收敛后产生）；原批次不重开，新 child Receipt 不写回旧批次。`failed`/`denied` 批次仍可由显式、带
+幂等键的 operator/Agent command 触发 successor recompute；`cancelled` 批次明确关闭该出口。`required=true` 的
+child 才属于发布目标集合，任一不可恢复都会阻断该批次 finalize；`required=false` 仅表示可选/诊断
+child，失败时可从 successor batch 的目标集合中显式省略并记录 `OPTIONAL_CHILD_OMITTED`，不阻断
+required 目标的 all-or-nothing finalize。任何被纳入发布目标集合的 child 都必须显式标为 required，
+禁止用“可选”静默掩盖缺失。Admission 时即须校验 `required` 标志与策略的 optional-omission
+许可一致；标志与策略不一致的 Request 直接拒绝，不能等到 child 失败后再归一化。
+optional child 若因 `reconcile_budget` 或 Request 预算进入 `blocked`，在策略允许时同样按
+`OPTIONAL_CHILD_OMITTED` 处理，不进入 required frontier；若策略将其声明为发布目标，则必须改为
+`required=true` 并承担 required child 的阻断语义。
+
+取消是 admission barrier 而不是强杀外部进程：取消命令提交时已在途的 child 允许收敛并持久化
+终态 Receipt，供 lineage 审计与未来 successor 的 exact-hash import 使用，但这些 Receipt 不能被
+`cancelled` 批次的 Finalizer 选用；取消后不再接纳新 child 或新 Attempt。provider 在取消后返回的
+结果仍写入原 Attempt/Receipt（append-only），由 successor import 明确重新接纳，不能写回已取消批次。
+
+策略修订时，admission 必须先冻结一个可复算的 `effective_policy_hash`：使用版本化的
+`JCS-v1`（RFC 8785 canonical JSON；UTF-8、键按 UTF-16 code unit 排序、遵循 ECMAScript 数字序列化、
+枚举使用契约字符串）对 policy 版本、所有影响执行的参数、默认值展开后的 overrides、failure/recovery
+policy 和 producer 配置的**白名单字段**做 domain-separated hash，具体构造为
+`SHA-256(ASCII("policy-hash-v1/whitelist-" + decimal(N)) || 0x00 || JCS_bytes)`，其中 `0x00`
+是单个 NUL 字节，输出为小写 hex SHA-256。
+producer 白名单只允许稳定的
+provider identity、模型发布/修订标识、执行域/合规区域、模型/算法版本、策略参数和能力声明，
+排除本机路径、时间戳、环境变量、worker host、密钥和临时缓存路径。任何白名单集合增删都必须
+递增 `policy-hash-v1/whitelist-N` 版本；跨语言实现必须通过包含非 BMP 键、浮点边界值和 `-0`
+的固定向量测试。
+该 hash 必须写入 Request、Claim、Attempt、Receipt、successor import 和 admission CAS 决策；复用只
+比较持久化的 hash，禁止用运行时当前配置重新推导历史策略。hash 作用域是每个 child Request，
+批次级仅保存 child hash 集合的规范化摘要。
+`effective_policy_payload` 的字段集合版本化为 `effective-policy/v1`：
+`{schema_version, whitelist_version, policy_version, parameters, failure_policy, recovery_policy,
+producer:{provider_identity, model_release, algorithm_release, execution_domain, capability_flags}}`；
+缺失字段与显式 `null` 不等价，集合语义的数组按规范化 identity 排序，序列语义数组保持原序，
+所有 identity 使用契约规定的大小写/Unicode 规范化。批次级摘要先构造
+`{"children":[{"effective_policy_hash":"...","episode_index":i}],"schema_version":"batch-policy/v1"}`
+（children 按 episode index 升序；同一 index 再按 `effective_policy_hash` 字典序），再使用
+`SHA-256(ASCII("batch-policy-hash-v1/whitelist-" + decimal(N)) || 0x00 || JCS_bytes)` 计算，不能由数据库行顺序决定。
+首批跨语言固定向量（`whitelist_version=1`，展示 JCS bytes，不含换行）为：
+
+| JCS bytes | `SHA-256(ASCII("policy-hash-v1/whitelist-1") || 0x00 || JCS bytes)` |
+|---|---|
+| `{"a":0,"😀":1}` | `67ae994c06cc46d6780bc808a52a1e9b335f819be22f0ad42d29b651104d6ada` |
+| `{"n":0}`（输入 `-0` 按 JCS 归一化） | `9808edfb7b83e3e680d494e660de7a9f99b049fbcdb1fd32872c2d2dfdb76704` |
+| `{"m":1e+21,"n":0.000001}` | `997f81fe8958d20800a108c4314d61a2c7dc6134d6b0b96143de1abaf8a2de93` |
+策略修订时，复用判断按 episode 单独进行：只有该 episode 的 source、`effective_policy_hash`、
+`semantic_execution_hash` 和依赖哈希仍与新批次目标完全一致，才可复用旧成功 Receipt；策略哈希失配只使该 episode（及依赖它
+的下游）失效，不得把不匹配的旧 Receipt 静默配入新批次。`semantic_execution_hash` 是
+source/prompt/context/模型输入、`required` 标志和依赖输入的规范化摘要，不包含 Request identity、
+parent ordinal 或 command key，用于跨 Request 的语义复用。`required` 必须持久化于 Request，并
+纳入该摘要与 canonical `request_hash`。selected recompute 路径的续跑发生在
+新批次中，原批次历史保持不可变。
+
+Claim/Attempt intent 必须在调用 provider、探测器或其他有副作用的 producer 之前提交。若进程
+在 Claim 之后、调用之前崩溃，reconcile 应确认“未发生调用”并按原 Request 的 retry budget
+收敛；“未发生调用”只能由 provider 幂等查询、受信任的本地 invocation ledger/事务记录或
+side-effect-free producer 的明确证明支持，不能以“没查到记录”代替。若无法确认，则保持
+`indeterminate`，不得直接当作 `not_started` 重试。
+
+确认未发生调用的 crashed Attempt 仍占用一个 Attempt ordinal，并以
+`ABANDONED_BEFORE_INVOCATION` 记账；这样重启不会重置 child budget。只有在新的 Attempt
+复用原 provider 幂等键或 producer 明确无副作用时，才能继续尝试。
+
+当前实现状态（截至 2026-09-02）：VLM 已提供 `selected_only` 执行入口，但它本身不等于完整的批次暂停/恢复
+控制器；Media Preflight 目前仍使用逐集 Command，尚未接入等价的 selected-only recompute API。
+因此 Media Preflight 的下一项实现不是重新跑整批，而是新增带 source/policy/episode 精确绑定的
+单集重跑与断点续跑入口，并补齐上述 child/batch 收敛规则。
+
 真实运行中的 `f049`、measurement closure 或 enum ordering 错误不应抹掉已经准确生成的 Entity、Fact、
 Event 和字幕理解。冻结 run `pipeline_run_694567bc4b4e456a98aa939f71f24f84` 作为强制分区恢复
 fixture：当观察图通过而 EditorialSignal 的非 anchor 字段（enum、measurement、非核心 role ref）
