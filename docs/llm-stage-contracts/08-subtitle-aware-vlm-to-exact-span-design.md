@@ -260,7 +260,7 @@ material requirements/SourceSpanRefs，而不是一个 0–241 秒巨型 clip。
 
 ### 6.1 批次暂停、单集重试与断点续跑
 
-以下是目标控制契约。episode 之间没有业务依赖，因此采用**有界并发计算 + 聚合失败关闭**：
+以下是控制契约。episode 之间没有业务依赖，因此采用**有界并发计算 + 聚合失败关闭**：
 单集失败不会取消兄弟集，也不会阻止尚未派发的独立 episode；它只阻止完整批次 Finalizer
 和下游 Stage。已成功 Artifact 保持不可变并可被后续显式恢复计划复用。必须把三种动作分开：
 
@@ -287,6 +287,16 @@ optional child failed | denied | indeterminate
 
 selected recompute 路径创建 successor Batch，导入可 exact-hash 复用的成功 episode，只执行
 失败或显式选择的 episode，再由 successor Finalizer 重新验证全集闭包。原批次永远不重新打开。
+
+Media Preflight 的持久化实现已经落地为一个专用的两表 recovery frontier，而不是通用工作流
+引擎：`media_preflight_recovery_frontiers` 固定一份 plan 和完整 episode census，
+`media_preflight_recovery_entries` 以 `(frontier_id, episode_index)` append-only 地保存每个
+成功 child 的精确 Command/Receipt/ArtifactSet handles。每次 successor 只填补空槽位；同一
+episode 的不同 closure、不同 producer kind、不同 profile 或不同 request identity 都被拒绝。
+完成 census 的事务原子选出唯一 finalizer Job，CPU/CUDA 的五成员证据 layout 和对应
+Prepare/Finalize 命令由数据库约束再次校验；finalizer 的 Receipt/ArtifactSet 只能由该 owner
+写入，重复提交返回相同最终 handles。这个 frontier 只负责“成功 episode 的可审计累积”，不替代
+child 内部的 bounded retry、Provider reconcile 或 lineage-level recompute budget。
 
 这里的 `episode[i]` 是**持久化 child 状态**，不是进程内变量。状态补充定义如下：
 

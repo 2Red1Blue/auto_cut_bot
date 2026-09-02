@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Protocol, TypeVar, cast
 
@@ -16,6 +16,7 @@ from autocut_kernel.media.runtime_measurement_identity import (
     PC_CUDA_RUNTIME_CAPABILITY_ID,
     RuntimeMeasurementIdentity,
 )
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.pipeline import (
     FinalizeRuntimeTimedMediaEvidenceBatchCommand,
     FinalizeRuntimeTimedMediaEvidenceBatchRequest,
@@ -23,6 +24,9 @@ from autocut_kernel.pipeline import (
     FinalizeTimedMediaEvidenceBatchCommand,
     FinalizeTimedMediaEvidenceBatchRequest,
     FinalizeTimedMediaEvidenceBatchResult,
+    MediaRecoveryEntry,
+    MediaRecoveryFrontier,
+    MediaRecoveryPlan,
     PrepareRuntimeTimedMediaEvidenceCommand,
     PrepareRuntimeTimedMediaEvidenceRequest,
     PrepareRuntimeTimedMediaEvidenceResult,
@@ -237,6 +241,24 @@ class MediaPreflightPipelineStore(
         artifact_scope: ArtifactScope,
         artifact_revision: int,
     ) -> PersistedCommittedArtifactSet | None: ...
+
+    def claim_media_recovery_frontier(
+        self, plan: MediaRecoveryPlan
+    ) -> MediaRecoveryFrontier: ...
+
+    def merge_media_recovery_successes(
+        self,
+        plan: MediaRecoveryPlan,
+        participant_job: Job,
+        entries: tuple[MediaRecoveryEntry, ...],
+    ) -> MediaRecoveryFrontier: ...
+
+    def mark_media_recovery_finalized(
+        self,
+        plan: MediaRecoveryPlan,
+        finalizer_job: Job,
+        outcome: CommandOutcome,
+    ) -> MediaRecoveryFrontier: ...
 
 
 class _RuntimeCudaAuthority:
@@ -458,6 +480,77 @@ def runtime_media_preflight_kernel_idempotency_key(
     )
 
 
+def _media_recovery_requirement_sha256(
+    request: PrepareTimedMediaEvidenceRequest,
+) -> str:
+    """Hash evidence-changing inputs while excluding attempt ownership."""
+
+    return canonical_sha256(
+        {
+            "adaptive_policy_sha256": request.adaptive_policy.canonical_hash,
+            "audio_detector_sha256": request.audio_detector_sha256,
+            "audio_sample_boundary_set_sha256": request.audio_sample_boundaries.canonical_hash,
+            "episode_index": request.episode_index,
+            "frame_detector_sha256": request.frame_detector_sha256,
+            "frame_pts_index_set_sha256": request.frame_pts_index.canonical_hash,
+            "materialization_policy_sha256": request.materialization_limits.evidence_policy_sha256,
+            "producer_policy_sha256": request.producer_policy_sha256,
+            "semantic_pack_sha256": request.semantic_pack.canonical_hash,
+            "source_blob_sha256": request.source_blob.content_hash,
+            "source_manifest_sha256": request.source_manifest_sha256,
+            "source_provenance_sha256": request.source_provenance_sha256,
+            "window_manifest_sha256": request.window_manifest.canonical_hash,
+        }
+    )
+
+
+def _media_recovery_entry(
+    request: PrepareTimedMediaEvidenceRequest,
+    outcome: CommandOutcome,
+    *,
+    request_hash: str,
+) -> MediaRecoveryEntry:
+    if (
+        outcome.state != "succeeded"
+        or outcome.receipt_id is None
+        or outcome.artifact_set_id is None
+    ):
+        raise PipelineRunValidationError(
+            "only an exact succeeded media child may enter recovery"
+        )
+    return MediaRecoveryEntry(
+        request.episode_index,
+        _media_recovery_requirement_sha256(request),
+        request.job,
+        request.idempotency_key,
+        request_hash,
+        request.transient_retry_budget,
+        outcome.command_slot_id,
+        outcome.receipt_id,
+        outcome.artifact_set_id,
+    )
+
+
+def _reconstruct_recovery_request(
+    base: PrepareTimedMediaEvidenceRequest,
+    entry: MediaRecoveryEntry,
+    evidence_job: Job,
+) -> PrepareTimedMediaEvidenceRequest:
+    request = replace(
+        base,
+        job=entry.origin_job,
+        idempotency_key=entry.idempotency_key,
+        artifact_scope=canonical_recipe_scope(entry.origin_job),
+        input_job=None if entry.origin_job == evidence_job else evidence_job,
+        transient_retry_budget=entry.transient_retry_budget,
+    )
+    if _media_recovery_requirement_sha256(request) != entry.requirement_sha256:
+        raise PipelineRunValidationError(
+            "reconstructed media child no longer satisfies its recovery slot"
+        )
+    return request
+
+
 class MediaPreflightPipelineStage:
     """Prepare every committed episode, then commit one aggregate stage Receipt."""
 
@@ -495,6 +588,195 @@ class MediaPreflightPipelineStage:
                 "media-preflight episode_max_concurrency must be positive"
             )
         self._episode_max_concurrency = episode_max_concurrency
+
+    def _recovery_plan(
+        self,
+        context: PipelineStageContext,
+        requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        policy: LocalMediaPreflightPolicy,
+        runtime: _RuntimeCudaAuthority | None,
+    ) -> MediaRecoveryPlan:
+        if not requests or tuple(request.episode_index for request in requests) != tuple(
+            range(len(requests))
+        ):
+            raise PipelineRunValidationError(
+                "media recovery requires the complete ordered episode census"
+            )
+        evidence_job = requests[0].evidence_job
+        if any(request.evidence_job != evidence_job for request in requests):
+            raise PipelineRunValidationError(
+                "media recovery requests do not share one immutable evidence Job"
+            )
+        semantic_set = requests[0].semantic_inputs_request.vlm_semantic_pack_set
+        if runtime is None:
+            snapshot = self._authority_profile_resolver.snapshot
+            native = self._authority_profile_resolver.resource.local_run.native_timed_speech
+            compatibility = canonical_sha256(
+                {
+                    "enabled_profile": {
+                        "profile_id": snapshot.enabled_profile.profile_id,
+                        "profile_version": snapshot.enabled_profile.profile_version,
+                    },
+                    "native_port_identity_sha256": native.native_port_identity_sha256,
+                    "producer_kind": "local_cpu",
+                    "producer_policy_sha256": policy.canonical_hash,
+                    "registry_set_sha256": snapshot.registry_set_sha256,
+                    "strategy_version": MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION,
+                }
+            )
+            producer_kind = "local_cpu"
+        else:
+            compatibility = canonical_sha256(
+                {
+                    "producer_kind": "pc_cuda",
+                    "runtime_measurement_identity_sha256": runtime.measurement.canonical_sha256,
+                    "runtime_projection_compatibility_sha256": (
+                        runtime.projection.compatibility_hash
+                    ),
+                    "runtime_policy_sha256": runtime.policy.canonical_hash,
+                    "strategy_version": RUNTIME_MEDIA_PREFLIGHT_EPISODE_STRATEGY_VERSION,
+                }
+            )
+            producer_kind = "pc_cuda"
+        return MediaRecoveryPlan(
+            evidence_job,
+            context.execution_profile_hash,
+            requests[0].source_manifest_sha256,
+            requests[0].source_provenance_sha256,
+            semantic_set.content_hash,
+            producer_kind,
+            compatibility,
+            tuple(_media_recovery_requirement_sha256(request) for request in requests),
+        )
+
+    def _frontier_store_enabled(self) -> bool:
+        """Allow narrow unit substitutes that deliberately bypass ``__init__``."""
+
+        return all(
+            callable(getattr(self._store, name, None))
+            for name in (
+                "claim_media_recovery_frontier",
+                "merge_media_recovery_successes",
+                "mark_media_recovery_finalized",
+            )
+        )
+
+    def _collect_cpu_recovery_entries(
+        self,
+        plan: MediaRecoveryPlan,
+        base_requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        executed: Mapping[
+            int, tuple[PrepareTimedMediaEvidenceRequest, PrepareTimedMediaEvidenceResult]
+        ],
+    ) -> tuple[MediaRecoveryEntry, ...]:
+        entries: list[MediaRecoveryEntry] = []
+        for base_request in base_requests:
+            request = base_request
+            outcome = self._store.read_outcome(request.job, request.idempotency_key)
+            actual = executed.get(base_request.episode_index)
+            if actual is not None:
+                request, result = actual
+                outcome = result.outcome
+            if outcome is None or outcome.state != "succeeded":
+                continue
+            entry = _media_recovery_entry(
+                request, outcome, request_hash=request.request_hash
+            )
+            if entry.requirement_sha256 != plan.requirement_sha256s[request.episode_index]:
+                raise PipelineRunValidationError("media recovery CPU entry changed requirement")
+            entries.append(entry)
+        return tuple(entries)
+
+    def _collect_runtime_recovery_entries(
+        self,
+        plan: MediaRecoveryPlan,
+        base_requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        executed: Mapping[
+            int,
+            tuple[
+                PrepareRuntimeTimedMediaEvidenceRequest,
+                PrepareRuntimeTimedMediaEvidenceResult,
+            ],
+        ],
+        runtime: _RuntimeCudaAuthority,
+    ) -> tuple[MediaRecoveryEntry, ...]:
+        entries: list[MediaRecoveryEntry] = []
+        for base_request in base_requests:
+            request = base_request
+            runtime_request = PrepareRuntimeTimedMediaEvidenceRequest(request, runtime.measurement)
+            outcome = self._store.read_outcome(request.job, request.idempotency_key)
+            actual = executed.get(base_request.episode_index)
+            if actual is not None:
+                runtime_request, result = actual
+                request = runtime_request.timed_media_request
+                outcome = result.outcome
+            if outcome is None or outcome.state != "succeeded":
+                continue
+            entry = _media_recovery_entry(
+                request,
+                outcome,
+                request_hash=runtime_request.request_hash_for(runtime.projection),
+            )
+            if entry.requirement_sha256 != plan.requirement_sha256s[request.episode_index]:
+                raise PipelineRunValidationError("media recovery CUDA entry changed requirement")
+            entries.append(entry)
+        return tuple(entries)
+
+    def _cpu_children_from_frontier(
+        self,
+        frontier: MediaRecoveryFrontier,
+        base_requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+    ) -> tuple[TimedMediaEvidenceBatchChild, ...]:
+        if frontier.state not in ("complete", "finalized"):
+            raise PipelineRunValidationError("incomplete recovery frontier has no CPU batch")
+        children: list[TimedMediaEvidenceBatchChild] = []
+        for base, entry in zip(base_requests, frontier.entries, strict=True):
+            request = _reconstruct_recovery_request(base, entry, frontier.plan.base_job)
+            if request.request_hash != entry.request_hash:
+                raise PipelineRunValidationError("reconstructed CPU media request hash changed")
+            outcome = self._store.read_outcome(entry.origin_job, entry.idempotency_key)
+            if (
+                outcome is None
+                or outcome.state != "succeeded"
+                or outcome.command_slot_id != entry.command_slot_id
+                or outcome.receipt_id != entry.receipt_id
+                or outcome.artifact_set_id != entry.artifact_set_id
+            ):
+                raise PipelineRunValidationError(
+                    "recovery frontier CPU child closure is no longer exact"
+                )
+            children.append(TimedMediaEvidenceBatchChild(request, outcome))
+        return tuple(children)
+
+    def _runtime_children_from_frontier(
+        self,
+        frontier: MediaRecoveryFrontier,
+        base_requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        runtime: _RuntimeCudaAuthority,
+    ) -> tuple[RuntimeTimedMediaEvidenceBatchChild, ...]:
+        if frontier.state not in ("complete", "finalized"):
+            raise PipelineRunValidationError("incomplete recovery frontier has no CUDA batch")
+        children: list[RuntimeTimedMediaEvidenceBatchChild] = []
+        for base, entry in zip(base_requests, frontier.entries, strict=True):
+            request = _reconstruct_recovery_request(base, entry, frontier.plan.base_job)
+            runtime_request = PrepareRuntimeTimedMediaEvidenceRequest(
+                request, runtime.measurement
+            )
+            if runtime_request.request_hash_for(runtime.projection) != entry.request_hash:
+                raise PipelineRunValidationError("reconstructed CUDA media request hash changed")
+            outcome = self._store.read_outcome(entry.origin_job, entry.idempotency_key)
+            if (
+                outcome is None
+                or outcome.state != "succeeded"
+                or outcome.command_slot_id != entry.command_slot_id
+                or outcome.receipt_id != entry.receipt_id
+                or outcome.artifact_set_id != entry.artifact_set_id
+            ):
+                raise PipelineRunValidationError(
+                    "recovery frontier CUDA child closure is no longer exact"
+                )
+            children.append(RuntimeTimedMediaEvidenceBatchChild(runtime_request, outcome))
+        return tuple(children)
 
     @staticmethod
     def _job(context: PipelineStageContext) -> Job:
@@ -723,9 +1005,11 @@ class MediaPreflightPipelineStage:
                 input_job=evidence_job,
                 transient_retry_budget=recompute.retry_budget,
             )
-            aggregate = list(requests)
-            aggregate[selected_index] = selected
-            return source_bundle, (selected,), tuple(aggregate)
+            # Keep the immutable base census separate from the selected
+            # successor request.  The recovery frontier combines the exact
+            # base successes with this new attempt; it never rewrites a base
+            # request in place.
+            return source_bundle, (selected,), tuple(requests)
         complete = tuple(requests)
         return source_bundle, complete, complete
 
@@ -879,6 +1163,15 @@ class MediaPreflightPipelineStage:
         # Check accepted installation before claim-owned detector work. The
         # finalizer independently replays all committed children afterwards.
         await asyncio.to_thread(resolver.resolve, self._store)
+        recovery_plan = (
+            self._recovery_plan(context, aggregate_requests, policy, None)
+            if self._frontier_store_enabled()
+            else None
+        )
+        if recovery_plan is not None:
+            await asyncio.to_thread(
+                self._store.claim_media_recovery_frontier, recovery_plan
+            )
         command = PrepareTimedMediaEvidenceCommand(
             self._store,
             _ClaimOwnedLocalProducer(
@@ -893,7 +1186,6 @@ class MediaPreflightPipelineStage:
             command.execute,
             max_concurrency=self._episode_max_concurrency,
         )
-        children: list[TimedMediaEvidenceBatchChild] = []
         unresolved: PrepareTimedMediaEvidenceResult | None = None
         terminal: PrepareTimedMediaEvidenceResult | None = None
         for request, result in zip(requests, results, strict=True):
@@ -914,22 +1206,66 @@ class MediaPreflightPipelineStage:
                 raise PipelineRunValidationError(
                     "succeeded media-preflight child lost its ArtifactSet"
                 )
+        executed = {
+            request.episode_index: (request, result)
+            for request, result in zip(requests, results, strict=True)
+        }
+        if recovery_plan is not None:
+            entries = self._collect_cpu_recovery_entries(
+                recovery_plan, aggregate_requests, executed
+            )
+            frontier = await asyncio.to_thread(
+                self._store.merge_media_recovery_successes,
+                recovery_plan,
+                Job(context.run_id, context.request.profile),
+                entries,
+            )
+            current_job = Job(context.run_id, context.request.profile)
+            if (
+                frontier.state in ("complete", "finalized")
+                and frontier.finalizer_job == current_job
+            ):
+                finalizer = FinalizeTimedMediaEvidenceBatchRequest(
+                    current_job,
+                    self._batch_idempotency_key(context, source_bundle, policy),
+                    canonical_recipe_scope(current_job),
+                    _ARTIFACT_REVISION,
+                    self._cpu_children_from_frontier(frontier, aggregate_requests),
+                )
+                batch = await asyncio.to_thread(
+                    FinalizeTimedMediaEvidenceBatchCommand(
+                        self._store,
+                        authority_profile_resolver=resolver,
+                        limits=media_evidence_read_limits(context.execution_profile),
+                    ).execute,
+                    finalizer,
+                )
+                if batch.outcome.state == "succeeded":
+                    await asyncio.to_thread(
+                        self._store.mark_media_recovery_finalized,
+                        recovery_plan,
+                        current_job,
+                        batch.outcome,
+                    )
+                return batch
+            if unresolved is not None:
+                return unresolved
+            if terminal is not None:
+                return terminal
+            return results[0]
         if unresolved is not None:
             return unresolved
         if terminal is not None:
             return terminal
         if selected_inspection_only:
             return results[0]
-        executed = {
-            request.episode_index: result
-            for request, result in zip(requests, results, strict=True)
-        }
+        children: list[TimedMediaEvidenceBatchChild] = []
         aggregate_unavailable = False
         for request in aggregate_requests:
-            result = executed.get(request.episode_index)
+            actual = executed.get(request.episode_index)
             outcome = (
-                result.outcome
-                if result is not None
+                actual[1].outcome
+                if actual is not None
                 else self._store.read_outcome(request.job, request.idempotency_key)
             )
             if outcome is None or outcome.state != "succeeded":
@@ -985,6 +1321,15 @@ class MediaPreflightPipelineStage:
         )
         if aggregate_requests is None:
             aggregate_requests = requests
+        recovery_plan = (
+            self._recovery_plan(context, aggregate_requests, policy, runtime)
+            if self._frontier_store_enabled()
+            else None
+        )
+        if recovery_plan is not None:
+            await asyncio.to_thread(
+                self._store.claim_media_recovery_frontier, recovery_plan
+            )
         aggregate_runtime_requests = tuple(
             PrepareRuntimeTimedMediaEvidenceRequest(base, runtime.measurement)
             for base in aggregate_requests
@@ -995,10 +1340,9 @@ class MediaPreflightPipelineStage:
             max_concurrency=self._episode_max_concurrency,
         )
         executed = {
-            request.timed_media_request.episode_index: result
+            request.timed_media_request.episode_index: (request, result)
             for request, result in zip(runtime_requests, results, strict=True)
         }
-        children: list[RuntimeTimedMediaEvidenceBatchChild] = []
         unresolved: PrepareRuntimeTimedMediaEvidenceResult | None = None
         terminal: PrepareRuntimeTimedMediaEvidenceResult | None = None
         for request, result in zip(runtime_requests, results, strict=True):
@@ -1017,16 +1361,64 @@ class MediaPreflightPipelineStage:
                 continue
             if outcome.artifact_set_id is None:
                 raise PipelineRunValidationError("succeeded CUDA child lost its ArtifactSet")
+        if recovery_plan is not None:
+            entries = self._collect_runtime_recovery_entries(
+                recovery_plan, aggregate_requests, executed, runtime
+            )
+            current_job = Job(context.run_id, context.request.profile)
+            frontier = await asyncio.to_thread(
+                self._store.merge_media_recovery_successes,
+                recovery_plan,
+                current_job,
+                entries,
+            )
+            if (
+                frontier.state in ("complete", "finalized")
+                and frontier.finalizer_job == current_job
+            ):
+                finalizer = FinalizeRuntimeTimedMediaEvidenceBatchRequest(
+                    current_job,
+                    self._runtime_batch_idempotency_key(
+                        context, source_bundle, runtime.policy
+                    ),
+                    canonical_recipe_scope(current_job),
+                    _ARTIFACT_REVISION,
+                    self._runtime_children_from_frontier(
+                        frontier, aggregate_requests, runtime
+                    ),
+                )
+                batch = await asyncio.to_thread(
+                    FinalizeRuntimeTimedMediaEvidenceBatchCommand(
+                        self._store,
+                        resolver,
+                        media_evidence_read_limits(context.execution_profile),
+                    ).execute,
+                    finalizer,
+                )
+                if batch.outcome.state == "succeeded":
+                    await asyncio.to_thread(
+                        self._store.mark_media_recovery_finalized,
+                        recovery_plan,
+                        current_job,
+                        batch.outcome,
+                    )
+                return batch
+            if unresolved is not None:
+                return unresolved
+            if terminal is not None:
+                return terminal
+            return results[0]
         if unresolved is not None:
             return unresolved
         if terminal is not None:
             return terminal
+        children: list[RuntimeTimedMediaEvidenceBatchChild] = []
         aggregate_unavailable = False
         for request in aggregate_runtime_requests:
-            result = executed.get(request.timed_media_request.episode_index)
+            actual = executed.get(request.timed_media_request.episode_index)
             outcome = (
-                result.outcome
-                if result is not None
+                actual[1].outcome
+                if actual is not None
                 else self._store.read_outcome(request.job, request.idempotency_key)
             )
             if outcome is None or outcome.state != "succeeded":

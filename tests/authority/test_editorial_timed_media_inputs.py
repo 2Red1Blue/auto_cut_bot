@@ -18,8 +18,18 @@ from autocut_kernel.pipeline.editorial_timed_media_inputs import (
     EditorialTimedMediaInputError,
     read_committed_editorial_timed_media_inputs,
 )
+from autocut_kernel.pipeline.finalize_timed_media_evidence_batch_command import (
+    FinalizeTimedMediaEvidenceBatchCommand,
+    FinalizeTimedMediaEvidenceBatchRequest,
+    TimedMediaEvidenceBatchChild,
+)
+from autocut_kernel.store import Job
+from autocut_kernel.store.models import canonical_recipe_scope
 
-from tests.authority.editorial_media_fixture import editorial_timed_media_case
+from tests.authority.editorial_media_fixture import (
+    _persist_media_record,
+    editorial_timed_media_case,
+)
 
 
 def _read(case):  # type: ignore[no-untyped-def]
@@ -68,6 +78,47 @@ def test_join_replays_one_shared_admitted_source_vlm_chain_without_writes(
     assert len(media.claims) == before_media_claims
     assert len(media.successes) == before_media_successes
     assert len(editorial.events) > before_editorial_events  # readers re-audited committed predecessors
+
+
+def test_join_accepts_recovery_batch_job_when_every_child_keeps_exact_base_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = editorial_timed_media_case(tmp_path, monkeypatch)
+    store, stage3_request, stage3_outcome, batch_request, _batch_outcome, resolver, limits = case
+    base_child = batch_request.children[0]
+    recovery_job = Job("pipeline_run_" + "e" * 32, stage3_request.job.profile)
+    recovery_request = replace(
+        base_child.request,
+        job=recovery_job,
+        idempotency_key="media-preflight:recovered-episode-0",
+        artifact_scope=canonical_recipe_scope(recovery_job),
+        input_job=stage3_request.job,
+    )
+    recovery_outcome = _persist_media_record(store.media, recovery_request, resolver)
+    recovered_batch_request = FinalizeTimedMediaEvidenceBatchRequest(
+        recovery_job,
+        "media-preflight:recovered-batch",
+        canonical_recipe_scope(recovery_job),
+        1,
+        (TimedMediaEvidenceBatchChild(recovery_request, recovery_outcome),),
+    )
+    recovered_batch = FinalizeTimedMediaEvidenceBatchCommand(
+        store.media, resolver, limits
+    ).execute(recovered_batch_request)
+
+    joined = read_committed_editorial_timed_media_inputs(
+        store,
+        stage3_request=stage3_request,
+        stage3_outcome=stage3_outcome,
+        media_batch_request=recovered_batch_request,
+        media_batch_outcome=recovered_batch.outcome,
+        authority_profile_resolver=resolver,
+        limits=limits,
+    )
+
+    assert joined.media_batch_request.job == recovery_job
+    assert joined.media_batch_request.job != stage3_request.job
+    assert joined.media_batch_request.children[0].request.evidence_job == stage3_request.job
 
 
 def test_join_rejects_changed_child_source_slot_with_unchanged_semantic_selector(

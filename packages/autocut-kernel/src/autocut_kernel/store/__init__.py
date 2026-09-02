@@ -24,6 +24,16 @@ from .errors import (
     StoreConcurrencyError,
     StoreValidationError,
 )
+from .media_recovery_frontier import (
+    MEDIA_RECOVERY_ENTRY_SCHEMA,
+    MEDIA_RECOVERY_PLAN_SCHEMA,
+    MediaRecoveryEntry,
+    MediaRecoveryFrontier,
+    MediaRecoveryFrontierError,
+    MediaRecoveryPlan,
+    MediaRecoveryProducerKind,
+    MediaRecoveryState,
+)
 from .models import (
     SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL,
@@ -149,6 +159,14 @@ __all__ = [
     "MediaEvidenceIntegrityError",
     "MediaEvidenceReference",
     "MediaEvidenceUnavailableError",
+    "MEDIA_RECOVERY_ENTRY_SCHEMA",
+    "MEDIA_RECOVERY_PLAN_SCHEMA",
+    "MediaRecoveryEntry",
+    "MediaRecoveryFrontier",
+    "MediaRecoveryFrontierError",
+    "MediaRecoveryPlan",
+    "MediaRecoveryProducerKind",
+    "MediaRecoveryState",
     "MediaOutputsIntegrityError",
     "MediaOutputsUnavailableError",
     "PersistenceConflictError",

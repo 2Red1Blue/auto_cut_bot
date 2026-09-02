@@ -1,5 +1,15 @@
 """Durable local pipeline command adapters."""
 
+from ..store.media_recovery_frontier import (
+    MEDIA_RECOVERY_ENTRY_SCHEMA,
+    MEDIA_RECOVERY_PLAN_SCHEMA,
+    MediaRecoveryEntry,
+    MediaRecoveryFrontier,
+    MediaRecoveryFrontierError,
+    MediaRecoveryPlan,
+    MediaRecoveryProducerKind,
+    MediaRecoveryState,
+)
 from .compile_v23_candidate_decision_set_command import (
     COMPILE_V23_CANDIDATE_DECISION_SET_COMMAND,
     V23_CANDIDATE_DECISION_SET_COMMAND_STRATEGY,
@@ -165,6 +175,14 @@ __all__ = [
     "VLM_PARSER_STRATEGY_VERSION",
     "LocalMediaCommand",
     "LocalMediaCommandRequest",
+    "MEDIA_RECOVERY_ENTRY_SCHEMA",
+    "MEDIA_RECOVERY_PLAN_SCHEMA",
+    "MediaRecoveryEntry",
+    "MediaRecoveryFrontier",
+    "MediaRecoveryFrontierError",
+    "MediaRecoveryPlan",
+    "MediaRecoveryProducerKind",
+    "MediaRecoveryState",
     "MEASURE_SHADOW_CALIBRATION_COMMAND",
     "SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL",
     "MeasureShadowCalibrationCommand",

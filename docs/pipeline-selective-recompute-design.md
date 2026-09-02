@@ -1,7 +1,10 @@
 # Pipeline 阶段与单集重算设计
 
-状态：首个可执行切片已实现；当前使用方法见
-[PC 运行说明](pc-semantic-pipeline-run.md)。完整的跨 Job 多集混合复用仍是后续设计。
+状态：VLM 首个可执行切片已实现；当前使用方法见
+[PC 运行说明](pc-semantic-pipeline-run.md)。**Media Preflight 的跨 Job 多集恢复前沿已在
+`0053_media_preflight_recovery_frontier.sql` 和 `PostgresRuntimeStore` 中实现并通过真实
+PostgreSQL CPU/CUDA 验证**；本设计中仍待实现的是 VLM 语义批次的跨 Job 混合复用、持久化
+inspection hold 和 lineage 预算控制，不能把媒体前沿误认为 VLM aggregate 已完成。
 本设计补齐现有架构，不恢复已删除的总契约，不引入旧 pipeline、Agent 强制编排、
 外部发布或新的人工审批系统。Kernel 负责结果与复用校验，Pipeline 负责固定 DAG；
 未来 Agent Runtime 可调用同一类型化接口，不能绕过 Kernel 改写结果。
@@ -36,8 +39,9 @@ SourcePrep 精确绑定投影，能够比较兼容性并保留原请求；**尚�
 运行正常执行批次 Finalizer；`semantic_story` 目标 Run 随后继续 Stage 1–3。若父集合包含多集，
 该结果仍只是检查分支，不执行 Finalizer，也不进入 Stage 1。两者只在 `semantic_only` 或
 `semantic_story`、父 Run 已提交 `video_only` Context Pack 且安装 execution profile 与父 Run
-完全一致时启用。API-assisted Context、ASR/VAD 和多集混合复用批次仍未实现，必须明确返回
-unsupported；不能以 `force=true` 放开任何阶段。
+完全一致时启用。API-assisted Context、ASR/VAD 和 **VLM 语义批次**多集混合复用仍未实现，
+必须明确返回 unsupported；不能以 `force=true` 放开任何阶段。Media Preflight 的物理证据
+恢复不走这个 VLM 接口，而由专用 recovery frontier 管理成功 episode 闭包。
 为避免部分 VLM child 推进故事链，多集父集合的 `selected_only` 只允许 `semantic_only`
 检查分支；`semantic_story + selected_only` 在 Source 绑定阶段确认集数后、创建目标 Run 前拒绝。
 换源文件、改集序或改素材授权集合仍走新的完整 SourcePrep，不声称已经支持增量换源。

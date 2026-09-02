@@ -165,9 +165,15 @@ mixed aggregate finalizer 也已实现；HTTP `stage=media_preflight` 不再因�
 - Media Stage 默认以最多 3 集有界并发执行（运行时可调整，且不改变证据身份）；某集终态失败
   不会取消或阻止其他独立集，成功 child 会保留，但 aggregate 与下游继续 fail-closed。失败集可
   通过媒体单集 successor 重跑；若其余集均已成功且执行身份兼容，mixed aggregate 会复用它们并
-  闭合新批次。跨 CPU/CUDA 或 runtime policy 变化的复用还未接入持久化 recovery frontier，当前只
-  保留所选集 inspection 结果并要求显式重算缺失身份，不能静默视为完整批次。
-  不允许通过 `/resume` 重开终态命令，也不能把当前 `retry_budget` 当作跨重启累计的持久化计数器。
+  闭合新批次。当前已由 `0053_media_preflight_recovery_frontier.sql` 接入持久化 recovery
+  frontier：一个不可变 plan 对应完整 episode census，两个 append-only 表分别保存 plan/head
+  和每集 exact succeeded Command/Receipt/ArtifactSet closure；successor 可以跨 Job 累积不同
+  缺失集，但只接受同一 producer kind、profile、策略和输入身份。CPU/CUDA 使用不同的五成员
+  layout，不能混合；完整 census 未闭合时不能生成 aggregate，闭合后仅由 CAS 选出的一个
+  finalizer Job 生成批次，最终化可安全重放。数据库还会拒绝错误的 Prepare/Finalize 命令或
+  错误的成员布局。
+  不允许通过 `/resume` 重开终态命令，也不能把当前 `retry_budget` 当作跨重启累计的持久化计数器；
+  frontier 只记成功闭包，媒体子命令内部的瞬态重试仍受当前请求预算限制。
 
 后续仍需补齐媒体子任务的持久化 Attempt、完整失败分类和预算 CAS，才能把当前进程内 BUSY 重试
 升级为与 VLM 等价的崩溃安全恢复能力。当前接口可以声明“有限瞬态重试 + 单集 successor”，不能

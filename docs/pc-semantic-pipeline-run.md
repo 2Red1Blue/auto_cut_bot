@@ -302,12 +302,17 @@ curl -sS -X POST http://127.0.0.1:18769/v1/pipeline/recompute \
 本来就只有一集且选择第 1 集时，该选择覆盖完整集合：运行执行正常批次 Finalizer，并在
 `semantic_story` 计划中继续 Stage 1–3。
 
-### 尚未实现的批次补齐
+### 当前边界
 
-改变 VLM 策略后的批量局部试跑、把多集父 Run 的“新单集 + 父 Run 成功集”闭合为新的完整批次、
-API-assisted Context Pack 跨 Job 绑定、可持久化 inspection hold 以及 lineage 预算 CAS
-仍未实现。不能通过跨 Job 直接引用成员来绕过当前 Finalizer/semantic reader 的同 Job 校验。
-详见 [selective recompute design](pipeline-selective-recompute-design.md)。
+VLM 的策略变更批量试跑、VLM 多集父 Run 的跨 Job aggregate 补齐、API-assisted Context Pack
+跨 Job 绑定、可持久化 inspection hold 以及 lineage 预算 CAS 仍按 VLM selective-recompute
+设计逐步实现，不能通过跨 Job 直接引用 VLM 成员绕过现有 reader 校验。**这不等于 Media
+Preflight 没有恢复能力**：媒体阶段已实现独立的 `media_preflight_recovery_frontier`，允许
+不同 successor Job 为同一固定 census 累积缺失 episode 的成功 closure；只有完整 census
+和对应 CPU/CUDA producer layout 都验证通过，才会生成新的 timed-media batch。媒体 frontier
+不会把 VLM 的 selected-only 结果伪装成完整语义 Batch。
+详见 [selective recompute design](pipeline-selective-recompute-design.md) 及
+[当前 LLM 错误与调试状态](llm-stage-contracts/05-errors-debug-status.md)。
 
 ## Moving to calibrated media evidence
 

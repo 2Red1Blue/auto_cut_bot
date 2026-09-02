@@ -90,6 +90,12 @@ from .errors import (
     StoreConcurrencyError,
     StoreValidationError,
 )
+from .media_recovery_frontier import (
+    MediaRecoveryEntry,
+    MediaRecoveryFrontier,
+    MediaRecoveryFrontierError,
+    MediaRecoveryPlan,
+)
 from .models import (
     SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME,
@@ -4553,6 +4559,358 @@ class PostgresRuntimeStore:
             )
 
         return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # Media Preflight recovery frontier
+    # ------------------------------------------------------------------
+
+    def claim_media_recovery_frontier(
+        self, plan: MediaRecoveryPlan
+    ) -> MediaRecoveryFrontier:
+        """Create or exact-read one fixed episode recovery census."""
+
+        if type(plan) is not MediaRecoveryPlan:  # noqa: E721
+            raise StoreValidationError("media recovery claim requires an exact plan")
+        plan_json = json.dumps(
+            plan.to_mapping(), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        )
+
+        def operation(cursor: DbCursor) -> MediaRecoveryFrontier:
+            base_job_id = self._require_existing_job_id(cursor, plan.base_job)
+            frontier_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.media_preflight_recovery_frontiers
+                    (frontier_id, plan_sha256, base_job_id, plan_json, episode_count)
+                VALUES (%s, %s, %s, %s::jsonb, %s)
+                ON CONFLICT (plan_sha256) DO NOTHING
+                """,
+                (
+                    frontier_id,
+                    plan.plan_sha256,
+                    base_job_id,
+                    plan_json,
+                    len(plan.requirement_sha256s),
+                ),
+            )
+            persisted = self._read_media_recovery_frontier(cursor, plan.plan_sha256)
+            if persisted is None or persisted.plan != plan:
+                raise StoreValidationError(
+                    "media recovery plan hash does not bind the persisted plan"
+                )
+            return persisted
+
+        return self._transaction(operation)
+
+    def merge_media_recovery_successes(
+        self,
+        plan: MediaRecoveryPlan,
+        participant_job: Job,
+        entries: tuple[MediaRecoveryEntry, ...],
+    ) -> MediaRecoveryFrontier:
+        """Fill previously empty episode slots and elect one finalizer owner."""
+
+        if type(plan) is not MediaRecoveryPlan or type(participant_job) is not Job:  # noqa: E721
+            raise StoreValidationError("media recovery merge requires exact plan and Job")
+        if type(entries) is not tuple or any(  # noqa: E721
+            type(entry) is not MediaRecoveryEntry for entry in entries
+        ):
+            raise StoreValidationError("media recovery entries must be an exact tuple")
+        if tuple(entry.episode_index for entry in entries) != tuple(
+            sorted({entry.episode_index for entry in entries})
+        ):
+            raise StoreValidationError("media recovery merge entries must be unique and ordered")
+
+        def operation(cursor: DbCursor) -> MediaRecoveryFrontier:
+            cursor.execute(
+                """
+                SELECT frontier_id
+                  FROM runtime.media_preflight_recovery_frontiers
+                 WHERE plan_sha256 = %s
+                 FOR UPDATE
+                """,
+                (plan.plan_sha256,),
+            )
+            frontier_row = cursor.fetchone()
+            if frontier_row is None:
+                raise StoreValidationError("media recovery frontier is not claimed")
+            frontier_id = UUID(str(frontier_row[0]))
+            persisted = self._read_media_recovery_frontier(cursor, plan.plan_sha256)
+            if persisted is None or persisted.plan != plan:
+                raise StoreValidationError("media recovery frontier plan changed")
+            if persisted.state == "finalized":
+                if entries and any(entry not in persisted.entries for entry in entries):
+                    raise StoreValidationError("finalized recovery frontier cannot accept new entries")
+                return persisted
+            participant_job_id = self._require_existing_job_id(cursor, participant_job)
+            changed = False
+            for entry in entries:
+                if (
+                    entry.origin_job not in (plan.base_job, participant_job)
+                    or entry.episode_index >= len(plan.requirement_sha256s)
+                    or entry.requirement_sha256
+                    != plan.requirement_sha256s[entry.episode_index]
+                    or entry.origin_job.profile != plan.base_job.profile
+                ):
+                    raise StoreValidationError(
+                        "media recovery entry must belong to the base or participant Job and satisfy its plan"
+                    )
+                origin_job_id = self._require_existing_job_id(cursor, entry.origin_job)
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.media_preflight_recovery_entries
+                        (frontier_id, episode_index, requirement_sha256, origin_job_id,
+                         idempotency_key, request_hash, transient_retry_budget,
+                         command_slot_id, receipt_id, artifact_set_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (frontier_id, episode_index) DO NOTHING
+                    """,
+                    (
+                        frontier_id,
+                        entry.episode_index,
+                        entry.requirement_sha256,
+                        origin_job_id,
+                        entry.idempotency_key,
+                        entry.request_hash,
+                        entry.transient_retry_budget,
+                        entry.command_slot_id,
+                        entry.receipt_id,
+                        entry.artifact_set_id,
+                    ),
+                )
+                inserted = cursor.rowcount == 1
+                cursor.execute(
+                    """
+                    SELECT requirement_sha256, job.job_key, job.profile,
+                           entry.idempotency_key, entry.request_hash,
+                           entry.transient_retry_budget, entry.command_slot_id,
+                           entry.receipt_id, entry.artifact_set_id
+                      FROM runtime.media_preflight_recovery_entries entry
+                      JOIN runtime.jobs job ON job.job_id = entry.origin_job_id
+                     WHERE entry.frontier_id = %s AND entry.episode_index = %s
+                    """,
+                    (frontier_id, entry.episode_index),
+                )
+                exact = cursor.fetchone()
+                if exact is None or self._decode_media_recovery_entry(
+                    entry.episode_index, exact
+                ) != entry:
+                    raise StoreValidationError(
+                        "media recovery episode slot is already sealed by another closure"
+                    )
+                changed = changed or inserted
+            cursor.execute(
+                "SELECT count(*) FROM runtime.media_preflight_recovery_entries WHERE frontier_id = %s",
+                (frontier_id,),
+            )
+            count_row = cursor.fetchone()
+            count = 0 if count_row is None else int(str(count_row[0]))
+            if count > len(plan.requirement_sha256s):
+                raise StoreValidationError("media recovery coverage exceeds its census")
+            if persisted.state == "open" and count == len(plan.requirement_sha256s):
+                cursor.execute(
+                    """
+                    UPDATE runtime.media_preflight_recovery_frontiers
+                       SET state = 'complete', finalizer_job_id = %s,
+                           version = version + 1, updated_at = transaction_timestamp()
+                     WHERE frontier_id = %s AND state = 'open'
+                    """,
+                    (participant_job_id, frontier_id),
+                )
+            elif changed:
+                cursor.execute(
+                    """
+                    UPDATE runtime.media_preflight_recovery_frontiers
+                       SET version = version + 1, updated_at = transaction_timestamp()
+                     WHERE frontier_id = %s AND state = 'open'
+                    """,
+                    (frontier_id,),
+                )
+            refreshed = self._read_media_recovery_frontier(cursor, plan.plan_sha256)
+            if refreshed is None:
+                raise StoreValidationError("media recovery frontier vanished after merge")
+            return refreshed
+
+        return self._transaction(operation)
+
+    def mark_media_recovery_finalized(
+        self,
+        plan: MediaRecoveryPlan,
+        finalizer_job: Job,
+        outcome: CommandOutcome,
+    ) -> MediaRecoveryFrontier:
+        """CAS a complete frontier to the exact already-committed batch."""
+
+        if (
+            type(plan) is not MediaRecoveryPlan  # noqa: E721
+            or type(finalizer_job) is not Job  # noqa: E721
+            or type(outcome) is not CommandOutcome  # noqa: E721
+            or outcome.state != "succeeded"
+            or outcome.receipt_id is None
+            or outcome.artifact_set_id is None
+        ):
+            raise StoreValidationError("media recovery finalization requires exact success")
+
+        def operation(cursor: DbCursor) -> MediaRecoveryFrontier:
+            cursor.execute(
+                """
+                SELECT frontier_id, state, finalizer_job_id, final_receipt_id,
+                       final_artifact_set_id
+                  FROM runtime.media_preflight_recovery_frontiers
+                 WHERE plan_sha256 = %s
+                 FOR UPDATE
+                """,
+                (plan.plan_sha256,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise StoreValidationError("media recovery frontier is unavailable")
+            frontier_id = UUID(str(row[0]))
+            job_id = self._require_existing_job_id(cursor, finalizer_job)
+            if UUID(str(row[2])) != job_id:
+                raise StoreValidationError("only the elected Job may finalize recovery")
+            if outcome.job_id != job_id:
+                raise StoreValidationError("final batch outcome belongs to another Job")
+            if str(row[1]) == "finalized":
+                if UUID(str(row[3])) != outcome.receipt_id or UUID(
+                    str(row[4])
+                ) != outcome.artifact_set_id:
+                    raise StoreValidationError("replayed final batch handles changed")
+            elif str(row[1]) == "complete":
+                cursor.execute(
+                    """
+                    UPDATE runtime.media_preflight_recovery_frontiers
+                       SET state = 'finalized', final_receipt_id = %s,
+                           final_artifact_set_id = %s, version = version + 1,
+                           updated_at = transaction_timestamp()
+                     WHERE frontier_id = %s AND state = 'complete'
+                    """,
+                    (outcome.receipt_id, outcome.artifact_set_id, frontier_id),
+                )
+            else:
+                raise StoreValidationError("incomplete recovery frontier cannot be finalized")
+            refreshed = self._read_media_recovery_frontier(cursor, plan.plan_sha256)
+            if refreshed is None:
+                raise StoreValidationError("media recovery frontier vanished after finalization")
+            return refreshed
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _require_existing_job_id(cursor: DbCursor, job: Job) -> UUID:
+        cursor.execute(
+            "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+            (job.job_key,),
+        )
+        row = cursor.fetchone()
+        if row is None or str(row[1]) != job.profile:
+            raise StoreValidationError("media recovery Job is unavailable or changed profile")
+        return UUID(str(row[0]))
+
+    @staticmethod
+    def _decode_media_recovery_entry(
+        episode_index: int, row: tuple[object, ...]
+    ) -> MediaRecoveryEntry:
+        try:
+            return MediaRecoveryEntry(
+                episode_index,
+                str(row[0]),
+                Job(str(row[1]), cast(JobProfile, str(row[2]))),
+                str(row[3]),
+                str(row[4]),
+                int(str(row[5])),
+                UUID(str(row[6])),
+                UUID(str(row[7])),
+                UUID(str(row[8])),
+            )
+        except (MediaRecoveryFrontierError, TypeError, ValueError) as error:
+            raise StoreValidationError("persisted media recovery entry is invalid") from error
+
+    def _read_media_recovery_frontier(
+        self, cursor: DbCursor, plan_sha256: str
+    ) -> MediaRecoveryFrontier | None:
+        cursor.execute(
+            """
+            SELECT frontier.frontier_id, frontier.plan_sha256, frontier.base_job_id,
+                   frontier.plan_json, frontier.state,
+                   frontier.version, final_job.job_key, final_job.profile,
+                   frontier.final_receipt_id, frontier.final_artifact_set_id
+              FROM runtime.media_preflight_recovery_frontiers frontier
+              LEFT JOIN runtime.jobs final_job
+                ON final_job.job_id = frontier.finalizer_job_id
+             WHERE frontier.plan_sha256 = %s
+            """,
+            (plan_sha256,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        persisted_plan_sha256 = _required_text(row[1], "persisted media recovery plan hash")
+        if persisted_plan_sha256 != plan_sha256:
+            raise StoreValidationError("persisted media recovery plan hash differs from lookup")
+        raw_plan = row[3]
+        if isinstance(raw_plan, Mapping):
+            plan_mapping = cast(Mapping[str, object], raw_plan)
+        else:
+            decoded = json.loads(str(raw_plan))
+            if not isinstance(decoded, Mapping):
+                raise StoreValidationError("persisted media recovery plan is not an object")
+            plan_mapping = cast(Mapping[str, object], decoded)
+        try:
+            plan = MediaRecoveryPlan.from_mapping(plan_mapping)
+        except MediaRecoveryFrontierError as error:
+            raise StoreValidationError("persisted media recovery plan is invalid") from error
+        if plan.plan_sha256 != persisted_plan_sha256:
+            raise StoreValidationError("persisted media recovery plan bytes do not match its hash")
+        base_job_id = UUID(str(row[2]))
+        cursor.execute(
+            "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+            (base_job_id,),
+        )
+        base_job_row = cursor.fetchone()
+        if base_job_row is None or Job(str(base_job_row[0]), cast(JobProfile, str(base_job_row[1]))) != plan.base_job:
+            raise StoreValidationError("persisted media recovery base Job differs from its plan")
+        cursor.execute(
+            """
+            SELECT entry.episode_index, entry.requirement_sha256,
+                   job.job_key, job.profile, entry.idempotency_key,
+                   entry.request_hash, entry.transient_retry_budget,
+                   entry.command_slot_id, entry.receipt_id, entry.artifact_set_id
+              FROM runtime.media_preflight_recovery_entries entry
+              JOIN runtime.jobs job ON job.job_id = entry.origin_job_id
+             WHERE entry.frontier_id = %s
+             ORDER BY entry.episode_index
+            """,
+                    (row[0],),
+        )
+        entries: list[MediaRecoveryEntry] = []
+        while True:
+            entry_row = cursor.fetchone()
+            if entry_row is None:
+                break
+            entries.append(
+                self._decode_media_recovery_entry(
+                    int(str(entry_row[0])), entry_row[1:]
+                )
+            )
+        finalizer_job = (
+            None
+            if row[6] is None
+            else Job(str(row[6]), cast(JobProfile, str(row[7])))
+        )
+        try:
+            return MediaRecoveryFrontier(
+                UUID(str(row[0])),
+                plan,
+                cast(Literal["open", "complete", "finalized"], str(row[4])),
+                int(str(row[5])),
+                tuple(entries),
+                finalizer_job,
+                None if row[8] is None else UUID(str(row[8])),
+                None if row[9] is None else UUID(str(row[9])),
+            )
+        except (MediaRecoveryFrontierError, TypeError, ValueError) as error:
+            raise StoreValidationError("persisted media recovery frontier is invalid") from error
 
     def read_terminal_command_receipt(
         self,

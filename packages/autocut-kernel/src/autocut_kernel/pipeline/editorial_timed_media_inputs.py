@@ -46,12 +46,14 @@ from .editorial_blueprint_inputs import (
 from .finalize_runtime_timed_media_evidence_batch_command import (
     FinalizeRuntimeTimedMediaEvidenceBatchRequest,
     FinalizeRuntimeTimedMediaEvidenceBatchResult,
+    RuntimeTimedMediaEvidenceBatchError,
     RuntimeTimedMediaEvidenceBatchStore,
     read_committed_runtime_timed_media_evidence_batch,
 )
 from .finalize_timed_media_evidence_batch_command import (
     FinalizeTimedMediaEvidenceBatchRequest,
     FinalizeTimedMediaEvidenceBatchResult,
+    TimedMediaEvidenceBatchError,
     TimedMediaEvidenceBatchStore,
     read_committed_timed_media_evidence_batch,
 )
@@ -108,8 +110,7 @@ class EditorialTimedCandidateBinding:
         if (type(refs) is not tuple or len(refs) != 5  # noqa: E721
                 or any(type(ref) is not CommittedArtifactMemberReference for ref in refs)  # noqa: E721
                 or tuple(ref.member_ordinal for ref in refs) != (0, 1, 2, 3, 4)
-                or len({(ref.receipt_id, ref.artifact_set_id, ref.scope) for ref in refs}) != 1
-                or refs[0].scope != self.source_ref.member_ref.scope):
+                or len({(ref.receipt_id, ref.artifact_set_id, ref.scope) for ref in refs}) != 1):
             raise EditorialTimedMediaInputError("candidate binding requires the exact five-member owner")
 
 
@@ -262,13 +263,17 @@ def read_committed_editorial_timed_media_inputs(
     succeeded_outcome_mapping(stage3_outcome)
     succeeded_outcome_mapping(media_batch_outcome)
     selector = stage3_request.stage2_request.stage1_request.inputs
-    if (stage3_request.job != media_batch_request.job
-            or stage3_request.artifact_scope != media_batch_request.artifact_scope
-            or stage3_outcome.job_id != media_batch_outcome.job_id
-            or any(_base_timed_media_request(child).semantic_inputs_request != selector
-                   or child.outcome.job_id != stage3_outcome.job_id
-                   for child in media_batch_request.children)):
-        raise EditorialTimedMediaInputError("editorial/media Job or complete semantic selector differs")
+    if (
+        stage3_request.job.profile != media_batch_request.job.profile
+        or any(
+            _base_timed_media_request(child).semantic_inputs_request != selector
+            or _base_timed_media_request(child).evidence_job != stage3_request.job
+            for child in media_batch_request.children
+        )
+    ):
+        raise EditorialTimedMediaInputError(
+            "editorial/media profile or complete semantic owner differs"
+        )
     editorial = read_committed_editorial_blueprints(store, stage3_request, stage3_outcome)
     predecessors = read_committed_editorial_blueprint_inputs(
         store, stage2_request=stage3_request.stage2_request,
@@ -294,20 +299,25 @@ def read_committed_editorial_timed_media_inputs(
     decoded_source = decode_candidate_source_context(semantic)  # Also requires render_source.
     if len(decoded_source.episodes) != len(media_batch_request.children):
         raise EditorialTimedMediaInputError("media batch does not cover the complete semantic Source")
-    if cpu_batch:
-        assert type(authority_profile_resolver) is InstalledLocalRunProfileResolver  # noqa: E721
-        batch = read_committed_timed_media_evidence_batch(
-            store, media_batch_request, media_batch_outcome,
-            authority_profile_resolver=authority_profile_resolver, limits=limits,
-        )
-    else:
-        assert type(authority_profile_resolver) is InstalledRuntimeTimedSpeechAuthorityResolver  # noqa: E721
-        batch = read_committed_runtime_timed_media_evidence_batch(
-            store,
-            cast(FinalizeRuntimeTimedMediaEvidenceBatchRequest, media_batch_request),
-            media_batch_outcome,
-            authority_resolver=authority_profile_resolver, limits=limits,
-        )
+    try:
+        if cpu_batch:
+            assert type(authority_profile_resolver) is InstalledLocalRunProfileResolver  # noqa: E721
+            batch = read_committed_timed_media_evidence_batch(
+                store, media_batch_request, media_batch_outcome,
+                authority_profile_resolver=authority_profile_resolver, limits=limits,
+            )
+        else:
+            assert type(authority_profile_resolver) is InstalledRuntimeTimedSpeechAuthorityResolver  # noqa: E721
+            batch = read_committed_runtime_timed_media_evidence_batch(
+                store,
+                cast(FinalizeRuntimeTimedMediaEvidenceBatchRequest, media_batch_request),
+                media_batch_outcome,
+                authority_resolver=authority_profile_resolver, limits=limits,
+            )
+    except (TimedMediaEvidenceBatchError, RuntimeTimedMediaEvidenceBatchError) as error:
+        raise EditorialTimedMediaInputError(
+            "media batch Job/Receipt closure is not exact"
+        ) from error
     catalog = predecessors.portfolio.values.business.candidate_catalog
     catalog_identity = SemanticMemberIdentity.from_artifact_member(predecessors.portfolio.record.artifacts[0])
     candidates = {SemanticObjectRef(catalog_identity, "candidate", value.candidate_id): value
