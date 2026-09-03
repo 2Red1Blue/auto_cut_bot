@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import time
 from array import array
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import UUID
 
+import autocut_kernel.rendering.production_ffmpeg_renderer as production_ffmpeg_renderer_module
 import pytest
 from autocut_kernel.media.types import TickRange, TimeBase
 from autocut_kernel.physical_edit.candidate_dialogue_guard import CandidateDialogueGuard
@@ -30,6 +33,12 @@ from autocut_kernel.pipeline.production_recipe import (
     ProductionSpan,
     ProductionStory,
 )
+from autocut_kernel.rendering.production_ffmpeg_renderer import (
+    ProductionFFmpegRenderer,
+    ProductionProcessResult,
+    ProductionRenderExecutionError,
+    ProductionRenderExecutionLimits,
+)
 from autocut_kernel.rendering.production_render_plan import (
     PRODUCTION_AV_H264_AAC_PROFILE,
     ProductionAvRenderProfile,
@@ -37,7 +46,13 @@ from autocut_kernel.rendering.production_render_plan import (
     bind_production_render_invocation,
     build_production_render_plan,
 )
-from autocut_kernel.store.models import ArtifactScope, BlobRef, CommittedArtifactMemberReference
+from autocut_kernel.store.models import (
+    ArtifactScope,
+    BlobRef,
+    CommittedArtifactMemberReference,
+    Job,
+    MaterializationLimits,
+)
 from autocut_kernel.vlm.models import VlmEditingMode
 
 
@@ -594,3 +609,770 @@ def test_bound_plan_executes_exact_two_source_av_concat(tmp_path: Path) -> None:
     late_crossings = audio_zero_crossings("0.6")
     assert early_crossings > 100
     assert late_crossings > early_crossings * 3 // 2
+
+
+@dataclass(slots=True)
+class _TestMaterializedLease:
+    reference: BlobRef
+    path: Path
+    closed: bool = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.path.unlink(missing_ok=True)
+        self.path.parent.rmdir()
+
+
+class _TestProductionSourceStore:
+    def __init__(
+        self,
+        root: Path,
+        contents: dict[BlobRef, bytes],
+        *,
+        corrupt_call: int | None = None,
+        fail_call: int | None = None,
+    ) -> None:
+        self.root = root
+        self.contents = contents
+        self.corrupt_call = corrupt_call
+        self.fail_call = fail_call
+        self.calls: list[tuple[Job, BlobRef, MaterializationLimits]] = []
+        self.leases: list[_TestMaterializedLease] = []
+
+    def materialize_immutable_blob(
+        self,
+        job: Job,
+        reference: BlobRef,
+        limits: MaterializationLimits,
+    ) -> _TestMaterializedLease:
+        call = len(self.calls) + 1
+        self.calls.append((job, reference, limits))
+        if call == self.fail_call:
+            raise RuntimeError("materialization failed")
+        directory = self.root / f"source-{call}"
+        directory.mkdir(parents=True)
+        directory.chmod(0o700)
+        path = (directory / "source.mp4").absolute()
+        payload = b"corrupt" if call == self.corrupt_call else self.contents[reference]
+        path.write_bytes(payload)
+        path.chmod(0o400)
+        lease = _TestMaterializedLease(reference, path)
+        self.leases.append(lease)
+        return lease
+
+
+def _execution_limits() -> ProductionRenderExecutionLimits:
+    return ProductionRenderExecutionLimits(
+        max_source_bytes=16 * 1024 * 1024,
+        copy_chunk_bytes=64 * 1024,
+        staging_quota_bytes=64 * 1024 * 1024,
+        max_output_bytes=16 * 1024 * 1024,
+        max_input_count=8,
+        max_segment_count=32,
+        stderr_max_bytes=16 * 1024,
+        timeout_milliseconds=30_000,
+    )
+
+
+def _blob_for_bytes(raw: bytes, *, object_id: UUID) -> BlobRef:
+    return BlobRef(
+        object_id,
+        f"sha256:{hashlib.sha256(raw).hexdigest()}",
+        len(raw),
+        "video/mp4",
+    )
+
+
+def _single_source_recipe(raw: bytes) -> tuple[ProductionRecipe, BlobRef]:
+    reference = _blob_for_bytes(
+        raw,
+        object_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    return (
+        _recipe(
+            _span(
+                ordinal=0,
+                requirement_id="requirement-1",
+                candidate_id="candidate-1",
+                source_blob=reference,
+            )
+        ),
+        reference,
+    )
+
+
+def test_production_executor_materializes_real_source_and_returns_private_facts(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if ffmpeg is None or ffprobe is None:
+        pytest.skip("ffmpeg and ffprobe are required")
+    source_path = (tmp_path / "input.mp4").absolute()
+    generated = subprocess.run(
+        [
+            ffmpeg,
+            "-nostdin",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=green:size=64x48:rate=25:duration=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=750:sample_rate=48000:duration=1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(source_path),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert generated.returncode == 0, generated.stderr.decode("utf-8", "replace")
+    raw = source_path.read_bytes()
+    reference = _blob_for_bytes(
+        raw,
+        object_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    first_span = _span(
+        ordinal=0,
+        requirement_id="requirement-1",
+        candidate_id="candidate-1",
+        source_blob=reference,
+        video_time_base=TimeBase(1, 12_800),
+        video_in_tick=0,
+        video_out_tick=5_120,
+        audio_in_tick=0,
+        audio_out_tick=19_200,
+    )
+    second_span = _span(
+        ordinal=1,
+        requirement_id="requirement-2",
+        candidate_id="candidate-2",
+        source_blob=reference,
+        video_time_base=TimeBase(1, 12_800),
+        video_in_tick=5_120,
+        video_out_tick=10_240,
+        audio_in_tick=19_200,
+        audio_out_tick=38_400,
+    )
+    recipe = _recipe(first_span, second_span)
+    profile = ProductionAvRenderProfile(
+        profile_id="production-executor-test-v1",
+        width=64,
+        height=48,
+    )
+    plan = build_production_render_plan(recipe, profile=profile)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+    attempt_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    rendered = ProductionFFmpegRenderer(ffmpeg).execute(
+        attempt_id=attempt_id,
+        job=Job("job-production-render", "production"),
+        recipe=recipe,
+        plan=plan,
+        store=store,
+        staging_root=(tmp_path / "render-staging").absolute(),
+        limits=_execution_limits(),
+        profile=profile,
+    )
+
+    try:
+        assert rendered.output_path.is_file()
+        assert rendered.output_path.stat().st_mode & 0o777 == 0o400
+        assert rendered.facts.attempt_id == attempt_id
+        assert rendered.facts.recipe_sha256 == recipe.canonical_hash
+        assert rendered.facts.plan_sha256 == plan.canonical_hash
+        assert rendered.facts.output_byte_length == rendered.output_path.stat().st_size
+        assert rendered.facts.input_count == 1
+        assert rendered.facts.segment_count == 2
+        assert len(store.calls) == 1
+        assert str(tmp_path) not in json.dumps(rendered.facts.to_mapping())
+        assert store.leases and all(item.closed for item in store.leases)
+        probed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "json",
+                str(rendered.output_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+        assert {item["codec_type"] for item in json.loads(probed.stdout)["streams"]} == {
+            "audio",
+            "video",
+        }
+        output = rendered.output_path
+        directory = output.parent
+    finally:
+        rendered.close()
+    assert not output.exists()
+    assert not directory.exists()
+
+
+def test_production_executor_rejects_plan_drift_before_store_access(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=replace(plan, filter_graph=plan.filter_graph + ";null"),
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_REQUEST_INVALID"
+    assert captured.value.outcome == "denied"
+    assert store.calls == []
+
+
+def test_production_executor_rejects_corrupt_materialization_before_ffmpeg(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(
+        tmp_path / "materialized",
+        {reference: raw},
+        corrupt_call=1,
+    )
+    invoked = False
+
+    def runner(argv: tuple[str, ...], **_kwargs: object) -> ProductionProcessResult:
+        nonlocal invoked
+        if argv[1:] == ("-version",):
+            return ProductionProcessResult(0, b"ffmpeg version fixture", b"")
+        invoked = True
+        return ProductionProcessResult(0, b"", b"")
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg, runner=runner).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_SOURCE_INTEGRITY_FAILED"
+    assert not invoked
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", ["failed", "timeout"])
+def test_production_executor_closes_sources_when_ffmpeg_does_not_finish(
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+
+    def runner(argv: tuple[str, ...], **_kwargs: object) -> ProductionProcessResult:
+        if argv[1:] == ("-version",):
+            return ProductionProcessResult(0, b"ffmpeg version fixture", b"")
+        if mode == "timeout":
+            raise subprocess.TimeoutExpired("ffmpeg", 1)
+        return ProductionProcessResult(2, b"", b"invalid input")
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg, runner=runner).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    expected = (
+        "PRODUCTION_RENDER_TIMEOUT" if mode == "timeout" else "PRODUCTION_RENDER_EXECUTION_FAILED"
+    )
+    assert captured.value.code == expected
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_production_executor_closes_earlier_source_when_later_materialization_fails(
+    tmp_path: Path,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    first_raw = b"first" * 128
+    second_raw = b"second" * 128
+    first = _blob_for_bytes(
+        first_raw,
+        object_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    second = _blob_for_bytes(
+        second_raw,
+        object_id=UUID("22222222-2222-4222-8222-222222222222"),
+    )
+    recipe = _recipe(
+        _span(
+            ordinal=0,
+            requirement_id="requirement-1",
+            candidate_id="candidate-1",
+            source_blob=first,
+            source_id="source-1",
+        ),
+        _span(
+            ordinal=1,
+            requirement_id="requirement-2",
+            candidate_id="candidate-2",
+            source_blob=second,
+            source_id="source-2",
+            video_in_tick=110,
+            video_out_tick=200,
+            audio_in_tick=60,
+            audio_out_tick=108,
+        ),
+    )
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(
+        tmp_path / "materialized",
+        {first: first_raw, second: second_raw},
+        fail_call=2,
+    )
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_SOURCE_MATERIALIZATION_FAILED"
+    assert len(store.calls) == 2
+    assert len(store.leases) == 1 and store.leases[0].closed
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_default_production_runner_kills_ffmpeg_when_stderr_exceeds_limit(
+    tmp_path: Path,
+) -> None:
+    executable = (tmp_path / "fake-ffmpeg").absolute()
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-version" ]; then\n'
+        "  echo 'ffmpeg version fixture'\n"
+        "  exit 0\n"
+        "fi\n"
+        "head -c 4096 /dev/zero >&2\n"
+        "sleep 5\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+    limits = replace(
+        _execution_limits(),
+        stderr_max_bytes=128,
+        timeout_milliseconds=5_000,
+    )
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(str(executable)).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=limits,
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_STDERR_LIMIT_EXCEEDED"
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_production_executor_applies_runtime_output_limit(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+    limits = replace(_execution_limits(), max_output_bytes=32)
+
+    def runner(argv: tuple[str, ...], **_kwargs: object) -> ProductionProcessResult:
+        if argv[1:] == ("-version",):
+            return ProductionProcessResult(0, b"ffmpeg version fixture", b"")
+        assert argv[-3:-1] == ("-fs", "32")
+        Path(argv[-1]).write_bytes(b"x" * 33)
+        return ProductionProcessResult(0, b"", b"")
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg, runner=runner).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=limits,
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_OUTPUT_LIMIT_EXCEEDED"
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_production_output_cleanup_can_retry_after_transient_failure(tmp_path: Path) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+
+    def runner(argv: tuple[str, ...], **_kwargs: object) -> ProductionProcessResult:
+        if argv[1:] == ("-version",):
+            return ProductionProcessResult(0, b"ffmpeg version fixture", b"")
+        Path(argv[-1]).write_bytes(b"private-render")
+        return ProductionProcessResult(0, b"", b"")
+
+    rendered = ProductionFFmpegRenderer(ffmpeg, runner=runner).execute(
+        attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+        job=Job("job-production-render", "production"),
+        recipe=recipe,
+        plan=plan,
+        store=store,
+        staging_root=(tmp_path / "render-staging").absolute(),
+        limits=_execution_limits(),
+    )
+    blocker = rendered.output_path.parent / "blocker"
+    blocker.write_bytes(b"block")
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        rendered.close()
+
+    assert captured.value.code == "PRODUCTION_RENDER_CLEANUP_FAILED"
+    assert rendered.output_path.parent.exists()
+    blocker.unlink()
+    rendered.close()
+    assert not rendered.output_path.parent.exists()
+
+
+def test_ffmpeg_identity_probe_is_bounded_before_sources_are_materialized(
+    tmp_path: Path,
+) -> None:
+    executable = (tmp_path / "fake-ffmpeg").absolute()
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-version" ]; then\n'
+        "  head -c 131072 /dev/zero\n"
+        "  sleep 5\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(str(executable)).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED"
+    assert store.calls == []
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+@dataclass(slots=True)
+class _AliasedMaterializedLease:
+    reference: BlobRef
+    path: Path
+    closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _AliasedProductionSourceStore:
+    def __init__(self, root: Path, raw: bytes) -> None:
+        root.mkdir(parents=True, mode=0o700)
+        root.chmod(0o700)
+        self.path = (root / "aliased-source.mp4").absolute()
+        self.path.write_bytes(raw)
+        self.path.chmod(0o400)
+        self.leases: list[_AliasedMaterializedLease] = []
+
+    def materialize_immutable_blob(
+        self,
+        _job: Job,
+        reference: BlobRef,
+        _limits: MaterializationLimits,
+    ) -> _AliasedMaterializedLease:
+        lease = _AliasedMaterializedLease(reference, self.path)
+        self.leases.append(lease)
+        return lease
+
+
+def test_production_executor_closes_descriptor_when_distinct_blobs_alias_one_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"same immutable bytes"
+    first = _blob_for_bytes(
+        raw,
+        object_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    second = _blob_for_bytes(
+        raw,
+        object_id=UUID("22222222-2222-4222-8222-222222222222"),
+    )
+    recipe = _recipe(
+        _span(
+            ordinal=0,
+            requirement_id="requirement-1",
+            candidate_id="candidate-1",
+            source_blob=first,
+            source_id="source-1",
+        ),
+        _span(
+            ordinal=1,
+            requirement_id="requirement-2",
+            candidate_id="candidate-2",
+            source_blob=second,
+            source_id="source-2",
+            video_in_tick=110,
+            video_out_tick=200,
+            audio_in_tick=60,
+            audio_out_tick=108,
+        ),
+    )
+    plan = build_production_render_plan(recipe)
+    store = _AliasedProductionSourceStore(tmp_path / "materialized", raw)
+    opened_descriptors: list[int] = []
+    original = production_ffmpeg_renderer_module._open_verified_source  # pyright: ignore[reportPrivateUsage]
+
+    def recording_open(*args: object, **kwargs: object) -> tuple[int, tuple[int, int]]:
+        descriptor, inode = original(*args, **kwargs)  # pyright: ignore[reportCallIssue]
+        opened_descriptors.append(descriptor)
+        return descriptor, inode
+
+    monkeypatch.setattr(
+        production_ffmpeg_renderer_module,
+        "_open_verified_source",
+        recording_open,
+    )
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_SOURCE_INTEGRITY_FAILED"
+    assert len(opened_descriptors) == 2
+    for descriptor in opened_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_production_executor_normalizes_attempt_directory_allocation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+
+    def fail_mkdtemp(*_args: object, **_kwargs: object) -> str:
+        raise PermissionError("fixture allocation failure")
+
+    monkeypatch.setattr(production_ffmpeg_renderer_module.tempfile, "mkdtemp", fail_mkdtemp)
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(ffmpeg).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_EXECUTION_FAILED"
+    assert store.calls == []
+    assert list((tmp_path / "render-staging").iterdir()) == []
+
+
+def test_production_executor_reports_attempt_directory_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        pytest.skip("ffmpeg is required")
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+    leaked_directory = (tmp_path / "render-staging" / "unsafe-attempt").absolute()
+
+    def create_unsafe_directory(*_args: object, **_kwargs: object) -> str:
+        leaked_directory.mkdir(mode=0o700)
+        leaked_directory.chmod(0o755)
+        return str(leaked_directory)
+
+    def fail_rmdir(_path: object) -> None:
+        raise PermissionError("fixture cleanup failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            production_ffmpeg_renderer_module.tempfile,
+            "mkdtemp",
+            create_unsafe_directory,
+        )
+        patcher.setattr(production_ffmpeg_renderer_module.os, "rmdir", fail_rmdir)
+
+        with pytest.raises(ProductionRenderExecutionError) as captured:
+            ProductionFFmpegRenderer(ffmpeg).execute(
+                attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                job=Job("job-production-render", "production"),
+                recipe=recipe,
+                plan=plan,
+                store=store,
+                staging_root=(tmp_path / "render-staging").absolute(),
+                limits=_execution_limits(),
+            )
+
+    assert captured.value.code == "PRODUCTION_RENDER_CLEANUP_FAILED"
+    assert store.calls == []
+    assert leaked_directory.is_dir()
+    leaked_directory.rmdir()
+
+
+def test_default_runner_kills_background_child_that_keeps_stderr_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = (tmp_path / "fake-ffmpeg").absolute()
+    executable.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-version" ]; then\n'
+        "  echo 'ffmpeg version fixture'\n"
+        "  exit 0\n"
+        "fi\n"
+        "(sleep 5) &\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    raw = b"source" * 128
+    recipe, reference = _single_source_recipe(raw)
+    plan = build_production_render_plan(recipe)
+    store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
+    killed_process_groups: list[int] = []
+    original_kill_process_group = production_ffmpeg_renderer_module._kill_process_group  # pyright: ignore[reportPrivateUsage]
+
+    def recording_kill_process_group(process: subprocess.Popen[bytes]) -> None:
+        killed_process_groups.append(process.pid)
+        original_kill_process_group(process)
+
+    monkeypatch.setattr(
+        production_ffmpeg_renderer_module,
+        "_kill_process_group",
+        recording_kill_process_group,
+    )
+    started = time.monotonic()
+
+    with pytest.raises(ProductionRenderExecutionError) as captured:
+        ProductionFFmpegRenderer(str(executable)).execute(
+            attempt_id=UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            job=Job("job-production-render", "production"),
+            recipe=recipe,
+            plan=plan,
+            store=store,
+            staging_root=(tmp_path / "render-staging").absolute(),
+            limits=_execution_limits(),
+        )
+
+    assert captured.value.code == "PRODUCTION_RENDER_EXECUTION_FAILED"
+    assert time.monotonic() - started < 2
+    assert len(killed_process_groups) == 1
+    group_id = killed_process_groups[0]
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            os.killpg(group_id, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail("production FFmpeg descendant process group is still alive")
+        time.sleep(0.01)
+    assert store.leases and all(item.closed for item in store.leases)
+    assert list((tmp_path / "render-staging").iterdir()) == []
