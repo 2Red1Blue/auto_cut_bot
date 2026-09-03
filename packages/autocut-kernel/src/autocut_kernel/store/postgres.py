@@ -141,6 +141,8 @@ from .models import (
     PersistedWholeSeriesSourceManifest,
     ProductionRenderAttempt,
     ProductionRenderLease,
+    ProductionRenderQcAttempt,
+    ProductionRenderQcLease,
     RecipeReference,
     ShadowLocalMeasurementAttempt,
     ShadowLocalMeasurementAttemptState,
@@ -571,6 +573,25 @@ class _ProductionRenderAttemptRecord:
                 raise RuntimeStoreError("rendering production record lost its lease token")
         elif self.lease_token is not None:
             raise RuntimeStoreError("non-rendering production record retained a lease token")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionRenderQcAttemptRecord:
+    """Private persisted QC state including the current fencing secret."""
+
+    attempt: ProductionRenderQcAttempt
+    lease_token: UUID | None
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ProductionRenderQcAttempt:  # noqa: E721
+            raise RuntimeStoreError("production render QC record requires an exact attempt")
+        if self.attempt.state == "scanning":
+            if type(self.lease_token) is not UUID:  # noqa: E721
+                raise RuntimeStoreError("scanning production render QC record lost its lease token")
+        elif self.lease_token is not None:
+            raise RuntimeStoreError(
+                "non-scanning production render QC record retained a lease token"
+            )
 
 
 def _text(value: object) -> str:
@@ -4697,6 +4718,509 @@ class PostgresRuntimeStore:
             ).attempt
 
         return self._transaction(operation)
+
+    # ------------------------------------------------------------------
+    # durable production render QC attempts
+    # ------------------------------------------------------------------
+
+    def reserve_production_render_qc_attempt(
+        self,
+        render_attempt_id: UUID,
+        *,
+        expected_render_version: int,
+        qc_policy_sha256: str,
+        required_check_set_version: str,
+        qc_runner_identity_sha256: str,
+    ) -> ProductionRenderQcAttempt:
+        """Reserve the sole exact QC identity for one rendered output."""
+
+        self._validate_uuid(render_attempt_id, "render_attempt_id")
+        self._validate_nonnegative_version(
+            expected_render_version,
+            "expected_render_version",
+        )
+        self._validate_sha256(
+            qc_policy_sha256,
+            "production render QC qc_policy_sha256",
+        )
+        self._validate_required_check_set_version(required_check_set_version)
+        self._validate_sha256(
+            qc_runner_identity_sha256,
+            "production render QC qc_runner_identity_sha256",
+        )
+
+        def operation(cursor: DbCursor) -> ProductionRenderQcAttempt:
+            render_record, job_id, slot_state = self._locked_production_render_attempt_aggregate(
+                cursor,
+                render_attempt_id,
+            )
+            render_attempt = render_record.attempt
+            if slot_state != "running":
+                raise CommandStateError("production render command cannot reserve a QC attempt")
+            if render_attempt.version != expected_render_version:
+                raise CommandStateError("production render QC parent version is stale")
+            if render_attempt.state != "rendered":
+                raise CommandStateError("production render QC requires a rendered parent attempt")
+            if (
+                render_attempt.output_blob is None
+                or render_attempt.render_facts is None
+                or render_attempt.render_facts_sha256 is None
+            ):
+                raise RuntimeStoreError("rendered production attempt lacks exact output and facts")
+
+            cursor.execute(
+                """
+                SELECT qc_attempt_id
+                  FROM runtime.production_render_qc_attempts
+                 WHERE render_attempt_id = %s
+                 FOR UPDATE
+                """,
+                (render_attempt_id,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                attempt = self._read_production_render_qc_attempt_by_id(
+                    cursor,
+                    UUID(str(existing[0])),
+                    for_update=False,
+                ).attempt
+                if (
+                    attempt.render_attempt_id != render_attempt_id
+                    or attempt.job_id != job_id
+                    or attempt.command_slot_id != render_attempt.command_slot_id
+                    or attempt.rendered_version != expected_render_version
+                    or attempt.output_blob != render_attempt.output_blob
+                    or attempt.render_facts_sha256 != render_attempt.render_facts_sha256
+                    or attempt.qc_policy_sha256 != qc_policy_sha256
+                    or attempt.required_check_set_version != required_check_set_version
+                    or attempt.qc_runner_identity_sha256 != qc_runner_identity_sha256
+                ):
+                    raise IdempotencyConflictError(
+                        "production render was reserved for QC with a different identity"
+                    )
+                return attempt
+
+            qc_attempt_id = uuid4()
+            output = render_attempt.output_blob
+            cursor.execute(
+                """
+                INSERT INTO runtime.production_render_qc_attempts (
+                    qc_attempt_id, render_attempt_id, job_id, command_slot_id,
+                    rendered_version, output_object_id, render_facts_sha256,
+                    qc_policy_sha256, required_check_set_version,
+                    qc_runner_identity_sha256, state, version
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'reserved', 0
+                )
+                """,
+                (
+                    qc_attempt_id,
+                    render_attempt_id,
+                    job_id,
+                    render_attempt.command_slot_id,
+                    expected_render_version,
+                    output.object_id,
+                    render_attempt.render_facts_sha256,
+                    qc_policy_sha256,
+                    required_check_set_version,
+                    qc_runner_identity_sha256,
+                ),
+            )
+            return replace(
+                self._read_production_render_qc_attempt_by_id(
+                    cursor,
+                    qc_attempt_id,
+                    for_update=False,
+                ).attempt,
+                is_fresh_reservation=True,
+            )
+
+        return self._transaction(operation)
+
+    def read_production_render_qc_attempt(
+        self,
+        qc_attempt_id: UUID,
+    ) -> ProductionRenderQcAttempt:
+        """Read one public QC attempt without exposing its lease token."""
+
+        self._validate_uuid(qc_attempt_id, "qc_attempt_id")
+        return self._transaction(
+            lambda cursor: (
+                self._read_production_render_qc_attempt_by_id(
+                    cursor,
+                    qc_attempt_id,
+                    for_update=False,
+                ).attempt
+            )
+        )
+
+    def read_production_render_qc_attempt_for_render(
+        self,
+        render_attempt_id: UUID,
+    ) -> ProductionRenderQcAttempt | None:
+        """Resolve the sole QC attempt through its exact rendered parent."""
+
+        self._validate_uuid(render_attempt_id, "render_attempt_id")
+
+        def operation(cursor: DbCursor) -> ProductionRenderQcAttempt | None:
+            cursor.execute(
+                """
+                SELECT qc_attempt_id
+                  FROM runtime.production_render_qc_attempts
+                 WHERE render_attempt_id = %s
+                """,
+                (render_attempt_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            if cursor.fetchone() is not None:
+                raise RuntimeStoreError("production render owns multiple QC attempts")
+            return self._read_production_render_qc_attempt_by_id(
+                cursor,
+                UUID(str(row[0])),
+                for_update=False,
+            ).attempt
+
+        return self._transaction(operation)
+
+    def acquire_production_render_qc_lease(
+        self,
+        qc_attempt_id: UUID,
+        *,
+        expected_version: int,
+        lease_seconds: int,
+    ) -> ProductionRenderQcLease | None:
+        """Acquire a reserved QC attempt or take over only an expired scan."""
+
+        self._validate_uuid(qc_attempt_id, "qc_attempt_id")
+        self._validate_nonnegative_version(expected_version, "expected_version")
+        self._validate_production_render_qc_lease_seconds(lease_seconds)
+        token = uuid4()
+
+        def operation(cursor: DbCursor) -> ProductionRenderQcLease | None:
+            record, render_attempt, slot_state = (
+                self._locked_production_render_qc_attempt_aggregate(
+                    cursor,
+                    qc_attempt_id,
+                )
+            )
+            attempt = record.attempt
+            if attempt.version != expected_version:
+                raise CommandStateError("production render QC lease version is stale")
+            if slot_state != "running" or render_attempt.state != "rendered":
+                raise CommandStateError("production render QC parent cannot acquire a lease")
+            if attempt.state not in ("reserved", "scanning"):
+                raise CommandStateError(
+                    f"production render QC attempt in {attempt.state} cannot acquire a lease"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_qc_attempts
+                   SET state = 'scanning', lease_token = %s,
+                       lease_expires_at = clock_timestamp()
+                           + make_interval(secs => %s),
+                       version = version + 1
+                 WHERE qc_attempt_id = %s AND version = %s
+                   AND (
+                       state = 'reserved'
+                       OR (state = 'scanning'
+                           AND lease_expires_at <= clock_timestamp())
+                   )
+                """,
+                (token, lease_seconds, qc_attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            acquired = self._read_production_render_qc_attempt_by_id(
+                cursor,
+                qc_attempt_id,
+                for_update=False,
+            )
+            return self._production_render_qc_lease(acquired)
+
+        return self._transaction(operation)
+
+    def renew_production_render_qc_lease(
+        self,
+        lease: ProductionRenderQcLease,
+        *,
+        lease_seconds: int,
+    ) -> ProductionRenderQcLease:
+        """Renew one exact active QC lease using database time."""
+
+        if type(lease) is not ProductionRenderQcLease:  # noqa: E721
+            raise StoreValidationError("production render QC renewal requires an exact lease")
+        self._validate_production_render_qc_lease_seconds(lease_seconds)
+
+        def operation(cursor: DbCursor) -> ProductionRenderQcLease:
+            record, render_attempt, slot_state = (
+                self._locked_production_render_qc_attempt_aggregate(
+                    cursor,
+                    lease.qc_attempt_id,
+                )
+            )
+            attempt = record.attempt
+            if (
+                slot_state != "running"
+                or render_attempt.state != "rendered"
+                or attempt.state != "scanning"
+                or attempt.version != lease.version
+                or attempt.render_attempt_id != lease.render_attempt_id
+                or attempt.job_id != lease.job_id
+                or attempt.command_slot_id != lease.command_slot_id
+                or record.lease_token != lease.token
+            ):
+                raise CommandStateError("production render QC lease is stale or owned elsewhere")
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_qc_attempts
+                   SET lease_expires_at = clock_timestamp()
+                           + make_interval(secs => %s),
+                       version = version + 1
+                 WHERE qc_attempt_id = %s AND state = 'scanning'
+                   AND version = %s AND lease_token = %s
+                   AND lease_expires_at > clock_timestamp()
+                   AND clock_timestamp() + make_interval(secs => %s)
+                       > lease_expires_at
+                """,
+                (
+                    lease_seconds,
+                    lease.qc_attempt_id,
+                    lease.version,
+                    lease.token,
+                    lease_seconds,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError(
+                    "production render QC lease renewal CAS was lost or would not extend expiry"
+                )
+            renewed = self._read_production_render_qc_attempt_by_id(
+                cursor,
+                lease.qc_attempt_id,
+                for_update=False,
+            )
+            return self._production_render_qc_lease(renewed)
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _validate_required_check_set_version(value: object) -> None:
+        valid_characters = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+        valid_initial_characters = "abcdefghijklmnopqrstuvwxyz0123456789"
+        if (
+            type(value) is not str  # noqa: E721
+            or not 1 <= len(value) <= 128
+            or value[0] not in valid_initial_characters
+            or any(character not in valid_characters for character in value)
+        ):
+            raise StoreValidationError(
+                "production render QC required_check_set_version must be a "
+                "safe lowercase version identifier"
+            )
+
+    @staticmethod
+    def _validate_production_render_qc_lease_seconds(value: int) -> None:
+        if type(value) is not int or not 1 <= value <= 3600:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC lease_seconds must be between 1 and 3600"
+            )
+
+    @staticmethod
+    def _production_render_qc_lease(
+        record: _ProductionRenderQcAttemptRecord,
+    ) -> ProductionRenderQcLease:
+        attempt = record.attempt
+        if (
+            attempt.state != "scanning"
+            or record.lease_token is None
+            or attempt.lease_expires_at is None
+        ):
+            raise RuntimeStoreError(
+                "production render QC lease transition returned an invalid attempt"
+            )
+        return ProductionRenderQcLease(
+            attempt.qc_attempt_id,
+            attempt.render_attempt_id,
+            attempt.job_id,
+            attempt.command_slot_id,
+            record.lease_token,
+            attempt.lease_expires_at,
+            attempt.version,
+        )
+
+    def _locked_production_render_qc_attempt_aggregate(
+        self,
+        cursor: DbCursor,
+        qc_attempt_id: UUID,
+    ) -> tuple[_ProductionRenderQcAttemptRecord, ProductionRenderAttempt, str]:
+        self._validate_uuid(qc_attempt_id, "qc_attempt_id")
+        cursor.execute(
+            """
+            SELECT render_attempt_id
+              FROM runtime.production_render_qc_attempts
+             WHERE qc_attempt_id = %s
+            """,
+            (qc_attempt_id,),
+        )
+        identity = cursor.fetchone()
+        if identity is None:
+            raise StoreValidationError("production render QC qc_attempt_id is unknown")
+        render_attempt_id = UUID(str(identity[0]))
+        render_record, _, slot_state = self._locked_production_render_attempt_aggregate(
+            cursor,
+            render_attempt_id,
+        )
+        record = self._read_production_render_qc_attempt_by_id(
+            cursor,
+            qc_attempt_id,
+            for_update=True,
+        )
+        attempt = record.attempt
+        render_attempt = render_record.attempt
+        if (
+            attempt.render_attempt_id != render_attempt.attempt_id
+            or attempt.job_id != render_attempt.job_id
+            or attempt.command_slot_id != render_attempt.command_slot_id
+            or attempt.output_blob != render_attempt.output_blob
+            or attempt.render_facts_sha256 != render_attempt.render_facts_sha256
+        ):
+            raise RuntimeStoreError(
+                "production render QC identity disagrees with its locked parent"
+            )
+        return record, render_attempt, slot_state
+
+    def _read_production_render_qc_attempt_by_id(
+        self,
+        cursor: DbCursor,
+        qc_attempt_id: UUID,
+        *,
+        for_update: bool,
+    ) -> _ProductionRenderQcAttemptRecord:
+        suffix = " FOR UPDATE OF qc" if for_update else ""
+        cursor.execute(
+            """
+            SELECT qc.render_attempt_id, qc.job_id, qc.command_slot_id,
+                   qc.rendered_version, qc.output_object_id,
+                   output.content_hash, output.byte_length, output.media_type,
+                   output.storage_kind, output_claim.job_id,
+                   qc.render_facts_sha256, qc.qc_policy_sha256,
+                   qc.required_check_set_version,
+                   qc.qc_runner_identity_sha256, qc.state, qc.version,
+                   qc.reserved_at, qc.lease_token, qc.lease_expires_at,
+                   parent.job_id, parent.command_slot_id,
+                   parent.output_object_id, parent.render_facts_sha256,
+                   parent.state, parent.version,
+                   render_slot.job_id, render_slot.state,
+                   render_slot.command_name, render_slot.execution_kind,
+                   render_job.profile
+              FROM runtime.production_render_qc_attempts AS qc
+              JOIN runtime.production_render_attempts AS parent
+                ON parent.attempt_id = qc.render_attempt_id
+              JOIN runtime.command_slots AS render_slot
+                ON render_slot.command_slot_id = parent.command_slot_id
+              JOIN runtime.jobs AS render_job
+                ON render_job.job_id = parent.job_id
+              JOIN storage.blob_objects AS output
+                ON output.object_id = qc.output_object_id
+              LEFT JOIN storage.blob_claims AS output_claim
+                ON output_claim.object_id = output.object_id
+               AND output_claim.job_id = qc.job_id
+             WHERE qc.qc_attempt_id = %s
+            """
+            + suffix,
+            (qc_attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("production render QC qc_attempt_id is unknown")
+        if cursor.fetchone() is not None:
+            raise RuntimeStoreError("production render QC identity resolved multiple rows")
+        (
+            render_attempt_id,
+            job_id,
+            command_slot_id,
+            rendered_version,
+            output_object_id,
+            output_content_hash,
+            output_byte_length,
+            output_media_type,
+            output_storage_kind,
+            output_claim_job_id,
+            render_facts_sha256,
+            qc_policy_sha256,
+            required_check_set_version,
+            qc_runner_identity_sha256,
+            state,
+            version,
+            reserved_at,
+            lease_token,
+            lease_expires_at,
+            parent_job_id,
+            parent_command_slot_id,
+            parent_output_object_id,
+            parent_render_facts_sha256,
+            parent_state,
+            parent_version,
+            slot_job_id,
+            slot_state,
+            slot_command_name,
+            slot_execution_kind,
+            render_job_profile,
+        ) = row
+        if (
+            output_claim_job_id is None
+            or UUID(str(output_claim_job_id)) != UUID(str(job_id))
+            or _text(output_storage_kind) != "s3_compatible"
+            or int(_text(output_byte_length)) <= 0
+            or _text(output_media_type) != "video/mp4"
+        ):
+            raise RuntimeStoreError(
+                "persisted production render QC output storage authority is invalid"
+            )
+        if (
+            UUID(str(job_id)) != UUID(str(parent_job_id))
+            or UUID(str(command_slot_id)) != UUID(str(parent_command_slot_id))
+            or UUID(str(output_object_id)) != UUID(str(parent_output_object_id))
+            or _text(render_facts_sha256) != _text(parent_render_facts_sha256)
+            or _text(parent_state) != "rendered"
+            or int(_text(rendered_version)) != int(_text(parent_version))
+            or UUID(str(slot_job_id)) != UUID(str(job_id))
+            or _text(slot_state) != "running"
+            or _text(slot_command_name) != PRODUCTION_RENDER_COMMAND_NAME
+            or _text(slot_execution_kind) != "deterministic"
+            or _text(render_job_profile) not in ("shadow", "production")
+        ):
+            raise RuntimeStoreError(
+                "persisted production render QC identity disagrees with its parent"
+            )
+        attempt = ProductionRenderQcAttempt(
+            qc_attempt_id=qc_attempt_id,
+            render_attempt_id=UUID(str(render_attempt_id)),
+            job_id=UUID(str(job_id)),
+            command_slot_id=UUID(str(command_slot_id)),
+            rendered_version=int(_text(rendered_version)),
+            output_blob=BlobRef(
+                UUID(str(output_object_id)),
+                _text(output_content_hash),
+                int(_text(output_byte_length)),
+                _text(output_media_type),
+            ),
+            render_facts_sha256=_text(render_facts_sha256),
+            qc_policy_sha256=_text(qc_policy_sha256),
+            required_check_set_version=_text(required_check_set_version),
+            qc_runner_identity_sha256=_text(qc_runner_identity_sha256),
+            state=cast(Literal["reserved", "scanning"], _text(state)),
+            version=int(_text(version)),
+            reserved_at=cast(datetime, reserved_at),
+            lease_expires_at=cast(datetime | None, lease_expires_at),
+        )
+        return _ProductionRenderQcAttemptRecord(
+            attempt,
+            None if lease_token is None else UUID(str(lease_token)),
+        )
 
     @staticmethod
     def _validate_render_lease_seconds(value: int) -> None:

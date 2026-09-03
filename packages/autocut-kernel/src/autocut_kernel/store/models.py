@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,7 @@ PRODUCTION_RENDER_COMMAND_NAME = "RenderProductionRecipeCommand@1"
 ProductionRenderAttemptState = Literal[
     "reserved", "rendering", "rendered", "committed", "denied", "failed"
 ]
+ProductionRenderQcAttemptState = Literal["reserved", "scanning"]
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -2131,6 +2133,147 @@ class ProductionRenderLease:
             raise StoreValidationError("production render lease expires_at must be timezone-aware")
         if type(self.version) is not int or self.version < 1:  # noqa: E721
             raise StoreValidationError("production render lease version must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderQcAttempt:
+    """Public durable identity and fenced state for one full-file QC scan."""
+
+    qc_attempt_id: UUID
+    render_attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    rendered_version: int
+    output_blob: BlobRef
+    render_facts_sha256: str
+    qc_policy_sha256: str
+    required_check_set_version: str
+    qc_runner_identity_sha256: str
+    state: ProductionRenderQcAttemptState
+    version: int
+    reserved_at: datetime
+    lease_expires_at: datetime | None = None
+    is_fresh_reservation: bool = field(default=False, compare=False)
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "qc_attempt_id",
+            "render_attempt_id",
+            "job_id",
+            "command_slot_id",
+        ):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    f"production render QC attempt {field_name} must be an exact UUID"
+                )
+        if type(self.rendered_version) is not int or self.rendered_version < 2:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC attempt rendered_version must be at least two"
+            )
+        if type(self.output_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC attempt output_blob must be an exact BlobRef"
+            )
+        if self.output_blob.byte_length <= 0:
+            raise StoreValidationError(
+                "production render QC output BlobRef must be non-empty"
+            )
+        if self.output_blob.media_type != "video/mp4":
+            raise StoreValidationError(
+                "production render QC output BlobRef must use video/mp4"
+            )
+        for field_name in (
+            "render_facts_sha256",
+            "qc_policy_sha256",
+            "qc_runner_identity_sha256",
+        ):
+            _sha256(
+                getattr(self, field_name),
+                f"production render QC attempt {field_name}",
+            )
+        if type(self.required_check_set_version) is not str or re.fullmatch(  # noqa: E721
+            r"[a-z0-9][a-z0-9._-]{0,127}",
+            self.required_check_set_version,
+        ) is None:
+            raise StoreValidationError(
+                "production render QC attempt required_check_set_version "
+                "must be a safe lowercase version identifier"
+            )
+        if self.state not in ("reserved", "scanning"):
+            raise StoreValidationError("production render QC attempt state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC attempt version must be a non-negative integer"
+            )
+        if self.state == "reserved":
+            if self.version != 0:
+                raise StoreValidationError(
+                    "reserved production render QC attempt must be version zero"
+                )
+            if self.lease_expires_at is not None:
+                raise StoreValidationError(
+                    "reserved production render QC attempt cannot expose a lease expiry"
+                )
+        else:
+            if self.version < 1:
+                raise StoreValidationError(
+                    "scanning production render QC attempt requires a positive version"
+                )
+            self._require_aware(self.lease_expires_at, "lease_expires_at")
+        self._require_aware(self.reserved_at, "reserved_at")
+        if type(self.is_fresh_reservation) is not bool:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC attempt is_fresh_reservation must be a boolean"
+            )
+
+    @staticmethod
+    def _require_aware(value: datetime | None, field_name: str) -> None:
+        if (  # noqa: E721
+            type(value) is not datetime
+            or value.tzinfo is None
+            or value.utcoffset() is None
+        ):
+            raise StoreValidationError(
+                f"production render QC attempt {field_name} must be timezone-aware"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderQcLease:
+    """Exact private-token lease capability for one full-file QC scanner."""
+
+    qc_attempt_id: UUID
+    render_attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    token: UUID
+    expires_at: datetime
+    version: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "qc_attempt_id",
+            "render_attempt_id",
+            "job_id",
+            "command_slot_id",
+            "token",
+        ):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    f"production render QC lease {field_name} must be an exact UUID"
+                )
+        if (  # noqa: E721
+            type(self.expires_at) is not datetime
+            or self.expires_at.tzinfo is None
+            or self.expires_at.utcoffset() is None
+        ):
+            raise StoreValidationError(
+                "production render QC lease expires_at must be timezone-aware"
+            )
+        if type(self.version) is not int or self.version < 1:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC lease version must be a positive integer"
+            )
 
 
 @dataclass(frozen=True, slots=True)
