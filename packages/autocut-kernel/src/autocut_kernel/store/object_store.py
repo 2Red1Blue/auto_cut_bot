@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
+import json
 import os
 import re
+import secrets
 import stat
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 from uuid import RFC_4122, UUID
@@ -30,6 +34,7 @@ _SAFE_PREFIX_PATTERN: Final = re.compile(
 )
 _OBJECT_ID_METADATA_KEY: Final = "autocut-object-id"
 _CONTENT_HASH_METADATA_KEY: Final = "autocut-content-sha256"
+_RESERVATION_ATTESTATION: Final = object()
 
 ObjectStoreWriteOutcome = Literal["denied", "failed", "indeterminate"]
 
@@ -148,6 +153,96 @@ class S3ObjectStoreConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class _PendingObjectTarget:
+    """Internal exact destination persisted before an external write begins."""
+
+    backend_id: str
+    storage_region: str
+    storage_locator: str
+    strategy: str = OBJECT_STORE_WRITE_STRATEGY
+
+    def __post_init__(self) -> None:
+        if not _SAFE_ID_PATTERN.fullmatch(self.backend_id):
+            raise ValueError("pending object backend_id is invalid")
+        if not _SAFE_ID_PATTERN.fullmatch(self.storage_region):
+            raise ValueError("pending object storage_region is invalid")
+        if (
+            not self.storage_locator
+            or len(self.storage_locator) > 1024
+            or self.storage_locator.startswith("/")
+            or ".." in self.storage_locator.split("/")
+        ):
+            raise ValueError("pending object storage_locator is invalid")
+        if self.strategy != OBJECT_STORE_WRITE_STRATEGY:
+            raise ValueError("pending object write strategy is unsupported")
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingObjectReservation:  # pyright: ignore[reportUnusedClass]
+    """Database-issued CAS capability for one exact pending object intent."""
+
+    intent: PendingObjectIntent
+    target: _PendingObjectTarget
+    job_id: UUID
+    reservation_token: UUID
+    expected_version: int
+    _attestation: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if type(self.intent) is not PendingObjectIntent:  # noqa: E721
+            raise ValueError("pending object reservation intent is invalid")
+        if type(self.target) is not _PendingObjectTarget:  # noqa: E721
+            raise ValueError("pending object reservation target is invalid")
+        for field_name in ("job_id", "reservation_token"):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise ValueError(f"pending object reservation {field_name} is invalid")
+        if type(self.expected_version) is not int or self.expected_version < 0:  # noqa: E721
+            raise ValueError("pending object reservation version is invalid")
+        if self._attestation is not _RESERVATION_ATTESTATION:
+            raise ValueError("pending object reservation was not issued by the Store")
+
+    @property
+    def reference(self) -> BlobRef:
+        return self.intent.reference
+
+    @property
+    def object_id(self) -> UUID:
+        return self.intent.object_id
+
+    @property
+    def content_hash(self) -> str:
+        return self.intent.content_hash
+
+    @property
+    def byte_length(self) -> int:
+        return self.intent.byte_length
+
+    @property
+    def media_type(self) -> str:
+        return self.intent.media_type
+
+
+def _issue_pending_object_reservation(  # pyright: ignore[reportUnusedFunction]
+    *,
+    intent: PendingObjectIntent,
+    target: _PendingObjectTarget,
+    job_id: UUID,
+    reservation_token: UUID,
+    expected_version: int,
+) -> _PendingObjectReservation:
+    """Issue the package-private capability consumed by the object adapter."""
+
+    return _PendingObjectReservation(
+        intent=intent,
+        target=target,
+        job_id=job_id,
+        reservation_token=reservation_token,
+        expected_version=expected_version,
+        _attestation=_RESERVATION_ATTESTATION,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class _VerifiedPendingObject:
     """Internal metadata proven by an exact remote HEAD reconciliation.
 
@@ -162,6 +257,9 @@ class _VerifiedPendingObject:
     etag: str
     version_id: str | None
     reconciled_after_put_error: bool
+    reservation_token: UUID
+    reservation_version: int
+    _verification_mac: bytes = field(repr=False, compare=False)
     strategy: str = OBJECT_STORE_WRITE_STRATEGY
 
     def __post_init__(self) -> None:
@@ -177,6 +275,12 @@ class _VerifiedPendingObject:
             raise ValueError("verified object version_id must be non-empty text when present")
         if type(self.reconciled_after_put_error) is not bool:  # noqa: E721
             raise ValueError("reconciled_after_put_error must be boolean")
+        if type(self.reservation_token) is not UUID:  # noqa: E721
+            raise ValueError("verified object reservation_token must be a UUID")
+        if type(self.reservation_version) is not int or self.reservation_version < 0:  # noqa: E721
+            raise ValueError("verified object reservation_version must be non-negative")
+        if type(self._verification_mac) is not bytes or len(self._verification_mac) != 32:  # noqa: E721
+            raise ValueError("verified object signature is malformed")
         if self.strategy != OBJECT_STORE_WRITE_STRATEGY:
             raise ValueError("verified object strategy is unsupported")
 
@@ -206,10 +310,26 @@ class S3PendingObjectStore:
             raise ValueError("object-store config must be exact S3ObjectStoreConfig")
         self._client = client
         self._config = config
+        self._verification_key = secrets.token_bytes(32)
+
+    def target_for(self, intent: object) -> _PendingObjectTarget:
+        """Describe the exact target that must be reserved before ``put_path``."""
+
+        if type(intent) is not PendingObjectIntent:  # noqa: E721
+            raise ObjectStoreWriteError(
+                "OBJECT_STORE_REQUEST_INVALID",
+                "object target requires an exact pending intent",
+                outcome="denied",
+            )
+        return _PendingObjectTarget(
+            backend_id=self._config.backend_id,
+            storage_region=self._config.storage_region,
+            storage_locator=self._object_key(intent.object_id),
+        )
 
     def put_path(
         self,
-        intent: object,
+        reservation: object,
         *,
         source_path: object,
         attempt_directory: object,
@@ -218,7 +338,7 @@ class S3PendingObjectStore:
         """Put one sealed attempt output or reconcile the same durable intent."""
 
         if (  # noqa: E721
-            type(intent) is not PendingObjectIntent
+            type(reservation) is not _PendingObjectReservation
             or not isinstance(source_path, Path)
             or not isinstance(attempt_directory, Path)
             or type(limits) is not ObjectStoreWriteLimits
@@ -226,6 +346,13 @@ class S3PendingObjectStore:
             raise ObjectStoreWriteError(
                 "OBJECT_STORE_REQUEST_INVALID",
                 "large-object write requires exact intent, paths, and limits",
+                outcome="denied",
+            )
+        intent = reservation.intent
+        if reservation.target != self.target_for(intent):
+            raise ObjectStoreWriteError(
+                "OBJECT_STORE_REQUEST_INVALID",
+                "object reservation does not belong to this configured adapter",
                 outcome="denied",
             )
         if intent.byte_length > limits.max_object_bytes:
@@ -241,7 +368,7 @@ class S3PendingObjectStore:
             intent,
         )
         descriptor = opened.descriptor
-        key = self._object_key(intent.object_id)
+        key = reservation.target.storage_locator
         checksum = _checksum_header(intent.content_hash)
         try:
             initial_hash, initial_length = _hash_descriptor(
@@ -284,7 +411,7 @@ class S3PendingObjectStore:
                 limits.verification_chunk_bytes,
             )
             if head.state == "exact":
-                return _VerifiedPendingObject(
+                result = _VerifiedPendingObject(
                     reference=intent.reference,
                     backend_id=self._config.backend_id,
                     storage_region=self._config.storage_region,
@@ -292,7 +419,11 @@ class S3PendingObjectStore:
                     etag=cast(str, head.etag),
                     version_id=head.version_id,
                     reconciled_after_put_error=put_error is not None,
+                    reservation_token=reservation.reservation_token,
+                    reservation_version=reservation.expected_version,
+                    _verification_mac=b"\x00" * 32,
                 )
+                return _seal_verified_object(self._verification_key, result)
             if head.state == "mismatch":
                 code = (
                     "OBJECT_STORE_REMOTE_CONFLICT"
@@ -312,6 +443,35 @@ class S3PendingObjectStore:
             )
         finally:
             os.close(descriptor)
+
+    def _verify_pending_object(
+        self,
+        reservation: object,
+        verified: object,
+    ) -> bool:
+        """Verify that this exact adapter signed every persisted result field."""
+
+        if (  # noqa: E721
+            type(reservation) is not _PendingObjectReservation
+            or type(verified) is not _VerifiedPendingObject
+            or verified.reference != reservation.reference
+            or verified.backend_id != reservation.target.backend_id
+            or verified.storage_region != reservation.target.storage_region
+            or verified.storage_locator != reservation.target.storage_locator
+            or verified.strategy != reservation.target.strategy
+            or verified.reservation_token != reservation.reservation_token
+            or verified.reservation_version != reservation.expected_version
+        ):
+            return False
+        expected = hmac.digest(
+            self._verification_key,
+            _verified_object_payload(verified),
+            "sha256",
+        )
+        return hmac.compare_digest(
+            verified._verification_mac,  # pyright: ignore[reportPrivateUsage]
+            expected,
+        )
 
     def _object_key(self, object_id: UUID) -> str:
         hexadecimal = object_id.hex
@@ -540,6 +700,36 @@ def _provider_error_code(error: Exception) -> str | None:
     if isinstance(code, (str, int)):
         return str(code)
     return None
+
+
+def _verified_object_payload(verified: _VerifiedPendingObject) -> bytes:
+    return json.dumps(
+        [
+            str(verified.reference.object_id),
+            verified.reference.content_hash,
+            verified.reference.byte_length,
+            verified.reference.media_type,
+            verified.backend_id,
+            verified.storage_region,
+            verified.storage_locator,
+            verified.etag,
+            verified.version_id,
+            verified.reconciled_after_put_error,
+            str(verified.reservation_token),
+            verified.reservation_version,
+            verified.strategy,
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _seal_verified_object(
+    key: bytes,
+    verified: _VerifiedPendingObject,
+) -> _VerifiedPendingObject:
+    signature = hmac.digest(key, _verified_object_payload(verified), "sha256")
+    return dataclass_replace(verified, _verification_mac=signature)
 
 
 __all__ = [

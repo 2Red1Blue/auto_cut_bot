@@ -171,6 +171,14 @@ from .models import (
     canonical_payload_hash,
     canonical_recipe_scope,
 )
+from .object_store import (
+    PendingObjectIntent,
+    S3PendingObjectStore,
+    _issue_pending_object_reservation,  # pyright: ignore[reportPrivateUsage]
+    _PendingObjectReservation,  # pyright: ignore[reportPrivateUsage]
+    _PendingObjectTarget,  # pyright: ignore[reportPrivateUsage]
+    _VerifiedPendingObject,  # pyright: ignore[reportPrivateUsage]
+)
 from .shadow_local_measurement_artifacts import (
     CommittedShadowLocalMeasurement,
     compile_shadow_local_measurement_artifacts,
@@ -1196,13 +1204,21 @@ class PostgresRuntimeStore:
         connection_factory: Callable[[], DbConnection],
         *,
         materialization_staging_root: Path | None = None,
+        object_store_verifier: S3PendingObjectStore | None = None,
     ) -> None:
         if not callable(connection_factory):
             raise StoreValidationError("connection_factory must be callable")
         if materialization_staging_root is not None:
             validate_materialization_staging_root(materialization_staging_root)
+        if object_store_verifier is not None and type(  # noqa: E721
+            object_store_verifier
+        ) is not S3PendingObjectStore:
+            raise StoreValidationError(
+                "object_store_verifier must be an exact S3PendingObjectStore"
+            )
         self._connection_factory = connection_factory
         self._materialization_staging_root = materialization_staging_root
+        self._object_store_verifier = object_store_verifier
 
     # ------------------------------------------------------------------
     # claim_command
@@ -2589,8 +2605,12 @@ class PostgresRuntimeStore:
         def operation(cursor: DbCursor) -> CommandOutcome:
             attempt = self._locked_shadow_attempt(cursor, attempt_id)
             if attempt.outcome.state != "running":
+                if attempt.outcome.job_id is None:
+                    raise RuntimeStoreError(
+                        "persisted shadow measurement outcome is missing its Job identity"
+                    )
                 return self._replay_or_raise(
-                    cursor, attempt.command_slot_id, attempt.outcome.job_id, "succeeded", None  # type: ignore[arg-type]
+                    cursor, attempt.command_slot_id, attempt.outcome.job_id, "succeeded", None
                 )
             if attempt.version != expected_version or attempt.state != "ready":
                 raise CommandStateError("shadow measurement finalizer requires the exact ready attempt")
@@ -3424,6 +3444,385 @@ class PostgresRuntimeStore:
             return reference
 
         return self._transaction(operation)
+
+    def reserve_object_write(
+        self,
+        job: Job,
+        intent: object,
+        target: object,
+    ) -> object:
+        """Persist exact external-write expectations before any provider effect."""
+
+        if type(intent) is not PendingObjectIntent:  # noqa: E721
+            raise StoreValidationError("intent must be an exact PendingObjectIntent")
+        if type(target) is not _PendingObjectTarget:  # noqa: E721
+            raise StoreValidationError("target must be an exact Store object target")
+
+        def operation(cursor: DbCursor) -> object:
+            job_id = self._ensure_job(cursor, job)
+            if self._locked_job_state(cursor, job_id) not in ("pending", "running"):
+                raise CommandStateError("terminal jobs cannot reserve object writes")
+            reservation_token = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO storage.object_write_intents (
+                    object_id, job_id, content_hash, byte_length, media_type,
+                    storage_backend_id, storage_region, storage_locator,
+                    write_strategy, reservation_token, state, version
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'reserved', 0
+                )
+                ON CONFLICT (object_id) DO NOTHING
+                RETURNING reservation_token, version
+                """,
+                (
+                    intent.object_id,
+                    job_id,
+                    intent.content_hash,
+                    intent.byte_length,
+                    intent.media_type,
+                    target.backend_id,
+                    target.storage_region,
+                    target.storage_locator,
+                    target.strategy,
+                    reservation_token,
+                ),
+            )
+            inserted = cursor.fetchone()
+            if inserted is None:
+                cursor.execute(
+                    """
+                    SELECT job_id, content_hash, byte_length, media_type,
+                           storage_backend_id, storage_region, storage_locator,
+                           write_strategy, reservation_token, state, version
+                      FROM storage.object_write_intents
+                     WHERE object_id = %s
+                     FOR UPDATE
+                    """,
+                    (intent.object_id,),
+                )
+                existing = cursor.fetchone()
+                if existing is None:
+                    raise RuntimeStoreError(
+                        "object write intent vanished after reservation conflict"
+                    )
+                (
+                    existing_job_id,
+                    content_hash,
+                    byte_length,
+                    media_type,
+                    backend_id,
+                    storage_region,
+                    storage_locator,
+                    write_strategy,
+                    existing_token,
+                    state,
+                    version,
+                ) = existing
+                if (
+                    UUID(str(existing_job_id)) != job_id
+                    or _text(content_hash) != intent.content_hash
+                    or int(_text(byte_length)) != intent.byte_length
+                    or _text(media_type) != intent.media_type
+                    or _text(backend_id) != target.backend_id
+                    or _text(storage_region) != target.storage_region
+                    or _text(storage_locator) != target.storage_locator
+                    or _text(write_strategy) != target.strategy
+                ):
+                    raise PersistenceConflictError(
+                        "object_id belongs to a different durable write intent"
+                    )
+                durable_state = _text(state)
+                durable_version = int(_text(version))
+                if (durable_state, durable_version) not in {
+                    ("reserved", 0),
+                    ("resolved", 1),
+                }:
+                    raise BlobIntegrityError(
+                        "persisted object write intent has an invalid lifecycle"
+                    )
+                reservation_token = UUID(str(existing_token))
+                version = 0
+            else:
+                reservation_token = UUID(str(inserted[0]))
+                version = int(_text(inserted[1]))
+            return _issue_pending_object_reservation(
+                intent=intent,
+                target=target,
+                job_id=job_id,
+                reservation_token=reservation_token,
+                expected_version=int(_text(version)),
+            )
+
+        return self._transaction(operation)
+
+    def claim_verified_object(
+        self,
+        job: Job,
+        reservation: object,
+        verified: object,
+    ) -> BlobRef:
+        """Atomically claim one independently verified external object for ``job``.
+
+        The locator-bearing value is intentionally private to the Store package.
+        Callers receive only the locator-free ``BlobRef`` selected by immutable
+        content identity.
+        """
+
+        if type(reservation) is not _PendingObjectReservation:  # noqa: E721
+            raise StoreValidationError(
+                "reservation must be an exact Store-owned pending object reservation"
+            )
+        if type(verified) is not _VerifiedPendingObject:  # noqa: E721
+            raise StoreValidationError(
+                "verified must be an exact Store-owned verified pending object"
+            )
+        verifier = self._object_store_verifier
+        if verifier is None:
+            raise StoreValidationError(
+                "external object claims require a configured object-store verifier"
+            )
+        if not verifier._verify_pending_object(  # pyright: ignore[reportPrivateUsage]
+            reservation,
+            verified,
+        ):
+            raise BlobIntegrityError(
+                "verified object signature does not match the configured object adapter"
+            )
+        reference = verified.reference
+        if (
+            reference != reservation.intent.reference
+            or verified.backend_id != reservation.target.backend_id
+            or verified.storage_region != reservation.target.storage_region
+            or verified.storage_locator != reservation.target.storage_locator
+            or verified.strategy != reservation.target.strategy
+            or verified.reservation_token != reservation.reservation_token
+            or verified.reservation_version != reservation.expected_version
+        ):
+            raise BlobIntegrityError(
+                "verified object does not match its durable pre-write reservation"
+            )
+
+        def operation(cursor: DbCursor) -> BlobRef:
+            job_id = self._ensure_job(cursor, job)
+            job_state = self._locked_job_state(cursor, job_id)
+            cursor.execute(
+                """
+                SELECT job_id, content_hash, byte_length, media_type,
+                       storage_backend_id, storage_region, storage_locator,
+                       write_strategy, reservation_token, state, version,
+                       resolved_object_id
+                  FROM storage.object_write_intents
+                 WHERE object_id = %s
+                 FOR UPDATE
+                """,
+                (reference.object_id,),
+            )
+            persisted = cursor.fetchone()
+            if persisted is None:
+                raise BlobIntegrityError("verified object has no durable pre-write reservation")
+            (
+                persisted_job_id,
+                content_hash,
+                byte_length,
+                media_type,
+                backend_id,
+                storage_region,
+                storage_locator,
+                write_strategy,
+                reservation_token,
+                state,
+                version,
+                resolved_object_id,
+            ) = persisted
+            if (
+                UUID(str(persisted_job_id)) != job_id
+                or reservation.job_id != job_id
+                or UUID(str(reservation_token)) != reservation.reservation_token
+                or _text(content_hash) != reference.content_hash
+                or int(_text(byte_length)) != reference.byte_length
+                or _text(media_type) != reference.media_type
+                or _text(backend_id) != verified.backend_id
+                or _text(storage_region) != verified.storage_region
+                or _text(storage_locator) != verified.storage_locator
+                or _text(write_strategy) != verified.strategy
+            ):
+                raise BlobIntegrityError(
+                    "verified object does not match the persisted write reservation"
+                )
+            durable_state = _text(state)
+            durable_version = int(_text(version))
+            if durable_state == "resolved":
+                if durable_version != reservation.expected_version + 1:
+                    raise BlobIntegrityError(
+                        "resolved object write intent has an invalid version"
+                    )
+                durable = self._locked_exact_blob_by_content_hash(cursor, reference)
+                if resolved_object_id is None or durable.object_id != UUID(
+                    str(resolved_object_id)
+                ):
+                    raise BlobIntegrityError(
+                        "resolved object write intent points at a different blob"
+                    )
+                cursor.execute(
+                    """
+                    SELECT 1 FROM storage.blob_claims
+                     WHERE job_id = %s AND object_id = %s
+                    """,
+                    (job_id, durable.object_id),
+                )
+                if cursor.fetchone() is None:
+                    raise BlobIntegrityError(
+                        "resolved object write intent is missing its durable Job claim"
+                    )
+                return durable
+            if (
+                durable_state != "reserved"
+                or durable_version != reservation.expected_version
+            ):
+                raise CommandStateError("object write reservation is stale")
+            if job_state not in ("pending", "running"):
+                raise CommandStateError("terminal jobs cannot claim new blob objects")
+            cursor.execute(
+                """
+                INSERT INTO storage.blob_objects (
+                    object_id, content_hash, byte_length, media_type, content_bytes,
+                    storage_kind, storage_backend_id, storage_region,
+                    storage_locator, storage_etag, storage_version_id,
+                    write_strategy, verified_at
+                ) VALUES (
+                    %s, %s, %s, %s, NULL,
+                    's3_compatible', %s, %s, %s, %s, %s, %s,
+                    transaction_timestamp()
+                )
+                ON CONFLICT (content_hash) DO NOTHING
+                RETURNING object_id, content_hash, byte_length, media_type
+                """,
+                (
+                    reference.object_id,
+                    reference.content_hash,
+                    reference.byte_length,
+                    reference.media_type,
+                    verified.backend_id,
+                    verified.storage_region,
+                    verified.storage_locator,
+                    verified.etag,
+                    verified.version_id,
+                    verified.strategy,
+                ),
+            )
+            inserted = cursor.fetchone()
+            if inserted is None:
+                durable = self._locked_exact_blob_by_content_hash(cursor, reference)
+            else:
+                durable = BlobRef(
+                    UUID(str(inserted[0])),
+                    _text(inserted[1]),
+                    int(_text(inserted[2])),
+                    _text(inserted[3]),
+                )
+                if durable != reference:
+                    raise BlobIntegrityError(
+                        "inserted external blob metadata does not match the verified object"
+                    )
+            cursor.execute(
+                """
+                INSERT INTO storage.blob_claims (blob_claim_id, object_id, job_id)
+                VALUES (%s, %s, %s) ON CONFLICT (job_id, object_id) DO NOTHING
+                """,
+                (uuid4(), durable.object_id, job_id),
+            )
+            cursor.execute(
+                """
+                UPDATE storage.object_write_intents
+                   SET state = 'resolved', version = version + 1,
+                       resolved_object_id = %s,
+                       resolved_at = transaction_timestamp()
+                 WHERE object_id = %s AND state = 'reserved' AND version = %s
+                   AND reservation_token = %s
+                """,
+                (
+                    durable.object_id,
+                    reference.object_id,
+                    reservation.expected_version,
+                    reservation.reservation_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StoreConcurrencyError("object write reservation CAS was lost")
+            return durable
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _locked_exact_blob_by_content_hash(
+        cursor: DbCursor,
+        expected: BlobRef,
+    ) -> BlobRef:
+        cursor.execute(
+            """
+            SELECT object_id, content_hash, byte_length, media_type, content_bytes,
+                   storage_kind, storage_backend_id, storage_region,
+                   storage_locator, storage_etag, write_strategy, verified_at
+              FROM storage.blob_objects
+             WHERE content_hash = %s
+             FOR UPDATE
+            """,
+            (expected.content_hash,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise RuntimeStoreError("blob object vanished after deduplication conflict")
+        (
+            object_id,
+            content_hash,
+            byte_length,
+            media_type,
+            content_bytes,
+            storage_kind,
+            backend_id,
+            storage_region,
+            storage_locator,
+            storage_etag,
+            write_strategy,
+            verified_at,
+        ) = row
+        durable = BlobRef(
+            UUID(str(object_id)),
+            _text(content_hash),
+            int(_text(byte_length)),
+            _text(media_type),
+        )
+        if (
+            durable.content_hash != expected.content_hash
+            or durable.byte_length != expected.byte_length
+            or durable.media_type != expected.media_type
+        ):
+            raise BlobIntegrityError(
+                "existing blob object does not match the verified content identity"
+            )
+        kind = _text(storage_kind)
+        if kind == "postgres_inline":
+            raise BlobIntegrityError(
+                "external render content conflicts with an inline blob object"
+            )
+        elif kind == "s3_compatible":
+            if content_bytes is not None or any(
+                value is None
+                for value in (
+                    backend_id,
+                    storage_region,
+                    storage_locator,
+                    storage_etag,
+                    write_strategy,
+                    verified_at,
+                )
+            ):
+                raise BlobIntegrityError("existing external blob metadata has an invalid shape")
+        else:
+            raise BlobIntegrityError("existing blob object uses an unsupported storage kind")
+        return durable
 
     def read_immutable_blob(self, job: Job, reference: BlobRef) -> bytes:
         """Read exact bytes only through a matching per-Job immutable claim."""

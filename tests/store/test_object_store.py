@@ -5,6 +5,7 @@ import hashlib
 import os
 import traceback
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, cast
 from uuid import UUID
@@ -17,6 +18,9 @@ from autocut_kernel.store.object_store import (
     PendingObjectIntent,
     S3ObjectStoreConfig,
     S3PendingObjectStore,
+    _issue_pending_object_reservation,  # pyright: ignore[reportPrivateUsage]
+    _PendingObjectReservation,  # pyright: ignore[reportPrivateUsage]
+    _PendingObjectTarget,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -82,12 +86,30 @@ def _sha256(content: bytes) -> str:
     return "sha256:" + hashlib.sha256(content).hexdigest()
 
 
-def _intent(content: bytes) -> PendingObjectIntent:
-    return PendingObjectIntent(
-        UUID("11111111-1111-4111-8111-111111111111"),
-        _sha256(content),
-        len(content),
-        "video/mp4",
+def _reservation_for(intent: PendingObjectIntent) -> _PendingObjectReservation:
+    return _issue_pending_object_reservation(
+        intent=intent,
+        target=_PendingObjectTarget(
+            backend_id="workspace-s3",
+            storage_region="local-primary",
+            storage_locator=(
+                f"autocut/workspace/{intent.object_id.hex[:2]}/{intent.object_id.hex}"
+            ),
+        ),
+        job_id=UUID("22222222-2222-4222-8222-222222222222"),
+        reservation_token=UUID("33333333-3333-4333-8333-333333333333"),
+        expected_version=0,
+    )
+
+
+def _intent(content: bytes) -> _PendingObjectReservation:
+    return _reservation_for(
+        PendingObjectIntent(
+            UUID("11111111-1111-4111-8111-111111111111"),
+            _sha256(content),
+            len(content),
+            "video/mp4",
+        )
     )
 
 
@@ -116,7 +138,7 @@ def _store(client: _FakeS3) -> S3PendingObjectStore:
     )
 
 
-def _seed_exact(client: _FakeS3, intent: PendingObjectIntent) -> None:
+def _seed_exact(client: _FakeS3, intent: _PendingObjectReservation) -> None:
     checksum = base64.b64encode(bytes.fromhex(intent.content_hash[7:])).decode("ascii")
     key = f"autocut/workspace/{intent.object_id.hex[:2]}/{intent.object_id.hex}"
     client.objects[("private-bucket", key)] = {
@@ -321,7 +343,7 @@ def test_wrong_declared_hash_is_rejected_before_external_call(tmp_path: Path) ->
 
     with pytest.raises(ObjectStoreWriteError) as caught:
         _store(client).put_path(
-            intent,
+            _reservation_for(intent),
             source_path=output,
             attempt_directory=attempt,
             limits=_limits(),
@@ -447,3 +469,50 @@ def test_config_and_intent_schemas_reject_unsafe_or_empty_values() -> None:
         )
     with pytest.raises(ValueError, match="UUIDv4"):
         PendingObjectIntent(UUID(int=0), "sha256:" + "0" * 64, 1, "video/mp4")
+
+
+def test_upload_requires_reservation_and_verification_is_adapter_bound(
+    tmp_path: Path,
+) -> None:
+    content = b"rendered-mp4-bytes"
+    attempt, output = _attempt_output(tmp_path, content)
+    client = _FakeS3()
+    raw_intent = PendingObjectIntent(
+        UUID("11111111-1111-4111-8111-111111111111"),
+        _sha256(content),
+        len(content),
+        "video/mp4",
+    )
+
+    with pytest.raises(ObjectStoreWriteError) as caught:
+        _store(client).put_path(
+            raw_intent,
+            source_path=output,
+            attempt_directory=attempt,
+            limits=_limits(),
+        )
+    assert caught.value.code == "OBJECT_STORE_REQUEST_INVALID"
+    assert client.put_calls == []
+
+    reservation = _reservation_for(raw_intent)
+    adapter = _store(client)
+    verified = adapter.put_path(
+        reservation,
+        source_path=output,
+        attempt_directory=attempt,
+        limits=_limits(),
+    )
+    assert adapter._verify_pending_object(  # pyright: ignore[reportPrivateUsage]
+        reservation,
+        verified,
+    )
+
+    tampered = replace(verified, etag='"forged"')
+    assert not adapter._verify_pending_object(  # pyright: ignore[reportPrivateUsage]
+        reservation,
+        tampered,
+    )
+    assert not _store(_FakeS3())._verify_pending_object(  # pyright: ignore[reportPrivateUsage]
+        reservation,
+        verified,
+    )
