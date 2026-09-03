@@ -99,6 +99,7 @@ from .media_recovery_frontier import (
 from .models import (
     PRODUCTION_RECIPE_COMMAND_NAME,
     PRODUCTION_RENDER_COMMAND_NAME,
+    PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION,
     SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     VLM_BATCH_FINALIZER_COMMAND_NAME,
@@ -142,7 +143,14 @@ from .models import (
     ProductionRenderAttempt,
     ProductionRenderLease,
     ProductionRenderQcAttempt,
+    ProductionRenderQcCheckEvidence,
+    ProductionRenderQcCollectionStatus,
+    ProductionRenderQcCoverage,
+    ProductionRenderQcEvidenceReport,
     ProductionRenderQcLease,
+    ProductionRenderQcMeasurement,
+    ProductionRenderQcMeasurementKind,
+    ProductionRenderQcMeasurementUnit,
     RecipeReference,
     ShadowLocalMeasurementAttempt,
     ShadowLocalMeasurementAttemptState,
@@ -757,6 +765,170 @@ def _decode_production_render_facts(
         return facts
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeStoreError("persisted production render facts are invalid") from error
+
+
+def _decode_production_render_qc_evidence_report(
+    value: str,
+    expected_sha256: str,
+) -> ProductionRenderQcEvidenceReport:
+    """Rebuild one closed QC journal and reject any non-canonical durable text."""
+
+    def exact_mapping(
+        candidate: object,
+        keys: frozenset[str],
+        field_name: str,
+    ) -> dict[str, object]:
+        if type(candidate) is not dict:  # noqa: E721
+            raise ValueError(f"{field_name} does not use its closed schema")
+        unknown_mapping = cast(dict[object, object], candidate)
+        if frozenset(unknown_mapping) != keys:
+            raise ValueError(f"{field_name} does not use its closed schema")
+        return cast(dict[str, object], candidate)
+
+    def exact_text(candidate: object, field_name: str) -> str:
+        if type(candidate) is not str:  # noqa: E721
+            raise ValueError(f"{field_name} must be exact text")
+        return candidate
+
+    try:
+        mapping = exact_mapping(
+            _strict_json_object(value, "production render QC evidence report"),
+            frozenset(
+                {
+                    "checks",
+                    "command_slot_id",
+                    "job_id",
+                    "output_blob",
+                    "qc_attempt_id",
+                    "qc_policy_sha256",
+                    "qc_runner_identity_sha256",
+                    "render_attempt_id",
+                    "render_facts_sha256",
+                    "required_check_set_version",
+                    "schema_version",
+                }
+            ),
+            "production render QC evidence report",
+        )
+        raw_checks = mapping["checks"]
+        if type(raw_checks) is not list:  # noqa: E721
+            raise ValueError("production render QC evidence checks must be an array")
+        checks: list[ProductionRenderQcCheckEvidence] = []
+        for raw_check in cast(list[object], raw_checks):
+            check = exact_mapping(
+                raw_check,
+                frozenset(
+                    {
+                        "argv_sha256",
+                        "check_id",
+                        "check_ordinal",
+                        "collection_status",
+                        "coverage",
+                        "diagnostic_code",
+                        "evidence_blob",
+                        "measurements",
+                        "parser_schema_version",
+                        "tool_identity_sha256",
+                    }
+                ),
+                "production render QC check evidence",
+            )
+            raw_measurements = check["measurements"]
+            if type(raw_measurements) is not list:  # noqa: E721
+                raise ValueError("production render QC measurements must be an array")
+            measurements: list[ProductionRenderQcMeasurement] = []
+            for raw_measurement in cast(list[object], raw_measurements):
+                measurement = exact_mapping(
+                    raw_measurement,
+                    frozenset({"name", "unit", "value", "value_kind"}),
+                    "production render QC measurement",
+                )
+                measurements.append(
+                    ProductionRenderQcMeasurement(
+                        name=exact_text(measurement["name"], "measurement.name"),
+                        value_kind=cast(
+                            ProductionRenderQcMeasurementKind,
+                            exact_text(measurement["value_kind"], "measurement.value_kind"),
+                        ),
+                        value=exact_text(measurement["value"], "measurement.value"),
+                        unit=cast(
+                            ProductionRenderQcMeasurementUnit,
+                            exact_text(measurement["unit"], "measurement.unit"),
+                        ),
+                    )
+                )
+            diagnostic_code = check["diagnostic_code"]
+            if diagnostic_code is not None and type(diagnostic_code) is not str:  # noqa: E721
+                raise ValueError("production render QC diagnostic code must be text or null")
+            checks.append(
+                ProductionRenderQcCheckEvidence(
+                    check_ordinal=cast(int, check["check_ordinal"]),
+                    check_id=exact_text(check["check_id"], "check.check_id"),
+                    collection_status=cast(
+                        ProductionRenderQcCollectionStatus,
+                        exact_text(check["collection_status"], "check.collection_status"),
+                    ),
+                    coverage=cast(
+                        ProductionRenderQcCoverage,
+                        exact_text(check["coverage"], "check.coverage"),
+                    ),
+                    parser_schema_version=exact_text(
+                        check["parser_schema_version"],
+                        "check.parser_schema_version",
+                    ),
+                    tool_identity_sha256=exact_text(
+                        check["tool_identity_sha256"],
+                        "check.tool_identity_sha256",
+                    ),
+                    argv_sha256=exact_text(check["argv_sha256"], "check.argv_sha256"),
+                    measurements=tuple(measurements),
+                    evidence_blob=_blob_ref(check["evidence_blob"], "check.evidence_blob"),
+                    diagnostic_code=diagnostic_code,
+                )
+            )
+        report = ProductionRenderQcEvidenceReport(
+            qc_attempt_id=UUID(exact_text(mapping["qc_attempt_id"], "report.qc_attempt_id")),
+            render_attempt_id=UUID(
+                exact_text(mapping["render_attempt_id"], "report.render_attempt_id")
+            ),
+            job_id=UUID(exact_text(mapping["job_id"], "report.job_id")),
+            command_slot_id=UUID(
+                exact_text(mapping["command_slot_id"], "report.command_slot_id")
+            ),
+            output_blob=_blob_ref(mapping["output_blob"], "report.output_blob"),
+            render_facts_sha256=exact_text(
+                mapping["render_facts_sha256"],
+                "report.render_facts_sha256",
+            ),
+            qc_policy_sha256=exact_text(
+                mapping["qc_policy_sha256"],
+                "report.qc_policy_sha256",
+            ),
+            required_check_set_version=exact_text(
+                mapping["required_check_set_version"],
+                "report.required_check_set_version",
+            ),
+            qc_runner_identity_sha256=exact_text(
+                mapping["qc_runner_identity_sha256"],
+                "report.qc_runner_identity_sha256",
+            ),
+            checks=tuple(checks),
+            schema_version=cast(
+                Literal["production-render-qc-evidence-v1"],
+                exact_text(mapping["schema_version"], "report.schema_version"),
+            ),
+        )
+        if (
+            report.schema_version != PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION
+            or report.canonical_json != value
+            or report.canonical_hash != expected_sha256
+        ):
+            raise ValueError("production render QC evidence JSON/hash is not canonical")
+        return report
+    except (KeyError, TypeError, ValueError, StoreValidationError) as error:
+        raise RuntimeStoreError(
+            "persisted production render QC evidence report is invalid"
+        ) from error
 
 
 def _canonical_media_db_json(value: str) -> str:
@@ -5006,6 +5178,146 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    def record_production_render_qc_evidence(
+        self,
+        lease: ProductionRenderQcLease,
+        report: ProductionRenderQcEvidenceReport,
+    ) -> ProductionRenderQcAttempt:
+        """Atomically attach one exact, complete QC evidence journal."""
+
+        if type(lease) is not ProductionRenderQcLease:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC evidence requires an exact lease"
+            )
+        if type(report) is not ProductionRenderQcEvidenceReport:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC evidence requires an exact report"
+            )
+
+        def operation(cursor: DbCursor) -> ProductionRenderQcAttempt:
+            record, render_attempt, slot_state = (
+                self._locked_production_render_qc_attempt_aggregate(
+                    cursor,
+                    lease.qc_attempt_id,
+                )
+            )
+            attempt = record.attempt
+            lease_identity_matches = (
+                attempt.qc_attempt_id == lease.qc_attempt_id
+                and attempt.render_attempt_id == lease.render_attempt_id
+                and attempt.job_id == lease.job_id
+                and attempt.command_slot_id == lease.command_slot_id
+            )
+            if not lease_identity_matches:
+                raise CommandStateError(
+                    "production render QC evidence lease is stale or owned elsewhere"
+                )
+            if attempt.state == "evidence_ready":
+                if attempt.version != lease.version + 1:
+                    raise CommandStateError(
+                        "production render QC evidence lease is stale or owned elsewhere"
+                    )
+                if attempt.evidence_report != report:
+                    raise IdempotencyConflictError(
+                        "production render QC evidence replay differs from the durable report"
+                    )
+                return attempt
+            if (
+                slot_state != "running"
+                or render_attempt.state != "rendered"
+                or attempt.state != "scanning"
+                or attempt.version != lease.version
+                or record.lease_token != lease.token
+            ):
+                raise CommandStateError(
+                    "production render QC evidence lease is stale or owned elsewhere"
+                )
+            if (
+                report.qc_attempt_id != attempt.qc_attempt_id
+                or report.render_attempt_id != attempt.render_attempt_id
+                or report.job_id != attempt.job_id
+                or report.command_slot_id != attempt.command_slot_id
+                or report.output_blob != attempt.output_blob
+                or report.render_facts_sha256 != attempt.render_facts_sha256
+                or report.qc_policy_sha256 != attempt.qc_policy_sha256
+                or report.required_check_set_version
+                != attempt.required_check_set_version
+                or report.qc_runner_identity_sha256
+                != attempt.qc_runner_identity_sha256
+            ):
+                raise StoreValidationError(
+                    "production render QC evidence report disagrees with reserved authority"
+                )
+            if report.canonical_hash != (
+                "sha256:"
+                + hashlib.sha256(report.canonical_json.encode("utf-8")).hexdigest()
+            ):
+                raise StoreValidationError(
+                    "production render QC evidence canonical JSON/hash identity diverged"
+                )
+
+            for check in report.checks:
+                durable = self._claimed_blob_ref(
+                    cursor,
+                    attempt.job_id,
+                    check.evidence_blob,
+                    field_name=f"production-render-qc-evidence[{check.check_ordinal}]",
+                )
+                _exact_blob_bytes(
+                    cursor,
+                    durable,
+                    f"production render QC evidence[{check.check_ordinal}]",
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO runtime.production_render_qc_evidence_members (
+                        qc_attempt_id, check_ordinal, check_id,
+                        evidence_object_id, evidence_content_hash,
+                        evidence_byte_length, evidence_media_type
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        attempt.qc_attempt_id,
+                        check.check_ordinal,
+                        check.check_id,
+                        durable.object_id,
+                        durable.content_hash,
+                        durable.byte_length,
+                        durable.media_type,
+                    ),
+                )
+
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_qc_attempts
+                   SET state = 'evidence_ready', version = version + 1,
+                       lease_token = NULL, lease_expires_at = NULL,
+                       evidence_report_json = %s,
+                       evidence_report_sha256 = %s
+                 WHERE qc_attempt_id = %s AND state = 'scanning'
+                   AND version = %s AND lease_token = %s
+                   AND lease_expires_at > clock_timestamp()
+                """,
+                (
+                    report.canonical_json,
+                    report.canonical_hash,
+                    lease.qc_attempt_id,
+                    lease.version,
+                    lease.token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError(
+                    "production render QC evidence lease expired or lost its CAS"
+                )
+            return self._read_production_render_qc_attempt_by_id(
+                cursor,
+                lease.qc_attempt_id,
+                for_update=False,
+            ).attempt
+
+        return self._transaction(operation)
+
     @staticmethod
     def _validate_required_check_set_version(value: object) -> None:
         valid_characters = "abcdefghijklmnopqrstuvwxyz0123456789._-"
@@ -5110,6 +5422,8 @@ class PostgresRuntimeStore:
                    qc.required_check_set_version,
                    qc.qc_runner_identity_sha256, qc.state, qc.version,
                    qc.reserved_at, qc.lease_token, qc.lease_expires_at,
+                   qc.evidence_report_json, qc.evidence_report_sha256,
+                   qc.evidence_ready_at,
                    parent.job_id, parent.command_slot_id,
                    parent.output_object_id, parent.render_facts_sha256,
                    parent.state, parent.version,
@@ -5158,6 +5472,9 @@ class PostgresRuntimeStore:
             reserved_at,
             lease_token,
             lease_expires_at,
+            evidence_report_json,
+            evidence_report_sha256,
+            evidence_ready_at,
             parent_job_id,
             parent_command_slot_id,
             parent_output_object_id,
@@ -5196,6 +5513,76 @@ class PostgresRuntimeStore:
             raise RuntimeStoreError(
                 "persisted production render QC identity disagrees with its parent"
             )
+        state_text = _text(state)
+        evidence_report = None
+        if state_text == "evidence_ready":
+            if evidence_report_json is None or evidence_report_sha256 is None:
+                raise RuntimeStoreError(
+                    "persisted production render QC evidence-ready state is incomplete"
+                )
+            evidence_report = _decode_production_render_qc_evidence_report(
+                _text(evidence_report_json),
+                _text(evidence_report_sha256),
+            )
+            cursor.execute(
+                """
+                SELECT member.check_ordinal, member.check_id,
+                       member.evidence_object_id, member.evidence_content_hash,
+                       member.evidence_byte_length, member.evidence_media_type
+                  FROM runtime.production_render_qc_evidence_members AS member
+                 WHERE member.qc_attempt_id = %s
+                 ORDER BY member.check_ordinal
+                """,
+                (qc_attempt_id,),
+            )
+            member_rows: list[tuple[object, ...]] = []
+            while (member_row := cursor.fetchone()) is not None:
+                member_rows.append(member_row)
+            expected_members = tuple(
+                (
+                    check.check_ordinal,
+                    check.check_id,
+                    check.evidence_blob.object_id,
+                    check.evidence_blob.content_hash,
+                    check.evidence_blob.byte_length,
+                    check.evidence_blob.media_type,
+                )
+                for check in evidence_report.checks
+            )
+            durable_members = tuple(
+                (
+                    int(_text(member[0])),
+                    _text(member[1]),
+                    UUID(str(member[2])),
+                    _text(member[3]),
+                    int(_text(member[4])),
+                    _text(member[5]),
+                )
+                for member in member_rows
+            )
+            if durable_members != expected_members:
+                raise RuntimeStoreError(
+                    "persisted production render QC evidence members disagree with the report"
+                )
+            for check in evidence_report.checks:
+                durable = self._claimed_blob_ref(
+                    cursor,
+                    UUID(str(job_id)),
+                    check.evidence_blob,
+                    field_name=(
+                        f"persisted-production-render-qc-evidence[{check.check_ordinal}]"
+                    ),
+                )
+                try:
+                    _exact_blob_bytes(
+                        cursor,
+                        durable,
+                        f"persisted production render QC evidence[{check.check_ordinal}]",
+                    )
+                except StoreValidationError as error:
+                    raise RuntimeStoreError(
+                        "persisted production render QC evidence bytes are invalid"
+                    ) from error
         attempt = ProductionRenderQcAttempt(
             qc_attempt_id=qc_attempt_id,
             render_attempt_id=UUID(str(render_attempt_id)),
@@ -5212,10 +5599,20 @@ class PostgresRuntimeStore:
             qc_policy_sha256=_text(qc_policy_sha256),
             required_check_set_version=_text(required_check_set_version),
             qc_runner_identity_sha256=_text(qc_runner_identity_sha256),
-            state=cast(Literal["reserved", "scanning"], _text(state)),
+            state=cast(
+                Literal["reserved", "scanning", "evidence_ready"],
+                state_text,
+            ),
             version=int(_text(version)),
             reserved_at=cast(datetime, reserved_at),
             lease_expires_at=cast(datetime | None, lease_expires_at),
+            evidence_report=evidence_report,
+            evidence_report_sha256=(
+                None
+                if evidence_report_sha256 is None
+                else _text(evidence_report_sha256)
+            ),
+            evidence_ready_at=cast(datetime | None, evidence_ready_at),
         )
         return _ProductionRenderQcAttemptRecord(
             attempt,

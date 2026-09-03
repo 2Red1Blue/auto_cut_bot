@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -59,7 +60,47 @@ PRODUCTION_RENDER_COMMAND_NAME = "RenderProductionRecipeCommand@1"
 ProductionRenderAttemptState = Literal[
     "reserved", "rendering", "rendered", "committed", "denied", "failed"
 ]
-ProductionRenderQcAttemptState = Literal["reserved", "scanning"]
+ProductionRenderQcAttemptState = Literal["reserved", "scanning", "evidence_ready"]
+ProductionRenderQcCollectionStatus = Literal[
+    "completed", "incomplete", "not_run", "not_applicable"
+]
+ProductionRenderQcCoverage = Literal["full_file", "partial", "none", "not_applicable"]
+ProductionRenderQcMeasurementKind = Literal[
+    "integer", "decimal", "rational", "boolean", "text", "sha256"
+]
+ProductionRenderQcMeasurementUnit = Literal[
+    "none",
+    "count",
+    "byte",
+    "tick",
+    "second",
+    "frame",
+    "sample",
+    "packet",
+    "stream",
+    "channel",
+    "hertz",
+    "decibel",
+    "lufs",
+    "percent",
+    "ratio",
+]
+PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION = "production-render-qc-evidence-v1"
+PRODUCTION_RENDER_QC_CHECK_SET_VERSION = "production-av-qc-v1"
+PRODUCTION_RENDER_QC_REQUIRED_CHECKS = (
+    "exact_object_identity",
+    "container_stream_topology",
+    "packet_timeline_integrity",
+    "decoded_frame_timeline",
+    "full_video_decode",
+    "full_audio_decode",
+    "video_black_intervals",
+    "video_freeze_intervals",
+    "audio_silence_intervals",
+    "audio_sample_health",
+    "av_presentation_envelope",
+    "edit_junction_continuity",
+)
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -90,6 +131,17 @@ def _sha256(value: str, field_name: str) -> None:
         or any(character not in "0123456789abcdef" for character in value[7:])
     ):
         raise StoreValidationError(f"{field_name} must be a lowercase sha256 digest")
+
+
+def _qc_safe_identifier(value: object, field_name: str) -> None:
+    if (
+        type(value) is not str  # noqa: E721
+        or not 1 <= len(value.encode("utf-8")) <= 128
+        or re.fullmatch(r"[a-z0-9][a-z0-9._-]*", value) is None
+    ):
+        raise StoreValidationError(
+            f"production render QC {field_name} must be a safe identifier"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2136,6 +2188,288 @@ class ProductionRenderLease:
 
 
 @dataclass(frozen=True, slots=True)
+class ProductionRenderQcMeasurement:
+    """One bounded scalar observation; it carries no QC policy decision."""
+
+    name: str
+    value_kind: ProductionRenderQcMeasurementKind
+    value: str
+    unit: ProductionRenderQcMeasurementUnit
+
+    def __post_init__(self) -> None:
+        _qc_safe_identifier(self.name, "measurement name")
+        if self.value_kind not in (
+            "integer",
+            "decimal",
+            "rational",
+            "boolean",
+            "text",
+            "sha256",
+        ):
+            raise StoreValidationError("production render QC measurement kind is unsupported")
+        if self.unit not in (
+            "none",
+            "count",
+            "byte",
+            "tick",
+            "second",
+            "frame",
+            "sample",
+            "packet",
+            "stream",
+            "channel",
+            "hertz",
+            "decibel",
+            "lufs",
+            "percent",
+            "ratio",
+        ):
+            raise StoreValidationError("production render QC measurement unit is unsupported")
+        if type(self.value) is not str or len(self.value.encode("utf-8")) > 512:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC measurement value must be bounded text"
+            )
+        if self.value_kind == "integer":
+            valid = re.fullmatch(r"(?:0|-?[1-9][0-9]*)", self.value) is not None
+        elif self.value_kind == "decimal":
+            valid = (
+                re.fullmatch(
+                    r"(?:0|-?[1-9][0-9]*|-?(?:0|[1-9][0-9]*)[.][0-9]*[1-9])",
+                    self.value,
+                )
+                is not None
+            )
+        elif self.value_kind == "rational":
+            match = re.fullmatch(r"(0|-?[1-9][0-9]*)/([1-9][0-9]*)", self.value)
+            valid = match is not None and math.gcd(
+                abs(int(match.group(1))), int(match.group(2))
+            ) == 1
+        elif self.value_kind == "boolean":
+            valid = self.value in ("true", "false")
+        elif self.value_kind == "sha256":
+            valid = re.fullmatch(r"sha256:[0-9a-f]{64}", self.value) is not None
+        else:
+            valid = bool(self.value) and not any(
+                segment in {"path", "locator", "uri", "url"}
+                for segment in self.name.split("_")
+            )
+        if not valid:
+            raise StoreValidationError(
+                "production render QC measurement value is not canonical"
+            )
+
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            "name": self.name,
+            "unit": self.unit,
+            "value": self.value,
+            "value_kind": self.value_kind,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderQcCheckEvidence:
+    """One complete or explicitly incomplete collector observation."""
+
+    check_ordinal: int
+    check_id: str
+    collection_status: ProductionRenderQcCollectionStatus
+    coverage: ProductionRenderQcCoverage
+    parser_schema_version: str
+    tool_identity_sha256: str
+    argv_sha256: str
+    measurements: tuple[ProductionRenderQcMeasurement, ...]
+    evidence_blob: BlobRef
+    diagnostic_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.check_ordinal) is not int or not 0 <= self.check_ordinal <= 63:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC check ordinal must be between zero and 63"
+            )
+        _qc_safe_identifier(self.check_id, "check_id")
+        _qc_safe_identifier(
+            self.parser_schema_version,
+            "parser schema version",
+        )
+        _sha256(self.tool_identity_sha256, "production render QC tool identity")
+        _sha256(self.argv_sha256, "production render QC argv")
+        valid_pairs = {
+            "completed": frozenset({"full_file", "not_applicable"}),
+            "incomplete": frozenset({"partial", "none"}),
+            "not_run": frozenset({"none"}),
+            "not_applicable": frozenset({"not_applicable"}),
+        }
+        if (
+            self.collection_status not in valid_pairs
+            or self.coverage not in valid_pairs[self.collection_status]
+        ):
+            raise StoreValidationError(
+                "production render QC collection status and coverage disagree"
+            )
+        if type(self.measurements) is not tuple or len(self.measurements) > 256:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC measurements must be a bounded tuple"
+            )
+        for measurement in self.measurements:
+            if type(measurement) is not ProductionRenderQcMeasurement:  # noqa: E721
+                raise StoreValidationError(
+                    "production render QC check requires exact measurement values"
+                )
+        names = tuple(item.name for item in self.measurements)
+        if names != tuple(sorted(names)) or len(names) != len(set(names)):
+            raise StoreValidationError(
+                "production render QC measurement names must be unique and sorted"
+            )
+        if type(self.evidence_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC evidence_blob must be an exact BlobRef"
+            )
+        if (
+            not 1 <= self.evidence_blob.byte_length <= 2 * 1024 * 1024
+            or self.evidence_blob.media_type != "application/json"
+        ):
+            raise StoreValidationError(
+                "production render QC evidence BlobRef is invalid or exceeds its cap"
+            )
+        if self.diagnostic_code is not None:
+            _qc_safe_identifier(
+                self.diagnostic_code,
+                "diagnostic code",
+            )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "argv_sha256": self.argv_sha256,
+            "check_id": self.check_id,
+            "check_ordinal": self.check_ordinal,
+            "collection_status": self.collection_status,
+            "coverage": self.coverage,
+            "diagnostic_code": self.diagnostic_code,
+            "evidence_blob": {
+                "byte_length": self.evidence_blob.byte_length,
+                "content_hash": self.evidence_blob.content_hash,
+                "media_type": self.evidence_blob.media_type,
+                "object_id": str(self.evidence_blob.object_id),
+            },
+            "measurements": [item.to_mapping() for item in self.measurements],
+            "parser_schema_version": self.parser_schema_version,
+            "tool_identity_sha256": self.tool_identity_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderQcEvidenceReport:
+    """Canonical private observation journal for one exact rendered output."""
+
+    qc_attempt_id: UUID
+    render_attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    output_blob: BlobRef
+    render_facts_sha256: str
+    qc_policy_sha256: str
+    required_check_set_version: str
+    qc_runner_identity_sha256: str
+    checks: tuple[ProductionRenderQcCheckEvidence, ...]
+    schema_version: Literal[
+        "production-render-qc-evidence-v1"
+    ] = PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "qc_attempt_id",
+            "render_attempt_id",
+            "job_id",
+            "command_slot_id",
+        ):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    f"production render QC report {field_name} must be an exact UUID"
+                )
+        if type(self.output_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC report output_blob must be an exact BlobRef"
+            )
+        if self.output_blob.byte_length <= 0 or self.output_blob.media_type != "video/mp4":
+            raise StoreValidationError(
+                "production render QC report output_blob must be a non-empty MP4"
+            )
+        for field_name in (
+            "render_facts_sha256",
+            "qc_policy_sha256",
+            "qc_runner_identity_sha256",
+        ):
+            _sha256(getattr(self, field_name), f"production render QC report {field_name}")
+        if self.required_check_set_version != PRODUCTION_RENDER_QC_CHECK_SET_VERSION:
+            raise StoreValidationError(
+                "production render QC report check-set version is unregistered"
+            )
+        if self.schema_version != PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION:
+            raise StoreValidationError(
+                "production render QC report schema version is unsupported"
+            )
+        if type(self.checks) is not tuple or not 1 <= len(self.checks) <= 64:  # noqa: E721
+            raise StoreValidationError(
+                "production render QC report checks must be a bounded tuple"
+            )
+        for check in self.checks:
+            if type(check) is not ProductionRenderQcCheckEvidence:  # noqa: E721
+                raise StoreValidationError(
+                    "production render QC report requires exact check evidence"
+                )
+        identities = tuple(
+            (check.check_ordinal, check.check_id) for check in self.checks
+        )
+        expected = tuple(enumerate(PRODUCTION_RENDER_QC_REQUIRED_CHECKS))
+        if identities != expected:
+            raise StoreValidationError(
+                "production render QC report check set is incomplete or reordered"
+            )
+        if sum(check.evidence_blob.byte_length for check in self.checks) > 16 * 1024 * 1024:
+            raise StoreValidationError(
+                "production render QC report evidence exceeds the aggregate cap"
+            )
+        if len(self.canonical_json.encode("utf-8")) > 1024 * 1024:
+            raise StoreValidationError(
+                "production render QC report exceeds the canonical JSON cap"
+            )
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "checks": [item.to_mapping() for item in self.checks],
+            "command_slot_id": str(self.command_slot_id),
+            "job_id": str(self.job_id),
+            "output_blob": {
+                "byte_length": self.output_blob.byte_length,
+                "content_hash": self.output_blob.content_hash,
+                "media_type": self.output_blob.media_type,
+                "object_id": str(self.output_blob.object_id),
+            },
+            "qc_attempt_id": str(self.qc_attempt_id),
+            "qc_policy_sha256": self.qc_policy_sha256,
+            "qc_runner_identity_sha256": self.qc_runner_identity_sha256,
+            "render_attempt_id": str(self.render_attempt_id),
+            "render_facts_sha256": self.render_facts_sha256,
+            "required_check_set_version": self.required_check_set_version,
+            "schema_version": self.schema_version,
+        }
+
+    @property
+    def canonical_json(self) -> str:
+        return json.dumps(
+            self.to_mapping(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @property
+    def canonical_hash(self) -> str:
+        return "sha256:" + hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
 class ProductionRenderQcAttempt:
     """Public durable identity and fenced state for one full-file QC scan."""
 
@@ -2153,6 +2487,9 @@ class ProductionRenderQcAttempt:
     version: int
     reserved_at: datetime
     lease_expires_at: datetime | None = None
+    evidence_report: ProductionRenderQcEvidenceReport | None = None
+    evidence_report_sha256: str | None = None
+    evidence_ready_at: datetime | None = None
     is_fresh_reservation: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -2199,7 +2536,7 @@ class ProductionRenderQcAttempt:
                 "production render QC attempt required_check_set_version "
                 "must be a safe lowercase version identifier"
             )
-        if self.state not in ("reserved", "scanning"):
+        if self.state not in ("reserved", "scanning", "evidence_ready"):
             raise StoreValidationError("production render QC attempt state is unsupported")
         if type(self.version) is not int or self.version < 0:  # noqa: E721
             raise StoreValidationError(
@@ -2214,12 +2551,43 @@ class ProductionRenderQcAttempt:
                 raise StoreValidationError(
                     "reserved production render QC attempt cannot expose a lease expiry"
                 )
-        else:
+            self._require_no_evidence()
+        elif self.state == "scanning":
             if self.version < 1:
                 raise StoreValidationError(
                     "scanning production render QC attempt requires a positive version"
                 )
             self._require_aware(self.lease_expires_at, "lease_expires_at")
+            self._require_no_evidence()
+        else:
+            if self.version < 2 or self.lease_expires_at is not None:
+                raise StoreValidationError(
+                    "evidence-ready production render QC attempt has an invalid version or lease"
+                )
+            if type(self.evidence_report) is not ProductionRenderQcEvidenceReport:  # noqa: E721
+                raise StoreValidationError(
+                    "evidence-ready production render QC attempt requires its exact report"
+                )
+            if self.evidence_report_sha256 != self.evidence_report.canonical_hash:
+                raise StoreValidationError(
+                    "production render QC evidence hash does not bind its canonical report"
+                )
+            self._require_aware(self.evidence_ready_at, "evidence_ready_at")
+            report = self.evidence_report
+            if (
+                report.qc_attempt_id != self.qc_attempt_id
+                or report.render_attempt_id != self.render_attempt_id
+                or report.job_id != self.job_id
+                or report.command_slot_id != self.command_slot_id
+                or report.output_blob != self.output_blob
+                or report.render_facts_sha256 != self.render_facts_sha256
+                or report.qc_policy_sha256 != self.qc_policy_sha256
+                or report.required_check_set_version != self.required_check_set_version
+                or report.qc_runner_identity_sha256 != self.qc_runner_identity_sha256
+            ):
+                raise StoreValidationError(
+                    "production render QC evidence report disagrees with its attempt"
+                )
         self._require_aware(self.reserved_at, "reserved_at")
         if type(self.is_fresh_reservation) is not bool:  # noqa: E721
             raise StoreValidationError(
@@ -2235,6 +2603,16 @@ class ProductionRenderQcAttempt:
         ):
             raise StoreValidationError(
                 f"production render QC attempt {field_name} must be timezone-aware"
+            )
+
+    def _require_no_evidence(self) -> None:
+        if (
+            self.evidence_report is not None
+            or self.evidence_report_sha256 is not None
+            or self.evidence_ready_at is not None
+        ):
+            raise StoreValidationError(
+                "pre-evidence production render QC attempt cannot expose evidence"
             )
 
 
