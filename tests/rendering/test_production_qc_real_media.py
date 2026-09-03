@@ -152,6 +152,58 @@ def _generate_black_av_fixture(path: Path, ffmpeg: str) -> None:
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
 
 
+def _generate_terminal_freeze_and_silence_fixture(path: Path, ffmpeg: str) -> None:
+    """Generate moving/tone media that enters both states exactly at the tail.
+
+    The terminal states deliberately have no subsequent non-free/non-silent
+    sample.  A collector may prove their observed start, but cannot invent an
+    end timestamp merely because the file reached EOF.
+    """
+
+    result = subprocess.run(  # noqa: S603 - exact executable and argv fixture.
+        (
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=12:duration=0.5",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=blue:size=160x120:rate=12:duration=0.75",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=0.5",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=mono:d=0.75",
+            "-filter_complex",
+            "[0:v][1:v]concat=n=2:v=1:a=0[v];[2:a][3:a]concat=n=2:v=0:a=1[a]",
+            "-map",
+            "[v]",
+            "-map",
+            "[a]",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-shortest",
+            str(path),
+        ),
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+
+
 def _generate_video_only_fixture(path: Path, ffmpeg: str) -> None:
     result = subprocess.run(  # noqa: S603 - exact executable and argv fixture.
         (
@@ -279,6 +331,8 @@ def _run_real_media_qc(
     media: Path,
     ffmpeg: str,
     ffprobe: str,
+    *,
+    junction_timeline_ticks: tuple[int, ...] = (450_000,),
 ) -> tuple[ProductionRenderQcAttempt, _RealMediaStore]:
     content = media.read_bytes()
     profile = _real_profile(tmp_path, ffmpeg, ffprobe)
@@ -319,7 +373,9 @@ def _run_real_media_qc(
         job=Job(f"real-qc-{uuid4()}", "production"),
         attempt=attempt,
         lease=lease,
-        plan=ProductionRenderQcPlanProjection(attempt.render_facts_sha256, (450_000,)),
+        plan=ProductionRenderQcPlanProjection(
+            attempt.render_facts_sha256, junction_timeline_ticks
+        ),
         materialization_limits=MaterializationLimits(1024 * 1024, 16 * 1024 * 1024, 64, 4096),
         ffmpeg_path=ffmpeg,
         ffprobe_path=ffprobe,
@@ -413,6 +469,64 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
     # The black fixture reaches EOF with a right-censored interval rather than
     # silently inventing an end timestamp; its bounded example is audit data.
     assert evidence[6]["examples"] == ["black:0:0/1:right_censored"]
+
+
+def test_real_media_runner_preserves_terminal_freeze_and_silence_as_censored(
+    tmp_path: Path,
+) -> None:
+    """EOF must preserve tail states as open intervals, never close them by guesswork."""
+
+    ffmpeg, ffprobe = _media_tools()
+    media = (tmp_path / "terminal-freeze-and-silence.mp4").absolute()
+    _generate_terminal_freeze_and_silence_fixture(media, ffmpeg)
+
+    result, store = _run_real_media_qc(tmp_path, media, ffmpeg, ffprobe)
+
+    assert result.state == "evidence_ready"
+    assert store.report is not None
+    evidence_by_check = {
+        item["check_id"]: item for item in (json.loads(content) for content in store.evidence)
+    }
+    for check_id, expected_example in (
+        ("video_freeze_intervals", "freeze:0:1/2:right_censored"),
+        ("audio_silence_intervals", "silence:1:1/2:right_censored"),
+    ):
+        evidence = evidence_by_check[check_id]
+        values = {item["name"]: item["value"] for item in evidence["measurements"]}
+        assert values["interval_count"] == "1"
+        assert values["right_censored_interval_count"] == "1"
+        assert evidence["examples"] == [expected_example]
+
+
+def test_real_media_runner_projects_two_junctions_from_the_exact_plan(tmp_path: Path) -> None:
+    """Junction collection is a plan projection over full decoded A/V evidence."""
+
+    ffmpeg, ffprobe = _media_tools()
+    media = (tmp_path / "two-junction-av.mp4").absolute()
+    _generate_black_av_fixture(media, ffmpeg)
+
+    result, store = _run_real_media_qc(
+        tmp_path,
+        media,
+        ffmpeg,
+        ffprobe,
+        junction_timeline_ticks=(150_000, 750_000),
+    )
+
+    assert result.state == "evidence_ready"
+    assert store.report is not None
+    checks = {check.check_id: check for check in store.report.checks}
+    evidence_by_check = {
+        item["check_id"]: item for item in (json.loads(content) for content in store.evidence)
+    }
+    decoded = checks["decoded_frame_timeline"]
+    junction = checks["edit_junction_continuity"]
+    assert (decoded.collection_status, decoded.coverage) == ("completed", "full_file")
+    assert (junction.collection_status, junction.coverage) == ("completed", "full_file")
+    assert {item.name: item.value for item in junction.measurements} == {
+        "junction_count": "2",
+        "observation_count": str(evidence_by_check["decoded_frame_timeline"]["record_count"]),
+    }
 
 
 @pytest.mark.parametrize(
