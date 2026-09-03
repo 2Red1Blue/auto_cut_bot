@@ -16,6 +16,15 @@ from .dialogue_guard import (
     derive_utterance_ranges,
     merge_vad_ranges,
 )
+from .editorial_exact_span import (
+    EDITORIAL_EXACT_SPAN_STRATEGY,
+    EditorialExactSpanError,
+    EditorialExactSpanIndeterminateError,
+    EditorialExactSpanPolicy,
+    EditorialExactSpanQuery,
+    derive_editorial_exact_span_query,
+    minimum_video_ticks,
+)
 from .exact_span import (
     BoundaryProof,
     CandidatePairLimitError,
@@ -50,6 +59,11 @@ __all__ = [
     "DialogueGuardIndeterminateError",
     "DialogueGuardKind",
     "DialogueRequirement",
+    "EDITORIAL_EXACT_SPAN_STRATEGY",
+    "EditorialExactSpanError",
+    "EditorialExactSpanIndeterminateError",
+    "EditorialExactSpanPolicy",
+    "EditorialExactSpanQuery",
     "ExactAvSpanPolicy",
     "ExactAvSpanRequest",
     "ExactAvSpanResult",
@@ -68,8 +82,10 @@ __all__ = [
     "VideoToAudioClockMapCertificate",
     "compile_exact_av_span",
     "derive_dialogue_guard",
+    "derive_editorial_exact_span_query",
     "derive_utterance_ranges",
     "merge_vad_ranges",
+    "minimum_video_ticks",
     "select_exact_span",
     "TimedSpeechGuardPolicy",
     "TimedSpeechProfile",
