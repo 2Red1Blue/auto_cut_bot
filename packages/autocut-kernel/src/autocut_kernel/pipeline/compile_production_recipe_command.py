@@ -122,6 +122,7 @@ STAGE4_OUTPUT_TIMING_INDETERMINATE: Final = "STAGE4_OUTPUT_TIMING_INDETERMINATE"
 STAGE4_COMPILATION_INFRASTRUCTURE_FAILED: Final = "STAGE4_COMPILATION_INFRASTRUCTURE_FAILED"
 
 _MAX_EXACT_JSON_INTEGER = 2**53 - 1
+_JSONB_READ_FIXED_ALLOWANCE_BYTES: Final = 4_096
 _REPORT_TYPE = "physical_edit_compilation_report"
 _ADMISSION_TYPE = "physical_edit_admission"
 _RECIPE_PREFIX = "production_recipe@"
@@ -1164,20 +1165,44 @@ def read_committed_production_recipe_set(
         raise CompileProductionRecipeError(
             "Stage 4 Store record differs from exact command identity"
         )
+    if len(record.members) > request.compilation_limits.max_compilation_entries + 2:
+        raise CompileProductionRecipeError(
+            "Stage 4 committed member count exceeds its frozen compilation bound"
+        )
     raw_bytes = tuple(
         member.payload_json.encode("utf-8", errors="strict") for member in record.members
     )
+    jsonb_member_read_limit = min(
+        _MAX_EXACT_JSON_INTEGER,
+        request.compilation_limits.max_member_payload_bytes * 2 + _JSONB_READ_FIXED_ALLOWANCE_BYTES,
+    )
+    jsonb_total_read_limit = min(
+        _MAX_EXACT_JSON_INTEGER,
+        request.compilation_limits.max_total_payload_bytes * 2
+        + _JSONB_READ_FIXED_ALLOWANCE_BYTES * len(raw_bytes),
+    )
     if (
-        any(len(raw) > request.compilation_limits.max_member_payload_bytes for raw in raw_bytes)
-        or sum(map(len, raw_bytes)) > request.compilation_limits.max_total_payload_bytes
+        any(len(raw) > jsonb_member_read_limit for raw in raw_bytes)
+        or sum(map(len, raw_bytes)) > jsonb_total_read_limit
     ):
         raise CompileProductionRecipeError(
-            "Stage 4 committed payload exceeds its frozen byte ceiling"
+            "Stage 4 committed JSONB transport exceeds its bounded read allowance"
         )
     try:
         decoded = tuple(
             load_canonical_json_bytes(raw, origin="Stage 4 member") for raw in raw_bytes
         )
+        canonical_bytes = tuple(item[1] for item in decoded)
+        if (
+            any(
+                len(payload) > request.compilation_limits.max_member_payload_bytes
+                for payload in canonical_bytes
+            )
+            or sum(map(len, canonical_bytes)) > request.compilation_limits.max_total_payload_bytes
+        ):
+            raise CompileProductionRecipeError(
+                "Stage 4 committed canonical payload exceeds its frozen byte ceiling"
+            )
         stored_report = PhysicalEditCompilationReport.from_mapping(decoded[0][0])
         stored_recipes = tuple(ProductionRecipe.from_mapping(item[0]) for item in decoded[1:-1])
         stored_admission = PhysicalEditAdmission.from_mapping(decoded[-1][0])
@@ -1201,8 +1226,13 @@ def read_committed_production_recipe_set(
             member.reference.scope != request.artifact_scope
             or member.reference.revision != request.artifact_revision
             or member.reference.content_hash != artifact.content_hash
-            or member.payload_json != artifact.payload_json
-            for member, artifact in zip(record.members, expected, strict=True)
+            or payload != artifact.payload_json.encode("utf-8")
+            for member, artifact, payload in zip(
+                record.members,
+                expected,
+                canonical_bytes,
+                strict=True,
+            )
         )
         or record.set_hash != artifact_set_hash(expected)
         or stored_report != report

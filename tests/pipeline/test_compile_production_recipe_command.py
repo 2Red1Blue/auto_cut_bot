@@ -26,6 +26,7 @@ from autocut_kernel.pipeline.compile_production_recipe_command import (
     resolve_compile_production_recipe_request,
 )
 from autocut_kernel.store.models import (
+    ArtifactMember,
     CommandOutcome,
     CommittedArtifactMemberReference,
     PersistedCommittedArtifactMember,
@@ -116,6 +117,33 @@ class _Stage4Store:
             assert self.stage4_record is not None
             return self.stage4_record
         return self.base.read_committed_artifact_set(job, **expected)
+
+
+def _reverse_json_object_order(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _reverse_json_object_order(child) for key, child in reversed(tuple(value.items()))
+        }
+    if isinstance(value, list):
+        return [_reverse_json_object_order(child) for child in value]
+    return value
+
+
+def _replace_record_payloads_with_jsonb_display(
+    record: PersistedCommittedArtifactSet,
+) -> PersistedCommittedArtifactSet:
+    members = tuple(
+        replace(
+            member,
+            payload_json=json.dumps(
+                _reverse_json_object_order(json.loads(member.payload_json)),
+                ensure_ascii=False,
+                separators=(", ", ": "),
+            ),
+        )
+        for member in record.members
+    )
+    return replace(record, members=members)
 
 
 def _request(
@@ -272,6 +300,164 @@ def test_member_and_total_payload_limits_are_independent_exact_boundaries(
     assert total_denial.outcome.state == "denied"
     assert total_denial.outcome.failure_code == STAGE4_COMPILATION_BLOCKED
     assert total_store.stage4_record is None
+
+
+def test_exact_reader_accepts_postgres_jsonb_display_at_canonical_byte_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_non_dialogue_blueprint_projection(monkeypatch)
+    case = editorial_timed_media_case(tmp_path, monkeypatch)
+    base, *_rest, resolver, limits = case
+    sizing_store = _Stage4Store(base)
+    sizing = CompileProductionRecipeCommand(sizing_store, resolver, limits).execute(_request(case))
+    assert sizing.outcome.state == "succeeded" and sizing_store.stage4_record is not None
+    payload_sizes = tuple(
+        len(member.payload_json.encode("utf-8")) for member in sizing_store.stage4_record.members
+    )
+    request = _request(
+        case,
+        member_payload=max(payload_sizes),
+        total_payload=sum(payload_sizes),
+    )
+    store = _Stage4Store(base)
+    result = CompileProductionRecipeCommand(store, resolver, limits).execute(request)
+    assert result.outcome.state == "succeeded" and store.stage4_record is not None
+    canonical_record = store.stage4_record
+    store.stage4_record = _replace_record_payloads_with_jsonb_display(canonical_record)
+    assert (
+        sum(len(member.payload_json.encode("utf-8")) for member in store.stage4_record.members)
+        > request.compilation_limits.max_total_payload_bytes
+    )
+    assert any(
+        persisted.payload_json != canonical.payload_json
+        for persisted, canonical in zip(
+            store.stage4_record.members,
+            canonical_record.members,
+            strict=True,
+        )
+    )
+
+    reread = read_committed_production_recipe_set(
+        store,
+        request,
+        result.outcome,
+        authority_profile_resolver=resolver,
+        limits=limits,
+    )
+
+    assert reread.report == result.committed.report
+    assert reread.recipes == result.committed.recipes
+    assert reread.admission == result.committed.admission
+
+
+def test_exact_reader_rejects_unbounded_jsonb_transport_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_non_dialogue_blueprint_projection(monkeypatch)
+    case = editorial_timed_media_case(tmp_path, monkeypatch)
+    base, *_rest, resolver, limits = case
+    sizing_store = _Stage4Store(base)
+    sizing = CompileProductionRecipeCommand(sizing_store, resolver, limits).execute(_request(case))
+    assert sizing.outcome.state == "succeeded" and sizing_store.stage4_record is not None
+    payload_sizes = tuple(
+        len(member.payload_json.encode("utf-8")) for member in sizing_store.stage4_record.members
+    )
+    request = _request(
+        case,
+        member_payload=max(payload_sizes),
+        total_payload=sum(payload_sizes),
+    )
+    store = _Stage4Store(base)
+    result = CompileProductionRecipeCommand(store, resolver, limits).execute(request)
+    assert result.outcome.state == "succeeded" and store.stage4_record is not None
+    target = store.stage4_record.members[0]
+    expanded = target.payload_json.replace(
+        ",",
+        "," + " " * (request.compilation_limits.max_member_payload_bytes * 3 + 8_192),
+        1,
+    )
+    changed = replace(target, payload_json=expanded)
+    store.stage4_record = replace(
+        store.stage4_record,
+        members=(changed, *store.stage4_record.members[1:]),
+    )
+
+    with pytest.raises(
+        CompileProductionRecipeError,
+        match="JSONB transport exceeds its bounded read allowance",
+    ):
+        read_committed_production_recipe_set(
+            store,
+            request,
+            result.outcome,
+            authority_profile_resolver=resolver,
+            limits=limits,
+        )
+
+
+def test_exact_reader_rejects_member_count_amplification_before_decoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_non_dialogue_blueprint_projection(monkeypatch)
+    case = editorial_timed_media_case(tmp_path, monkeypatch)
+    base, *_rest, resolver, limits = case
+    store = _Stage4Store(base)
+    request = _request(case, entries=4)
+    result = CompileProductionRecipeCommand(store, resolver, limits).execute(request)
+    assert result.outcome.state == "succeeded" and store.stage4_record is not None
+    record = store.stage4_record
+    extra_count = request.compilation_limits.max_compilation_entries + 3 - len(record.members)
+    extra_payload = "{}"
+    extra_hash = canonical_payload_hash(extra_payload)
+    extras = tuple(
+        PersistedCommittedArtifactMember(
+            CommittedArtifactMemberReference(
+                record.receipt_id,
+                record.artifact_set_id,
+                len(record.members) + index,
+                request.artifact_scope,
+                "unexpected_stage4_member",
+                f"unexpected-{index}",
+                request.artifact_revision,
+                extra_hash,
+            ),
+            extra_payload,
+            record.command_slot_id,
+        )
+        for index in range(extra_count)
+    )
+    members = (*record.members, *extras)
+    artifacts = tuple(
+        ArtifactMember(
+            member.reference.artifact_type,
+            member.reference.logical_id,
+            member.reference.revision,
+            member.reference.scope,
+            member.reference.content_hash,
+            member.payload_json,
+        )
+        for member in members
+    )
+    store.stage4_record = replace(
+        record,
+        members=members,
+        set_hash=artifact_set_hash(artifacts),
+    )
+
+    with pytest.raises(
+        CompileProductionRecipeError,
+        match="member count exceeds its frozen compilation bound",
+    ):
+        read_committed_production_recipe_set(
+            store,
+            request,
+            result.outcome,
+            authority_profile_resolver=resolver,
+            limits=limits,
+        )
 
 
 def test_request_hash_binds_cpu_cuda_backend_discriminator(
