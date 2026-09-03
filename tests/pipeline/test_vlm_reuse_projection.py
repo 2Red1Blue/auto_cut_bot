@@ -7,10 +7,18 @@ import pytest
 from autocut_kernel.store import Job
 from autocut_kernel.store.models import canonical_recipe_scope
 
+from auto_cut_bot.pipeline.vlm.contextual_video_prompt import (
+    VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
+)
 from auto_cut_bot.pipeline.vlm.doubao_ark_provider import DoubaoArkVlmProviderConfig
-from auto_cut_bot.pipeline.vlm.request_factory import build_doubao_vlm_request
+from auto_cut_bot.pipeline.vlm.request_factory import (
+    build_doubao_vlm_request,
+    registered_response_schema_json,
+)
 from auto_cut_bot.pipeline.vlm.reuse import derive_vlm_reuse_identity
 from tests.pipeline.test_doubao_vlm_request_factory import _policy, _retry_policy, _source_bundle
+from tests.pipeline.test_vlm_contextual_video_prompt import _pack
+from tests.pipeline.test_vlm_video_integration import _policy as _v4_policy
 
 
 def _case():
@@ -94,3 +102,35 @@ def test_changed_generation_budget_changes_semantic_compatibility():
     original = derive_vlm_reuse_identity(request, source_bundle=bundle, provider_scope=scope)
     target = derive_vlm_reuse_identity(changed, source_bundle=bundle, provider_scope=scope)
     assert original.canonical_hash != target.canonical_hash
+
+
+def test_context_assisted_v23_request_projects_and_binds_its_exact_pack() -> None:
+    bundle = _source_bundle()
+    pack = _pack()
+    policy = replace(
+        _v4_policy(),
+        prompt_version=VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
+        response_schema_json=registered_response_schema_json(
+            _v4_policy().parser_strategy_version,
+            VLM_CONTEXTUAL_CANDIDATE_CORE_VIDEO_PROMPT_VERSION,
+        ),
+    )
+    request = build_doubao_vlm_request(
+        source_bundle=bundle,
+        episode_index=0,
+        job=bundle.source_job,
+        artifact_revision=1,
+        idempotency_key="context-assisted-v23",
+        policy=policy,
+        retry_policy=_retry_policy(),
+        context_pack=pack,
+    )
+    scope = DoubaoArkVlmProviderConfig(
+        api_key="fixture-key-not-used", tenant_id="tenant-1", project_id="project-1",
+    )
+
+    projected = derive_vlm_reuse_identity(request, source_bundle=bundle, provider_scope=scope)
+
+    assert projected.context_pack == pack
+    assert projected.context_pack_sha256 == pack.canonical_hash
+    assert projected.to_mapping()["context_pack_sha256"] == pack.canonical_hash

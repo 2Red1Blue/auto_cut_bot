@@ -7,9 +7,10 @@ matching fingerprint nor a Protocol implementation proves those authorities.
 
 The registered prompt/adapter/parser versions own template rendering, aliases,
 and adapter-added instructions. Exact rendered prompt bytes (including any
-background or character context) remain a per-request dependency. New adapters
-with additional messages or external context need an explicit identity version;
-they cannot silently project those dependencies away here.
+background or character context) remain a per-request dependency. A request
+with a WindowContextPack must close both its canonical mapping and digest;
+future adapters cannot silently project additional messages or external context
+away here.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Protocol, cast, runtime_checkable
 
+from ..context_pack import WindowContextPack
 from ..media.types import canonical_sha256, sha256_prefixed
 from .models import VlmParsePolicy, VlmRequestIdentity, VlmValidationError
 from .semantic_contracts import VLM_PARSER_V4, parser_contract_sha256_for
@@ -58,6 +60,8 @@ class VlmReuseRequestFacts(Protocol):
     def parser_strategy_version(self) -> str: ...
     @property
     def parser_contract_sha256(self) -> str | None: ...
+    @property
+    def context_pack(self) -> WindowContextPack | None: ...
     @property
     def source_provenance_sha256(self) -> str | None: ...
     @property
@@ -158,6 +162,14 @@ def _parameters(value: str) -> dict[str, object]:
             raise VlmValidationError(f"{name} is outside the registered request range")
         result[name] = float(number)
     return result
+
+
+def _context_pack(value: object) -> WindowContextPack | None:
+    if value is None:
+        return None
+    if type(value) is not WindowContextPack:  # noqa: E721
+        raise VlmValidationError("context_pack must be an exact WindowContextPack when present")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +284,7 @@ def _verified_request(request: VlmReuseRequestFacts) -> VlmRequestIdentity:
     _text(request.parser_strategy_version, "parser_strategy_version")
     parameters = _json_object(request.request_parameters_json, "request_parameters_json")
     schema = _json_object(request.response_schema_json, "response_schema_json")
+    context_pack = _context_pack(request.context_pack)
     expected = VlmRequestIdentity.from_manifest(
         request.manifest, request.manifest_set,
         prompt_template_sha256=_bytes_hash(request.prompt_template.encode("utf-8")),
@@ -305,6 +318,9 @@ def _verified_request(request: VlmReuseRequestFacts) -> VlmRequestIdentity:
         semantic_payload["parser_contract_sha256"] = parser_digest
     elif request.parser_contract_sha256 is not None:
         raise VlmValidationError("legacy request cannot claim a parser implementation field")
+    if context_pack is not None:
+        semantic_payload["context_pack"] = context_pack.to_mapping()
+        semantic_payload["context_pack_sha256"] = context_pack.canonical_hash
     if set(payload) != set(semantic_payload) | {"retry_policy", "retry_policy_sha256"}:
         raise VlmValidationError("origin request payload fields are not closed")
     if any(payload[name] != value for name, value in semantic_payload.items()):
@@ -331,6 +347,8 @@ class VlmReuseIdentityV1:
     episode_index: int
     origin_request_identity: VlmRequestIdentity = field(compare=False)
     origin_request_payload: bytes = field(compare=False, repr=False)
+    context_pack: WindowContextPack | None = None
+    context_pack_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.semantic_policy) is not VlmSemanticPolicyIdentityV1:  # noqa: E721
@@ -340,6 +358,12 @@ class VlmReuseIdentityV1:
         self.origin_request_identity.assert_manifest_binding(self.manifest, self.manifest_set)
         _hash(self.source_provenance_sha256, "source_provenance_sha256")
         _hash(self.source_manifest_sha256, "source_manifest_sha256")
+        context_pack = _context_pack(self.context_pack)
+        if context_pack is None:
+            if self.context_pack_sha256 is not None:
+                raise VlmValidationError("context_pack_sha256 requires an exact context_pack")
+        elif _hash(self.context_pack_sha256, "context_pack_sha256") != context_pack.canonical_hash:
+            raise VlmValidationError("context_pack_sha256 must match the exact context_pack bytes")
         _text(self.rendered_prompt, "rendered_prompt")
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
             raise VlmValidationError("episode_index must be a non-negative integer")
@@ -373,6 +397,9 @@ class VlmReuseIdentityV1:
         }
         if policy.parser_contract_sha256 is not None:
             expected_payload["parser_contract_sha256"] = policy.parser_contract_sha256
+        if context_pack is not None:
+            expected_payload["context_pack"] = context_pack.to_mapping()
+            expected_payload["context_pack_sha256"] = context_pack.canonical_hash
         if (
             set(payload) != set(expected_payload) | {"retry_policy", "retry_policy_sha256"}
             or any(payload[name] != value for name, value in expected_payload.items())
@@ -409,10 +436,12 @@ class VlmReuseIdentityV1:
         # _verified_request rejected null or non-string provenance above.
         provenance = _hash(request.source_provenance_sha256, "source_provenance_sha256")
         source_manifest = _hash(request.source_manifest_sha256, "source_manifest_sha256")
+        context_pack = _context_pack(request.context_pack)
         return cls(
             semantic_policy, request.manifest, request.manifest_set, request.prompt_template,
             provenance, source_manifest, request.episode_index,
-            origin_identity, request.request_payload,
+            origin_identity, request.request_payload, context_pack,
+            None if context_pack is None else context_pack.canonical_hash,
         )
 
     def to_mapping(self) -> dict[str, object]:
@@ -430,6 +459,11 @@ class VlmReuseIdentityV1:
             "frame_samples_sha256": self.manifest.frame_samples_sha256,
             "frame_pts_index_set_sha256": self.manifest.frame_pts_index_set_sha256,
             "rendered_prompt_sha256": _bytes_hash(self.rendered_prompt.encode("utf-8")),
+            **(
+                {"context_pack_sha256": self.context_pack_sha256}
+                if self.context_pack_sha256 is not None
+                else {}
+            ),
         }
 
     @property

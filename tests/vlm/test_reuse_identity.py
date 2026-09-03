@@ -8,6 +8,7 @@ from dataclasses import FrozenInstanceError, dataclass, replace
 from uuid import UUID
 
 import pytest
+from autocut_kernel.context_pack import WindowContextPack
 from autocut_kernel.media.types import TickRange
 from autocut_kernel.pipeline.generate_vlm_evidence_command import GenerateVlmEvidenceRequest
 from autocut_kernel.store.models import BlobRef, Job, canonical_recipe_scope
@@ -35,7 +36,22 @@ class _ProviderScope:
     worker_count: int = 1
 
 
-def _request() -> GenerateVlmEvidenceRequest:
+def _context_pack(rendered_context: str = "API context: Alice arrives.") -> WindowContextPack:
+    return WindowContextPack(
+        mode="video_only",
+        source_binding_hash=None,
+        normalized_context_hash=None,
+        selection_policy_version="context-selection-v1",
+        selection_policy_hash="sha256:" + "6" * 64,
+        known_through_external_episode_ordinal=None,
+        selected_refs=(),
+        suppressed_reason_counts=(),
+        rendered_context=rendered_context,
+        video_only_reason_code="fixture-no-api-context",
+    )
+
+
+def _request(*, context_pack: WindowContextPack | None = None) -> GenerateVlmEvidenceRequest:
     manifest = _manifest()
     proxy_id = UUID("00000000-0000-0000-0000-000000000001")
     manifest = replace(
@@ -64,6 +80,7 @@ def _request() -> GenerateVlmEvidenceRequest:
         retry_policy=GenerationRetryPolicy("generation-retry-v1", 1, ()),
         source_provenance_sha256="sha256:" + "2" * 64,
         source_manifest_sha256="sha256:" + "5" * 64,
+        context_pack=context_pack,
     )
 
 
@@ -147,6 +164,33 @@ def test_rendered_context_is_not_batch_semantic_policy() -> None:
     changed = replace(request, prompt_template=_TEMPLATE + "episode 2 context")
     assert _identity(request).semantic_policy == _identity(changed).semantic_policy
     assert _identity(request) != _identity(changed)
+
+
+def test_context_pack_bytes_and_digest_are_closed_identity_facts() -> None:
+    request = _request(context_pack=_context_pack())
+    identity = _identity(request)
+    changed = _request(context_pack=_context_pack("API context: Bob leaves."))
+
+    assert identity.context_pack == request.context_pack
+    assert identity.context_pack_sha256 == request.context_pack.canonical_hash
+    assert identity.to_mapping()["context_pack_sha256"] == request.context_pack.canonical_hash
+    assert identity.canonical_hash != _identity(changed).canonical_hash
+
+    payload = json.loads(identity.origin_request_payload)
+    payload["context_pack_sha256"] = "sha256:" + "7" * 64
+    tampered_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    tampered_origin = replace(
+        identity.origin_request_identity,
+        request_payload_sha256="sha256:" + hashlib.sha256(tampered_payload).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="semantic policy facts"):
+        replace(
+            identity,
+            origin_request_identity=tampered_origin,
+            origin_request_payload=tampered_payload,
+        )
+    with pytest.raises(ValueError, match="context_pack_sha256"):
+        replace(identity, context_pack_sha256="sha256:" + "8" * 64)
 
 
 def test_provider_isolation_and_static_template_change_semantic_policy() -> None:
