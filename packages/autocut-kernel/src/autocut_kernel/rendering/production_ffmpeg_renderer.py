@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
-import signal
 import stat
 import subprocess
 import tempfile
-import threading
 from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +28,17 @@ from ..store.models import (
     MaterializationLimits,
     VerifiedMaterializedBlob,
 )
+from .production_process import (
+    PinnedExecutable,
+    ProductionExecutableError,
+    ProductionExecutableIdentity,
+    ProductionProcessResult,
+    ProductionProcessRunner,
+    pin_executable,
+    resolve_executable,
+    reverify_pinned_executable,
+    run_bounded_process,
+)
 from .production_render_plan import (
     PRODUCTION_AV_H264_AAC_PROFILE,
     ProductionAvRenderProfile,
@@ -43,7 +51,6 @@ from .production_render_plan import (
 PRODUCTION_RENDER_ATTEMPT_SCHEMA_VERSION: Final = "production-render-attempt-v1"
 PRODUCTION_RENDER_EXECUTION_SCHEMA_VERSION: Final = "production-ffmpeg-execution-v1"
 _OUTPUT_MEDIA_TYPE: Final = "video/mp4"
-_TOOL_VERSION_MAX_BYTES: Final = 64 * 1024
 _HASH_CHUNK_BYTES: Final = 1024 * 1024
 
 
@@ -147,29 +154,9 @@ class ProductionRenderSourceStore(Protocol):
     ) -> VerifiedMaterializedBlob: ...
 
 
-@dataclass(frozen=True, slots=True)
-class ProductionFfmpegIdentity:
-    """Content identity of the executable and its exact version response."""
-
-    executable_sha256: str
-    executable_byte_length: int
-    version_output_sha256: str
-
-    def __post_init__(self) -> None:
-        sha256_prefixed(self.executable_sha256, "production ffmpeg executable_sha256")
-        if type(self.executable_byte_length) is not int or self.executable_byte_length <= 0:  # noqa: E721
-            raise ValueError("production ffmpeg executable_byte_length must be positive")
-        sha256_prefixed(
-            self.version_output_sha256,
-            "production ffmpeg version_output_sha256",
-        )
-
-    def to_mapping(self) -> dict[str, object]:
-        return {
-            "executable_byte_length": self.executable_byte_length,
-            "executable_sha256": self.executable_sha256,
-            "version_output_sha256": self.version_output_sha256,
-        }
+# Compatibility export: FFmpeg facts retain their existing public type name,
+# while the process module owns the generic executable identity contract.
+ProductionFfmpegIdentity = ProductionExecutableIdentity
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,40 +256,6 @@ class VerifiedProductionRender:
         self._closed = True
 
 
-@dataclass(frozen=True, slots=True)
-class ProductionProcessResult:
-    """Bounded subprocess result returned by the execution adapter."""
-
-    returncode: int
-    stdout: bytes
-    stderr: bytes
-    stdout_limit_exceeded: bool = False
-    stderr_limit_exceeded: bool = False
-
-    def __post_init__(self) -> None:
-        if type(self.returncode) is not int:  # noqa: E721
-            raise ValueError("production process returncode must be an integer")
-        if type(self.stdout) is not bytes or type(self.stderr) is not bytes:  # noqa: E721
-            raise ValueError("production process output must be bytes")
-        if (  # noqa: E721
-            type(self.stdout_limit_exceeded) is not bool
-            or type(self.stderr_limit_exceeded) is not bool
-        ):
-            raise ValueError("production process limit state must be boolean")
-
-
-class ProductionProcessRunner(Protocol):
-    def __call__(
-        self,
-        argv: tuple[str, ...],
-        *,
-        timeout_milliseconds: int,
-        stdout_max_bytes: int,
-        stderr_max_bytes: int,
-        pass_fds: tuple[int, ...],
-    ) -> ProductionProcessResult: ...
-
-
 class ProductionFFmpegRenderer:
     """Materialize, verify, and execute one closed production render plan."""
 
@@ -314,7 +267,7 @@ class ProductionFFmpegRenderer:
     ) -> None:
         self._executable = _resolve_ffmpeg_path(executable)
         if runner is None:
-            runner = _run_bounded_process
+            runner = run_bounded_process
         if not callable(runner):
             raise ValueError("production render runner must be callable")
         self._runner = runner
@@ -604,23 +557,12 @@ def _require_request(
 
 
 def _resolve_ffmpeg_path(executable: str | None) -> Path:
-    selected = shutil.which(executable or "ffmpeg")
-    if selected is None:
+    try:
+        return resolve_executable(executable, default_name="ffmpeg")
+    except ProductionExecutableError as error:
         raise ProductionRenderExecutionError(
             "PRODUCTION_RENDER_TOOL_UNAVAILABLE",
-            "FFmpeg executable is unavailable",
-            outcome="failed",
-        )
-    try:
-        path = Path(selected).resolve(strict=True)
-        status = path.lstat()
-        if not stat.S_ISREG(status.st_mode):
-            raise OSError("FFmpeg executable is not a regular file")
-        return path
-    except OSError as error:
-        raise ProductionRenderExecutionError(
-            "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED",
-            "FFmpeg executable identity could not be verified",
+            "FFmpeg executable is unavailable or could not be verified",
             outcome="failed",
         ) from error
 
@@ -631,208 +573,14 @@ def _pin_ffmpeg_executable(
     runner: ProductionProcessRunner,
 ) -> tuple[Path, ProductionFfmpegIdentity]:
     try:
-        executable_sha256, executable_byte_length = _copy_regular_file(source, destination)
-        version = runner(
-            (str(destination), "-version"),
-            timeout_milliseconds=10_000,
-            stdout_max_bytes=_TOOL_VERSION_MAX_BYTES,
-            stderr_max_bytes=_TOOL_VERSION_MAX_BYTES,
-            pass_fds=(),
-        )
+        pinned, identity = pin_executable(source, destination, runner=runner)
     except Exception as error:
-        if isinstance(error, ProductionRenderExecutionError):
-            raise
         raise ProductionRenderExecutionError(
             "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED",
             "FFmpeg executable identity could not be verified",
             outcome="failed",
         ) from error
-    if (
-        type(version) is not ProductionProcessResult
-        or version.returncode != 0
-        or version.stdout_limit_exceeded
-        or version.stderr_limit_exceeded
-    ):
-        raise ProductionRenderExecutionError(
-            "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED",
-            "FFmpeg executable returned an invalid bounded version response",
-            outcome="failed",
-        )
-    identity = ProductionFfmpegIdentity(
-        executable_sha256,
-        executable_byte_length,
-        _sha256_bytes(version.stdout + b"\0" + version.stderr),
-    )
-    return destination, identity
-
-
-def _copy_regular_file(source: Path, destination: Path) -> tuple[str, int]:
-    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-    destination_fd: int | None = None
-    try:
-        source_status = os.fstat(source_fd)
-        if not stat.S_ISREG(source_status.st_mode):
-            raise OSError("FFmpeg source is not a regular file")
-        destination_fd = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o500,
-        )
-        digest = hashlib.sha256()
-        length = 0
-        while chunk := os.read(source_fd, _HASH_CHUNK_BYTES):
-            digest.update(chunk)
-            length += len(chunk)
-            written = 0
-            while written < len(chunk):
-                written += os.write(destination_fd, chunk[written:])
-        os.fsync(destination_fd)
-        os.fchmod(destination_fd, 0o500)
-        destination_status = os.fstat(destination_fd)
-        final_source_status = os.fstat(source_fd)
-        if (
-            destination_status.st_size != length
-            or destination_status.st_nlink != 1
-            or not stat.S_ISREG(destination_status.st_mode)
-            or (source_status.st_dev, source_status.st_ino, source_status.st_size)
-            != (
-                final_source_status.st_dev,
-                final_source_status.st_ino,
-                final_source_status.st_size,
-            )
-        ):
-            raise OSError("FFmpeg executable changed while it was pinned")
-        return f"sha256:{digest.hexdigest()}", length
-    finally:
-        if destination_fd is not None:
-            os.close(destination_fd)
-        os.close(source_fd)
-
-
-def _run_bounded_process(
-    argv: tuple[str, ...],
-    *,
-    timeout_milliseconds: int,
-    stdout_max_bytes: int,
-    stderr_max_bytes: int,
-    pass_fds: tuple[int, ...],
-) -> ProductionProcessResult:
-    """Execute shell-free and kill the process group when either stream exceeds its cap."""
-
-    if (
-        type(timeout_milliseconds) is not int
-        or timeout_milliseconds <= 0
-        or type(stdout_max_bytes) is not int
-        or stdout_max_bytes < 0
-        or type(stderr_max_bytes) is not int
-        or stderr_max_bytes <= 0
-        or any(type(value) is not int or value < 0 for value in pass_fds)
-        or len(pass_fds) != len(set(pass_fds))
-    ):
-        raise ValueError("bounded process limits or inherited descriptors are invalid")
-
-    process = subprocess.Popen(  # noqa: S603 - argv is built by the closed plan binder.
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE if stdout_max_bytes else subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        pass_fds=pass_fds,
-    )
-    stdout_pipe = process.stdout
-    stderr_pipe = process.stderr
-    if stderr_pipe is None:  # pragma: no cover - guaranteed by stderr=PIPE.
-        _kill_process_group(process)
-        process.wait()
-        raise OSError("production FFmpeg stderr pipe is unavailable")
-    stdout = bytearray()
-    stderr = bytearray()
-    stdout_limit_exceeded = threading.Event()
-    stderr_limit_exceeded = threading.Event()
-    reader_error: list[OSError] = []
-
-    def read_stream(
-        descriptor: int,
-        captured: bytearray,
-        limit: int,
-        exceeded: threading.Event,
-    ) -> None:
-        try:
-            while chunk := os.read(descriptor, 64 * 1024):
-                remaining = max(0, limit - len(captured))
-                captured.extend(chunk[:remaining])
-                if len(chunk) > remaining and not exceeded.is_set():
-                    exceeded.set()
-                    try:
-                        _kill_process_group(process)
-                    except ProcessLookupError:
-                        pass
-        except OSError as error:
-            reader_error.append(error)
-
-    readers = [
-        threading.Thread(
-            target=read_stream,
-            args=(stderr_pipe.fileno(), stderr, stderr_max_bytes, stderr_limit_exceeded),
-            name="production-process-stderr",
-            daemon=True,
-        )
-    ]
-    if stdout_pipe is not None:
-        readers.append(
-            threading.Thread(
-                target=read_stream,
-                args=(stdout_pipe.fileno(), stdout, stdout_max_bytes, stdout_limit_exceeded),
-                name="production-process-stdout",
-                daemon=True,
-            )
-        )
-    for reader in readers:
-        reader.start()
-    try:
-        returncode = process.wait(timeout=timeout_milliseconds / 1000)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(process)
-        process.wait()
-        _join_process_readers(process, readers)
-        raise
-    _join_process_readers(process, readers)
-    if reader_error:
-        raise reader_error[0]
-    return ProductionProcessResult(
-        returncode,
-        bytes(stdout),
-        bytes(stderr),
-        stdout_limit_exceeded.is_set(),
-        stderr_limit_exceeded.is_set(),
-    )
-
-
-def _join_process_readers(
-    process: subprocess.Popen[bytes],
-    readers: list[threading.Thread],
-) -> None:
-    for reader in readers:
-        reader.join(timeout=0.25)
-    if any(reader.is_alive() for reader in readers):
-        _kill_process_group(process)
-        for reader in readers:
-            reader.join(timeout=1)
-    if any(reader.is_alive() for reader in readers):
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
-        raise OSError("production process output readers did not terminate")
-
-
-def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-    """Terminate FFmpeg and any helper children holding inherited descriptors."""
-
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
+    return pinned.path, identity
 
 
 def _staging_root(value: object) -> Path:
@@ -986,30 +734,15 @@ def _verify_pinned_executable(
     expected_length: int,
 ) -> None:
     try:
-        status = path.lstat()
-        actual_sha256, actual_length = _sha256_file(path)
-        final_status = path.lstat()
-    except OSError as error:
+        reverify_pinned_executable(
+            PinnedExecutable(path, expected_sha256, expected_length),
+        )
+    except (ProductionExecutableError, ValueError) as error:
         raise ProductionRenderExecutionError(
             "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED",
             "pinned FFmpeg executable could not be reverified",
             outcome="failed",
         ) from error
-    if (
-        status.st_uid != os.geteuid()
-        or status.st_mode & 0o077
-        or not stat.S_ISREG(status.st_mode)
-        or status.st_nlink != 1
-        or actual_sha256 != expected_sha256
-        or actual_length != expected_length
-        or (final_status.st_dev, final_status.st_ino, final_status.st_size)
-        != (status.st_dev, status.st_ino, status.st_size)
-    ):
-        raise ProductionRenderExecutionError(
-            "PRODUCTION_RENDER_TOOL_IDENTITY_FAILED",
-            "pinned FFmpeg executable identity changed during execution",
-            outcome="failed",
-        )
 
 
 def _verify_output(path: Path, max_output_bytes: int) -> tuple[int, int]:

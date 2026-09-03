@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import UUID
 
 import autocut_kernel.rendering.production_ffmpeg_renderer as production_ffmpeg_renderer_module
+import autocut_kernel.rendering.production_process as production_process_module
 import pytest
 from autocut_kernel.media.types import TickRange, TimeBase
 from autocut_kernel.physical_edit.candidate_dialogue_guard import CandidateDialogueGuard
@@ -1337,14 +1338,14 @@ def test_default_runner_kills_background_child_that_keeps_stderr_open(
     plan = build_production_render_plan(recipe)
     store = _TestProductionSourceStore(tmp_path / "materialized", {reference: raw})
     killed_process_groups: list[int] = []
-    original_kill_process_group = production_ffmpeg_renderer_module._kill_process_group  # pyright: ignore[reportPrivateUsage]
+    original_kill_process_group = production_process_module._kill_process_group  # pyright: ignore[reportPrivateUsage]
 
     def recording_kill_process_group(process: subprocess.Popen[bytes]) -> None:
         killed_process_groups.append(process.pid)
         original_kill_process_group(process)
 
     monkeypatch.setattr(
-        production_ffmpeg_renderer_module,
+        production_process_module,
         "_kill_process_group",
         recording_kill_process_group,
     )
