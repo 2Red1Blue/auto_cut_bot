@@ -1,5 +1,14 @@
 """Pure physical-edit domain operations."""
 
+from .candidate_timed_speech_authority import (
+    CandidateTimedSpeechAuthority,
+    CandidateTimedSpeechAuthorityError,
+    CandidateTimedSpeechAuthorityInput,
+    CandidateTimedSpeechAuthorityKind,
+    normalize_candidate_timed_speech_authority,
+    project_candidate_timed_speech_authority_from_registry_entry,
+    project_candidate_timed_speech_authority_from_runtime_projection,
+)
 from .dialogue_guard import (
     DialogueGuardError,
     DialogueGuardIndeterminateError,
@@ -52,6 +61,10 @@ from .exact_span import (
 __all__ = [
     "BoundaryProof",
     "CandidatePairLimitError",
+    "CandidateTimedSpeechAuthority",
+    "CandidateTimedSpeechAuthorityError",
+    "CandidateTimedSpeechAuthorityInput",
+    "CandidateTimedSpeechAuthorityKind",
     "CanonicalExactAvSpanCompiler",
     "ClockMapOutcome",
     "DialogueIntegrityProof",
@@ -86,6 +99,9 @@ __all__ = [
     "derive_utterance_ranges",
     "merge_vad_ranges",
     "minimum_video_ticks",
+    "normalize_candidate_timed_speech_authority",
+    "project_candidate_timed_speech_authority_from_registry_entry",
+    "project_candidate_timed_speech_authority_from_runtime_projection",
     "select_exact_span",
     "TimedSpeechGuardPolicy",
     "TimedSpeechProfile",

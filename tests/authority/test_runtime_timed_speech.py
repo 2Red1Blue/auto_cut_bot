@@ -294,6 +294,16 @@ def test_projects_closed_pc_cuda_runtime_timed_speech_authority() -> None:
         projection.vad_timing_error_bound_tick
         == _capability(measurement).anchor.record.vad.accepted_bound_tick
     )
+    assert projection.word_gap_ms == _policies(measurement).word_gap_ms
+    assert projection.vad_merge_gap_ms == _policies(measurement).vad_merge_gap_ms
+    assert projection.to_mapping()["timing_policies"] == {
+        **_policies(measurement).to_mapping(),
+    }
+    changed_gap = replace(projection, word_gap_ms=projection.word_gap_ms + 1)
+    assert changed_gap.compatibility_hash != projection.compatibility_hash
+    assert changed_gap.canonical_hash != projection.canonical_hash
+    with pytest.raises(RuntimeTimedSpeechProjectionError, match="gap durations"):
+        replace(projection, vad_merge_gap_ms=1.0)
     assert projection.canonical_hash != projection.compatibility_hash
     assert projection.to_mapping()["accepted_calibration"] == {
         "record_sha256": projection.record_sha256,

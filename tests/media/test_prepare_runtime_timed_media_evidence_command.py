@@ -82,6 +82,8 @@ def _runtime_projection(request) -> RuntimeTimedSpeechProjection:
         vad_merge_policy_sha256=HASH_B,
         alignment_policy_sha256=HASH_C,
         acceptance_policy_sha256=HASH_A,
+        word_gap_ms=0,
+        vad_merge_gap_ms=0,
         producers=(
             CalibrationRecordProducerIdentity(
                 role=CalibrationRecordRole.ASR,
@@ -358,6 +360,36 @@ def test_runtime_command_refuses_policy_schema_or_static_authority_drift(
 
     outcome = PrepareRuntimeTimedMediaEvidenceCommand(
         store, _RuntimeProducer(_Producer(_bundle()), authority_mutator=_drift), resolver
+    ).execute(request)
+
+    assert outcome.outcome.state == "denied"
+    assert outcome.outcome.failure_code == "RUNTIME_TIMED_MEDIA_EVIDENCE_INVALID"
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ("utterance_gap_milliseconds", "vad_merge_gap_milliseconds"),
+)
+def test_runtime_command_refuses_positive_timing_gap_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+) -> None:
+    store = _Store()
+    request = _runtime_request(store)
+    projection = _runtime_projection(request.timed_media_request)
+    resolver, _ = _installed_resolver(monkeypatch, projection)
+
+    def _drift(authority: dict[str, object]) -> dict[str, object]:
+        changed = dict(authority)
+        timing = dict(changed["timing"])
+        timing[field_name] = 999
+        changed["timing"] = timing
+        return changed
+
+    outcome = PrepareRuntimeTimedMediaEvidenceCommand(
+        store,
+        _RuntimeProducer(_Producer(_bundle()), authority_mutator=_drift),
+        resolver,
     ).execute(request)
 
     assert outcome.outcome.state == "denied"

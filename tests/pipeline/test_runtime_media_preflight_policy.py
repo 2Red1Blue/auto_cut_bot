@@ -73,6 +73,30 @@ def test_rejects_non_pc_cuda_projection_and_static_timing_drift() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    ("utterance_gap_milliseconds", "vad_merge_gap_milliseconds"),
+)
+def test_rejects_positive_static_gap_drift_from_projection(field_name: str) -> None:
+    projection = _projection()
+    projection = replace(
+        projection,
+        **{
+            (
+                "word_gap_ms"
+                if field_name == "utterance_gap_milliseconds"
+                else "vad_merge_gap_ms"
+            ): 0
+        },
+    )
+
+    with pytest.raises(RuntimeMediaPreflightPolicyError, match="static timing gaps"):
+        project_pc_cuda_runtime_timed_speech_policy(
+            _static_policy(projection, **{field_name: 999}),
+            projection,
+        )
+
+
 def test_rejects_tampered_projection_producer_order_and_record_reference() -> None:
     projection = _projection()
 

@@ -14,11 +14,11 @@ from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 
 from ..media.root_evidence import AudioSourceOutcome, CoverageOutcome, RootMediaEvidenceBundle
-from ..media.stage4_predecessor import TimedSpeechProfileRegistryEntry
 from ..media.timed_evidence import CandidateEvidenceWindowPlan, CandidateTimedEvidenceSet
 from ..media.types import TickRange, canonical_sha256, require_pts
 from .boundary_checks import shot_stable, subtitle_clear, visual_stable
 from .candidate_dialogue_guard import CandidateDialogueGuard, derive_candidate_dialogue_guard
+from .candidate_timed_speech_authority import CandidateTimedSpeechAuthorityInput
 from .exact_span import (
     BoundaryProof,
     CandidatePairLimitError,
@@ -177,7 +177,7 @@ def _key(request: ExactAvSpanRequest, clock_map: ReplayedPresentationMap,
 def compile_candidate_av_span(
     request: ExactAvSpanRequest, root: RootMediaEvidenceBundle,
     candidate: CandidateTimedEvidenceSet, plan: CandidateEvidenceWindowPlan,
-    profile: TimedSpeechProfileRegistryEntry, clock_map: ReplayedPresentationMap,
+    profile: CandidateTimedSpeechAuthorityInput, clock_map: ReplayedPresentationMap,
     policy: CandidateExactSpanPolicy,
 ) -> CandidateExactSpanResult:
     """Exhaust all aligned sample pairs, without materializing their Cartesian product."""

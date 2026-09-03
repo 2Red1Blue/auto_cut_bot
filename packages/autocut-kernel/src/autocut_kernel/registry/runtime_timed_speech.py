@@ -74,6 +74,8 @@ class RuntimeTimedSpeechProjection:
     vad_merge_policy_sha256: str
     alignment_policy_sha256: str
     acceptance_policy_sha256: str
+    word_gap_ms: int
+    vad_merge_gap_ms: int
     producers: tuple[CalibrationRecordProducerIdentity, CalibrationRecordProducerIdentity]
 
     def __post_init__(self) -> None:
@@ -122,6 +124,13 @@ class RuntimeTimedSpeechProjection:
         ):
             raise _fail("accepted ASR/VAD timing bounds must be positive integers")
         if (
+            type(self.word_gap_ms) is not int  # noqa: E721
+            or type(self.vad_merge_gap_ms) is not int  # noqa: E721
+            or self.word_gap_ms < 0
+            or self.vad_merge_gap_ms < 0
+        ):
+            raise _fail("accepted word/VAD gap durations must be non-negative integers")
+        if (
             self.asr_calibration_record_sha256 == self.vad_calibration_record_sha256
             or self.record_sha256 == self.validation_receipt_sha256
         ):
@@ -141,7 +150,7 @@ class RuntimeTimedSpeechProjection:
     def _base_mapping(self) -> dict[str, object]:
         """Return the exact accepted closure without audit-only provenance."""
         return {
-            "schema_version": "runtime-timed-speech-projection-v1",
+            "schema_version": "runtime-timed-speech-projection-v2",
             "runtime_capability_id": self.runtime_capability_id,
             "runtime_measurement_identity_sha256": self.runtime_measurement_identity_sha256,
             "timing_compatibility_sha256": self.timing_compatibility_sha256,
@@ -191,6 +200,8 @@ class RuntimeTimedSpeechProjection:
                 "vad_merge_policy_sha256": self.vad_merge_policy_sha256,
                 "alignment_policy_sha256": self.alignment_policy_sha256,
                 "acceptance_policy_sha256": self.acceptance_policy_sha256,
+                "word_gap_ms": self.word_gap_ms,
+                "vad_merge_gap_ms": self.vad_merge_gap_ms,
             },
         }
 
@@ -483,6 +494,8 @@ def project_runtime_timed_speech(
         vad_merge_policy_sha256=identity.vad_merge_policy_sha256,
         alignment_policy_sha256=identity.alignment_policy_sha256,
         acceptance_policy_sha256=identity.acceptance_policy_sha256,
+        word_gap_ms=timing_policies.word_gap_ms,
+        vad_merge_gap_ms=timing_policies.vad_merge_gap_ms,
         producers=(record.asr.producer_identity, record.vad.producer_identity),
     )
 

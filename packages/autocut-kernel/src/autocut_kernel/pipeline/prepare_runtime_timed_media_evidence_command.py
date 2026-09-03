@@ -682,6 +682,13 @@ def _validate_runtime_authority_mapping(
         or timing["vad_merge_gap_milliseconds"] < 0
     ):
         raise RuntimeTimedMediaEvidenceCommandError("runtime producer timing gaps are invalid")
+    if (
+        timing["utterance_gap_milliseconds"] != projection.word_gap_ms
+        or timing["vad_merge_gap_milliseconds"] != projection.vad_merge_gap_ms
+    ):
+        raise RuntimeTimedMediaEvidenceCommandError(
+            "runtime producer timing gaps differ from the accepted projection"
+        )
     if authority.get("static_policy_sha256") != expected_static_policy_sha256:
         raise RuntimeTimedMediaEvidenceCommandError(
             "runtime producer static policy differs from the installed authority"

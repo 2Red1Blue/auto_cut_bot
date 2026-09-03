@@ -303,6 +303,11 @@ def project_pc_cuda_runtime_timed_speech_policy(
         raise _fail("static policy must require word timestamps")
     if static_policy.timed_speech_policy_sha256 != projection.timed_speech_policy_sha256:
         raise _fail("static timing policy differs from selected runtime projection")
+    if (
+        static_policy.utterance_gap_milliseconds != projection.word_gap_ms
+        or static_policy.vad_merge_gap_milliseconds != projection.vad_merge_gap_ms
+    ):
+        raise _fail("static timing gaps differ from selected runtime projection")
     if type(projection.source_time_base) is not TimeBase:  # noqa: E721
         raise _fail("runtime projection source clock is invalid")
     if (
@@ -336,8 +341,8 @@ def project_pc_cuda_runtime_timed_speech_policy(
         projection.alignment_policy_sha256, projection.acceptance_policy_sha256,
         static_policy.timed_speech_endpoint_url, static_policy.timed_speech_provider_id,
         static_policy.timed_speech_provider_version, static_policy.timed_speech_timeout_seconds,
-        static_policy.timed_speech_max_response_bytes, static_policy.utterance_gap_milliseconds,
-        static_policy.vad_merge_gap_milliseconds, (producers[0], producers[1]),
+        static_policy.timed_speech_max_response_bytes, projection.word_gap_ms,
+        projection.vad_merge_gap_ms, (producers[0], producers[1]),
     )
 
 

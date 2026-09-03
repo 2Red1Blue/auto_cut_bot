@@ -162,6 +162,8 @@ def _runtime_output_for_reader(
         (lambda value: value["source_clock"].__setitem__("clock_id", "forged-clock"), "source clock"),
         (lambda value: value["timing"].__setitem__("word_gap_policy_sha256", "sha256:" + "f" * 64), "timing policies"),
         (lambda value: value["timing"].__setitem__("vad_merge_gap_milliseconds", -1), "timing gaps"),
+        (lambda value: value["timing"].__setitem__("utterance_gap_milliseconds", 999), "timing gaps"),
+        (lambda value: value["timing"].__setitem__("vad_merge_gap_milliseconds", 999), "timing gaps"),
         (lambda value: value["operation"].__setitem__("endpoint_url", "http://127.0.0.1:8080/v1/timed-speech-evidence"), "legacy"),
         (lambda value: value["operation"].__setitem__("provider_id", " "), "provider identity"),
         (lambda value: value["operation"].__setitem__("max_response_bytes", 0), "operation limits"),

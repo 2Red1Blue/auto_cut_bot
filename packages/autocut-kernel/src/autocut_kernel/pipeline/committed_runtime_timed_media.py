@@ -311,6 +311,13 @@ def _validate_runtime_authority_mapping(
         gap = timing[name]
         if type(gap) is not int or gap < 0:  # noqa: E721
             raise RuntimeTimedMediaReadError("runtime authority timing gaps are invalid")
+    if (
+        timing["utterance_gap_milliseconds"] != projection.word_gap_ms
+        or timing["vad_merge_gap_milliseconds"] != projection.vad_merge_gap_ms
+    ):
+        raise RuntimeTimedMediaReadError(
+            "runtime authority timing gaps differ from fresh projection"
+        )
     operation = _object(
         authority["operation"],
         ("endpoint_url", "provider_id", "provider_version", "timeout_seconds", "max_response_bytes"),

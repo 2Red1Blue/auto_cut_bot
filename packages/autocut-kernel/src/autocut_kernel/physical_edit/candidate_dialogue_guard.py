@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 
+from ..media.calibration_record import CalibrationRecordRole
 from ..media.root_evidence import (
     AudioSourceOutcome,
     Coverage,
@@ -26,7 +27,6 @@ from ..media.root_evidence import (
 from ..media.stage4_predecessor import (
     TimedSpeechProducerRequirement,
     TimedSpeechProfileKind,
-    TimedSpeechProfileRegistryEntry,
 )
 from ..media.timed_evidence import (
     CalibrationBinding,
@@ -36,6 +36,13 @@ from ..media.timed_evidence import (
     SentenceCompleteness,
 )
 from ..media.types import TickRange, TimeBase, canonical_sha256, sha256_prefixed
+from .candidate_timed_speech_authority import (
+    CandidateTimedSpeechAuthority,
+    CandidateTimedSpeechAuthorityError,
+    CandidateTimedSpeechAuthorityInput,
+    CandidateTimedSpeechAuthorityKind,
+    normalize_candidate_timed_speech_authority,
+)
 from .dialogue_guard import (
     DialogueGuardError,
     DialogueGuardIndeterminateError,
@@ -56,7 +63,9 @@ class CandidateDialogueGuard:
     candidate_evidence_sha256: str
     candidate_window_sha256: str
     window_plan_sha256: str
-    profile_sha256: str
+    timed_speech_authority_sha256: str
+    original_authority_kind: CandidateTimedSpeechAuthorityKind
+    original_authority_sha256: str
     guard_policy_sha256: str
     source_id: str
     source_sha256: str
@@ -71,9 +80,12 @@ class CandidateDialogueGuard:
     def __post_init__(self) -> None:
         for name in (
             "root_evidence_sha256", "candidate_evidence_sha256", "candidate_window_sha256",
-            "window_plan_sha256", "profile_sha256", "guard_policy_sha256", "source_sha256",
+            "window_plan_sha256", "timed_speech_authority_sha256",
+            "original_authority_sha256", "guard_policy_sha256", "source_sha256",
         ):
             sha256_prefixed(getattr(self, name), name)
+        if type(self.original_authority_kind) is not CandidateTimedSpeechAuthorityKind:  # noqa: E721
+            raise DialogueGuardError("candidate guard original authority kind is invalid")
         for text in (self.source_id, self.source_audio_clock_id):
             if type(text) is not str or not text.strip():  # noqa: E721
                 raise DialogueGuardError("candidate guard source/clock must be exact text")
@@ -121,12 +133,14 @@ class CandidateDialogueGuard:
     def to_mapping(self) -> dict[str, object]:
         coverage = self.source_audio_range
         return {
-            "schema_version": "candidate-dialogue-guard-v1",
+            "schema_version": "candidate-dialogue-guard-v2",
             "root_evidence_sha256": self.root_evidence_sha256,
             "candidate_evidence_sha256": self.candidate_evidence_sha256,
             "candidate_window_sha256": self.candidate_window_sha256,
             "window_plan_sha256": self.window_plan_sha256,
-            "profile_sha256": self.profile_sha256,
+            "timed_speech_authority_sha256": self.timed_speech_authority_sha256,
+            "original_authority_kind": self.original_authority_kind.value,
+            "original_authority_sha256": self.original_authority_sha256,
             "guard_policy_sha256": self.guard_policy_sha256,
             "source_id": self.source_id,
             "source_sha256": self.source_sha256,
@@ -164,6 +178,78 @@ def _time(tick: int, base: TimeBase) -> Fraction:
 
 
 def _bind_producer(
+    evidence: TranscriptSet | SpeechActivitySet,
+    original: TranscriptSet | SpeechActivitySet,
+    authority: CandidateTimedSpeechAuthority,
+    role: CalibrationRecordRole,
+    bindings: tuple[CalibrationBinding, ...],
+) -> None:
+    if authority.authority_kind is CandidateTimedSpeechAuthorityKind.INSTALLED_CPU_PROFILE:
+        profile = authority.installed_cpu_profile
+        if profile is None:  # pragma: no cover - authority constructor closes this arm.
+            raise DialogueGuardError("installed CPU authority is unavailable")
+        requirement = (
+            profile.transcript_requirement
+            if role is CalibrationRecordRole.ASR
+            else profile.vad_requirement
+        )
+        _bind_cpu_producer(evidence, original, requirement, bindings)
+        return
+    projection = authority.runtime_cuda_capability
+    if projection is None:  # pragma: no cover - authority constructor closes this arm.
+        raise DialogueGuardError("runtime CUDA authority is unavailable")
+    position = 0 if role is CalibrationRecordRole.ASR else 1
+    producer = projection.producers[position]
+    record_sha256 = (
+        projection.asr_calibration_record_sha256
+        if role is CalibrationRecordRole.ASR
+        else projection.vad_calibration_record_sha256
+    )
+    timing_bound = (
+        projection.asr_timing_error_bound_tick
+        if role is CalibrationRecordRole.ASR
+        else projection.vad_timing_error_bound_tick
+    )
+    context = evidence.context
+    if (
+        (context.source_id, context.source_sha256, context.clock_id, context.time_base)
+        != (
+            original.context.source_id,
+            original.context.source_sha256,
+            original.context.clock_id,
+            original.context.time_base,
+        )
+        or context.producer_id != producer.producer_id
+        or context.generation_policy_sha256 != producer.generation_policy_sha256
+        or context.clock_id != projection.source_clock_id
+        or context.time_base != projection.source_time_base
+    ):
+        raise DialogueGuardError("candidate CUDA speech producer does not bind root/authority")
+    if (
+        context.origin_tick < original.context.origin_tick
+        or context.end_tick > original.context.end_tick
+    ):
+        raise DialogueGuardError("candidate speech context exceeds original source audio extent")
+    matches = tuple(item for item in bindings if item.producer_id == producer.producer_id)
+    if len(matches) != 1:
+        raise DialogueGuardError("candidate CUDA speech producer requires one calibration binding")
+    binding = matches[0]
+    if (
+        binding.producer_version != producer.producer_version
+        or binding.policy_sha256 != producer.generation_policy_sha256
+        or binding.detector_sha256 != producer.detector_sha256
+        or binding.calibration_record_sha256 != record_sha256
+        or binding.time_base != projection.source_time_base
+        or binding.timing_error_bound_tick != timing_bound
+        or binding.adapter_sha256 != projection.native_port_identity_sha256
+        or not binding.active
+    ):
+        raise DialogueGuardError(
+            "candidate CUDA producer/calibration/native adapter does not match authority"
+        )
+
+
+def _bind_cpu_producer(
     evidence: TranscriptSet | SpeechActivitySet,
     original: TranscriptSet | SpeechActivitySet,
     requirement: TimedSpeechProducerRequirement,
@@ -271,9 +357,9 @@ def _validate_window(
 
 def _transcript_ranges(
     transcript: TranscriptSet, audio: EvidenceContext,
-    profile: TimedSpeechProfileRegistryEntry, requirement: DialogueRequirement,
+    authority: CandidateTimedSpeechAuthority, requirement: DialogueRequirement,
 ) -> tuple[tuple[int, int], ...]:
-    word_only = profile.kind is TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1
+    word_only = authority.profile_kind is TimedSpeechProfileKind.SENSEVOICE_WORD_GUARD_V1
     if word_only and requirement is DialogueRequirement.COMPLETE:
         raise DialogueGuardIndeterminateError("word guard cannot satisfy complete dialogue")
     if transcript.completeness.segment is not EvidenceCompleteness.COMPLETE or any(
@@ -299,7 +385,9 @@ def _transcript_ranges(
         or (bool(transcript.sentences) == word_only)
     ):
         raise DialogueGuardIndeterminateError("candidate transcript lacks profile-required completeness")
-    words = group_transcript_words(transcript, audio, word_gap_tick=profile.guard_policy.word_gap_tick)
+    words = group_transcript_words(
+        transcript, audio, word_gap_tick=authority.guard_policy.word_gap_tick
+    )
     return words + tuple((item.in_tick, item.out_tick) for item in transcript.sentences)
 
 
@@ -307,7 +395,7 @@ def derive_candidate_dialogue_guard(
     root: RootMediaEvidenceBundle,
     candidate: CandidateTimedEvidenceSet,
     plan: CandidateEvidenceWindowPlan,
-    profile: TimedSpeechProfileRegistryEntry,
+    profile: CandidateTimedSpeechAuthorityInput,
     requirement: DialogueRequirement,
 ) -> CandidateDialogueGuard:
     """Recompute local protection using original physical sets and real profile."""
@@ -315,17 +403,26 @@ def derive_candidate_dialogue_guard(
         type(root) is not RootMediaEvidenceBundle  # noqa: E721
         or type(candidate) is not CandidateTimedEvidenceSet  # noqa: E721
         or type(plan) is not CandidateEvidenceWindowPlan  # noqa: E721
-        or type(profile) is not TimedSpeechProfileRegistryEntry  # noqa: E721
         or type(requirement) is not DialogueRequirement  # noqa: E721
     ):
         raise DialogueGuardError("candidate guard requires exact typed inputs")
+    try:
+        authority = normalize_candidate_timed_speech_authority(profile)
+    except CandidateTimedSpeechAuthorityError as error:
+        raise DialogueGuardError(str(error)) from error
     _validate_window(root, candidate, plan)
     audio = root.audio_sample_boundaries.context
-    policy = profile.guard_policy
+    policy = authority.guard_policy
     if (policy.source_audio_clock_id, policy.source_audio_time_base) != (audio.clock_id, audio.time_base):
         raise DialogueGuardError("candidate guard policy uses a foreign source audio clock")
-    _bind_producer(candidate.transcript, root.transcript, profile.transcript_requirement, candidate.calibration_bindings)
-    _bind_producer(candidate.speech_activity, root.speech_activity, profile.vad_requirement, candidate.calibration_bindings)
+    _bind_producer(
+        candidate.transcript, root.transcript, authority,
+        CalibrationRecordRole.ASR, candidate.calibration_bindings,
+    )
+    _bind_producer(
+        candidate.speech_activity, root.speech_activity, authority,
+        CalibrationRecordRole.VAD, candidate.calibration_bindings,
+    )
     coverage: TickRange | None = None
     protected: tuple[ProtectedAudioRange, ...] = ()
     if root.audio_sample_boundaries.source_outcome is AudioSourceOutcome.NOT_APPLICABLE:
@@ -346,7 +443,7 @@ def derive_candidate_dialogue_guard(
         transcript_range = _covered_component(candidate.transcript.coverage, start, end)
         vad_range = _covered_component(candidate.speech_activity.coverage, start, end)
         coverage = TickRange(max(transcript_range.start_pts, vad_range.start_pts), min(transcript_range.end_pts, vad_range.end_pts))
-        ranges = _transcript_ranges(candidate.transcript, audio, profile, requirement)
+        ranges = _transcript_ranges(candidate.transcript, audio, authority, requirement)
         speech = candidate.speech_activity
         if speech.source_outcome is SpeechSourceOutcome.SPEECH_DETECTED:
             ranges += merge_speech_activity(speech, audio, vad_merge_gap_tick=policy.vad_merge_gap_tick)
@@ -360,7 +457,8 @@ def derive_candidate_dialogue_guard(
         kind = DialogueGuardKind.REQUIRED if requirement is DialogueRequirement.COMPLETE else DialogueGuardKind.NOT_REQUIRED
     return CandidateDialogueGuard(
         root.canonical_hash, candidate.canonical_hash, candidate.candidate_window.canonical_hash,
-        plan.canonical_hash, profile.canonical_hash, canonical_sha256(policy.to_mapping()),
+        plan.canonical_hash, authority.canonical_hash, authority.authority_kind,
+        authority.original_authority_sha256, canonical_sha256(policy.to_mapping()),
         root.source_id, root.source_sha256, audio.clock_id, audio.time_base, coverage,
         requirement, kind, _reason(kind), protected,
     )
@@ -370,7 +468,7 @@ def verify_candidate_dialogue_guard(
     root: RootMediaEvidenceBundle,
     candidate: CandidateTimedEvidenceSet,
     plan: CandidateEvidenceWindowPlan,
-    profile: TimedSpeechProfileRegistryEntry,
+    profile: CandidateTimedSpeechAuthorityInput,
     requirement: DialogueRequirement,
     guard: CandidateDialogueGuard,
 ) -> None:
