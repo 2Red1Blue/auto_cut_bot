@@ -70,8 +70,8 @@ class _PostgresStage4Store:
     def claim_command(self, claim):  # type: ignore[no-untyped-def]
         return self._durable.claim_command(claim)
 
-    def commit_command_success(self, success):  # type: ignore[no-untyped-def]
-        return self._durable.commit_command_success(success)
+    def commit_production_recipe_success(self, verified):  # type: ignore[no-untyped-def]
+        return self._durable.commit_production_recipe_success(verified)
 
     def commit_command_rejection(self, rejection):  # type: ignore[no-untyped-def]
         return self._durable.commit_command_rejection(rejection)

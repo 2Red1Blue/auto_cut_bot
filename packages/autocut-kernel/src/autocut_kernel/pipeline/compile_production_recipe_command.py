@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hmac
+import secrets
+from dataclasses import dataclass, field, replace
 from fractions import Fraction
 from typing import Final, Protocol, cast
 from uuid import UUID
@@ -51,6 +53,7 @@ from ..semantic_chain.editorial_material_search import MaterialSearchChoice
 from ..semantic_chain.editorial_models import SpanIntent
 from ..semantic_chain.editorial_timing import verify_editorial_timing
 from ..store.models import (
+    PRODUCTION_RECIPE_COMMAND_NAME,
     ArtifactMember,
     ArtifactScope,
     CommandClaim,
@@ -110,7 +113,7 @@ from .production_recipe_admission import (
     verify_physical_edit_admission,
 )
 
-COMPILE_PRODUCTION_RECIPE_COMMAND: Final = "CompileProductionRecipeCommand@1"
+COMPILE_PRODUCTION_RECIPE_COMMAND: Final = PRODUCTION_RECIPE_COMMAND_NAME
 PRODUCTION_RECIPE_COMMAND_STRATEGY: Final = "compile-production-recipe-v1"
 SPAN_RESOLUTION_STRATEGY: Final = "preferred-then-fallback-v1"
 
@@ -126,6 +129,7 @@ _JSONB_READ_FIXED_ALLOWANCE_BYTES: Final = 4_096
 _REPORT_TYPE = "physical_edit_compilation_report"
 _ADMISSION_TYPE = "physical_edit_admission"
 _RECIPE_PREFIX = "production_recipe@"
+_PRODUCTION_RECIPE_COMMIT_KEY: Final = secrets.token_bytes(32)
 
 
 class CompileProductionRecipeError(ValueError):
@@ -138,10 +142,30 @@ class _CompilationFailureError(CompileProductionRecipeError):
         self.code = code
 
 
+@dataclass(frozen=True, slots=True)
+class _VerifiedProductionRecipeCommit:
+    """Process-local capability binding Store bytes to a verified Stage 4 closure."""
+
+    success: CommandSuccess
+    admission: VerifiedPhysicalEditAdmission
+    _verification_mac: bytes = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if type(self.success) is not CommandSuccess:  # noqa: E721
+            raise CompileProductionRecipeError("Stage 4 commit capability has invalid success")
+        if type(self.admission) is not VerifiedPhysicalEditAdmission:  # noqa: E721
+            raise CompileProductionRecipeError("Stage 4 commit capability has invalid Admission")
+        if type(self._verification_mac) is not bytes or len(self._verification_mac) != 32:  # noqa: E721
+            raise CompileProductionRecipeError("Stage 4 commit capability signature is invalid")
+
+
 class ProductionRecipeCommandStore(EditorialTimedMediaStore, Protocol):
     def claim_command(self, claim: CommandClaim) -> CommandOutcome: ...
 
-    def commit_command_success(self, success: CommandSuccess) -> CommandOutcome: ...
+    def commit_production_recipe_success(
+        self,
+        verified: object,
+    ) -> CommandOutcome: ...
 
     def commit_command_rejection(self, rejection: CommandRejection) -> CommandOutcome: ...
 
@@ -1040,6 +1064,108 @@ def _artifacts(
     return artifacts
 
 
+def _validate_verified_production_recipe_success(
+    success: CommandSuccess,
+    verified: VerifiedPhysicalEditAdmission,
+) -> None:
+    """Prove that the exact Store members are the independently admitted closure."""
+
+    subjects = verified.recipe_subjects
+    artifacts = success.artifacts
+    if (
+        not verified.render_authorized
+        or len(artifacts) != len(subjects) + 2
+        or success.set_hash != artifact_set_hash(artifacts)
+    ):
+        raise CompileProductionRecipeError(
+            "Stage 4 commit does not contain the verified report, Recipes, and Admission"
+        )
+    report = artifacts[0]
+    admission = artifacts[-1]
+    if (
+        report.artifact_type != _REPORT_TYPE
+        or report.logical_id != _REPORT_TYPE
+        or report.scope != verified.expected_job_scope
+        or report.content_hash != verified.report.canonical_hash
+        or canonical_payload_hash(report.payload_json) != report.content_hash
+        or admission.artifact_type != _ADMISSION_TYPE
+        or admission.logical_id != _ADMISSION_TYPE
+        or admission.scope != verified.expected_job_scope
+        or admission.content_hash != verified.admission.canonical_hash
+        or canonical_payload_hash(admission.payload_json) != admission.content_hash
+    ):
+        raise CompileProductionRecipeError(
+            "Stage 4 report or Admission differs from the verified closure"
+        )
+    for artifact, subject in zip(artifacts[1:-1], subjects, strict=True):
+        if (
+            artifact.artifact_type != subject.artifact_type
+            or artifact.logical_id != subject.logical_id
+            or artifact.revision != subject.revision
+            or artifact.scope != subject.scope
+            or artifact.content_hash != subject.content_hash
+            or canonical_payload_hash(artifact.payload_json) != artifact.content_hash
+        ):
+            raise CompileProductionRecipeError(
+                "Stage 4 Recipe member differs from the verified closure"
+            )
+
+
+def _verified_production_recipe_commit_payload(
+    value: _VerifiedProductionRecipeCommit,
+) -> bytes:
+    verified = value.admission
+    return canonical_json_bytes(
+        {
+            "command_slot_id": str(value.success.command_slot_id),
+            "set_hash": value.success.set_hash,
+            "verification_binding_sha256": verified.verification_binding_sha256,
+            "report_sha256": verified.report.canonical_hash,
+            "admission_sha256": verified.admission.canonical_hash,
+            "recipe_subjects": [item.to_mapping() for item in verified.recipe_subjects],
+        }
+    )
+
+
+def _issue_verified_production_recipe_commit(
+    success: CommandSuccess,
+    verified: VerifiedPhysicalEditAdmission,
+) -> _VerifiedProductionRecipeCommit:
+    """Issue the only capability accepted by the Stage 4 persistence owner."""
+
+    _validate_verified_production_recipe_success(success, verified)
+    unsigned = _VerifiedProductionRecipeCommit(success, verified, b"\x00" * 32)
+    return replace(
+        unsigned,
+        _verification_mac=hmac.digest(
+            _PRODUCTION_RECIPE_COMMIT_KEY,
+            _verified_production_recipe_commit_payload(unsigned),
+            "sha256",
+        ),
+    )
+
+
+def _open_verified_production_recipe_commit(  # pyright: ignore[reportUnusedFunction]
+    value: object,
+) -> CommandSuccess:
+    """Open one untampered command-owned Stage 4 commit capability."""
+
+    if type(value) is not _VerifiedProductionRecipeCommit:  # noqa: E721
+        raise CompileProductionRecipeError(
+            "Stage 4 persistence requires a verified commit capability"
+        )
+    verified = value
+    expected = hmac.digest(
+        _PRODUCTION_RECIPE_COMMIT_KEY,
+        _verified_production_recipe_commit_payload(verified),
+        "sha256",
+    )
+    if not hmac.compare_digest(verified._verification_mac, expected):  # pyright: ignore[reportPrivateUsage]
+        raise CompileProductionRecipeError("Stage 4 commit capability was modified")
+    _validate_verified_production_recipe_success(verified.success, verified.admission)
+    return verified.success
+
+
 def _reject(
     store: ProductionRecipeCommandStore, outcome: CommandOutcome, failure: _CompilationFailureError
 ) -> CommandOutcome:
@@ -1100,7 +1226,7 @@ class CompileProductionRecipeCommand:
                 )
             return CompileProductionRecipeResult(claimed)
         try:
-            report, recipes, admission, _verified = _compile_and_admit(resolved)
+            report, recipes, admission, verified = _compile_and_admit(resolved)
             artifacts = _artifacts(resolved, report, recipes, admission)
         except _CompilationFailureError as error:
             return CompileProductionRecipeResult(_reject(self._store, claimed, error))
@@ -1110,8 +1236,13 @@ class CompileProductionRecipeCommand:
                 "Stage 4 compilation infrastructure failed",
             )
             return CompileProductionRecipeResult(_reject(self._store, claimed, failure))
-        committed = self._store.commit_command_success(
-            CommandSuccess(claimed.command_slot_id, artifact_set_hash(artifacts), artifacts)
+        success = CommandSuccess(
+            claimed.command_slot_id,
+            artifact_set_hash(artifacts),
+            artifacts,
+        )
+        committed = self._store.commit_production_recipe_success(
+            _issue_verified_production_recipe_commit(success, verified)
         )
         return CompileProductionRecipeResult(
             committed,

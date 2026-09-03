@@ -97,6 +97,8 @@ from .media_recovery_frontier import (
     MediaRecoveryPlan,
 )
 from .models import (
+    PRODUCTION_RECIPE_COMMAND_NAME,
+    PRODUCTION_RENDER_COMMAND_NAME,
     SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME,
     VLM_BATCH_FINALIZER_COMMAND_NAME,
@@ -137,6 +139,8 @@ from .models import (
     PersistedVlmSemanticPack,
     PersistedVlmSemanticPackV4,
     PersistedWholeSeriesSourceManifest,
+    ProductionRenderAttempt,
+    ProductionRenderLease,
     RecipeReference,
     ShadowLocalMeasurementAttempt,
     ShadowLocalMeasurementAttemptState,
@@ -530,6 +534,23 @@ class _VerifiedMaterializedBlob:
                 outcome="failed",
             ) from error
         self._quota_lease.release()
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionRenderAttemptRecord:
+    """Private persisted render state including the current fencing secret."""
+
+    attempt: ProductionRenderAttempt
+    lease_token: UUID | None
+
+    def __post_init__(self) -> None:
+        if type(self.attempt) is not ProductionRenderAttempt:  # noqa: E721
+            raise RuntimeStoreError("production render record requires an exact attempt")
+        if self.attempt.state == "rendering":
+            if type(self.lease_token) is not UUID:  # noqa: E721
+                raise RuntimeStoreError("rendering production record lost its lease token")
+        elif self.lease_token is not None:
+            raise RuntimeStoreError("non-rendering production record retained a lease token")
 
 
 def _text(value: object) -> str:
@@ -2786,10 +2807,76 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "MeasureShadowLocalCalibrationCommand@1 success requires the local shadow owner API"
                 )
+            if command_name == PRODUCTION_RENDER_COMMAND_NAME:
+                raise CommandStateError(
+                    "RenderProductionRecipeCommand@1 success requires the render-attempt owner API"
+                )
+            if command_name == PRODUCTION_RECIPE_COMMAND_NAME:
+                raise CommandStateError(
+                    "CompileProductionRecipeCommand@1 success requires the Stage 4 owner API"
+                )
             self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if state != "running":
                 return self._replay_or_raise(
                     cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
+                )
+            return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def commit_production_recipe_success(
+        self,
+        verified: object,
+    ) -> CommandOutcome:
+        """Commit only a command-owned, independently verified Stage 4 closure."""
+
+        # Lazy import preserves the Store/model import boundary while the
+        # package-private opener verifies the process-local HMAC capability.
+        from ..pipeline.compile_production_recipe_command import (
+            CompileProductionRecipeError,
+            _open_verified_production_recipe_commit,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        try:
+            success = _open_verified_production_recipe_commit(verified)
+        except CompileProductionRecipeError as error:
+            raise StoreValidationError(
+                "Stage 4 success requires its verified command capability"
+            ) from error
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, _ = self._locked_job_then_slot(
+                cursor,
+                success.command_slot_id,
+            )
+            self._require_slot_execution_kind(
+                cursor,
+                success.command_slot_id,
+                "deterministic",
+            )
+            if command_name != PRODUCTION_RECIPE_COMMAND_NAME:
+                raise CommandStateError(
+                    "only CompileProductionRecipeCommand@1 may commit Stage 4 output"
+                )
+            cursor.execute(
+                "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+                (job_id,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None or cursor.fetchone() is not None:
+                raise RuntimeStoreError("Stage 4 command lost its durable Job")
+            job = Job(_text(job_row[0]), cast(JobProfile, _text(job_row[1])))
+            if success.artifacts[0].scope != canonical_recipe_scope(job):
+                raise StoreValidationError(
+                    "Stage 4 output must use the canonical Job scope"
+                )
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor,
+                    success.command_slot_id,
+                    job_id,
+                    "succeeded",
+                    success.set_hash,
                 )
             return self._write_success(cursor, success, job_id)
 
@@ -3292,6 +3379,10 @@ class PostgresRuntimeStore:
             if command_name == SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
                 raise CommandStateError(
                     "MeasureShadowLocalCalibrationCommand@1 cannot use generic rejection"
+                )
+            if command_name == PRODUCTION_RENDER_COMMAND_NAME:
+                raise CommandStateError(
+                    "RenderProductionRecipeCommand@1 rejection requires the render-attempt owner API"
                 )
             self._require_slot_execution_kind(cursor, rejection.command_slot_id, "deterministic")
             if state != "running":
@@ -3823,6 +3914,784 @@ class PostgresRuntimeStore:
         else:
             raise BlobIntegrityError("existing blob object uses an unsupported storage kind")
         return durable
+
+    # ------------------------------------------------------------------
+    # durable production render attempts
+    # ------------------------------------------------------------------
+
+    def reserve_production_render_attempt(
+        self,
+        command_slot_id: UUID,
+        request_hash: str,
+        *,
+        recipe: CommittedArtifactMemberReference,
+        render_plan_sha256: str,
+        render_profile_sha256: str,
+        renderer_identity_sha256: str,
+        max_output_bytes: int,
+    ) -> ProductionRenderAttempt:
+        """Reserve one exact admitted Recipe and immutable render identity."""
+
+        self._validate_uuid(command_slot_id, "command_slot_id")
+        self._validate_sha256(request_hash, "production render request_hash")
+        if type(recipe) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError(
+                "production render recipe must be an exact committed member reference"
+            )
+        for field_name, value in (
+            ("render_plan_sha256", render_plan_sha256),
+            ("render_profile_sha256", render_profile_sha256),
+            ("renderer_identity_sha256", renderer_identity_sha256),
+        ):
+            self._validate_sha256(value, f"production render {field_name}")
+        if type(max_output_bytes) is not int or max_output_bytes <= 0:  # noqa: E721
+            raise StoreValidationError(
+                "production render max_output_bytes must be a positive integer"
+            )
+
+        def operation(cursor: DbCursor) -> ProductionRenderAttempt:
+            job_id, slot_state, command_name, slot_request_hash = (
+                self._locked_job_then_slot(cursor, command_slot_id)
+            )
+            self._require_slot_execution_kind(cursor, command_slot_id, "deterministic")
+            if command_name != PRODUCTION_RENDER_COMMAND_NAME:
+                raise CommandStateError(
+                    "production render attempt requires its reserved render command"
+                )
+            if slot_state != "running":
+                raise CommandStateError(
+                    "production render command slot is already terminal"
+                )
+            if slot_request_hash != request_hash:
+                raise IdempotencyConflictError(
+                    "production render request hash differs from its command claim"
+                )
+            cursor.execute(
+                "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+                (job_id,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None or cursor.fetchone() is not None:
+                raise RuntimeStoreError("production render Job identity is unavailable")
+            if _text(job_row[1]) not in ("shadow", "production"):
+                raise StoreValidationError(
+                    "production render attempts require a shadow or production Job"
+                )
+            job = Job(
+                _text(job_row[0]),
+                cast(Literal["shadow", "production"], _text(job_row[1])),
+            )
+            try:
+                committed = self._read_exact_committed_set(cursor, job, recipe)
+            except (SemanticInputUnavailableError, SemanticInputIntegrityError) as error:
+                raise StoreValidationError(
+                    "production render Recipe authority is unavailable"
+                ) from error
+            if (
+                committed.command_name != PRODUCTION_RECIPE_COMMAND_NAME
+                or committed.execution_kind != "deterministic"
+                or recipe.scope != canonical_recipe_scope(job)
+                or recipe.artifact_type != "recipe"
+                or not recipe.logical_id.startswith("production_recipe@")
+                or recipe.member_ordinal <= 0
+                or recipe.member_ordinal >= len(committed.members) - 1
+                or committed.members[0][1].artifact_type
+                != "physical_edit_compilation_report"
+                or committed.members[-1][1].artifact_type
+                != "physical_edit_admission"
+                or any(
+                    member.artifact_type != "recipe"
+                    for _, member in committed.members[1:-1]
+                )
+            ):
+                raise StoreValidationError(
+                    "production render Recipe is not an exact admitted Stage 4 member"
+                )
+            cursor.execute(
+                """
+                SELECT attempt_id
+                  FROM runtime.production_render_attempts
+                 WHERE command_slot_id = %s
+                 FOR UPDATE
+                """,
+                (command_slot_id,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                attempt = self._read_production_render_attempt_by_id(
+                    cursor,
+                    UUID(str(existing[0])),
+                    for_update=False,
+                ).attempt
+                if (
+                    attempt.request_hash != request_hash
+                    or attempt.recipe != recipe
+                    or attempt.render_plan_sha256 != render_plan_sha256
+                    or attempt.render_profile_sha256 != render_profile_sha256
+                    or attempt.renderer_identity_sha256
+                    != renderer_identity_sha256
+                    or attempt.max_output_bytes != max_output_bytes
+                ):
+                    raise IdempotencyConflictError(
+                        "production render slot was reserved with a different identity"
+                    )
+                return attempt
+            attempt_id = uuid4()
+            cursor.execute(
+                """
+                INSERT INTO runtime.production_render_attempts (
+                    attempt_id, job_id, command_slot_id, request_hash,
+                    recipe_receipt_id, recipe_artifact_set_id,
+                    recipe_member_ordinal, recipe_namespace,
+                    recipe_scope_kind, recipe_scope_key, recipe_artifact_type,
+                    recipe_logical_id, recipe_revision, recipe_content_hash,
+                    render_plan_sha256, render_profile_sha256,
+                    renderer_identity_sha256, max_output_bytes,
+                    state, version
+                ) VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    'reserved', 0
+                )
+                """,
+                (
+                    attempt_id,
+                    job_id,
+                    command_slot_id,
+                    request_hash,
+                    recipe.receipt_id,
+                    recipe.artifact_set_id,
+                    recipe.member_ordinal,
+                    recipe.scope.namespace,
+                    recipe.scope.kind,
+                    recipe.scope.key,
+                    recipe.artifact_type,
+                    recipe.logical_id,
+                    recipe.revision,
+                    recipe.content_hash,
+                    render_plan_sha256,
+                    render_profile_sha256,
+                    renderer_identity_sha256,
+                    max_output_bytes,
+                ),
+            )
+            return replace(
+                self._read_production_render_attempt_by_id(
+                    cursor,
+                    attempt_id,
+                    for_update=False,
+                ).attempt,
+                is_fresh_reservation=True,
+            )
+
+        return self._transaction(operation)
+
+    def acquire_production_render_lease(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        lease_seconds: int,
+    ) -> ProductionRenderLease | None:
+        """Acquire a reservation or take over only an expired render lease."""
+
+        self._validate_uuid(attempt_id, "attempt_id")
+        self._validate_nonnegative_version(expected_version, "expected_version")
+        self._validate_render_lease_seconds(lease_seconds)
+        token = uuid4()
+
+        def operation(cursor: DbCursor) -> ProductionRenderLease | None:
+            record, _, slot_state = self._locked_production_render_attempt_aggregate(
+                cursor,
+                attempt_id,
+            )
+            attempt = record.attempt
+            if attempt.version != expected_version:
+                raise CommandStateError("production render lease version is stale")
+            if slot_state != "running":
+                raise CommandStateError("production render command cannot acquire a lease")
+            if attempt.state not in ("reserved", "rendering"):
+                raise CommandStateError(
+                    f"production render attempt in {attempt.state} cannot acquire a lease"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET state = 'rendering', lease_token = %s,
+                       lease_expires_at = clock_timestamp()
+                           + make_interval(secs => %s),
+                       version = version + 1
+                 WHERE attempt_id = %s AND version = %s
+                   AND (
+                       state = 'reserved'
+                       OR (state = 'rendering'
+                           AND lease_expires_at <= clock_timestamp())
+                   )
+                """,
+                (token, lease_seconds, attempt_id, expected_version),
+            )
+            if cursor.rowcount != 1:
+                return None
+            acquired = self._read_production_render_attempt_by_id(
+                cursor,
+                attempt_id,
+                for_update=False,
+            )
+            return self._production_render_lease(acquired)
+
+        return self._transaction(operation)
+
+    def renew_production_render_lease(
+        self,
+        lease: ProductionRenderLease,
+        *,
+        lease_seconds: int,
+    ) -> ProductionRenderLease:
+        """Renew one active exact lease using database time and version fencing."""
+
+        if type(lease) is not ProductionRenderLease:  # noqa: E721
+            raise StoreValidationError(
+                "production render renewal requires an exact lease"
+            )
+        self._validate_render_lease_seconds(lease_seconds)
+
+        def operation(cursor: DbCursor) -> ProductionRenderLease:
+            record, _, slot_state = self._locked_production_render_attempt_aggregate(
+                cursor,
+                lease.attempt_id,
+            )
+            attempt = record.attempt
+            if (
+                slot_state != "running"
+                or attempt.state != "rendering"
+                or attempt.version != lease.version
+                or attempt.job_id != lease.job_id
+                or attempt.command_slot_id != lease.command_slot_id
+                or record.lease_token != lease.token
+            ):
+                raise CommandStateError(
+                    "production render lease is stale or owned elsewhere"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET lease_expires_at = clock_timestamp()
+                           + make_interval(secs => %s),
+                       version = version + 1
+                 WHERE attempt_id = %s AND state = 'rendering'
+                   AND version = %s AND lease_token = %s
+                   AND lease_expires_at > clock_timestamp()
+                   AND clock_timestamp() + make_interval(secs => %s)
+                       > lease_expires_at
+                """,
+                (
+                    lease_seconds,
+                    lease.attempt_id,
+                    lease.version,
+                    lease.token,
+                    lease_seconds,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError(
+                    "production render lease renewal CAS was lost or would not extend expiry"
+                )
+            renewed = self._read_production_render_attempt_by_id(
+                cursor,
+                lease.attempt_id,
+                for_update=False,
+            )
+            return self._production_render_lease(renewed)
+
+        return self._transaction(operation)
+
+    def record_production_render_output(
+        self,
+        lease: ProductionRenderLease,
+        *,
+        output_blob: BlobRef,
+    ) -> ProductionRenderAttempt:
+        """Bind one exact same-Job external MP4 while the lease is active."""
+
+        if type(lease) is not ProductionRenderLease:  # noqa: E721
+            raise StoreValidationError(
+                "production render output requires an exact lease"
+            )
+        if type(output_blob) is not BlobRef:  # noqa: E721
+            raise StoreValidationError(
+                "production render output must be an exact BlobRef"
+            )
+
+        def operation(cursor: DbCursor) -> ProductionRenderAttempt:
+            record, job_id, slot_state = (
+                self._locked_production_render_attempt_aggregate(
+                    cursor,
+                    lease.attempt_id,
+                )
+            )
+            attempt = record.attempt
+            if (
+                slot_state != "running"
+                or attempt.state != "rendering"
+                or attempt.version != lease.version
+                or attempt.job_id != lease.job_id
+                or attempt.command_slot_id != lease.command_slot_id
+                or record.lease_token != lease.token
+            ):
+                raise CommandStateError(
+                    "production render output lease is stale or owned elsewhere"
+                )
+            durable = self._claimed_blob_ref(
+                cursor,
+                job_id,
+                output_blob,
+                field_name="production-render-output",
+            )
+            cursor.execute(
+                """
+                SELECT storage_kind
+                  FROM storage.blob_objects
+                 WHERE object_id = %s
+                """,
+                (durable.object_id,),
+            )
+            kind_row = cursor.fetchone()
+            if (
+                kind_row is None
+                or _text(kind_row[0]) != "s3_compatible"
+                or durable.media_type != "video/mp4"
+                or durable.byte_length <= 0
+                or durable.byte_length > attempt.max_output_bytes
+            ):
+                raise BlobIntegrityError(
+                    "production render output is not an allowed external MP4"
+                )
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET state = 'rendered', version = version + 1,
+                       lease_token = NULL, lease_expires_at = NULL,
+                       output_object_id = %s,
+                       rendered_at = clock_timestamp()
+                 WHERE attempt_id = %s AND state = 'rendering'
+                   AND version = %s AND lease_token = %s
+                   AND lease_expires_at > clock_timestamp()
+                """,
+                (
+                    durable.object_id,
+                    lease.attempt_id,
+                    lease.version,
+                    lease.token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError(
+                    "production render output lease expired or lost its CAS"
+                )
+            return self._read_production_render_attempt_by_id(
+                cursor,
+                lease.attempt_id,
+                for_update=False,
+            ).attempt
+
+        return self._transaction(operation)
+
+    def commit_production_render_rejection(
+        self,
+        attempt_id: UUID,
+        *,
+        expected_version: int,
+        rejection: CommandRejection,
+        lease: ProductionRenderLease | None = None,
+    ) -> CommandOutcome:
+        """Atomically reject a reserved, actively rendering, or rendered attempt."""
+
+        self._validate_uuid(attempt_id, "attempt_id")
+        self._validate_nonnegative_version(expected_version, "expected_version")
+        if type(rejection) is not CommandRejection:  # noqa: E721
+            raise StoreValidationError(
+                "production render rejection must be an exact CommandRejection"
+            )
+        if lease is not None and type(lease) is not ProductionRenderLease:  # noqa: E721
+            raise StoreValidationError(
+                "production render rejection lease must be exact when supplied"
+            )
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            record, job_id, slot_state = (
+                self._locked_production_render_attempt_aggregate(
+                    cursor,
+                    attempt_id,
+                )
+            )
+            attempt = record.attempt
+            if attempt.command_slot_id != rejection.command_slot_id:
+                raise StoreValidationError(
+                    "production render rejection belongs to another command slot"
+                )
+            if slot_state != "running":
+                outcome = self._replay_or_raise(
+                    cursor,
+                    rejection.command_slot_id,
+                    job_id,
+                    rejection.outcome,
+                    None,
+                )
+                if (
+                    attempt.state != rejection.outcome
+                    or attempt.receipt_id != outcome.receipt_id
+                    or attempt.failure_code != rejection.failure_code
+                    or attempt.failure_detail_json
+                    != _canonical_db_json(rejection.failure_detail_json)
+                ):
+                    raise CommandStateError(
+                        "terminal production render rejection replay differs"
+                    )
+                return replace(
+                    outcome,
+                    failure_detail_json=attempt.failure_detail_json,
+                )
+            if attempt.version != expected_version:
+                raise CommandStateError(
+                    "production render rejection version is stale"
+                )
+            if attempt.state == "rendering":
+                if (
+                    lease is None
+                    or lease.attempt_id != attempt.attempt_id
+                    or lease.job_id != attempt.job_id
+                    or lease.command_slot_id != attempt.command_slot_id
+                    or lease.version != attempt.version
+                    or lease.token != record.lease_token
+                ):
+                    raise CommandStateError(
+                        "production render rejection lease is stale or owned elsewhere"
+                    )
+                lease_predicate = (
+                    " AND lease_token = %s"
+                    " AND lease_expires_at > clock_timestamp()"
+                )
+                lease_params: tuple[object, ...] = (lease.token,)
+            elif attempt.state in ("reserved", "rendered"):
+                if lease is not None:
+                    raise StoreValidationError(
+                        "non-rendering production rejection must not supply a lease"
+                    )
+                lease_predicate = ""
+                lease_params = ()
+            else:
+                raise CommandStateError(
+                    f"production render attempt in {attempt.state} cannot be rejected"
+                )
+            outcome = self._write_rejection(cursor, rejection, job_id)
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET state = %s, version = version + 1,
+                       lease_token = NULL, lease_expires_at = NULL,
+                       receipt_id = %s, failure_code = %s,
+                       failure_detail = %s::jsonb,
+                       completed_at = clock_timestamp()
+                 WHERE attempt_id = %s AND state = %s AND version = %s
+                """
+                + lease_predicate,
+                (
+                    rejection.outcome,
+                    outcome.receipt_id,
+                    rejection.failure_code,
+                    rejection.failure_detail_json,
+                    attempt_id,
+                    attempt.state,
+                    expected_version,
+                    *lease_params,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError(
+                    "production render rejection lease expired or lost its CAS"
+                )
+            terminal = self._read_production_render_attempt_by_id(
+                cursor,
+                attempt_id,
+                for_update=False,
+            ).attempt
+            if terminal.state != rejection.outcome or terminal.receipt_id != outcome.receipt_id:
+                raise RuntimeStoreError(
+                    "production render rejection did not close its exact attempt"
+                )
+            return outcome
+
+        return self._transaction(operation)
+
+    def read_production_render_attempt(
+        self,
+        attempt_id: UUID,
+    ) -> ProductionRenderAttempt:
+        """Read one exact production render attempt by immutable identity."""
+
+        self._validate_uuid(attempt_id, "attempt_id")
+        return self._transaction(
+            lambda cursor: self._read_production_render_attempt_by_id(
+                cursor,
+                attempt_id,
+                for_update=False,
+            ).attempt
+        )
+
+    def read_production_render_attempt_for_slot(
+        self,
+        job: Job,
+        command_slot_id: UUID,
+    ) -> ProductionRenderAttempt | None:
+        """Resolve the sole attempt through an exact Job and command slot."""
+
+        if type(job) is not Job:  # noqa: E721
+            raise StoreValidationError("job must be an exact Job")
+        self._validate_uuid(command_slot_id, "command_slot_id")
+
+        def operation(cursor: DbCursor) -> ProductionRenderAttempt | None:
+            cursor.execute(
+                "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
+                (job.job_key,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None:
+                return None
+            if _text(job_row[1]) != job.profile:
+                raise JobProfileMismatchError(
+                    "job_key belongs to a different profile"
+                )
+            cursor.execute(
+                """
+                SELECT attempt_id
+                  FROM runtime.production_render_attempts
+                 WHERE job_id = %s AND command_slot_id = %s
+                """,
+                (UUID(str(job_row[0])), command_slot_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            if cursor.fetchone() is not None:
+                raise RuntimeStoreError(
+                    "production render slot owns multiple attempts"
+                )
+            return self._read_production_render_attempt_by_id(
+                cursor,
+                UUID(str(row[0])),
+                for_update=False,
+            ).attempt
+
+        return self._transaction(operation)
+
+    @staticmethod
+    def _validate_render_lease_seconds(value: int) -> None:
+        if type(value) is not int or not 1 <= value <= 3600:  # noqa: E721
+            raise StoreValidationError(
+                "production render lease_seconds must be between 1 and 3600"
+            )
+
+    @staticmethod
+    def _production_render_lease(
+        record: _ProductionRenderAttemptRecord,
+    ) -> ProductionRenderLease:
+        attempt = record.attempt
+        if (
+            attempt.state != "rendering"
+            or record.lease_token is None
+            or attempt.lease_expires_at is None
+        ):
+            raise RuntimeStoreError(
+                "production render lease transition returned an invalid attempt"
+            )
+        return ProductionRenderLease(
+            attempt.attempt_id,
+            attempt.job_id,
+            attempt.command_slot_id,
+            record.lease_token,
+            attempt.lease_expires_at,
+            attempt.version,
+        )
+
+    def _locked_production_render_attempt_aggregate(
+        self,
+        cursor: DbCursor,
+        attempt_id: UUID,
+    ) -> tuple[_ProductionRenderAttemptRecord, UUID, str]:
+        self._validate_uuid(attempt_id, "attempt_id")
+        cursor.execute(
+            """
+            SELECT job_id, command_slot_id
+              FROM runtime.production_render_attempts
+             WHERE attempt_id = %s
+            """,
+            (attempt_id,),
+        )
+        identity = cursor.fetchone()
+        if identity is None:
+            raise StoreValidationError("production render attempt_id is unknown")
+        expected_job_id = UUID(str(identity[0]))
+        slot_id = UUID(str(identity[1]))
+        job_id, slot_state, command_name, _ = self._locked_job_then_slot(
+            cursor,
+            slot_id,
+        )
+        self._require_slot_execution_kind(cursor, slot_id, "deterministic")
+        if command_name != PRODUCTION_RENDER_COMMAND_NAME:
+            raise CommandStateError(
+                "production render attempt belongs to another command"
+            )
+        if job_id != expected_job_id:
+            raise RuntimeStoreError(
+                "production render attempt changed Jobs while being locked"
+            )
+        record = self._read_production_render_attempt_by_id(
+            cursor,
+            attempt_id,
+            for_update=True,
+        )
+        attempt = record.attempt
+        if attempt.job_id != job_id or attempt.command_slot_id != slot_id:
+            raise RuntimeStoreError(
+                "production render attempt identity changed while being locked"
+            )
+        return record, job_id, slot_state
+
+    def _read_production_render_attempt_by_id(
+        self,
+        cursor: DbCursor,
+        attempt_id: UUID,
+        *,
+        for_update: bool,
+    ) -> _ProductionRenderAttemptRecord:
+        suffix = " FOR UPDATE OF attempt" if for_update else ""
+        cursor.execute(
+            """
+            SELECT attempt.job_id, attempt.command_slot_id,
+                   attempt.request_hash,
+                   attempt.recipe_receipt_id, attempt.recipe_artifact_set_id,
+                   attempt.recipe_member_ordinal, attempt.recipe_namespace,
+                   attempt.recipe_scope_kind, attempt.recipe_scope_key,
+                   attempt.recipe_artifact_type, attempt.recipe_logical_id,
+                   attempt.recipe_revision, attempt.recipe_content_hash,
+                   attempt.render_plan_sha256, attempt.render_profile_sha256,
+                   attempt.renderer_identity_sha256, attempt.max_output_bytes,
+                   attempt.state, attempt.version, attempt.reserved_at,
+                   attempt.lease_token, attempt.lease_expires_at,
+                   output.object_id, output.content_hash,
+                   output.byte_length, output.media_type,
+                   attempt.receipt_id, attempt.artifact_set_id,
+                   attempt.failure_code, attempt.failure_detail::text,
+                   attempt.rendered_at, attempt.completed_at
+              FROM runtime.production_render_attempts AS attempt
+              LEFT JOIN storage.blob_objects AS output
+                ON output.object_id = attempt.output_object_id
+             WHERE attempt.attempt_id = %s
+            """
+            + suffix,
+            (attempt_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            raise StoreValidationError("production render attempt_id is unknown")
+        (
+            job_id,
+            command_slot_id,
+            request_hash,
+            recipe_receipt_id,
+            recipe_artifact_set_id,
+            recipe_member_ordinal,
+            recipe_namespace,
+            recipe_scope_kind,
+            recipe_scope_key,
+            recipe_artifact_type,
+            recipe_logical_id,
+            recipe_revision,
+            recipe_content_hash,
+            render_plan_sha256,
+            render_profile_sha256,
+            renderer_identity_sha256,
+            max_output_bytes,
+            state,
+            version,
+            reserved_at,
+            lease_token,
+            lease_expires_at,
+            output_object_id,
+            output_content_hash,
+            output_byte_length,
+            output_media_type,
+            receipt_id,
+            artifact_set_id,
+            failure_code,
+            failure_detail,
+            rendered_at,
+            completed_at,
+        ) = row
+        output_blob = None
+        if output_object_id is not None:
+            output_blob = BlobRef(
+                UUID(str(output_object_id)),
+                _text(output_content_hash),
+                int(_text(output_byte_length)),
+                _text(output_media_type),
+            )
+        attempt = ProductionRenderAttempt(
+            attempt_id=UUID(str(attempt_id)),
+            job_id=UUID(str(job_id)),
+            command_slot_id=UUID(str(command_slot_id)),
+            request_hash=_text(request_hash),
+            recipe=CommittedArtifactMemberReference(
+                UUID(str(recipe_receipt_id)),
+                UUID(str(recipe_artifact_set_id)),
+                int(_text(recipe_member_ordinal)),
+                ArtifactScope(
+                    _text(recipe_namespace),
+                    _text(recipe_scope_kind),
+                    _text(recipe_scope_key),
+                ),
+                _text(recipe_artifact_type),
+                _text(recipe_logical_id),
+                int(_text(recipe_revision)),
+                _text(recipe_content_hash),
+            ),
+            render_plan_sha256=_text(render_plan_sha256),
+            render_profile_sha256=_text(render_profile_sha256),
+            renderer_identity_sha256=_text(renderer_identity_sha256),
+            max_output_bytes=int(_text(max_output_bytes)),
+            state=cast(
+                Literal[
+                    "reserved",
+                    "rendering",
+                    "rendered",
+                    "committed",
+                    "denied",
+                    "failed",
+                ],
+                _text(state),
+            ),
+            version=int(_text(version)),
+            reserved_at=cast(datetime, reserved_at),
+            lease_expires_at=cast(datetime | None, lease_expires_at),
+            output_blob=output_blob,
+            receipt_id=None if receipt_id is None else UUID(str(receipt_id)),
+            artifact_set_id=(
+                None if artifact_set_id is None else UUID(str(artifact_set_id))
+            ),
+            failure_code=None if failure_code is None else _text(failure_code),
+            failure_detail_json=(
+                None
+                if failure_detail is None
+                else _canonical_db_json(_text(failure_detail))
+            ),
+            rendered_at=cast(datetime | None, rendered_at),
+            completed_at=cast(datetime | None, completed_at),
+        )
+        return _ProductionRenderAttemptRecord(
+            attempt,
+            None if lease_token is None else UUID(str(lease_token)),
+        )
 
     def read_immutable_blob(self, job: Job, reference: BlobRef) -> bytes:
         """Read exact bytes only through a matching per-Job immutable claim."""

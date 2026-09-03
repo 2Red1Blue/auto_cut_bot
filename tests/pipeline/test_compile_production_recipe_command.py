@@ -28,6 +28,7 @@ from autocut_kernel.pipeline.compile_production_recipe_command import (
 from autocut_kernel.store.models import (
     ArtifactMember,
     CommandOutcome,
+    CommandSuccess,
     CommittedArtifactMemberReference,
     PersistedCommittedArtifactMember,
     PersistedCommittedArtifactSet,
@@ -58,7 +59,8 @@ class _Stage4Store:
         self.outcomes[claim.idempotency_key] = outcome
         return outcome
 
-    def commit_command_success(self, success):  # type: ignore[no-untyped-def]
+    def commit_production_recipe_success(self, verified):  # type: ignore[no-untyped-def]
+        success = command_module._open_verified_production_recipe_commit(verified)
         claim = self.claims[-1]
         source = self.base.editorial.inputs.source_manifest
         receipt_id, artifact_set_id = uuid4(), uuid4()
@@ -243,6 +245,37 @@ def test_cpu_success_is_atomic_exact_and_replayable(
         )
         == first.committed
     )
+
+
+def test_stage4_commit_capability_is_exact_and_tamper_evident(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_non_dialogue_blueprint_projection(monkeypatch)
+    case = editorial_timed_media_case(tmp_path, monkeypatch)
+    request = _request(case)
+    base, *_rest, resolver, limits = case
+    resolved = resolve_compile_production_recipe_request(
+        base,
+        request,
+        authority_profile_resolver=resolver,
+        limits=limits,
+    )
+    report, recipes, admission, verified = command_module._compile_and_admit(resolved)
+    artifacts = command_module._artifacts(resolved, report, recipes, admission)
+    success = CommandSuccess(uuid4(), artifact_set_hash(artifacts), artifacts)
+    capability = command_module._issue_verified_production_recipe_commit(
+        success,
+        verified,
+    )
+
+    assert command_module._open_verified_production_recipe_commit(capability) == success
+    with pytest.raises(CompileProductionRecipeError, match="verified commit capability"):
+        command_module._open_verified_production_recipe_commit(success)
+    with pytest.raises(CompileProductionRecipeError, match="modified"):
+        command_module._open_verified_production_recipe_commit(
+            replace(capability, _verification_mac=b"\x00" * 32)
+        )
 
 
 def test_entry_limit_denies_without_an_artifact_set(

@@ -35,9 +35,7 @@ SHADOW_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset(
 )
 SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME = "MeasureShadowLocalCalibrationCommand@1"
 SHADOW_LOCAL_CALIBRATION_MEASUREMENT_PROTOCOL = "shadow-local-calibration-measurement-v1"
-SHADOW_LOCAL_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset(
-    {"SHADOW_LOCAL_CALIBRATION_INVALID_RAW"}
-)
+SHADOW_LOCAL_CALIBRATION_TERMINAL_DENIAL_CODES = frozenset({"SHADOW_LOCAL_CALIBRATION_INVALID_RAW"})
 ShadowMeasurementAttemptState = Literal[
     "prepared", "collecting", "ready", "indeterminate", "committed"
 ]
@@ -52,6 +50,11 @@ VLM_BATCH_FINALIZER_COMMAND_NAME = "FinalizeVlmBatchCommand"
 VLM_BATCH_IDEMPOTENCY_PREFIX = "vlm-batch:"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION = "vlm-batch-finalizer-v1"
 VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4 = "vlm-batch-finalizer-v2-semantic-pack-v4"
+PRODUCTION_RECIPE_COMMAND_NAME = "CompileProductionRecipeCommand@1"
+PRODUCTION_RENDER_COMMAND_NAME = "RenderProductionRecipeCommand@1"
+ProductionRenderAttemptState = Literal[
+    "reserved", "rendering", "rendered", "committed", "denied", "failed"
+]
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -67,6 +70,7 @@ GenerationFailureDisposition = Literal["retryable", "nonretryable", "repairable"
 _LEGACY_GENERATION_RETRY_POLICY_HASH = (
     "sha256:70f279a4b886d1aaf1498b432af937495e431113db3f38728a635ed24a6fbe39"
 )
+
 
 def _text(value: str, field_name: str) -> None:
     if type(value) is not str or not value.strip():  # noqa: E721
@@ -204,9 +208,7 @@ class WholeSeriesSourceManifestReference:
     logical_id: str
     revision: int
     content_hash: str
-    artifact_type: Literal["whole_series_source_manifest"] = (
-        "whole_series_source_manifest"
-    )
+    artifact_type: Literal["whole_series_source_manifest"] = "whole_series_source_manifest"
 
     def __post_init__(self) -> None:
         _text(self.logical_id, "logical_id")
@@ -214,9 +216,7 @@ class WholeSeriesSourceManifestReference:
             raise StoreValidationError("revision must be a positive integer")
         _sha256(self.content_hash, "content_hash")
         if self.artifact_type != "whole_series_source_manifest":
-            raise StoreValidationError(
-                "source manifest reference has an invalid artifact_type"
-            )
+            raise StoreValidationError("source manifest reference has an invalid artifact_type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,9 +245,7 @@ class PersistedWholeSeriesSourceManifest:
             if not isinstance(value, UUID):  # pyright: ignore[reportUnnecessaryIsInstance]
                 raise StoreValidationError(f"{field_name} must be a UUID")
         if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
-            raise StoreValidationError(
-                "payload_json does not match source manifest content_hash"
-            )
+            raise StoreValidationError("payload_json does not match source manifest content_hash")
         object.__setattr__(self, "proxy_blobs", proxy_blobs)
         if self.source_job is not None:
             if type(self.source_job) is not Job:  # noqa: E721
@@ -312,9 +310,7 @@ class VlmRequestRecordReference:
             raise StoreValidationError("revision must be a positive integer")
         _sha256(self.content_hash, "content_hash")
         if self.artifact_type != "vlm_request_record":
-            raise StoreValidationError(
-                "VLM request record reference has an invalid artifact_type"
-            )
+            raise StoreValidationError("VLM request record reference has an invalid artifact_type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,9 +329,7 @@ class VlmSemanticPackReference:
             raise StoreValidationError("revision must be a positive integer")
         _sha256(self.content_hash, "content_hash")
         if self.artifact_type != "vlm_semantic_pack":
-            raise StoreValidationError(
-                "VLM Semantic Pack reference has an invalid artifact_type"
-            )
+            raise StoreValidationError("VLM Semantic Pack reference has an invalid artifact_type")
 
 
 VLM_REQUEST_IDENTITY_FIELDS = frozenset(
@@ -377,9 +371,7 @@ _VLM_REQUEST_RECORD_FIELDS = frozenset(
         "window_manifest_sha256",
     }
 )
-_BLOB_REF_FIELDS = frozenset(
-    {"object_id", "content_hash", "byte_length", "media_type"}
-)
+_BLOB_REF_FIELDS = frozenset({"object_id", "content_hash", "byte_length", "media_type"})
 
 
 def _strict_json_mapping(value: str, field_name: str) -> dict[str, object]:
@@ -420,7 +412,11 @@ def _mapping_blob_ref(value: object, field_name: str) -> BlobRef:
         content_hash = mapping["content_hash"]
         byte_length = mapping["byte_length"]
         media_type = mapping["media_type"]
-        if type(content_hash) is not str or type(byte_length) is not int or type(media_type) is not str:  # noqa: E721
+        if (
+            type(content_hash) is not str
+            or type(byte_length) is not int
+            or type(media_type) is not str
+        ):  # noqa: E721
             raise ValueError("BlobRef member type mismatch")
         return BlobRef(object_id, content_hash, byte_length, media_type)
     except (KeyError, TypeError, ValueError, StoreValidationError) as error:
@@ -455,7 +451,8 @@ class PersistedVlmGenerationChild:
 
     def __post_init__(self) -> None:
         if type(self.semantic_schema_version) is not int or (  # noqa: E721
-            self.parser_strategy_version, self.semantic_schema_version
+            self.parser_strategy_version,
+            self.semantic_schema_version,
         ) not in (("strict-semantic-pack-v3", 3), ("strict-semantic-pack-v4", 4)):
             raise StoreValidationError("VLM child parser and schema versions disagree")
         if type(self.reference) is not VlmRequestRecordReference:  # noqa: E721
@@ -534,8 +531,7 @@ class PersistedVlmGenerationChild:
             or payload["window_manifest_sha256"] != self.window_manifest_sha256
             or payload["window_manifest_set_sha256"] != self.window_manifest_set_sha256
             or identity.get("window_manifest_sha256") != self.window_manifest_sha256
-            or identity.get("window_manifest_set_sha256")
-            != self.window_manifest_set_sha256
+            or identity.get("window_manifest_set_sha256") != self.window_manifest_set_sha256
             or identity.get("request_payload_sha256") != self.request_payload.content_hash
             or _mapping_blob_ref(payload["request_payload_blob"], "request_payload_blob")
             != self.request_payload
@@ -575,9 +571,7 @@ class PersistedVlmGenerationChild:
             prompt_version=cast(str, identity["prompt_version"]),
             response_schema_sha256=cast(str, identity["response_schema_sha256"]),
             preprocess_policy_sha256=cast(str, identity["preprocess_policy_sha256"]),
-            window_sampling_policy_sha256=cast(
-                str, identity["window_sampling_policy_sha256"]
-            ),
+            window_sampling_policy_sha256=cast(str, identity["window_sampling_policy_sha256"]),
             model_id=cast(str, identity["model_id"]),
             provider_id=cast(str, identity["provider_id"]),
             request_parameters_sha256=cast(str, identity["request_parameters_sha256"]),
@@ -603,15 +597,11 @@ class PersistedVlmSemanticPack:
             raise StoreValidationError("VLM Semantic Pack source child is invalid")
         if self.reference.scope != canonical_recipe_scope(self.source_child.source_job):
             raise StoreValidationError("VLM Semantic Pack has a non-canonical Job scope")
-        expected_logical_id = (
-            f"semantic_pack_{self.source_child.window_manifest_sha256[7:39]}"
-        )
+        expected_logical_id = f"semantic_pack_{self.source_child.window_manifest_sha256[7:39]}"
         if self.reference.logical_id != expected_logical_id:
             raise StoreValidationError("VLM Semantic Pack logical identity is invalid")
         if canonical_payload_hash(self.payload_json) != self.reference.content_hash:
-            raise StoreValidationError(
-                "VLM Semantic Pack payload does not match its artifact hash"
-            )
+            raise StoreValidationError("VLM Semantic Pack payload does not match its artifact hash")
         decoded_payload_json = json.dumps(
             self.semantic_pack.to_mapping(),
             ensure_ascii=False,
@@ -619,14 +609,10 @@ class PersistedVlmSemanticPack:
             sort_keys=True,
         )
         if canonical_payload_hash(decoded_payload_json) != self.reference.content_hash:
-            raise StoreValidationError(
-                "decoded VLM Semantic Pack does not match its artifact hash"
-            )
+            raise StoreValidationError("decoded VLM Semantic Pack does not match its artifact hash")
         if (
-            self.semantic_pack.request_identity_sha256
-            != self.source_child.request_identity_sha256
-            or self.semantic_pack.window_manifest_sha256
-            != self.source_child.window_manifest_sha256
+            self.semantic_pack.request_identity_sha256 != self.source_child.request_identity_sha256
+            or self.semantic_pack.window_manifest_sha256 != self.source_child.window_manifest_sha256
         ):
             raise StoreValidationError(
                 "VLM Semantic Pack does not match its committed request provenance"
@@ -663,8 +649,7 @@ class PersistedVlmSemanticPackV4:
             != self.reference.content_hash
             or self.semantic_pack.request_identity_sha256
             != self.source_child.request_identity_sha256
-            or self.semantic_pack.window_manifest_sha256
-            != self.source_child.window_manifest_sha256
+            or self.semantic_pack.window_manifest_sha256 != self.source_child.window_manifest_sha256
         ):
             raise StoreValidationError(
                 "V4 Semantic Pack does not match its committed child identity"
@@ -918,10 +903,20 @@ class CommittedArtifactMemberReference:
         if type(value) is not dict:  # noqa: E721
             raise StoreValidationError("committed member reference must be an object")
         item = cast(dict[str, object], value)
-        if set(item) != {
-            "receipt_id", "artifact_set_id", "member_ordinal", "scope",
-            "artifact_type", "logical_id", "revision", "content_hash",
-        } or type(item["scope"]) is not dict:
+        if (
+            set(item)
+            != {
+                "receipt_id",
+                "artifact_set_id",
+                "member_ordinal",
+                "scope",
+                "artifact_type",
+                "logical_id",
+                "revision",
+                "content_hash",
+            }
+            or type(item["scope"]) is not dict
+        ):
             raise StoreValidationError("committed member reference has missing or unknown fields")
         scope = cast(dict[str, object], item["scope"])
         if set(scope) != {"namespace", "kind", "key"}:
@@ -934,10 +929,16 @@ class CommittedArtifactMemberReference:
         except ValueError as error:
             raise StoreValidationError("committed member reference UUID is invalid") from error
         return cls(
-            receipt_id, artifact_set_id, cast(int, item["member_ordinal"]),
-            ArtifactScope(cast(str, scope["namespace"]), cast(str, scope["kind"]), cast(str, scope["key"])),
-            cast(str, item["artifact_type"]), cast(str, item["logical_id"]),
-            cast(int, item["revision"]), cast(str, item["content_hash"]),
+            receipt_id,
+            artifact_set_id,
+            cast(int, item["member_ordinal"]),
+            ArtifactScope(
+                cast(str, scope["namespace"]), cast(str, scope["kind"]), cast(str, scope["key"])
+            ),
+            cast(str, item["artifact_type"]),
+            cast(str, item["logical_id"]),
+            cast(int, item["revision"]),
+            cast(str, item["content_hash"]),
         )
 
 
@@ -987,17 +988,29 @@ class PersistedCommittedArtifactSet:
     members: tuple[PersistedCommittedArtifactMember, ...]
 
     def __post_init__(self) -> None:
-        if type(self.job) is not Job or self.job.profile not in ("test", "shadow", "production", "authority"):  # noqa: E721
+        if type(self.job) is not Job or self.job.profile not in (
+            "test",
+            "shadow",
+            "production",
+            "authority",
+        ):  # noqa: E721
             raise StoreValidationError("committed set requires an exact Job and profile")
         for value in (self.job_id, self.command_slot_id, self.receipt_id, self.artifact_set_id):
             if type(value) is not UUID:  # noqa: E721
                 raise StoreValidationError("committed set identifiers must be UUIDs")
         _sha256(self.request_hash, "committed set request_hash")
         _text(self.command_name, "committed set command_name")
-        if type(self.execution_kind) is not str or self.execution_kind not in ("deterministic", "generation"):  # noqa: E721
+        if type(self.execution_kind) is not str or self.execution_kind not in (
+            "deterministic",
+            "generation",
+        ):  # noqa: E721
             raise StoreValidationError("committed set execution kind is unsupported")
-        if type(self.members) is not tuple or not self.members or any(  # noqa: E721
-            type(item) is not PersistedCommittedArtifactMember for item in self.members
+        if (
+            type(self.members) is not tuple
+            or not self.members
+            or any(  # noqa: E721
+                type(item) is not PersistedCommittedArtifactMember for item in self.members
+            )
         ):
             raise StoreValidationError("committed set requires ordered persisted members")
         for ordinal, member in enumerate(self.members):
@@ -1019,8 +1032,12 @@ class PersistedCommittedArtifactSet:
     def artifacts(self) -> tuple[ArtifactMember, ...]:
         return tuple(
             ArtifactMember(
-                ref.artifact_type, ref.logical_id, ref.revision, ref.scope,
-                ref.content_hash, member.payload_json,
+                ref.artifact_type,
+                ref.logical_id,
+                ref.revision,
+                ref.scope,
+                ref.content_hash,
+                member.payload_json,
             )
             for member in self.members
             for ref in (member.reference,)
@@ -1047,11 +1064,16 @@ class CalibrationValidationBinding:
             if value == "sha256:" + "0" * 64:
                 raise StoreValidationError(f"{name} must be non-zero")
         _text(self.attempt_idempotency_key, "validator attempt idempotency key")
-        if self.runtime_measurement_identity is not None and type(self.runtime_measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
+        if (
+            self.runtime_measurement_identity is not None
+            and type(self.runtime_measurement_identity) is not RuntimeMeasurementIdentity
+        ):  # noqa: E721
             raise StoreValidationError("runtime measurement identity must be exact when present")
         manifest, results = self.manifest_reference, self.results_reference
         if any(type(ref) is not CommittedArtifactMemberReference for ref in (manifest, results)):  # noqa: E721
-            raise StoreValidationError("calibration validation requires exact measurement references")
+            raise StoreValidationError(
+                "calibration validation requires exact measurement references"
+            )
         if (
             manifest.receipt_id != results.receipt_id
             or manifest.artifact_set_id != results.artifact_set_id
@@ -1060,14 +1082,19 @@ class CalibrationValidationBinding:
             or manifest.scope.kind != "shadow_run"
             or manifest.content_hash == results.content_hash
         ):
-            raise StoreValidationError("calibration measurement references must name one exact shadow set")
+            raise StoreValidationError(
+                "calibration measurement references must name one exact shadow set"
+            )
         _sha256("sha256:" + manifest.scope.key, "measurement scope request hash")
         for ref, ordinal, artifact_type, logical_id in (
             (manifest, 0, "calibration_measurement_manifest", "measurement-manifest"),
             (results, 1, "calibration_measurement_results", "measurement-results"),
         ):
             if (ref.member_ordinal, ref.artifact_type, ref.logical_id, ref.revision) != (
-                ordinal, artifact_type, logical_id, 1
+                ordinal,
+                artifact_type,
+                logical_id,
+                1,
             ) or ref.content_hash == "sha256:" + "0" * 64:
                 raise StoreValidationError("calibration measurement reference identity is invalid")
 
@@ -1098,9 +1125,9 @@ class CalibrationValidationBinding:
         # intentionally a different immutable validator command input.
         if self.runtime_measurement_identity is not None:
             payload["runtime_measurement_identity"] = self.runtime_measurement_identity.to_mapping()
-        return canonical_payload_hash(json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ))
+        return canonical_payload_hash(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        )
 
     @property
     def claim(self) -> CommandClaim:
@@ -1172,7 +1199,9 @@ class PersistedRuntimeCalibrationCapability:
         if type(self.measurement_identity) is not RuntimeMeasurementIdentity:  # noqa: E721
             raise StoreValidationError("runtime capability requires an exact measurement identity")
         if type(self.anchor) is not PersistedCalibrationRecordAnchor:  # noqa: E721
-            raise StoreValidationError("runtime capability requires an exact accepted record anchor")
+            raise StoreValidationError(
+                "runtime capability requires an exact accepted record anchor"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1203,10 +1232,7 @@ class VlmBatchRequestPolicy:
             _text(getattr(self, field_name), f"VLM batch policy {field_name}")
 
     def to_mapping(self) -> dict[str, str]:
-        return {
-            field_name: getattr(self, field_name)
-            for field_name in self.__dataclass_fields__
-        }
+        return {field_name: getattr(self, field_name) for field_name in self.__dataclass_fields__}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1236,16 +1262,18 @@ class VlmSemanticPackSetChild:
             "vlm_semantic_pack",
         ):
             raise StoreValidationError("VLM pack-set child member types are invalid")
-        if len({item.receipt_id for item in members}) != 1 or len(
-            {item.artifact_set_id for item in members}
-        ) != 1:
-            raise StoreValidationError("VLM pack-set child members must share a Receipt/ArtifactSet")
-        if len({item.scope for item in members}) != 1 or len(
-            {item.revision for item in members}
-        ) != 1:
+        if (
+            len({item.receipt_id for item in members}) != 1
+            or len({item.artifact_set_id for item in members}) != 1
+        ):
             raise StoreValidationError(
-                "VLM pack-set child members must share scope/revision"
+                "VLM pack-set child members must share a Receipt/ArtifactSet"
             )
+        if (
+            len({item.scope for item in members}) != 1
+            or len({item.revision for item in members}) != 1
+        ):
+            raise StoreValidationError("VLM pack-set child members must share scope/revision")
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -1272,10 +1300,11 @@ class CommittedVlmInputReference:
     def __post_init__(self) -> None:
         members = (self.request_record, self.response_record, self.semantic_pack)
         if any(type(item) is not CommittedArtifactMemberReference for item in members):  # noqa: E721
-            raise StoreValidationError(
-                "committed VLM members must be exact member references"
-            )
-        if any(type(item) is not BlobRef for item in (self.proxy_blob, self.request_payload, self.raw_response)):  # noqa: E721
+            raise StoreValidationError("committed VLM members must be exact member references")
+        if any(
+            type(item) is not BlobRef
+            for item in (self.proxy_blob, self.request_payload, self.raw_response)
+        ):  # noqa: E721
             raise StoreValidationError("committed VLM blobs must be exact BlobRefs")
 
 
@@ -1291,13 +1320,9 @@ class CommittedSemanticInputsRequest:
         if type(self.job) is not Job:  # noqa: E721
             raise StoreValidationError("semantic input job must be a Job")
         if type(self.source_manifest) is not CommittedArtifactMemberReference:  # noqa: E721
-            raise StoreValidationError(
-                "semantic source manifest must be an exact member reference"
-            )
+            raise StoreValidationError("semantic source manifest must be an exact member reference")
         if type(self.vlm_semantic_pack_set) is not CommittedArtifactMemberReference:  # noqa: E721
-            raise StoreValidationError(
-                "semantic pack set must be an exact member reference"
-            )
+            raise StoreValidationError("semantic pack set must be an exact member reference")
         if (
             self.vlm_semantic_pack_set.artifact_type != "vlm_semantic_pack_set"
             or self.vlm_semantic_pack_set.logical_id != "vlm_semantic_pack_set"
@@ -1385,7 +1410,9 @@ class CommittedVlmSemanticInput:
             getattr(child, "semantic_schema_version", 3),
         )
         if child_version != expected_version:
-            raise StoreValidationError("VLM semantic pack exact type disagrees with its child version")
+            raise StoreValidationError(
+                "VLM semantic pack exact type disagrees with its child version"
+            )
         if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
             raise StoreValidationError("VLM semantic response_record is invalid")
         if type(self.raw_response) is not BlobRef:  # noqa: E721
@@ -1431,9 +1458,7 @@ class CommittedV4InspectionInput:
             child.parser_strategy_version,
             child.semantic_schema_version,
         ) != ("strict-semantic-pack-v4", 4):
-            raise StoreValidationError(
-                "V4 inspection pack disagrees with its child version"
-            )
+            raise StoreValidationError("V4 inspection pack disagrees with its child version")
         if type(self.response_record) is not CommittedArtifactMemberReference:  # noqa: E721
             raise StoreValidationError("V4 inspection response_record is invalid")
         if type(self.raw_response) is not BlobRef:  # noqa: E721
@@ -1506,9 +1531,7 @@ class CommittedV4InspectionInput:
             }
         )
         if frozenset(response_payload) != expected_response_fields:
-            raise StoreValidationError(
-                "V4 inspection response payload schema mismatch"
-            )
+            raise StoreValidationError("V4 inspection response payload schema mismatch")
         response_blob = _mapping_blob_ref(
             response_payload["raw_response_blob"],
             "V4 inspection raw_response_blob",
@@ -1585,9 +1608,7 @@ class CommittedV4SemanticChildInspection:
             or not self.child_idempotency_key
             or self.child_idempotency_key != self.child_idempotency_key.strip()
         ):
-            raise StoreValidationError(
-                "V4 inspection child_idempotency_key is not canonical text"
-            )
+            raise StoreValidationError("V4 inspection child_idempotency_key is not canonical text")
         try:
             decoded_source = decode_source_manifest(
                 self.source_manifest.payload_json,
@@ -1598,9 +1619,7 @@ class CommittedV4SemanticChildInspection:
                 "V4 inspection SourceManifest cannot be decoded exactly"
             ) from error
         if decoded_source.census != self.source_grant:
-            raise StoreValidationError(
-                "V4 inspection source_grant differs from its SourceManifest"
-            )
+            raise StoreValidationError("V4 inspection source_grant differs from its SourceManifest")
         decoded_windows = tuple(
             SourceWindowIdentity(
                 episode_index=episode_index,
@@ -1636,8 +1655,7 @@ class CommittedV4SemanticChildInspection:
             or child.idempotency_key != self.child_idempotency_key
             or child.source_job != source_job
             or child.kernel_job_id != self.source_manifest.job_id
-            or child.source_manifest_sha256
-            != self.source_manifest.reference.content_hash
+            or child.source_manifest_sha256 != self.source_manifest.reference.content_hash
             or child.source_provenance_sha256 != self.source_manifest.canonical_hash
             or child.episode_index != self.semantic_input.source_window.episode_index
             or child.window_manifest_sha256
@@ -1679,12 +1697,8 @@ class CommittedSemanticInputs:
         if not inputs or any(type(item) is not CommittedVlmSemanticInput for item in inputs):  # noqa: E721
             raise StoreValidationError("semantic inputs must contain committed VLM inputs")
         order_keys = tuple(item.source_window.canonical_order_key for item in inputs)
-        window_ids = tuple(
-            item.source_window.window_manifest_sha256 for item in inputs
-        )
-        if order_keys != tuple(sorted(order_keys)) or len(window_ids) != len(
-            set(window_ids)
-        ):
+        window_ids = tuple(item.source_window.window_manifest_sha256 for item in inputs)
+        if order_keys != tuple(sorted(order_keys)) or len(window_ids) != len(set(window_ids)):
             raise StoreValidationError(
                 "semantic inputs must have unique canonical Source/Window order"
             )
@@ -1757,9 +1771,7 @@ class GenerationAttempt:
             "generation.provider_idempotency_key",
         )
         if type(self.request_payload) is not BlobRef:  # noqa: E721
-            raise StoreValidationError(
-                "generation.request_payload must be an exact BlobRef"
-            )
+            raise StoreValidationError("generation.request_payload must be an exact BlobRef")
         if self.state not in (
             "reserved",
             "dispatched",
@@ -1775,9 +1787,7 @@ class GenerationAttempt:
         if type(self.attempt_ordinal) is not int or self.attempt_ordinal < 1:  # noqa: E721
             raise StoreValidationError("generation attempt_ordinal must be positive")
         if type(self.max_attempts) is not int or self.max_attempts < self.attempt_ordinal:  # noqa: E721
-            raise StoreValidationError(
-                "generation max_attempts must cover the attempt ordinal"
-            )
+            raise StoreValidationError("generation max_attempts must cover the attempt ordinal")
         _sha256(self.retry_policy_hash, "generation.retry_policy_hash")
         if self.attempt_ordinal == 1:
             if self.previous_attempt_id is not None:
@@ -1787,23 +1797,36 @@ class GenerationAttempt:
         if self.provider_request_id is not None:
             _text(self.provider_request_id, "generation.provider_request_id")
         if self.state in ("responded", "reconciled", "committed") and self.raw_response is None:
-            raise StoreValidationError(f"{self.state} generation requires an exact raw-response BlobRef")
-        if self.state in ("reserved", "dispatched", "indeterminate") and self.raw_response is not None:
+            raise StoreValidationError(
+                f"{self.state} generation requires an exact raw-response BlobRef"
+            )
+        if (
+            self.state in ("reserved", "dispatched", "indeterminate")
+            and self.raw_response is not None
+        ):
             raise StoreValidationError(f"{self.state} generation cannot claim a raw response")
         if self.state == "committed":
             if self.receipt_id is None or self.artifact_set_id is None:
-                raise StoreValidationError("committed generation requires receipt and artifact set bindings")
+                raise StoreValidationError(
+                    "committed generation requires receipt and artifact set bindings"
+                )
         elif self.receipt_id is not None or self.artifact_set_id is not None:
-            raise StoreValidationError("only committed generation may bind a receipt or artifact set")
+            raise StoreValidationError(
+                "only committed generation may bind a receipt or artifact set"
+            )
         if self.state == "failed":
             _text(self.failure_code or "", "generation.failure_code")
             _text(self.failure_detail_json or "", "generation.failure_detail_json")
             try:
                 detail = json.loads(self.failure_detail_json or "")
             except (TypeError, ValueError) as error:
-                raise StoreValidationError("generation.failure_detail_json must contain JSON") from error
+                raise StoreValidationError(
+                    "generation.failure_detail_json must contain JSON"
+                ) from error
             if not isinstance(detail, dict):
-                raise StoreValidationError("generation.failure_detail_json must contain a JSON object")
+                raise StoreValidationError(
+                    "generation.failure_detail_json must contain a JSON object"
+                )
             if self.failure_disposition not in (
                 "retryable",
                 "nonretryable",
@@ -1815,15 +1838,9 @@ class GenerationAttempt:
         elif self.failure_code is not None or self.failure_detail_json is not None:
             raise StoreValidationError("only failed generation may contain failure diagnostics")
         elif self.failure_disposition is not None:
-            raise StoreValidationError(
-                "only failed generation may contain a failure disposition"
-            )
-        if (self.dispatch_lease_token is None) != (
-            self.dispatch_lease_expires_at is None
-        ):
-            raise StoreValidationError(
-                "generation dispatch lease token and expiry must be paired"
-            )
+            raise StoreValidationError("only failed generation may contain a failure disposition")
+        if (self.dispatch_lease_token is None) != (self.dispatch_lease_expires_at is None):
+            raise StoreValidationError("generation dispatch lease token and expiry must be paired")
         if self.dispatch_lease_token is not None:
             _text(self.dispatch_lease_token, "generation.dispatch_lease_token")
             if (
@@ -1839,9 +1856,7 @@ class GenerationAttempt:
                 )
         if self.state == "dispatched" and self.dispatch_lease_token is None:
             raise StoreValidationError("dispatched generation requires an active lease identity")
-        if self.not_before_at is not None and (
-            self.not_before_at.tzinfo is None
-        ):
+        if self.not_before_at is not None and (self.not_before_at.tzinfo is None):
             raise StoreValidationError(
                 "generation not_before_at must be timezone-aware when present"
             )
@@ -1849,9 +1864,7 @@ class GenerationAttempt:
             type(self.retry_backoff_seconds) is not int  # noqa: E721
             or self.retry_backoff_seconds < 0
         ):
-            raise StoreValidationError(
-                "generation retry_backoff_seconds must be non-negative"
-            )
+            raise StoreValidationError("generation retry_backoff_seconds must be non-negative")
         if self.attempt_ordinal == 1 and self.retry_backoff_seconds != 0:
             raise StoreValidationError("first generation attempt cannot have retry backoff")
 
@@ -1870,6 +1883,201 @@ class GenerationAttempt:
         if reference.tzinfo is None:
             raise StoreValidationError("dispatch lease comparison time must be timezone-aware")
         return self.dispatch_lease_expires_at > reference
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderAttempt:
+    """Durable, fenced execution state for one admitted Stage 4 Recipe member."""
+
+    attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    request_hash: str
+    recipe: CommittedArtifactMemberReference
+    render_plan_sha256: str
+    render_profile_sha256: str
+    renderer_identity_sha256: str
+    max_output_bytes: int
+    state: ProductionRenderAttemptState
+    version: int
+    reserved_at: datetime
+    lease_expires_at: datetime | None = None
+    output_blob: BlobRef | None = None
+    receipt_id: UUID | None = None
+    artifact_set_id: UUID | None = None
+    failure_code: str | None = None
+    failure_detail_json: str | None = None
+    rendered_at: datetime | None = None
+    completed_at: datetime | None = None
+    is_fresh_reservation: bool = field(default=False, compare=False)
+
+    def __post_init__(self) -> None:
+        for field_name in ("attempt_id", "job_id", "command_slot_id"):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    f"production render attempt {field_name} must be an exact UUID"
+                )
+        if type(self.recipe) is not CommittedArtifactMemberReference:  # noqa: E721
+            raise StoreValidationError(
+                "production render attempt recipe must be an exact committed member reference"
+            )
+        if (
+            self.recipe.scope.namespace != "pipeline"
+            or self.recipe.scope.kind != "job"
+            or self.recipe.artifact_type != "recipe"
+            or not self.recipe.logical_id.startswith("production_recipe@")
+            or len(self.recipe.logical_id) <= len("production_recipe@")
+        ):
+            raise StoreValidationError(
+                "production render attempt recipe is not an admitted Stage 4 Recipe identity"
+            )
+        _sha256(self.request_hash, "production render attempt request_hash")
+        for field_name in (
+            "render_plan_sha256",
+            "render_profile_sha256",
+            "renderer_identity_sha256",
+        ):
+            _sha256(
+                getattr(self, field_name),
+                f"production render attempt {field_name}",
+            )
+        if type(self.max_output_bytes) is not int or self.max_output_bytes <= 0:  # noqa: E721
+            raise StoreValidationError(
+                "production render attempt max_output_bytes must be a positive integer"
+            )
+        if self.state not in (
+            "reserved",
+            "rendering",
+            "rendered",
+            "committed",
+            "denied",
+            "failed",
+        ):
+            raise StoreValidationError("production render attempt state is unsupported")
+        if type(self.version) is not int or self.version < 0:  # noqa: E721
+            raise StoreValidationError(
+                "production render attempt version must be a non-negative integer"
+            )
+        if self.state == "reserved" and self.version != 0:
+            raise StoreValidationError("reserved production render attempt must be version zero")
+        minimum_version = {
+            "reserved": 0,
+            "rendering": 1,
+            "rendered": 2,
+            "committed": 3,
+            "denied": 1,
+            "failed": 1,
+        }[self.state]
+        if self.version < minimum_version:
+            raise StoreValidationError(
+                "production render attempt version is inconsistent with its state"
+            )
+        if self.state == "rendering":
+            self._require_aware(self.lease_expires_at, "lease_expires_at")
+        elif self.lease_expires_at is not None:
+            raise StoreValidationError(
+                "only a rendering production attempt may expose a lease expiry"
+            )
+        if (self.output_blob is None) != (self.rendered_at is None):
+            raise StoreValidationError(
+                "production render output BlobRef and rendered_at must be paired"
+            )
+        if self.state in ("rendered", "committed") and self.output_blob is None:
+            raise StoreValidationError(
+                f"{self.state} production attempt requires an exact output BlobRef"
+            )
+        if self.output_blob is not None:
+            if type(self.output_blob) is not BlobRef:  # noqa: E721
+                raise StoreValidationError(
+                    "production render attempt output_blob must be an exact BlobRef"
+                )
+            if self.output_blob.byte_length <= 0:
+                raise StoreValidationError("production render output BlobRef must be non-empty")
+            if self.output_blob.byte_length > self.max_output_bytes:
+                raise StoreValidationError(
+                    "production render output exceeds its immutable byte ceiling"
+                )
+            if self.output_blob.media_type != "video/mp4":
+                raise StoreValidationError("production render output BlobRef must use video/mp4")
+            self._require_aware(self.rendered_at, "rendered_at")
+        elif self.rendered_at is not None:
+            raise StoreValidationError(
+                "production render attempt cannot bind rendered_at without output bytes"
+            )
+        if self.state in ("reserved", "rendering") and self.output_blob is not None:
+            raise StoreValidationError(
+                "an unfinished production render attempt cannot bind output bytes"
+            )
+        terminal = self.state in ("committed", "denied", "failed")
+        if terminal:
+            if type(self.receipt_id) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    "terminal production render attempt requires an exact Receipt UUID"
+                )
+            self._require_aware(self.completed_at, "completed_at")
+        elif self.receipt_id is not None or self.completed_at is not None:
+            raise StoreValidationError(
+                "only terminal production render attempts may bind a Receipt"
+            )
+        if self.state == "committed":
+            if type(self.artifact_set_id) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    "committed production render attempt requires an ArtifactSet UUID"
+                )
+        elif self.artifact_set_id is not None:
+            raise StoreValidationError(
+                "only committed production render attempt may bind an ArtifactSet"
+            )
+        if self.state in ("denied", "failed"):
+            _text(
+                self.failure_code or "",
+                "production render attempt failure_code",
+            )
+            _strict_canonical_json_object(
+                self.failure_detail_json or "",
+                "production render attempt failure_detail_json",
+            )
+        elif self.failure_code is not None or self.failure_detail_json is not None:
+            raise StoreValidationError(
+                "only rejected production render attempts may contain failure diagnostics"
+            )
+        self._require_aware(self.reserved_at, "reserved_at")
+        if self.rendered_at is not None and self.rendered_at < self.reserved_at:
+            raise StoreValidationError("production render attempt rendered_at precedes reserved_at")
+        if self.completed_at is not None and self.completed_at < self.reserved_at:
+            raise StoreValidationError(
+                "production render attempt completed_at precedes reserved_at"
+            )
+
+    @staticmethod
+    def _require_aware(value: datetime | None, field_name: str) -> None:
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise StoreValidationError(
+                f"production render attempt {field_name} must be timezone-aware"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderLease:
+    """Exact post-CAS lease capability returned to one production renderer."""
+
+    attempt_id: UUID
+    job_id: UUID
+    command_slot_id: UUID
+    token: UUID
+    expires_at: datetime
+    version: int
+
+    def __post_init__(self) -> None:
+        for field_name in ("attempt_id", "job_id", "command_slot_id", "token"):
+            if type(getattr(self, field_name)) is not UUID:  # noqa: E721
+                raise StoreValidationError(
+                    f"production render lease {field_name} must be an exact UUID"
+                )
+        if type(self.expires_at) is not datetime or self.expires_at.tzinfo is None:  # noqa: E721
+            raise StoreValidationError("production render lease expires_at must be timezone-aware")
+        if type(self.version) is not int or self.version < 1:  # noqa: E721
+            raise StoreValidationError("production render lease version must be a positive integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2043,7 +2251,9 @@ class ShadowMeasurementPlan:
         if type(self.claim) is not CommandClaim:  # noqa: E721
             raise StoreValidationError("shadow measurement plan requires an exact CommandClaim")
         if self.claim.command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
-            raise StoreValidationError("shadow measurement plan requires the exact measurement command")
+            raise StoreValidationError(
+                "shadow measurement plan requires the exact measurement command"
+            )
         if self.claim.job.profile != "shadow":
             raise StoreValidationError("shadow measurement plan requires a shadow Job")
         payload = _strict_canonical_json_object(
@@ -2068,12 +2278,16 @@ class ShadowMeasurementPlan:
         ):
             raise StoreValidationError("shadow measurement plan claim identity is invalid")
         members = tuple(self.members)
-        if not members or any(type(member) is not ShadowMeasurementMemberPlan for member in members):  # noqa: E721
+        if not members or any(
+            type(member) is not ShadowMeasurementMemberPlan for member in members
+        ):  # noqa: E721
             raise StoreValidationError("shadow measurement plan requires exact member plans")
         if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
             raise StoreValidationError("shadow measurement member ordinals must be contiguous")
         if len({member.corpus_member_reference_sha256 for member in members}) != len(members):
-            raise StoreValidationError("shadow measurement plan must not duplicate member references")
+            raise StoreValidationError(
+                "shadow measurement plan must not duplicate member references"
+            )
         plan_members = payload.get("corpus_members")
         if not isinstance(plan_members, list):
             raise StoreValidationError("shadow measurement plan member set is invalid")
@@ -2092,15 +2306,28 @@ class ShadowMeasurementPlan:
             }:
                 raise StoreValidationError("shadow measurement plan member shape is invalid")
             if (
-                encoded_member["corpus_member_reference_sha256"] != member.corpus_member_reference_sha256
+                encoded_member["corpus_member_reference_sha256"]
+                != member.corpus_member_reference_sha256
                 or encoded_member["expected_anchor_reference_sha256"]
                 != member.expected_anchor_reference_sha256
-                or json.dumps(encoded_member["native_invocation"], ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                or json.dumps(
+                    encoded_member["native_invocation"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
                 != member.invocation_json
-                or json.dumps(encoded_member["raw_context"], ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+                or json.dumps(
+                    encoded_member["raw_context"],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
                 != member.context_json
             ):
-                raise StoreValidationError("shadow measurement member plan drifts from canonical plan")
+                raise StoreValidationError(
+                    "shadow measurement member plan drifts from canonical plan"
+                )
         object.__setattr__(self, "members", members)
 
 
@@ -2262,7 +2489,9 @@ class ShadowMeasurementTerminalDenialRequest:
                 )
         _text(self.member_lease_token, "shadow terminal denial member_lease_token")
         if self.command_name != SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME:
-            raise StoreValidationError("shadow terminal denial requires the exact measurement command")
+            raise StoreValidationError(
+                "shadow terminal denial requires the exact measurement command"
+            )
         if self.failure_code not in SHADOW_CALIBRATION_TERMINAL_DENIAL_CODES:
             raise StoreValidationError("shadow terminal denial failure_code is not allowlisted")
         _strict_canonical_json_object(
@@ -2392,7 +2621,9 @@ class ShadowLocalMeasurementMemberPlan:
             self.canonical_request_json, "shadow-local member canonical_request_json"
         )
         if self.case_sha256 != case_hash or self.request_sha256 != request_hash:
-            raise StoreValidationError("shadow-local member media hashes do not match canonical values")
+            raise StoreValidationError(
+                "shadow-local member media hashes do not match canonical values"
+            )
         if type(self.source_job_id) is not UUID:  # noqa: E721
             raise StoreValidationError("shadow-local member source_job_id must be an exact UUID")
         if type(self.source_blob) is not BlobRef:  # noqa: E721
@@ -2447,7 +2678,9 @@ class ShadowLocalMeasurementPlan:
             or self.claim.job.profile != "shadow"
             or self.claim.execution_kind != "deterministic"
         ):
-            raise StoreValidationError("shadow-local plan requires the exact deterministic shadow command")
+            raise StoreValidationError(
+                "shadow-local plan requires the exact deterministic shadow command"
+            )
         payload = _strict_canonical_json_object(
             self.canonical_plan_json, "shadow-local canonical_plan_json"
         )
@@ -2495,9 +2728,8 @@ class ShadowLocalMeasurementPlan:
         ):
             raise StoreValidationError("shadow-local plan input value types are invalid")
         members = tuple(self.members)
-        if (
-            not members
-            or any(type(member) is not ShadowLocalMeasurementMemberPlan for member in members)
+        if not members or any(
+            type(member) is not ShadowLocalMeasurementMemberPlan for member in members
         ):
             raise StoreValidationError("shadow-local plan requires exact member plans")
         if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
@@ -2518,15 +2750,14 @@ class ShadowLocalMeasurementPlan:
             source_bindings,
             strict=True,
         ):
-            if (
-                _store_canonical_value_bytes(encoded, "shadow-local encoded member")
-                != _store_canonical_value_bytes(
-                    member.to_plan_mapping(), "shadow-local expected member"
-                )
-                or _store_canonical_value_bytes(source, "shadow-local encoded source binding")
-                != _store_canonical_value_bytes(
-                    member.source_binding_mapping(), "shadow-local expected source binding"
-                )
+            if _store_canonical_value_bytes(
+                encoded, "shadow-local encoded member"
+            ) != _store_canonical_value_bytes(
+                member.to_plan_mapping(), "shadow-local expected member"
+            ) or _store_canonical_value_bytes(
+                source, "shadow-local encoded source binding"
+            ) != _store_canonical_value_bytes(
+                member.source_binding_mapping(), "shadow-local expected source binding"
             ):
                 raise StoreValidationError("shadow-local plan member drifts from canonical plan")
         object.__setattr__(self, "members", members)
@@ -2589,7 +2820,9 @@ class ShadowLocalMeasurementMember:
                 or self.busy_proof_blob is not None
                 or self.busy_proof_json is not None
             ):  # noqa: E721
-                raise StoreValidationError("staged shadow-local member requires BlobRef and evidence")
+                raise StoreValidationError(
+                    "staged shadow-local member requires BlobRef and evidence"
+                )
             _strict_media_canonical_json_object(
                 self.evidence_json, "shadow-local member evidence_json"
             )
@@ -2600,7 +2833,9 @@ class ShadowLocalMeasurementMember:
                 or self.raw_blob is not None
                 or self.evidence_json is not None
             ):  # noqa: E721
-                raise StoreValidationError("not-started shadow-local member requires only a BUSY proof BlobRef")
+                raise StoreValidationError(
+                    "not-started shadow-local member requires only a BUSY proof BlobRef"
+                )
             proof = _strict_media_canonical_json_object(
                 self.busy_proof_json, "shadow-local member busy_proof_json"
             )
@@ -2619,20 +2854,26 @@ class ShadowLocalMeasurementMember:
                 or proof.get("binding_sha256") != self.binding_sha256
                 or proof.get("service_profile_sha256") != self.service_profile_sha256
             ):
-                raise StoreValidationError("shadow-local BUSY proof does not bind the exact member request")
-            if (
-                self.busy_proof_blob.content_hash
-                != "sha256:" + hashlib.sha256(self.busy_proof_json.encode("utf-8")).hexdigest()
-                or self.busy_proof_blob.byte_length != len(self.busy_proof_json.encode("utf-8"))
+                raise StoreValidationError(
+                    "shadow-local BUSY proof does not bind the exact member request"
+                )
+            if self.busy_proof_blob.content_hash != "sha256:" + hashlib.sha256(
+                self.busy_proof_json.encode("utf-8")
+            ).hexdigest() or self.busy_proof_blob.byte_length != len(
+                self.busy_proof_json.encode("utf-8")
             ):
-                raise StoreValidationError("shadow-local BUSY proof BlobRef does not bind exact proof bytes")
+                raise StoreValidationError(
+                    "shadow-local BUSY proof BlobRef does not bind exact proof bytes"
+                )
         elif (
             self.raw_blob is not None
             or self.evidence_json is not None
             or self.busy_proof_blob is not None
             or self.busy_proof_json is not None
         ):
-            raise StoreValidationError("only staged or not-started members may bind durable response bytes")
+            raise StoreValidationError(
+                "only staged or not-started members may bind durable response bytes"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2673,13 +2914,18 @@ class ShadowLocalMeasurementAttempt:
         if type(self.version) is not int or self.version < 0:  # noqa: E721
             raise StoreValidationError("shadow-local attempt version must be non-negative")
         members = tuple(self.members)
-        if not members or any(type(member) is not ShadowLocalMeasurementMember for member in members):  # noqa: E721
+        if not members or any(
+            type(member) is not ShadowLocalMeasurementMember for member in members
+        ):  # noqa: E721
             raise StoreValidationError("shadow-local attempt requires exact members")
         if tuple(member.member_ordinal for member in members) != tuple(range(len(members))):
             raise StoreValidationError("shadow-local attempt members must be ordered")
         if any(member.attempt_id != self.attempt_id for member in members):
             raise StoreValidationError("shadow-local attempt member identity drift")
-        if type(self.outcome) is not CommandOutcome or self.outcome.command_slot_id != self.command_slot_id:  # noqa: E721
+        if (
+            type(self.outcome) is not CommandOutcome
+            or self.outcome.command_slot_id != self.command_slot_id
+        ):  # noqa: E721
             raise StoreValidationError("shadow-local attempt outcome drift")
         object.__setattr__(self, "members", members)
 
@@ -2720,7 +2966,9 @@ class ShadowLocalMeasurementStagedResponse:
 
     def __post_init__(self) -> None:
         if type(self.raw_bytes) is not bytes or not self.raw_bytes:  # noqa: E721
-            raise StoreValidationError("shadow-local staged raw_bytes must be nonempty immutable bytes")
+            raise StoreValidationError(
+                "shadow-local staged raw_bytes must be nonempty immutable bytes"
+            )
         _sha256(self.content_hash, "shadow-local staged content_hash")
         _text(self.media_type, "shadow-local staged media_type")
         _strict_media_canonical_json_object(self.evidence_json, "shadow-local staged evidence_json")
@@ -2740,12 +2988,12 @@ class ShadowLocalMeasurementNotStartedProof:
 
     def __post_init__(self) -> None:
         if type(self.raw_bytes) is not bytes or not self.raw_bytes:  # noqa: E721
-            raise StoreValidationError("shadow-local BUSY raw_bytes must be nonempty immutable bytes")
+            raise StoreValidationError(
+                "shadow-local BUSY raw_bytes must be nonempty immutable bytes"
+            )
         _sha256(self.content_hash, "shadow-local BUSY content_hash")
         _text(self.media_type, "shadow-local BUSY media_type")
-        proof = _strict_media_canonical_json_object(
-            self.proof_json, "shadow-local BUSY proof_json"
-        )
+        proof = _strict_media_canonical_json_object(self.proof_json, "shadow-local BUSY proof_json")
         if set(proof) != {
             "binding_sha256",
             "invocation_state",
@@ -2760,7 +3008,9 @@ class ShadowLocalMeasurementNotStartedProof:
         ):
             raise StoreValidationError("shadow-local BUSY proof is not a pre-dispatch refusal")
         if self.raw_bytes != self.proof_json.encode("utf-8"):
-            raise StoreValidationError("shadow-local BUSY raw bytes must equal canonical proof bytes")
+            raise StoreValidationError(
+                "shadow-local BUSY raw bytes must equal canonical proof bytes"
+            )
         if self.content_hash != "sha256:" + hashlib.sha256(self.raw_bytes).hexdigest():
             raise StoreValidationError("shadow-local BUSY raw bytes do not match content_hash")
 
@@ -2796,7 +3046,9 @@ class ShadowLocalMeasurementTerminalDenialRequest:
         if self.command_name != SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME:
             raise StoreValidationError("shadow-local terminal denial command is invalid")
         if self.failure_code not in SHADOW_LOCAL_CALIBRATION_TERMINAL_DENIAL_CODES:
-            raise StoreValidationError("shadow-local terminal denial failure_code is not allowlisted")
+            raise StoreValidationError(
+                "shadow-local terminal denial failure_code is not allowlisted"
+            )
         _strict_canonical_json_object(
             self.failure_detail_json, "shadow-local terminal denial failure_detail_json"
         )
@@ -2818,12 +3070,16 @@ class ShadowLocalMeasurementRetryAuthorization:
         _sha256(self.decision_reference_sha256, "shadow-local retry decision reference")
         _sha256(self.predecessor_plan_hash, "shadow-local retry predecessor plan hash")
         if type(self.predecessor_attempt_id) is not UUID:  # noqa: E721
-            raise StoreValidationError("shadow-local retry predecessor_attempt_id must be an exact UUID")
+            raise StoreValidationError(
+                "shadow-local retry predecessor_attempt_id must be an exact UUID"
+            )
         if type(self.predecessor_version) is not int or self.predecessor_version < 0:  # noqa: E721
             raise StoreValidationError("shadow-local retry predecessor_version is invalid")
         _sha256(self.member_case_sha256, "shadow-local retry member case")
         if type(self.next_attempt_ordinal) is not int or self.next_attempt_ordinal < 2:  # noqa: E721
-            raise StoreValidationError("shadow-local retry next_attempt_ordinal must be at least two")
+            raise StoreValidationError(
+                "shadow-local retry next_attempt_ordinal must be at least two"
+            )
         if self.reason_code not in ("NATIVE_OUTCOME_UNKNOWN", "REQUEST_NOT_STARTED"):
             raise StoreValidationError("shadow-local retry authorization reason is unsupported")
 
@@ -2835,9 +3091,13 @@ class ShadowLocalMeasurementTerminalDenialResult:
 
     def __post_init__(self) -> None:
         if type(self.attempt) is not ShadowLocalMeasurementAttempt:  # noqa: E721
-            raise StoreValidationError("shadow-local terminal denial result requires an exact attempt")
+            raise StoreValidationError(
+                "shadow-local terminal denial result requires an exact attempt"
+            )
         if type(self.outcome) is not CommandOutcome:  # noqa: E721
-            raise StoreValidationError("shadow-local terminal denial result requires an exact outcome")
+            raise StoreValidationError(
+                "shadow-local terminal denial result requires an exact outcome"
+            )
         if (
             self.attempt.state != "denied"
             or self.outcome.state != "denied"
