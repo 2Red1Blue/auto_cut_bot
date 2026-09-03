@@ -20,6 +20,12 @@ _AUTOCUT_CORE = str(Path(__file__).resolve().parent / "packages/autocut-core")
 if _AUTOCUT_CORE not in sys.path:
     sys.path.insert(0, _AUTOCUT_CORE)
 
+# Authority tests consume the tracked runtime helpers from ``tools/authority``.
+# Make that package available for focused collection as well as the full suite.
+_AUTHORITY_TOOLS = str(Path(__file__).resolve().parent / "tools")
+if _AUTHORITY_TOOLS not in sys.path:
+    sys.path.insert(0, _AUTHORITY_TOOLS)
+
 
 @pytest.fixture(autouse=True)
 def _isolate_auto_cut_bot_log_activation() -> Iterator[None]:
