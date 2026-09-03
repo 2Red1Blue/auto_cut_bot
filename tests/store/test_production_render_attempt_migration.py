@@ -2,11 +2,21 @@
 
 from pathlib import Path
 
-MIGRATION = Path("packages/autocut-kernel/migrations/0055_production_render_attempt_recovery.sql")
+RECOVERY_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0055_production_render_attempt_recovery.sql"
+)
+FACTS_MIGRATION = Path(
+    "packages/autocut-kernel/migrations/0056_production_render_facts.sql"
+)
 
 
 def _sql() -> str:
-    return MIGRATION.read_text(encoding="utf-8")
+    return "\n".join(
+        (
+            RECOVERY_MIGRATION.read_text(encoding="utf-8"),
+            FACTS_MIGRATION.read_text(encoding="utf-8"),
+        )
+    )
 
 
 def test_render_attempt_binds_exact_slot_recipe_and_render_identities() -> None:
@@ -30,6 +40,7 @@ def test_render_attempt_binds_exact_slot_recipe_and_render_identities() -> None:
         "render_plan_sha256",
         "render_profile_sha256",
         "renderer_identity_sha256",
+        "execution_limits_sha256",
         "max_output_bytes",
     ):
         assert column in sql
@@ -81,6 +92,41 @@ def test_rendered_and_terminal_shapes_require_exact_blob_and_receipt_closure() -
     assert "(output_object_id IS NOT NULL AND rendered_at IS NOT NULL)" in sql
     assert "jsonb_typeof(failure_detail) = 'object'" in sql
     assert "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW" in sql
+
+
+def test_render_facts_are_closed_exact_and_immutable() -> None:
+    sql = FACTS_MIGRATION.read_text(encoding="utf-8")
+
+    assert "requires an empty production render attempt journal" in sql
+    assert "pre-facts attempts must be quarantined or reset" in sql
+    assert "render_facts_json text" in sql
+    assert "render_facts_sha256 text" in sql
+    assert "production_render_attempt_facts_shape" in sql
+    assert "output_object_id IS NULL" in sql
+    assert "render_facts_json IS NULL" in sql
+    assert "output_object_id IS NOT NULL" in sql
+    assert "render_facts_json IS NOT NULL" in sql
+    assert "NEW.render_facts_json IS NULL" in sql
+    assert "production render output facts are immutable once known" in sql
+    assert "jsonb_object_keys(facts)" in sql
+    assert "CREATE OR REPLACE FUNCTION runtime.canonical_json_ascii" in sql
+    assert "codepoint < 32 OR codepoint > 126" in sql
+    assert "NEW.render_facts_json IS DISTINCT FROM runtime.canonical_json_ascii(facts)" in sql
+    assert "production render facts must use canonical JSON serialization" in sql
+    assert "production-render-attempt-v1" in sql
+    assert "production-ffmpeg-execution-v1" in sql
+    assert "facts->>'attempt_id' <> NEW.attempt_id::text" in sql
+    assert "facts->>'recipe_sha256' <> NEW.recipe_content_hash" in sql
+    assert "facts->>'plan_sha256' <> NEW.render_plan_sha256" in sql
+    assert "facts->>'profile_sha256' <> NEW.render_profile_sha256" in sql
+    assert "facts->>'execution_limits_sha256' <> NEW.execution_limits_sha256" in sql
+    assert "facts->'output'->>'content_hash'" in sql
+    assert "facts->'output'->>'byte_length'" in sql
+    assert "facts->'output'->>'media_type'" in sql
+    assert "sha256(convert_to(NEW.render_facts_json, 'UTF8'))" in sql
+    assert "production render facts hash does not bind" in sql
+    assert "production renderer identity does not bind" in sql
+    assert "Canonical SHA-256 identity" in sql
 
 
 def test_render_attempt_migration_grants_no_visibility_or_publication() -> None:

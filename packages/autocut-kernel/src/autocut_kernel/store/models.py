@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import UUID
 
 from ..media.calibration_record import (
@@ -25,6 +25,9 @@ from ..source_manifest import (
 from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
 from ..vlm.semantic_pack_v4 import VlmSemanticPackV4
 from .errors import StoreValidationError
+
+if TYPE_CHECKING:
+    from ..rendering.production_ffmpeg_renderer import ProductionRenderAttemptFacts
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
 JobProfile = Literal["test", "shadow", "production", "authority"]
@@ -1897,12 +1900,15 @@ class ProductionRenderAttempt:
     render_plan_sha256: str
     render_profile_sha256: str
     renderer_identity_sha256: str
+    execution_limits_sha256: str
     max_output_bytes: int
     state: ProductionRenderAttemptState
     version: int
     reserved_at: datetime
     lease_expires_at: datetime | None = None
     output_blob: BlobRef | None = None
+    render_facts: ProductionRenderAttemptFacts | None = None
+    render_facts_sha256: str | None = None
     receipt_id: UUID | None = None
     artifact_set_id: UUID | None = None
     failure_code: str | None = None
@@ -1936,6 +1942,7 @@ class ProductionRenderAttempt:
             "render_plan_sha256",
             "render_profile_sha256",
             "renderer_identity_sha256",
+            "execution_limits_sha256",
         ):
             _sha256(
                 getattr(self, field_name),
@@ -1982,6 +1989,14 @@ class ProductionRenderAttempt:
             raise StoreValidationError(
                 "production render output BlobRef and rendered_at must be paired"
             )
+        if (self.render_facts is None) != (self.render_facts_sha256 is None):
+            raise StoreValidationError(
+                "production render facts and their canonical hash must be paired"
+            )
+        if (self.output_blob is None) != (self.render_facts is None):
+            raise StoreValidationError(
+                "production render output and exact render facts must be paired"
+            )
         if self.state in ("rendered", "committed") and self.output_blob is None:
             raise StoreValidationError(
                 f"{self.state} production attempt requires an exact output BlobRef"
@@ -2000,6 +2015,44 @@ class ProductionRenderAttempt:
             if self.output_blob.media_type != "video/mp4":
                 raise StoreValidationError("production render output BlobRef must use video/mp4")
             self._require_aware(self.rendered_at, "rendered_at")
+            from ..rendering.production_ffmpeg_renderer import (
+                ProductionRenderAttemptFacts,
+            )
+
+            if type(self.render_facts) is not ProductionRenderAttemptFacts:  # noqa: E721
+                raise StoreValidationError(
+                    "production render attempt requires exact ProductionRenderAttemptFacts"
+                )
+            facts = self.render_facts
+            _sha256(
+                self.render_facts_sha256 or "",
+                "production render attempt render_facts_sha256",
+            )
+            ffmpeg_json = json.dumps(
+                facts.ffmpeg.to_mapping(),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            renderer_identity = "sha256:" + hashlib.sha256(ffmpeg_json).hexdigest()
+            if (
+                facts.canonical_hash != self.render_facts_sha256
+                or facts.attempt_id != self.attempt_id
+                or facts.job.job_key != self.recipe.scope.key
+                or facts.story_id
+                != self.recipe.logical_id.removeprefix("production_recipe@")
+                or facts.recipe_sha256 != self.recipe.content_hash
+                or facts.plan_sha256 != self.render_plan_sha256
+                or facts.profile_sha256 != self.render_profile_sha256
+                or facts.execution_limits_sha256 != self.execution_limits_sha256
+                or renderer_identity != self.renderer_identity_sha256
+                or facts.output_sha256 != self.output_blob.content_hash
+                or facts.output_byte_length != self.output_blob.byte_length
+                or facts.output_media_type != self.output_blob.media_type
+            ):
+                raise StoreValidationError(
+                    "production render facts disagree with the durable attempt authority"
+                )
         elif self.rendered_at is not None:
             raise StoreValidationError(
                 "production render attempt cannot bind rendered_at without output bytes"

@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 from uuid import UUID, uuid4
 
 from psycopg import DatabaseError, InterfaceError
@@ -176,9 +176,12 @@ from .models import (
     canonical_recipe_scope,
 )
 from .object_store import (
+    ObjectStoreReadError,
+    ObjectStoreReadLimits,
     PendingObjectIntent,
     S3PendingObjectStore,
     _issue_pending_object_reservation,  # pyright: ignore[reportPrivateUsage]
+    _issue_s3_read_grant,  # pyright: ignore[reportPrivateUsage]
     _PendingObjectReservation,  # pyright: ignore[reportPrivateUsage]
     _PendingObjectTarget,  # pyright: ignore[reportPrivateUsage]
     _VerifiedPendingObject,  # pyright: ignore[reportPrivateUsage]
@@ -188,6 +191,9 @@ from .shadow_local_measurement_artifacts import (
     compile_shadow_local_measurement_artifacts,
     validate_shadow_local_measurement_artifact_metadata,
 )
+
+if TYPE_CHECKING:
+    from ..rendering.production_ffmpeg_renderer import ProductionRenderAttemptFacts
 from .source_reuse import (
     SOURCE_REUSE_BINDING_ARTIFACT_TYPE,
     SOURCE_REUSE_BINDING_LOGICAL_ID,
@@ -537,6 +543,20 @@ class _VerifiedMaterializedBlob:
 
 
 @dataclass(frozen=True, slots=True)
+class _ClaimedBlobMaterializationSource:
+    """Exact durable storage identity behind one same-Job ``BlobRef`` claim."""
+
+    reference: BlobRef
+    storage_kind: Literal["postgres_inline", "s3_compatible"]
+    backend_id: str | None
+    storage_region: str | None
+    storage_locator: str | None
+    etag: str | None
+    version_id: str | None
+    write_strategy: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ProductionRenderAttemptRecord:
     """Private persisted render state including the current fencing secret."""
 
@@ -593,6 +613,129 @@ def _canonical_db_json(value: str) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _canonical_production_render_facts_json(
+    facts: ProductionRenderAttemptFacts,
+) -> str:
+    """Encode render facts exactly as their domain canonical hash expects."""
+
+    return json.dumps(
+        facts.to_mapping(),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _decode_production_render_facts(
+    value: str,
+    expected_sha256: str,
+) -> ProductionRenderAttemptFacts:
+    """Rebuild one closed facts record and reject non-canonical durable text."""
+
+    from ..rendering.production_ffmpeg_renderer import (
+        PRODUCTION_RENDER_ATTEMPT_SCHEMA_VERSION,
+        PRODUCTION_RENDER_EXECUTION_SCHEMA_VERSION,
+        ProductionFfmpegIdentity,
+        ProductionRenderAttemptFacts,
+    )
+
+    def exact_mapping(
+        candidate: object,
+        keys: frozenset[str],
+        field_name: str,
+    ) -> dict[str, object]:
+        if type(candidate) is not dict:  # noqa: E721
+            raise ValueError(f"{field_name} does not use its closed schema")
+        unknown_mapping = cast(dict[object, object], candidate)
+        if frozenset(unknown_mapping) != keys:
+            raise ValueError(f"{field_name} does not use its closed schema")
+        return cast(dict[str, object], candidate)
+
+    try:
+        mapping = exact_mapping(
+            _strict_json_object(value, "production render facts"),
+            frozenset(
+                {
+                    "schema_version",
+                    "execution_schema_version",
+                    "attempt_id",
+                    "job",
+                    "story_id",
+                    "recipe_sha256",
+                    "plan_sha256",
+                    "profile_sha256",
+                    "execution_limits_sha256",
+                    "input_authority_sha256",
+                    "input_count",
+                    "segment_count",
+                    "ffmpeg",
+                    "stderr_sha256",
+                    "output",
+                }
+            ),
+            "production render facts",
+        )
+        if (
+            mapping["schema_version"] != PRODUCTION_RENDER_ATTEMPT_SCHEMA_VERSION
+            or mapping["execution_schema_version"]
+            != PRODUCTION_RENDER_EXECUTION_SCHEMA_VERSION
+        ):
+            raise ValueError("production render facts schema version is unsupported")
+        job = exact_mapping(
+            mapping["job"],
+            frozenset({"job_key", "profile"}),
+            "production render facts job",
+        )
+        profile = job["profile"]
+        if profile not in ("test", "shadow", "production", "authority"):
+            raise ValueError("production render facts Job profile is unsupported")
+        ffmpeg = exact_mapping(
+            mapping["ffmpeg"],
+            frozenset(
+                {
+                    "executable_sha256",
+                    "executable_byte_length",
+                    "version_output_sha256",
+                }
+            ),
+            "production render facts ffmpeg",
+        )
+        output = exact_mapping(
+            mapping["output"],
+            frozenset({"content_hash", "byte_length", "media_type"}),
+            "production render facts output",
+        )
+        facts = ProductionRenderAttemptFacts(
+            attempt_id=UUID(str(mapping["attempt_id"])),
+            job=Job(str(job["job_key"]), profile),
+            story_id=str(mapping["story_id"]),
+            recipe_sha256=str(mapping["recipe_sha256"]),
+            plan_sha256=str(mapping["plan_sha256"]),
+            profile_sha256=str(mapping["profile_sha256"]),
+            execution_limits_sha256=str(mapping["execution_limits_sha256"]),
+            input_authority_sha256=str(mapping["input_authority_sha256"]),
+            input_count=cast(int, mapping["input_count"]),
+            segment_count=cast(int, mapping["segment_count"]),
+            ffmpeg=ProductionFfmpegIdentity(
+                executable_sha256=str(ffmpeg["executable_sha256"]),
+                executable_byte_length=cast(int, ffmpeg["executable_byte_length"]),
+                version_output_sha256=str(ffmpeg["version_output_sha256"]),
+            ),
+            stderr_sha256=str(mapping["stderr_sha256"]),
+            output_sha256=str(output["content_hash"]),
+            output_byte_length=cast(int, output["byte_length"]),
+            output_media_type=str(output["media_type"]),
+        )
+        if (
+            _canonical_production_render_facts_json(facts) != value
+            or facts.canonical_hash != expected_sha256
+        ):
+            raise ValueError("production render facts JSON/hash is not canonical")
+        return facts
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeStoreError("persisted production render facts are invalid") from error
 
 
 def _canonical_media_db_json(value: str) -> str:
@@ -3928,9 +4071,15 @@ class PostgresRuntimeStore:
         render_plan_sha256: str,
         render_profile_sha256: str,
         renderer_identity_sha256: str,
+        execution_limits_sha256: str,
         max_output_bytes: int,
     ) -> ProductionRenderAttempt:
-        """Reserve one exact admitted Recipe and immutable render identity."""
+        """Reserve one exact Recipe and immutable render/execution identities.
+
+        ``renderer_identity_sha256`` is retained for API compatibility and has
+        one closed meaning: the canonical hash of
+        ``ProductionFfmpegIdentity.to_mapping()`` supplied in the final facts.
+        """
 
         self._validate_uuid(command_slot_id, "command_slot_id")
         self._validate_sha256(request_hash, "production render request_hash")
@@ -3942,6 +4091,7 @@ class PostgresRuntimeStore:
             ("render_plan_sha256", render_plan_sha256),
             ("render_profile_sha256", render_profile_sha256),
             ("renderer_identity_sha256", renderer_identity_sha256),
+            ("execution_limits_sha256", execution_limits_sha256),
         ):
             self._validate_sha256(value, f"production render {field_name}")
         if type(max_output_bytes) is not int or max_output_bytes <= 0:  # noqa: E721
@@ -4030,6 +4180,8 @@ class PostgresRuntimeStore:
                     or attempt.render_profile_sha256 != render_profile_sha256
                     or attempt.renderer_identity_sha256
                     != renderer_identity_sha256
+                    or attempt.execution_limits_sha256
+                    != execution_limits_sha256
                     or attempt.max_output_bytes != max_output_bytes
                 ):
                     raise IdempotencyConflictError(
@@ -4046,10 +4198,11 @@ class PostgresRuntimeStore:
                     recipe_scope_kind, recipe_scope_key, recipe_artifact_type,
                     recipe_logical_id, recipe_revision, recipe_content_hash,
                     render_plan_sha256, render_profile_sha256,
-                    renderer_identity_sha256, max_output_bytes,
+                    renderer_identity_sha256, execution_limits_sha256,
+                    max_output_bytes,
                     state, version
                 ) VALUES (
-                    %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     'reserved', 0
@@ -4073,6 +4226,7 @@ class PostgresRuntimeStore:
                     render_plan_sha256,
                     render_profile_sha256,
                     renderer_identity_sha256,
+                    execution_limits_sha256,
                     max_output_bytes,
                 ),
             )
@@ -4211,6 +4365,7 @@ class PostgresRuntimeStore:
         lease: ProductionRenderLease,
         *,
         output_blob: BlobRef,
+        facts: ProductionRenderAttemptFacts,
     ) -> ProductionRenderAttempt:
         """Bind one exact same-Job external MP4 while the lease is active."""
 
@@ -4221,6 +4376,14 @@ class PostgresRuntimeStore:
         if type(output_blob) is not BlobRef:  # noqa: E721
             raise StoreValidationError(
                 "production render output must be an exact BlobRef"
+            )
+        from ..rendering.production_ffmpeg_renderer import (
+            ProductionRenderAttemptFacts,
+        )
+
+        if type(facts) is not ProductionRenderAttemptFacts:  # noqa: E721
+            raise StoreValidationError(
+                "production render output requires exact ProductionRenderAttemptFacts"
             )
 
         def operation(cursor: DbCursor) -> ProductionRenderAttempt:
@@ -4268,11 +4431,59 @@ class PostgresRuntimeStore:
                     "production render output is not an allowed external MP4"
                 )
             cursor.execute(
+                "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+                (job_id,),
+            )
+            job_row = cursor.fetchone()
+            if job_row is None or cursor.fetchone() is not None:
+                raise RuntimeStoreError("production render Job identity is unavailable")
+            job = Job(
+                _text(job_row[0]),
+                cast(JobProfile, _text(job_row[1])),
+            )
+            ffmpeg_identity_json = json.dumps(
+                facts.ffmpeg.to_mapping(),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+            ffmpeg_identity_sha256 = (
+                "sha256:" + hashlib.sha256(ffmpeg_identity_json).hexdigest()
+            )
+            if (
+                facts.attempt_id != attempt.attempt_id
+                or facts.job != job
+                or facts.story_id
+                != attempt.recipe.logical_id.removeprefix("production_recipe@")
+                or facts.recipe_sha256 != attempt.recipe.content_hash
+                or facts.plan_sha256 != attempt.render_plan_sha256
+                or facts.profile_sha256 != attempt.render_profile_sha256
+                or facts.execution_limits_sha256
+                != attempt.execution_limits_sha256
+                or ffmpeg_identity_sha256 != attempt.renderer_identity_sha256
+                or facts.output_sha256 != durable.content_hash
+                or facts.output_byte_length != durable.byte_length
+                or facts.output_media_type != durable.media_type
+            ):
+                raise StoreValidationError(
+                    "production render facts disagree with reserved authority or output Blob"
+                )
+            facts_json = _canonical_production_render_facts_json(facts)
+            facts_json_sha256 = (
+                "sha256:" + hashlib.sha256(facts_json.encode("utf-8")).hexdigest()
+            )
+            if facts_json_sha256 != facts.canonical_hash:
+                raise StoreValidationError(
+                    "production render facts canonical JSON/hash identity diverged"
+                )
+            cursor.execute(
                 """
                 UPDATE runtime.production_render_attempts
                    SET state = 'rendered', version = version + 1,
                        lease_token = NULL, lease_expires_at = NULL,
                        output_object_id = %s,
+                       render_facts_json = %s,
+                       render_facts_sha256 = %s,
                        rendered_at = clock_timestamp()
                  WHERE attempt_id = %s AND state = 'rendering'
                    AND version = %s AND lease_token = %s
@@ -4280,6 +4491,8 @@ class PostgresRuntimeStore:
                 """,
                 (
                     durable.object_id,
+                    facts_json,
+                    facts.canonical_hash,
                     lease.attempt_id,
                     lease.version,
                     lease.token,
@@ -4576,15 +4789,19 @@ class PostgresRuntimeStore:
                    attempt.recipe_artifact_type, attempt.recipe_logical_id,
                    attempt.recipe_revision, attempt.recipe_content_hash,
                    attempt.render_plan_sha256, attempt.render_profile_sha256,
-                   attempt.renderer_identity_sha256, attempt.max_output_bytes,
+                   attempt.renderer_identity_sha256,
+                   attempt.execution_limits_sha256, attempt.max_output_bytes,
                    attempt.state, attempt.version, attempt.reserved_at,
                    attempt.lease_token, attempt.lease_expires_at,
                    output.object_id, output.content_hash,
                    output.byte_length, output.media_type,
+                   attempt.render_facts_json, attempt.render_facts_sha256,
                    attempt.receipt_id, attempt.artifact_set_id,
                    attempt.failure_code, attempt.failure_detail::text,
-                   attempt.rendered_at, attempt.completed_at
+                   attempt.rendered_at, attempt.completed_at,
+                   render_job.job_key, render_job.profile
               FROM runtime.production_render_attempts AS attempt
+              JOIN runtime.jobs AS render_job ON render_job.job_id = attempt.job_id
               LEFT JOIN storage.blob_objects AS output
                 ON output.object_id = attempt.output_object_id
              WHERE attempt.attempt_id = %s
@@ -4612,6 +4829,7 @@ class PostgresRuntimeStore:
             render_plan_sha256,
             render_profile_sha256,
             renderer_identity_sha256,
+            execution_limits_sha256,
             max_output_bytes,
             state,
             version,
@@ -4622,12 +4840,16 @@ class PostgresRuntimeStore:
             output_content_hash,
             output_byte_length,
             output_media_type,
+            render_facts_json,
+            render_facts_sha256,
             receipt_id,
             artifact_set_id,
             failure_code,
             failure_detail,
             rendered_at,
             completed_at,
+            render_job_key,
+            render_job_profile,
         ) = row
         output_blob = None
         if output_object_id is not None:
@@ -4637,6 +4859,21 @@ class PostgresRuntimeStore:
                 int(_text(output_byte_length)),
                 _text(output_media_type),
             )
+        render_facts = None
+        if render_facts_json is not None and render_facts_sha256 is not None:
+            render_facts = _decode_production_render_facts(
+                _text(render_facts_json),
+                _text(render_facts_sha256),
+            )
+            if render_facts.job != Job(
+                _text(render_job_key),
+                cast(JobProfile, _text(render_job_profile)),
+            ):
+                raise RuntimeStoreError(
+                    "persisted production render facts disagree with their Job"
+                )
+        elif render_facts_json is not None or render_facts_sha256 is not None:
+            raise RuntimeStoreError("persisted production render facts are incomplete")
         attempt = ProductionRenderAttempt(
             attempt_id=UUID(str(attempt_id)),
             job_id=UUID(str(job_id)),
@@ -4659,6 +4896,7 @@ class PostgresRuntimeStore:
             render_plan_sha256=_text(render_plan_sha256),
             render_profile_sha256=_text(render_profile_sha256),
             renderer_identity_sha256=_text(renderer_identity_sha256),
+            execution_limits_sha256=_text(execution_limits_sha256),
             max_output_bytes=int(_text(max_output_bytes)),
             state=cast(
                 Literal[
@@ -4675,6 +4913,12 @@ class PostgresRuntimeStore:
             reserved_at=cast(datetime, reserved_at),
             lease_expires_at=cast(datetime | None, lease_expires_at),
             output_blob=output_blob,
+            render_facts=render_facts,
+            render_facts_sha256=(
+                None
+                if render_facts_sha256 is None
+                else _text(render_facts_sha256)
+            ),
             receipt_id=None if receipt_id is None else UUID(str(receipt_id)),
             artifact_set_id=(
                 None if artifact_set_id is None else UUID(str(artifact_set_id))
@@ -4753,7 +4997,8 @@ class PostgresRuntimeStore:
             )
         root = self._materialization_root()
         try:
-            durable = self._verified_claimed_blob_ref(job, reference)
+            source = self._verified_claimed_blob_materialization_source(job, reference)
+            durable = source.reference
         except BlobIntegrityError as error:
             raise MaterializationError(
                 "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
@@ -4766,6 +5011,12 @@ class PostgresRuntimeStore:
                 "private media staging is unavailable",
                 outcome="failed",
             ) from error
+        if source.storage_kind == "s3_compatible" and self._object_store_verifier is None:
+            raise MaterializationError(
+                "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                "external immutable media storage is not configured",
+                outcome="failed",
+            )
 
         quota_lease = _reserve_materialization_quota(
             root, durable.byte_length, limits.staging_quota_bytes
@@ -4782,29 +5033,79 @@ class PostgresRuntimeStore:
             try:
                 descriptor = os.open(
                     "source.mp4",
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                     0o600,
                     dir_fd=directory_fd,
                 )
             finally:
                 os.close(directory_fd)
 
-            digest = hashlib.sha256()
-            offset = 0
-            while offset < durable.byte_length:
-                expected = min(limits.copy_chunk_bytes, durable.byte_length - offset)
-                chunk = self._read_immutable_blob_chunk(durable.object_id, offset, expected)
-                if len(chunk) != expected:
-                    raise BlobIntegrityError("immutable blob stream ended before its declared length")
-                digest.update(chunk)
-                written = 0
-                while written < len(chunk):
-                    written += os.write(descriptor, chunk[written:])
-                offset += len(chunk)
-            if self._read_immutable_blob_chunk(durable.object_id, offset, 1):
-                raise BlobIntegrityError("immutable blob stream exceeded its declared length")
-            if "sha256:" + digest.hexdigest() != durable.content_hash:
-                raise BlobIntegrityError("immutable blob stream failed exact digest verification")
+            if source.storage_kind == "postgres_inline":
+                digest = hashlib.sha256()
+                offset = 0
+                while offset < durable.byte_length:
+                    expected = min(limits.copy_chunk_bytes, durable.byte_length - offset)
+                    chunk = self._read_immutable_blob_chunk(
+                        durable.object_id, offset, expected
+                    )
+                    if len(chunk) != expected:
+                        raise BlobIntegrityError(
+                            "immutable blob stream ended before its declared length"
+                        )
+                    digest.update(chunk)
+                    written = 0
+                    while written < len(chunk):
+                        written += os.write(descriptor, chunk[written:])
+                    offset += len(chunk)
+                if self._read_immutable_blob_chunk(durable.object_id, offset, 1):
+                    raise BlobIntegrityError(
+                        "immutable blob stream exceeded its declared length"
+                    )
+                if "sha256:" + digest.hexdigest() != durable.content_hash:
+                    raise BlobIntegrityError(
+                        "immutable blob stream failed exact digest verification"
+                    )
+            else:
+                verifier = cast(S3PendingObjectStore, self._object_store_verifier)
+                if any(
+                    value is None
+                    for value in (
+                        source.backend_id,
+                        source.storage_region,
+                        source.storage_locator,
+                        source.etag,
+                        source.write_strategy,
+                    )
+                ):
+                    raise BlobIntegrityError(
+                        "external immutable blob metadata is incomplete"
+                    )
+                grant = _issue_s3_read_grant(
+                    reference=durable,
+                    backend_id=cast(str, source.backend_id),
+                    storage_region=cast(str, source.storage_region),
+                    storage_locator=cast(str, source.storage_locator),
+                    etag=cast(str, source.etag),
+                    version_id=source.version_id,
+                    write_strategy=cast(str, source.write_strategy),
+                )
+                verified = verifier.materialize_to_descriptor(
+                    grant,
+                    destination_descriptor=descriptor,
+                    limits=ObjectStoreReadLimits(
+                        max_object_bytes=limits.effective_max_source_bytes,
+                        transfer_chunk_bytes=min(
+                            limits.copy_chunk_bytes,
+                            limits.effective_max_source_bytes,
+                        ),
+                    ),
+                )
+                if not verifier._verify_materialized_read(  # pyright: ignore[reportPrivateUsage]
+                    grant, verified
+                ):
+                    raise BlobIntegrityError(
+                        "external immutable blob verification signature is invalid"
+                    )
             os.fsync(descriptor)
             source_stat = os.fstat(descriptor)
             if (
@@ -4822,9 +5123,19 @@ class PostgresRuntimeStore:
                 directory,
                 quota_lease,
             )
-        except BlobIntegrityError as error:
+        except (BlobIntegrityError, ObjectStoreReadError) as error:
             if self._discard_partial_materialization(directory, descriptor):
                 quota_lease.release()
+            if isinstance(error, ObjectStoreReadError) and error.code in {
+                "OBJECT_STORE_READ_REQUEST_INVALID",
+                "OBJECT_STORE_READ_TARGET_UNSAFE",
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+            }:
+                raise MaterializationError(
+                    "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED",
+                    "external immutable media could not be materialized exactly",
+                    outcome="failed",
+                ) from error
             raise MaterializationError(
                 "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED",
                 "committed source BlobRef integrity verification failed",
@@ -4858,8 +5169,12 @@ class PostgresRuntimeStore:
                 outcome="failed",
             ) from error
 
-    def _verified_claimed_blob_ref(self, job: Job, reference: BlobRef) -> BlobRef:
-        def operation(cursor: DbCursor) -> BlobRef:
+    def _verified_claimed_blob_materialization_source(
+        self,
+        job: Job,
+        reference: BlobRef,
+    ) -> _ClaimedBlobMaterializationSource:
+        def operation(cursor: DbCursor) -> _ClaimedBlobMaterializationSource:
             cursor.execute(
                 "SELECT job_id, profile FROM runtime.jobs WHERE job_key = %s",
                 (job.job_key,),
@@ -4870,8 +5185,88 @@ class PostgresRuntimeStore:
             job_id, profile = job_row
             if _text(profile) != job.profile:
                 raise JobProfileMismatchError("job_key belongs to a different profile")
-            return self._claimed_blob_ref(
-                cursor, UUID(str(job_id)), reference, field_name="immutable"
+            cursor.execute(
+                """
+                SELECT object.object_id, object.content_hash,
+                       object.byte_length, object.media_type,
+                       object.content_bytes IS NOT NULL,
+                       object.storage_kind, object.storage_backend_id,
+                       object.storage_region, object.storage_locator,
+                       object.storage_etag, object.storage_version_id,
+                       object.write_strategy, object.verified_at IS NOT NULL
+                  FROM storage.blob_objects AS object
+                  JOIN storage.blob_claims AS claim
+                    ON claim.object_id = object.object_id
+                 WHERE claim.job_id = %s AND object.object_id = %s
+                """,
+                (UUID(str(job_id)), reference.object_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise BlobIntegrityError(
+                    "immutable BlobRef is not claimed by the attempt Job"
+                )
+            durable = BlobRef(
+                UUID(str(row[0])),
+                _text(row[1]),
+                int(_text(row[2])),
+                _text(row[3]),
+            )
+            if durable != reference:
+                raise BlobIntegrityError(
+                    "immutable BlobRef does not match durable blob metadata"
+                )
+            has_inline_bytes = bool(row[4])
+            storage_kind = _text(row[5])
+            backend_id = None if row[6] is None else _text(row[6])
+            storage_region = None if row[7] is None else _text(row[7])
+            storage_locator = None if row[8] is None else _text(row[8])
+            etag = None if row[9] is None else _text(row[9])
+            version_id = None if row[10] is None else _text(row[10])
+            write_strategy = None if row[11] is None else _text(row[11])
+            is_verified = bool(row[12])
+            external_metadata = (
+                backend_id,
+                storage_region,
+                storage_locator,
+                etag,
+                version_id,
+                write_strategy,
+            )
+            if storage_kind == "postgres_inline":
+                if not has_inline_bytes or is_verified or any(
+                    value is not None for value in external_metadata
+                ):
+                    raise BlobIntegrityError(
+                        "inline immutable blob storage metadata is invalid"
+                    )
+            elif storage_kind == "s3_compatible":
+                required_external_metadata = (
+                    backend_id,
+                    storage_region,
+                    storage_locator,
+                    etag,
+                    write_strategy,
+                )
+                if has_inline_bytes or not is_verified or any(
+                    value is None for value in required_external_metadata
+                ):
+                    raise BlobIntegrityError(
+                        "external immutable blob storage metadata is invalid"
+                    )
+            else:
+                raise BlobIntegrityError(
+                    "immutable blob uses an unsupported storage kind"
+                )
+            return _ClaimedBlobMaterializationSource(
+                reference=durable,
+                storage_kind=storage_kind,
+                backend_id=backend_id,
+                storage_region=storage_region,
+                storage_locator=storage_locator,
+                etag=etag,
+                version_id=version_id,
+                write_strategy=write_strategy,
             )
 
         return self._transaction(operation)

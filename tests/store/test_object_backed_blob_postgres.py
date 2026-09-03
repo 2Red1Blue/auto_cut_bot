@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,7 @@ from autocut_kernel.store import (
     S3PendingObjectStore,
     StoreValidationError,
 )
+from autocut_kernel.store.models import MaterializationError, MaterializationLimits
 from autocut_kernel.store.object_store import (
     _issue_pending_object_reservation,  # pyright: ignore[reportPrivateUsage]
 )
@@ -50,11 +52,13 @@ def _hash(content: bytes) -> str:
 class _ExactObjectClient:
     def __init__(self) -> None:
         self.object: dict[str, object] | None = None
+        self.content: bytes | None = None
 
     def put_object(self, **kwargs: object) -> Mapping[str, object]:
         body = cast(BinaryIO, kwargs["Body"])
         content = body.read()
         assert len(content) == kwargs["ContentLength"]
+        self.content = content
         self.object = {
             "ChecksumSHA256": kwargs["ChecksumSHA256"],
             "ContentLength": kwargs["ContentLength"],
@@ -69,12 +73,24 @@ class _ExactObjectClient:
     def head_object(self, **kwargs: object) -> Mapping[str, object]:
         assert self.object is not None
         assert kwargs["Key"] == self.object["Key"]
+        if "VersionId" in kwargs:
+            assert kwargs["VersionId"] == self.object["VersionId"]
         return self.object
 
+    def get_object(self, **kwargs: object) -> Mapping[str, object]:
+        assert self.object is not None
+        assert self.content is not None
+        assert kwargs["Key"] == self.object["Key"]
+        assert kwargs["IfMatch"] == self.object["ETag"]
+        assert kwargs["VersionId"] == self.object["VersionId"]
+        return {**self.object, "Body": io.BytesIO(self.content)}
 
-def _object_adapter() -> S3PendingObjectStore:
+
+def _object_adapter(
+    client: _ExactObjectClient | None = None,
+) -> S3PendingObjectStore:
     return S3PendingObjectStore(
-        _ExactObjectClient(),
+        _ExactObjectClient() if client is None else client,
         S3ObjectStoreConfig(
             backend_id="workspace-s3",
             storage_region="local-primary",
@@ -430,6 +446,74 @@ def test_verified_external_object_is_claimed_without_exposing_locator(
             True,
             1,
         )
+
+
+def test_external_blob_materializes_after_store_restart_without_local_path(
+    tmp_path: Path,
+) -> None:
+    assert DSN is not None
+    client = _ExactObjectClient()
+    writer_adapter = _object_adapter(client)
+    writer_store = PostgresRuntimeStore(
+        lambda: psycopg.connect(DSN),
+        object_store_verifier=writer_adapter,
+    )
+    job = Job("restart-safe-external-materialization", "test")
+    content = b"restart-safe exact production render bytes"
+    reservation, verified = _verified_object(
+        content,
+        tmp_path / "attempt-restart-safe",
+        writer_store,
+        job,
+        writer_adapter,
+    )
+    reference = writer_store.claim_verified_object(
+        job,
+        reservation,
+        verified,
+    )
+
+    staging_root = tmp_path / "restart-safe-staging"
+    restarted_store = PostgresRuntimeStore(
+        lambda: psycopg.connect(DSN),
+        materialization_staging_root=staging_root,
+        object_store_verifier=_object_adapter(client),
+    )
+    limits = MaterializationLimits(
+        max_source_bytes=1024,
+        timed_speech_max_request_bytes=1024,
+        copy_chunk_bytes=7,
+        staging_quota_bytes=4096,
+    )
+
+    lease = restarted_store.materialize_immutable_blob(job, reference, limits)
+    materialized_path = lease.path
+    try:
+        assert lease.reference == reference
+        assert materialized_path.read_bytes() == content
+        assert materialized_path.stat().st_mode & 0o777 == 0o400
+        assert str(materialized_path).startswith(str(staging_root))
+    finally:
+        lease.close()
+    assert not materialized_path.exists()
+
+    with pytest.raises(MaterializationError) as foreign_error:
+        restarted_store.materialize_immutable_blob(
+            Job("restart-safe-foreign-job", "test"),
+            reference,
+            limits,
+        )
+    assert foreign_error.value.code == "COMMITTED_SOURCE_BLOB_INTEGRITY_FAILED"
+
+    unconfigured_root = tmp_path / "unconfigured-staging"
+    unconfigured_store = PostgresRuntimeStore(
+        lambda: psycopg.connect(DSN),
+        materialization_staging_root=unconfigured_root,
+    )
+    with pytest.raises(MaterializationError) as unconfigured_error:
+        unconfigured_store.materialize_immutable_blob(job, reference, limits)
+    assert unconfigured_error.value.code == "MEDIA_MATERIALIZATION_INFRASTRUCTURE_FAILED"
+    assert list(unconfigured_root.iterdir()) == []
 
 
 def test_external_claim_rejects_tampered_or_foreign_adapter_verification(

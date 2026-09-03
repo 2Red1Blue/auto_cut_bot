@@ -16,7 +16,7 @@ import os
 import re
 import secrets
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
@@ -24,6 +24,11 @@ from typing import Final, Literal, Protocol, cast
 from uuid import RFC_4122, UUID
 
 from .models import BlobRef
+
+try:  # Native Windows may import write-only store code; reads remain POSIX-only.
+    import fcntl as _fcntl
+except ModuleNotFoundError:  # pragma: no cover - exercised by native Windows.
+    _fcntl = None
 
 OBJECT_STORE_WRITE_SCHEMA_VERSION: Final = "object-store-write-v1"
 OBJECT_STORE_WRITE_STRATEGY: Final = "s3-single-put-v1"
@@ -35,8 +40,10 @@ _SAFE_PREFIX_PATTERN: Final = re.compile(
 _OBJECT_ID_METADATA_KEY: Final = "autocut-object-id"
 _CONTENT_HASH_METADATA_KEY: Final = "autocut-content-sha256"
 _RESERVATION_ATTESTATION: Final = object()
+_READ_GRANT_ATTESTATION: Final = object()
 
 ObjectStoreWriteOutcome = Literal["denied", "failed", "indeterminate"]
+ObjectStoreReadOutcome = Literal["denied", "failed", "indeterminate"]
 
 
 class S3ObjectClient(Protocol):
@@ -67,6 +74,30 @@ class ObjectStoreWriteError(RuntimeError):
             "OBJECT_STORE_RESULT_INDETERMINATE",
         }:
             raise ValueError("object-store failure code is unsupported")
+        self.code = code
+        self.detail = detail
+        self.outcome = outcome
+        super().__init__(detail)
+
+
+class ObjectStoreReadError(RuntimeError):
+    """Closed, locator-free result from the external object-read boundary."""
+
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        outcome: ObjectStoreReadOutcome,
+    ) -> None:
+        if code not in {
+            "OBJECT_STORE_READ_REQUEST_INVALID",
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "OBJECT_STORE_READ_LIMIT_EXCEEDED",
+            "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+            "OBJECT_STORE_RESULT_INDETERMINATE",
+        }:
+            raise ValueError("object-store read failure code is unsupported")
         self.code = code
         self.detail = detail
         self.outcome = outcome
@@ -121,6 +152,26 @@ class ObjectStoreWriteLimits:
         ):
             raise ValueError(
                 "verification_chunk_bytes must be positive and not exceed max_object_bytes"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectStoreReadLimits:
+    """Explicit byte and chunk ceilings for one object-store materialization."""
+
+    max_object_bytes: int
+    transfer_chunk_bytes: int
+
+    def __post_init__(self) -> None:
+        if type(self.max_object_bytes) is not int or self.max_object_bytes <= 0:  # noqa: E721
+            raise ValueError("max_object_bytes must be a positive integer")
+        if (  # noqa: E721
+            type(self.transfer_chunk_bytes) is not int
+            or self.transfer_chunk_bytes <= 0
+            or self.transfer_chunk_bytes > self.max_object_bytes
+        ):
+            raise ValueError(
+                "transfer_chunk_bytes must be positive and not exceed max_object_bytes"
             )
 
 
@@ -242,6 +293,73 @@ def _issue_pending_object_reservation(  # pyright: ignore[reportUnusedFunction]
     )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _S3ReadGrant:  # pyright: ignore[reportUnusedClass]
+    """Store-issued authority to read one exact durable S3-compatible object.
+
+    Its representation intentionally omits every private storage field.  Public
+    callers must never receive this package-private capability.
+    """
+
+    reference: BlobRef
+    backend_id: str
+    storage_region: str
+    storage_locator: str
+    etag: str
+    version_id: str | None
+    write_strategy: str
+    _attestation: object = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not BlobRef:  # noqa: E721
+            raise ValueError("S3 read grant requires an exact BlobRef")
+        if not _SAFE_ID_PATTERN.fullmatch(self.backend_id):
+            raise ValueError("S3 read grant backend_id is invalid")
+        if not _SAFE_ID_PATTERN.fullmatch(self.storage_region):
+            raise ValueError("S3 read grant storage_region is invalid")
+        if (
+            not self.storage_locator
+            or len(self.storage_locator) > 1024
+            or self.storage_locator.startswith("/")
+            or ".." in self.storage_locator.split("/")
+        ):
+            raise ValueError("S3 read grant storage_locator is invalid")
+        if type(self.etag) is not str or not self.etag.strip():  # noqa: E721
+            raise ValueError("S3 read grant etag is invalid")
+        if self.version_id is not None and (
+            type(self.version_id) is not str or not self.version_id.strip()  # noqa: E721
+        ):
+            raise ValueError("S3 read grant version_id is invalid")
+        if self.write_strategy != OBJECT_STORE_WRITE_STRATEGY:
+            raise ValueError("S3 read grant write strategy is unsupported")
+        if self._attestation is not _READ_GRANT_ATTESTATION:
+            raise ValueError("S3 read grant was not issued by the Store")
+
+
+def _issue_s3_read_grant(  # pyright: ignore[reportUnusedFunction]
+    *,
+    reference: BlobRef,
+    backend_id: str,
+    storage_region: str,
+    storage_locator: str,
+    etag: str,
+    version_id: str | None,
+    write_strategy: str,
+) -> _S3ReadGrant:
+    """Issue the package-private capability consumed by the read adapter."""
+
+    return _S3ReadGrant(
+        reference=reference,
+        backend_id=backend_id,
+        storage_region=storage_region,
+        storage_locator=storage_locator,
+        etag=etag,
+        version_id=version_id,
+        write_strategy=write_strategy,
+        _attestation=_READ_GRANT_ATTESTATION,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _VerifiedPendingObject:
     """Internal metadata proven by an exact remote HEAD reconciliation.
@@ -283,6 +401,44 @@ class _VerifiedPendingObject:
             raise ValueError("verified object signature is malformed")
         if self.strategy != OBJECT_STORE_WRITE_STRATEGY:
             raise ValueError("verified object strategy is unsupported")
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedObjectRead:
+    """Adapter-sealed proof that exact bytes reached one private descriptor."""
+
+    reference: BlobRef
+    backend_id: str
+    storage_region: str
+    etag: str
+    version_id: str | None
+    write_strategy: str
+    destination_identity: tuple[int, int, int, int, int, int, int, int]
+    _verification_mac: bytes = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if type(self.reference) is not BlobRef:  # noqa: E721
+            raise ValueError("verified read requires an exact BlobRef")
+        if not _SAFE_ID_PATTERN.fullmatch(self.backend_id):
+            raise ValueError("verified read backend_id is invalid")
+        if not _SAFE_ID_PATTERN.fullmatch(self.storage_region):
+            raise ValueError("verified read storage_region is invalid")
+        if type(self.etag) is not str or not self.etag.strip():  # noqa: E721
+            raise ValueError("verified read etag is invalid")
+        if self.version_id is not None and (
+            type(self.version_id) is not str or not self.version_id.strip()  # noqa: E721
+        ):
+            raise ValueError("verified read version_id is invalid")
+        if self.write_strategy != OBJECT_STORE_WRITE_STRATEGY:
+            raise ValueError("verified read write strategy is unsupported")
+        if (
+            type(self.destination_identity) is not tuple  # noqa: E721
+            or len(self.destination_identity) != 8
+            or any(type(value) is not int for value in self.destination_identity)  # noqa: E721
+        ):
+            raise ValueError("verified read destination identity is malformed")
+        if type(self._verification_mac) is not bytes or len(self._verification_mac) != 32:  # noqa: E721
+            raise ValueError("verified read signature is malformed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +600,217 @@ class S3PendingObjectStore:
         finally:
             os.close(descriptor)
 
+    def materialize_to_descriptor(
+        self,
+        grant: object,
+        *,
+        destination_descriptor: object,
+        limits: object,
+    ) -> _VerifiedObjectRead:
+        """Boundedly GET one exact granted object into a caller-owned descriptor.
+
+        The caller retains ownership of the descriptor and any partial bytes.
+        The adapter never accepts or returns a filesystem path.
+        """
+
+        if (  # noqa: E721
+            type(grant) is not _S3ReadGrant
+            or type(destination_descriptor) is not int
+            or type(limits) is not ObjectStoreReadLimits
+        ):
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_READ_REQUEST_INVALID",
+                "object read requires an exact Store grant, descriptor, and limits",
+                outcome="denied",
+            )
+        if (
+            grant.backend_id != self._config.backend_id
+            or grant.storage_region != self._config.storage_region
+            or grant.storage_locator != self._object_key(grant.reference.object_id)
+            or grant.write_strategy != OBJECT_STORE_WRITE_STRATEGY
+        ):
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_READ_REQUEST_INVALID",
+                "object read grant does not belong to this configured adapter",
+                outcome="denied",
+            )
+        if grant.reference.byte_length > limits.max_object_bytes:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_READ_LIMIT_EXCEEDED",
+                "object exceeds the configured read byte limit",
+                outcome="denied",
+            )
+        descriptor = destination_descriptor
+        initial_identity = _validate_read_destination(descriptor)
+        head = self._head_exact_read(grant)
+        if head == "missing" or head == "mismatch":
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                "the granted object is missing or does not match durable metadata",
+                outcome="failed",
+            )
+        if head == "unknown":
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the granted object cannot be reconciled with its provider",
+                outcome="indeterminate",
+            )
+
+        get_object = getattr(self._client, "get_object", None)
+        if not callable(get_object):
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the configured provider cannot perform an exact object read",
+                outcome="indeterminate",
+            )
+        request: dict[str, object] = {
+            "Bucket": self._config.bucket,
+            "Key": grant.storage_locator,
+            "ChecksumMode": "ENABLED",
+            "IfMatch": grant.etag,
+        }
+        if grant.version_id is not None:
+            request["VersionId"] = grant.version_id
+        try:
+            response = get_object(**request)
+        except Exception as error:
+            if _provider_error_code(error) in {
+                "404",
+                "NoSuchKey",
+                "NoSuchVersion",
+                "NotFound",
+                "PreconditionFailed",
+                "412",
+            }:
+                raise ObjectStoreReadError(
+                    "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                    "the granted object disappeared or changed before it could be read",
+                    outcome="failed",
+                ) from None
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object read did not produce a known provider result",
+                outcome="indeterminate",
+            ) from None
+        # Third-party clients can violate their type stub at runtime; keep this
+        # trust-boundary check even though the local Protocol promises Mapping.
+        if not isinstance(response, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
+            _close_provider_response_body(response)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object read returned an unknown provider result",
+                outcome="indeterminate",
+            )
+        response_mapping = cast(Mapping[object, object], response)
+        try:
+            body = response_mapping.get("Body")
+        except Exception:
+            _close_provider_response_body(response_mapping)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object read returned an unknown provider result",
+                outcome="indeterminate",
+            ) from None
+        read = getattr(body, "read", None)
+        close = getattr(body, "close", None)
+        if not callable(read) or not callable(close):
+            if callable(close):
+                _close_provider_body(close)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object read did not return a bounded response stream",
+                outcome="indeterminate",
+            )
+        try:
+            metadata_exact = _read_metadata_exact(response_mapping, grant)
+        except Exception:
+            _close_provider_body(close)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object response metadata could not be inspected",
+                outcome="indeterminate",
+            ) from None
+        if not metadata_exact:
+            _close_provider_body(close)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                "the object response does not match durable metadata",
+                outcome="failed",
+            )
+
+        try:
+            digest, byte_length = _stream_provider_body(
+                read,
+                descriptor,
+                grant.reference.byte_length,
+                limits.transfer_chunk_bytes,
+            )
+        except ObjectStoreReadError:
+            _close_provider_body(close)
+            raise
+        except Exception:
+            _close_provider_body(close)
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object response could not be completely consumed",
+                outcome="indeterminate",
+            ) from None
+        try:
+            close()
+        except Exception:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object response could not be cleanly released",
+                outcome="indeterminate",
+            ) from None
+        if byte_length != grant.reference.byte_length or digest != grant.reference.content_hash:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                "the object response bytes do not match the granted BlobRef",
+                outcome="failed",
+            )
+        final_identity = _verify_read_destination(
+            descriptor,
+            initial_identity,
+            grant.reference,
+            limits.transfer_chunk_bytes,
+        )
+        verified = _VerifiedObjectRead(
+            reference=grant.reference,
+            backend_id=grant.backend_id,
+            storage_region=grant.storage_region,
+            etag=grant.etag,
+            version_id=grant.version_id,
+            write_strategy=grant.write_strategy,
+            destination_identity=final_identity,
+            _verification_mac=b"\x00" * 32,
+        )
+        return _seal_verified_read(self._verification_key, grant, verified)
+
+    def _verify_materialized_read(self, grant: object, verified: object) -> bool:
+        """Verify this adapter sealed every grant and result identity field."""
+
+        if (  # noqa: E721
+            type(grant) is not _S3ReadGrant
+            or type(verified) is not _VerifiedObjectRead
+            or verified.reference != grant.reference
+            or verified.backend_id != grant.backend_id
+            or verified.storage_region != grant.storage_region
+            or verified.etag != grant.etag
+            or verified.version_id != grant.version_id
+            or verified.write_strategy != grant.write_strategy
+        ):
+            return False
+        expected = hmac.digest(
+            self._verification_key,
+            _verified_read_payload(grant, verified),
+            "sha256",
+        )
+        return hmac.compare_digest(
+            verified._verification_mac,  # pyright: ignore[reportPrivateUsage]
+            expected,
+        )
+
     def _verify_pending_object(
         self,
         reservation: object,
@@ -472,6 +839,44 @@ class S3PendingObjectStore:
             verified._verification_mac,  # pyright: ignore[reportPrivateUsage]
             expected,
         )
+
+    def _head_exact_read(
+        self,
+        grant: _S3ReadGrant,
+    ) -> Literal["exact", "missing", "mismatch", "unknown"]:
+        request: dict[str, object] = {
+            "Bucket": self._config.bucket,
+            "Key": grant.storage_locator,
+            "ChecksumMode": "ENABLED",
+        }
+        if grant.version_id is not None:
+            request["VersionId"] = grant.version_id
+        response: object
+        try:
+            response = self._client.head_object(**request)
+        except Exception as error:
+            if _provider_error_code(error) in {
+                "404",
+                "NoSuchKey",
+                "NoSuchVersion",
+                "NotFound",
+            }:
+                return "missing"
+            return "unknown"
+        # Provider responses remain untrusted even when the SDK type stub says
+        # Mapping; malformed response objects must fail closed.
+        if not isinstance(response, Mapping):  # pyright: ignore[reportUnnecessaryIsInstance]
+            return "unknown"
+        try:
+            metadata_exact = _read_metadata_exact(
+                cast(Mapping[object, object], response),
+                grant,
+            )
+        except Exception:
+            return "unknown"
+        if not metadata_exact:
+            return "mismatch"
+        return "exact"
 
     def _object_key(self, object_id: UUID) -> str:
         hexadecimal = object_id.hex
@@ -517,6 +922,234 @@ class S3PendingObjectStore:
         ):
             return _HeadResult("mismatch")
         return _HeadResult("exact", etag, version_id)
+
+
+def _read_metadata_exact(
+    response: Mapping[object, object],
+    grant: _S3ReadGrant,
+) -> bool:
+    metadata = response.get("Metadata")
+    if not isinstance(metadata, Mapping):
+        return False
+    metadata_mapping = cast(Mapping[object, object], metadata)
+    normalized_metadata = {str(key).lower(): value for key, value in metadata_mapping.items()}
+    checksum = response.get("ChecksumSHA256")
+    delete_marker = response.get("DeleteMarker")
+    return (
+        type(response.get("ContentLength")) is int  # noqa: E721
+        and response.get("ContentLength") == grant.reference.byte_length
+        and response.get("ContentType") == grant.reference.media_type
+        and response.get("ETag") == grant.etag
+        and response.get("VersionId") == grant.version_id
+        and (delete_marker is None or delete_marker is False)
+        and (checksum is None or checksum == _checksum_header(grant.reference.content_hash))
+        and normalized_metadata.get(_OBJECT_ID_METADATA_KEY) == str(grant.reference.object_id)
+        and normalized_metadata.get(_CONTENT_HASH_METADATA_KEY) == grant.reference.content_hash
+    )
+
+
+def _validate_read_destination(
+    descriptor: int,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    if _fcntl is None:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object reads require POSIX descriptor integrity controls",
+            outcome="denied",
+        )
+    try:
+        status = os.fstat(descriptor)
+        descriptor_flags = _fcntl.fcntl(descriptor, _fcntl.F_GETFL)
+    except (OSError, ValueError):
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination is not an available private descriptor",
+            outcome="denied",
+        ) from None
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or status.st_uid != os.geteuid()
+        or status.st_nlink != 1
+        or stat.S_IMODE(status.st_mode) != 0o600
+        or status.st_size != 0
+        or descriptor_flags & os.O_ACCMODE != os.O_RDWR
+        or descriptor_flags & os.O_APPEND
+    ):
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination is not an empty caller-owned private file",
+            outcome="denied",
+        )
+    return _file_identity(status)
+
+
+def _stream_provider_body(
+    read: Callable[[int], object],
+    descriptor: int,
+    expected_byte_length: int,
+    chunk_bytes: int,
+) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < expected_byte_length:
+        requested = min(chunk_bytes, expected_byte_length - offset)
+        try:
+            chunk = read(requested)
+        except Exception:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object response stream failed during bounded reading",
+                outcome="indeterminate",
+            ) from None
+        if type(chunk) is not bytes:  # noqa: E721
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_RESULT_INDETERMINATE",
+                "the exact object response returned an invalid stream chunk",
+                outcome="indeterminate",
+            )
+        if not chunk:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                "the exact object response ended before its declared byte length",
+                outcome="failed",
+            )
+        if len(chunk) > requested:
+            raise ObjectStoreReadError(
+                "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+                "the exact object response violated its bounded chunk contract",
+                outcome="failed",
+            )
+        digest.update(chunk)
+        _write_destination_chunk(descriptor, chunk, offset)
+        offset += len(chunk)
+    try:
+        trailing = read(1)
+    except Exception:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_RESULT_INDETERMINATE",
+            "the exact object response stream failed at its declared boundary",
+            outcome="indeterminate",
+        ) from None
+    if type(trailing) is not bytes:  # noqa: E721
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_RESULT_INDETERMINATE",
+            "the exact object response returned an invalid terminal chunk",
+            outcome="indeterminate",
+        )
+    if trailing:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_REMOTE_INTEGRITY_FAILED",
+            "the exact object response exceeded its declared byte length",
+            outcome="failed",
+        )
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination could not be durably synchronized",
+            outcome="failed",
+        ) from None
+    return f"sha256:{digest.hexdigest()}", offset
+
+
+def _write_destination_chunk(descriptor: int, chunk: bytes, offset: int) -> None:
+    written = 0
+    try:
+        while written < len(chunk):
+            count = os.pwrite(descriptor, chunk[written:], offset + written)
+            if count <= 0:
+                raise OSError("destination write made no progress")
+            written += count
+    except OSError:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination could not accept exact bytes",
+            outcome="failed",
+        ) from None
+
+
+def _verify_read_destination(
+    descriptor: int,
+    initial_identity: tuple[int, int, int, int, int, int, int, int],
+    reference: BlobRef,
+    chunk_bytes: int,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    try:
+        before_hash = _file_identity(os.fstat(descriptor))
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < reference.byte_length:
+            chunk = os.pread(
+                descriptor,
+                min(chunk_bytes, reference.byte_length - offset),
+                offset,
+            )
+            if not chunk:
+                raise OSError("destination ended before its declared length")
+            digest.update(chunk)
+            offset += len(chunk)
+        trailing = os.pread(descriptor, 1, offset)
+        after_hash = _file_identity(os.fstat(descriptor))
+    except OSError:
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination could not be independently verified",
+            outcome="failed",
+        ) from None
+    same_private_file = (
+        before_hash[0] == initial_identity[0]
+        and before_hash[1] == initial_identity[1]
+        and before_hash[5:] == initial_identity[5:]
+        and before_hash[2] == reference.byte_length
+    )
+    if (
+        not same_private_file
+        or before_hash != after_hash
+        or trailing
+        or offset != reference.byte_length
+        or f"sha256:{digest.hexdigest()}" != reference.content_hash
+    ):
+        raise ObjectStoreReadError(
+            "OBJECT_STORE_READ_TARGET_UNSAFE",
+            "object read destination changed or failed exact verification",
+            outcome="failed",
+        )
+    return after_hash
+
+
+def _close_provider_body(close: Callable[[], object]) -> None:
+    try:
+        close()
+    except Exception:
+        pass
+
+
+def _close_provider_response_body(response: object) -> None:
+    """Best-effort close for a malformed provider envelope.
+
+    SDK type declarations are not an authority boundary.  A malformed runtime
+    response may expose its body as an attribute or a mapping member; neither
+    inspection nor close failure may escape the closed read result.
+    """
+
+    body: object | None = None
+    try:
+        body = getattr(response, "Body", None)
+    except Exception:
+        pass
+    if body is None and isinstance(response, Mapping):
+        response_mapping = cast(Mapping[object, object], response)
+        try:
+            body = response_mapping.get("Body")
+        except Exception:
+            pass
+    try:
+        close = getattr(body, "close", None)
+    except Exception:
+        return
+    if callable(close):
+        _close_provider_body(close)
 
 
 def _open_sealed_attempt_output(
@@ -732,9 +1365,43 @@ def _seal_verified_object(
     return dataclass_replace(verified, _verification_mac=signature)
 
 
+def _verified_read_payload(
+    grant: _S3ReadGrant,
+    verified: _VerifiedObjectRead,
+) -> bytes:
+    return json.dumps(
+        [
+            str(verified.reference.object_id),
+            verified.reference.content_hash,
+            verified.reference.byte_length,
+            verified.reference.media_type,
+            verified.backend_id,
+            verified.storage_region,
+            grant.storage_locator,
+            verified.etag,
+            verified.version_id,
+            verified.write_strategy,
+            list(verified.destination_identity),
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _seal_verified_read(
+    key: bytes,
+    grant: _S3ReadGrant,
+    verified: _VerifiedObjectRead,
+) -> _VerifiedObjectRead:
+    signature = hmac.digest(key, _verified_read_payload(grant, verified), "sha256")
+    return dataclass_replace(verified, _verification_mac=signature)
+
+
 __all__ = [
     "OBJECT_STORE_WRITE_SCHEMA_VERSION",
     "OBJECT_STORE_WRITE_STRATEGY",
+    "ObjectStoreReadError",
+    "ObjectStoreReadLimits",
     "ObjectStoreWriteError",
     "ObjectStoreWriteLimits",
     "PendingObjectIntent",

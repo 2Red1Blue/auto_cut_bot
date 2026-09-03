@@ -154,6 +154,7 @@ def migrated_database() -> None:
                 "0009_vlm_bounded_retry.sql",
                 "0011_generation_retry_schedule.sql",
                 "0018_command_execution_kind.sql",
+                "0054_object_backed_blob_metadata.sql",
             ):
                 cursor.execute((Path("packages/autocut-kernel/migrations") / name).read_text())
 

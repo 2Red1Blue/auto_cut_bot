@@ -7,6 +7,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -14,6 +15,10 @@ import pytest
 from autocut_kernel.pipeline.compile_production_recipe_command import (
     COMPILE_PRODUCTION_RECIPE_COMMAND,
     CompileProductionRecipeCommand,
+)
+from autocut_kernel.rendering.production_ffmpeg_renderer import (
+    ProductionFfmpegIdentity,
+    ProductionRenderAttemptFacts,
 )
 from autocut_kernel.store import (
     PRODUCTION_RECIPE_COMMAND_NAME,
@@ -31,6 +36,7 @@ from autocut_kernel.store import (
     Job,
     PostgresRuntimeStore,
     ProductionRenderLease,
+    RuntimeStoreError,
     StoreValidationError,
 )
 from autocut_kernel.store.models import artifact_set_hash, canonical_payload_hash
@@ -49,6 +55,7 @@ pytestmark = pytest.mark.skipif(
     reason="set AUTOCUT_TEST_POSTGRES_DSN to disposable ac_autocut_verify",
 )
 MIGRATIONS = Path("packages/autocut-kernel/migrations")
+FACTS_MIGRATION = MIGRATIONS / "0056_production_render_facts.sql"
 
 
 def _hash(value: bytes) -> str:
@@ -57,6 +64,24 @@ def _hash(value: bytes) -> str:
 
 def _json(value: dict[str, object]) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _canonical_hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return _hash(encoded)
+
+
+def _ffmpeg_identity() -> ProductionFfmpegIdentity:
+    return ProductionFfmpegIdentity(
+        executable_sha256=_hash(b"ffmpeg-executable"),
+        executable_byte_length=123456,
+        version_output_sha256=_hash(b"ffmpeg-version-output"),
+    )
 
 
 def _member(
@@ -186,14 +211,40 @@ def _reserve(
     suffix: str,
 ):
     slot_id, request_hash = _render_slot(store, job, suffix=suffix)
+    ffmpeg = _ffmpeg_identity()
     return store.reserve_production_render_attempt(
         slot_id,
         request_hash,
         recipe=recipe,
         render_plan_sha256=_hash(b"render-plan:" + suffix.encode()),
         render_profile_sha256=_hash(b"render-profile"),
-        renderer_identity_sha256=_hash(b"ffmpeg-identity"),
+        renderer_identity_sha256=_canonical_hash(ffmpeg.to_mapping()),
+        execution_limits_sha256=_hash(b"execution-limits:" + suffix.encode()),
         max_output_bytes=1024,
+    )
+
+
+def _facts(
+    attempt,  # type: ignore[no-untyped-def]
+    job: Job,
+    output: BlobRef,
+) -> ProductionRenderAttemptFacts:
+    return ProductionRenderAttemptFacts(
+        attempt_id=attempt.attempt_id,
+        job=job,
+        story_id=attempt.recipe.logical_id.removeprefix("production_recipe@"),
+        recipe_sha256=attempt.recipe.content_hash,
+        plan_sha256=attempt.render_plan_sha256,
+        profile_sha256=attempt.render_profile_sha256,
+        execution_limits_sha256=attempt.execution_limits_sha256,
+        input_authority_sha256=_hash(b"ordered-input-authority"),
+        input_count=2,
+        segment_count=3,
+        ffmpeg=_ffmpeg_identity(),
+        stderr_sha256=_hash(b"bounded-stderr"),
+        output_sha256=output.content_hash,
+        output_byte_length=output.byte_length,
+        output_media_type="video/mp4",
     )
 
 
@@ -239,6 +290,61 @@ def _external_blob(job: Job, content: bytes, *, media_type: str = "video/mp4") -
     return reference
 
 
+def _assert_render_facts_contract(cursor) -> None:  # type: ignore[no-untyped-def]
+    cursor.execute(
+        """
+        SELECT column_name
+          FROM information_schema.columns
+         WHERE table_schema = 'runtime'
+           AND table_name = 'production_render_attempts'
+           AND column_name IN (
+                'execution_limits_sha256',
+                'render_facts_json',
+                'render_facts_sha256'
+           )
+         ORDER BY column_name
+        """
+    )
+    columns = tuple(row[0] for row in cursor.fetchall())
+    cursor.execute(
+        """
+        SELECT proname
+          FROM pg_proc
+          JOIN pg_namespace ON pg_namespace.oid = pg_proc.pronamespace
+         WHERE pg_namespace.nspname = 'runtime'
+           AND proname IN ('canonical_json_ascii', 'json_ascii_quote')
+         ORDER BY proname
+        """
+    )
+    functions = tuple(row[0] for row in cursor.fetchall())
+    cursor.execute(
+        """
+        SELECT trigger.tgname, trigger.tgconstraint <> 0,
+               constraint_row.condeferrable, constraint_row.condeferred
+          FROM pg_trigger AS trigger
+          JOIN pg_constraint AS constraint_row
+            ON constraint_row.oid = trigger.tgconstraint
+         WHERE trigger.tgrelid = 'runtime.production_render_attempts'::regclass
+           AND trigger.tgname = 'runtime_production_render_facts_integrity_check'
+           AND NOT trigger.tgisinternal
+        """
+    )
+    trigger = cursor.fetchone()
+
+    assert columns == (
+        "execution_limits_sha256",
+        "render_facts_json",
+        "render_facts_sha256",
+    )
+    assert functions == ("canonical_json_ascii", "json_ascii_quote")
+    assert trigger == (
+        "runtime_production_render_facts_integrity_check",
+        True,
+        True,
+        True,
+    )
+
+
 @pytest.fixture(scope="module", autouse=True)
 def migrated_database() -> None:
     assert DSN is not None
@@ -248,8 +354,36 @@ def migrated_database() -> None:
         with connection.cursor() as cursor:
             cursor.execute("DROP SCHEMA IF EXISTS storage CASCADE")
             cursor.execute("DROP SCHEMA IF EXISTS runtime CASCADE")
-            for migration in sorted(MIGRATIONS.glob("*.sql")):
+            migrations = sorted(MIGRATIONS.glob("*.sql"))
+            before_facts = [
+                migration
+                for migration in migrations
+                if migration.name < FACTS_MIGRATION.name
+            ]
+            after_facts = [
+                migration
+                for migration in migrations
+                if migration.name > FACTS_MIGRATION.name
+            ]
+            assert FACTS_MIGRATION in migrations
+            assert any(
+                migration.name == "0055_production_render_attempt_recovery.sql"
+                for migration in before_facts
+            )
+            for migration in before_facts:
                 cursor.execute(migration.read_text(encoding="utf-8"))
+            cursor.execute("SELECT count(*) FROM runtime.production_render_attempts")
+            assert cursor.fetchone() == (0,)
+            cursor.execute(FACTS_MIGRATION.read_text(encoding="utf-8"))
+            _assert_render_facts_contract(cursor)
+            for migration in after_facts:
+                cursor.execute(migration.read_text(encoding="utf-8"))
+
+
+def test_empty_0055_to_0056_upgrade_installs_render_facts_contract() -> None:
+    assert DSN is not None
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        _assert_render_facts_contract(cursor)
 
 
 @pytest.fixture(scope="module")
@@ -278,6 +412,39 @@ def stage4_authority(
         patcher.undo()
 
 
+def test_database_canonical_json_ascii_matches_python() -> None:
+    assert DSN is not None
+    value = {
+        "z": ["line\nbreak", "emoji:\U0001f43a", 17],
+        "a": {
+            "empty": "",
+            "quote": '"',
+            "snow": "雪",
+            "slash": "\\",
+            "escape_boundary_sweep": "".join(
+                chr(codepoint)
+                # PostgreSQL text cannot represent U+0000; it fails closed
+                # before this serializer. Cover every other control boundary.
+                for codepoint in (*range(1, 33), *range(0x7E, 0xA1))
+            ),
+        },
+    }
+    expected = json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT runtime.canonical_json_ascii(%s::jsonb)",
+            (_json(value),),
+        )
+        row = cursor.fetchone()
+
+    assert row == (expected,)
+
+
 def test_reservation_is_exactly_replayable_and_conflicts_fail(
     stage4_authority: tuple[PostgresRuntimeStore, Job, CommittedArtifactMemberReference],
 ) -> None:
@@ -291,6 +458,7 @@ def test_reservation_is_exactly_replayable_and_conflicts_fail(
         render_plan_sha256=attempt.render_plan_sha256,
         render_profile_sha256=attempt.render_profile_sha256,
         renderer_identity_sha256=attempt.renderer_identity_sha256,
+        execution_limits_sha256=attempt.execution_limits_sha256,
         max_output_bytes=attempt.max_output_bytes,
     )
 
@@ -306,6 +474,7 @@ def test_reservation_is_exactly_replayable_and_conflicts_fail(
             render_plan_sha256=_hash(b"different-plan"),
             render_profile_sha256=attempt.render_profile_sha256,
             renderer_identity_sha256=attempt.renderer_identity_sha256,
+            execution_limits_sha256=attempt.execution_limits_sha256,
             max_output_bytes=attempt.max_output_bytes,
         )
 
@@ -325,6 +494,7 @@ def test_non_stage4_recipe_authority_is_rejected(
             render_plan_sha256=_hash(b"plan"),
             render_profile_sha256=_hash(b"profile"),
             renderer_identity_sha256=_hash(b"renderer"),
+            execution_limits_sha256=_hash(b"limits"),
             max_output_bytes=1024,
         )
 
@@ -486,7 +656,11 @@ def test_expired_lease_takeover_and_renew_fence_old_owner(
     assert takeover.token != short.token
     output = _external_blob(job, b"takeover output bytes")
     with pytest.raises(CommandStateError, match="stale|owned elsewhere"):
-        store.record_production_render_output(short, output_blob=output)
+        store.record_production_render_output(
+            short,
+            output_blob=output,
+            facts=_facts(takeover_attempt, job, output),
+        )
 
 
 def test_lock_wait_cannot_renew_a_lease_that_expired_in_real_database_time(
@@ -535,15 +709,74 @@ def test_external_output_is_bound_and_rereads_after_store_restart(
     assert lease is not None
     output = _external_blob(job, b"verified rendered MP4 bytes")
 
-    rendered = store.record_production_render_output(lease, output_blob=output)
+    facts = _facts(attempt, job, output)
+    rendered = store.record_production_render_output(
+        lease,
+        output_blob=output,
+        facts=facts,
+    )
 
     assert rendered.state == "rendered"
     assert rendered.output_blob == output
+    assert rendered.render_facts == facts
+    assert rendered.render_facts_sha256 == facts.canonical_hash
     assert rendered.version == lease.version + 1
     assert not hasattr(rendered, "lease_token")
     assert _store().read_production_render_attempt(attempt.attempt_id) == rendered
     with pytest.raises(CommandStateError, match="stale|owned elsewhere"):
-        store.record_production_render_output(lease, output_blob=output)
+        store.record_production_render_output(
+            lease,
+            output_blob=output,
+            facts=facts,
+        )
+
+
+def test_output_rejects_every_mismatched_closed_render_fact(
+    stage4_authority: tuple[PostgresRuntimeStore, Job, CommittedArtifactMemberReference],
+) -> None:
+    store, job, recipe = stage4_authority
+    attempt = _reserve(store, job, recipe, suffix="fact-mismatch")
+    lease = store.acquire_production_render_lease(
+        attempt.attempt_id,
+        expected_version=0,
+        lease_seconds=60,
+    )
+    assert lease is not None
+    output = _external_blob(job, b"fact mismatch output")
+    facts = _facts(attempt, job, output)
+    mismatches = (
+        replace(facts, attempt_id=uuid4()),
+        replace(facts, job=Job("another-render-job", "production")),
+        replace(facts, story_id="another-story"),
+        replace(facts, recipe_sha256=_hash(b"another-recipe")),
+        replace(facts, plan_sha256=_hash(b"another-plan")),
+        replace(facts, profile_sha256=_hash(b"another-profile")),
+        replace(facts, execution_limits_sha256=_hash(b"another-limit-set")),
+        replace(
+            facts,
+            ffmpeg=replace(
+                facts.ffmpeg,
+                version_output_sha256=_hash(b"another-tool-version"),
+            ),
+        ),
+        replace(facts, output_sha256=_hash(b"another-output")),
+        replace(facts, output_byte_length=facts.output_byte_length + 1),
+    )
+
+    for mismatched in mismatches:
+        with pytest.raises(StoreValidationError, match="facts disagree"):
+            store.record_production_render_output(
+                lease,
+                output_blob=output,
+                facts=mismatched,
+            )
+
+    rendered = store.record_production_render_output(
+        lease,
+        output_blob=output,
+        facts=facts,
+    )
+    assert rendered.render_facts == facts
 
 
 def test_output_must_be_external_mp4_claimed_by_same_job(
@@ -570,7 +803,11 @@ def test_output_must_be_external_mp4_claimed_by_same_job(
     foreign = _external_blob(foreign_job, b"foreign rendered bytes")
 
     with pytest.raises(BlobIntegrityError, match="not claimed"):
-        store.record_production_render_output(lease, output_blob=foreign)
+        store.record_production_render_output(
+            lease,
+            output_blob=foreign,
+            facts=_facts(attempt, job, foreign),
+        )
 
     inline_bytes = b"inline rendered bytes"
     inline = store.put_immutable_blob(
@@ -580,18 +817,39 @@ def test_output_must_be_external_mp4_claimed_by_same_job(
         media_type="video/mp4",
     )
     with pytest.raises(BlobIntegrityError, match="allowed external MP4"):
-        store.record_production_render_output(lease, output_blob=inline)
+        store.record_production_render_output(
+            lease,
+            output_blob=inline,
+            facts=_facts(attempt, job, inline),
+        )
 
     wrong_media = _external_blob(job, b"wrong media", media_type="video/webm")
     with pytest.raises(BlobIntegrityError, match="allowed external MP4"):
-        store.record_production_render_output(lease, output_blob=wrong_media)
+        store.record_production_render_output(
+            lease,
+            output_blob=wrong_media,
+            facts=_facts(
+                attempt,
+                job,
+                BlobRef(
+                    wrong_media.object_id,
+                    wrong_media.content_hash,
+                    wrong_media.byte_length,
+                    "video/mp4",
+                ),
+            ),
+        )
 
     with pytest.raises(Exception, match="blob_objects_storage_shape"):
         _external_blob(job, b"")
 
     oversized = _external_blob(job, b"x" * 1025)
     with pytest.raises(BlobIntegrityError, match="allowed external MP4"):
-        store.record_production_render_output(lease, output_blob=oversized)
+        store.record_production_render_output(
+            lease,
+            output_blob=oversized,
+            facts=_facts(attempt, job, oversized),
+        )
 
 
 def test_pre_render_rejection_is_atomic_replayable_and_generic_path_is_blocked(
@@ -638,7 +896,11 @@ def test_post_render_qc_denial_retains_private_blob_without_artifact_set(
     )
     assert lease is not None
     output = _external_blob(job, b"private output rejected by QC")
-    rendered = store.record_production_render_output(lease, output_blob=output)
+    rendered = store.record_production_render_output(
+        lease,
+        output_blob=output,
+        facts=_facts(attempt, job, output),
+    )
     rejection = CommandRejection(
         attempt.command_slot_id,
         "PUBLICATION_QC_DENIED",
@@ -682,3 +944,265 @@ def test_direct_identity_rewrite_and_delete_are_rejected(
                 "DELETE FROM runtime.production_render_attempts WHERE attempt_id = %s",
                 (attempt.attempt_id,),
             )
+
+
+def test_direct_sql_cannot_bind_or_rewrite_render_facts(
+    stage4_authority: tuple[PostgresRuntimeStore, Job, CommittedArtifactMemberReference],
+) -> None:
+    assert DSN is not None
+    store, job, recipe = stage4_authority
+    attempt = _reserve(store, job, recipe, suffix="facts-trigger")
+    lease = store.acquire_production_render_lease(
+        attempt.attempt_id,
+        expected_version=0,
+        lease_seconds=60,
+    )
+    assert lease is not None
+    output = _external_blob(job, b"facts trigger output")
+    facts = _facts(attempt, job, output)
+    canonical_facts = json.dumps(
+        facts.to_mapping(),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        with pytest.raises(Exception, match="lease renewal or takeover is invalid"):
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET render_facts_json = %s, render_facts_sha256 = %s,
+                       version = version + 1
+                 WHERE attempt_id = %s
+                """,
+                (_json(facts.to_mapping()), facts.canonical_hash, attempt.attempt_id),
+            )
+        connection.rollback()
+
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE runtime.production_render_attempts
+               SET state = 'rendered', version = version + 1,
+                   lease_token = NULL, lease_expires_at = NULL,
+                   output_object_id = %s, render_facts_json = %s,
+                   render_facts_sha256 = %s,
+                   rendered_at = clock_timestamp()
+             WHERE attempt_id = %s
+            """,
+            (
+                output.object_id,
+                canonical_facts,
+                _hash(b"wrong-facts-hash"),
+                attempt.attempt_id,
+            ),
+        )
+        with pytest.raises(Exception, match="facts hash does not bind"):
+            cursor.execute(
+                "SET CONSTRAINTS runtime.runtime_production_render_facts_integrity_check "
+                "IMMEDIATE"
+            )
+        connection.rollback()
+
+    noncanonical_facts = json.dumps(
+        facts.to_mapping(),
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    )
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE runtime.production_render_attempts
+               SET state = 'rendered', version = version + 1,
+                   lease_token = NULL, lease_expires_at = NULL,
+                   output_object_id = %s, render_facts_json = %s,
+                   render_facts_sha256 = %s,
+                   rendered_at = clock_timestamp()
+             WHERE attempt_id = %s
+            """,
+            (
+                output.object_id,
+                noncanonical_facts,
+                _hash(noncanonical_facts.encode("utf-8")),
+                attempt.attempt_id,
+            ),
+        )
+        with pytest.raises(Exception, match="must use canonical JSON serialization"):
+            cursor.execute(
+                "SET CONSTRAINTS runtime.runtime_production_render_facts_integrity_check "
+                "IMMEDIATE"
+            )
+        connection.rollback()
+
+    wrong_ffmpeg_facts = replace(
+        facts,
+        ffmpeg=ProductionFfmpegIdentity(
+            executable_sha256=_hash(b"different-ffmpeg"),
+            executable_byte_length=654321,
+            version_output_sha256=_hash(b"different-version-output"),
+        ),
+    )
+    wrong_ffmpeg_json = json.dumps(
+        wrong_ffmpeg_facts.to_mapping(),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE runtime.production_render_attempts
+               SET state = 'rendered', version = version + 1,
+                   lease_token = NULL, lease_expires_at = NULL,
+                   output_object_id = %s, render_facts_json = %s,
+                   render_facts_sha256 = %s,
+                   rendered_at = clock_timestamp()
+             WHERE attempt_id = %s
+            """,
+            (
+                output.object_id,
+                wrong_ffmpeg_json,
+                wrong_ffmpeg_facts.canonical_hash,
+                attempt.attempt_id,
+            ),
+        )
+        with pytest.raises(Exception, match="renderer identity does not bind"):
+            cursor.execute(
+                "SET CONSTRAINTS runtime.runtime_production_render_facts_integrity_check "
+                "IMMEDIATE"
+            )
+        connection.rollback()
+
+    rendered = store.record_production_render_output(
+        lease,
+        output_blob=output,
+        facts=facts,
+    )
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        with pytest.raises(Exception, match="output facts are immutable"):
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET render_facts_sha256 = %s, version = version + 1
+                 WHERE attempt_id = %s
+                """,
+                (_hash(b"tampered-facts"), rendered.attempt_id),
+            )
+
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "DISABLE TRIGGER runtime_production_render_attempt_transition_guard"
+        )
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "DISABLE TRIGGER runtime_production_render_facts_integrity_check"
+        )
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "DISABLE TRIGGER runtime_production_render_attempt_integrity_check"
+        )
+        cursor.execute(
+            """
+            UPDATE runtime.production_render_attempts
+               SET render_facts_json = %s
+             WHERE attempt_id = %s
+            """,
+            (" " + canonical_facts, rendered.attempt_id),
+        )
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "ENABLE TRIGGER runtime_production_render_attempt_transition_guard"
+        )
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "ENABLE TRIGGER runtime_production_render_facts_integrity_check"
+        )
+        cursor.execute(
+            "ALTER TABLE runtime.production_render_attempts "
+            "ENABLE TRIGGER runtime_production_render_attempt_integrity_check"
+        )
+
+    try:
+        with pytest.raises(RuntimeStoreError, match="facts are invalid"):
+            _store().read_production_render_attempt(rendered.attempt_id)
+    finally:
+        with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "DISABLE TRIGGER runtime_production_render_attempt_transition_guard"
+            )
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "DISABLE TRIGGER runtime_production_render_facts_integrity_check"
+            )
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "DISABLE TRIGGER runtime_production_render_attempt_integrity_check"
+            )
+            cursor.execute(
+                """
+                UPDATE runtime.production_render_attempts
+                   SET render_facts_json = %s
+                 WHERE attempt_id = %s
+                """,
+                (canonical_facts, rendered.attempt_id),
+            )
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "ENABLE TRIGGER runtime_production_render_attempt_transition_guard"
+            )
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "ENABLE TRIGGER runtime_production_render_facts_integrity_check"
+            )
+            cursor.execute(
+                "ALTER TABLE runtime.production_render_attempts "
+                "ENABLE TRIGGER runtime_production_render_attempt_integrity_check"
+            )
+
+
+def test_record_rejects_render_facts_canonicalizer_divergence(
+    stage4_authority: tuple[PostgresRuntimeStore, Job, CommittedArtifactMemberReference],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, job, recipe = stage4_authority
+    attempt = _reserve(store, job, recipe, suffix="canonicalizer-divergence")
+    lease = store.acquire_production_render_lease(
+        attempt.attempt_id,
+        expected_version=0,
+        lease_seconds=60,
+    )
+    assert lease is not None
+    output = _external_blob(job, b"canonicalizer divergence output")
+    facts = _facts(attempt, job, output)
+    monkeypatch.setattr(
+        ProductionRenderAttemptFacts,
+        "canonical_hash",
+        property(lambda _facts: _hash(b"divergent-canonicalizer")),
+    )
+
+    with pytest.raises(StoreValidationError, match="canonical JSON/hash identity diverged"):
+        store.record_production_render_output(
+            lease,
+            output_blob=output,
+            facts=facts,
+        )
+
+
+def test_facts_migration_refuses_preexisting_attempt_journal(
+    stage4_authority: tuple[PostgresRuntimeStore, Job, CommittedArtifactMemberReference],
+) -> None:
+    assert DSN is not None
+    store, job, recipe = stage4_authority
+    _reserve(store, job, recipe, suffix="pre-facts-migration-row")
+
+    with pytest.raises(
+        Exception,
+        match="requires an empty production render attempt journal",
+    ):
+        with psycopg.connect(DSN, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(FACTS_MIGRATION.read_text(encoding="utf-8"))
