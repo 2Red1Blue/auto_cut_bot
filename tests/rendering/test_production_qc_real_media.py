@@ -152,6 +152,54 @@ def _generate_black_av_fixture(path: Path, ffmpeg: str) -> None:
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
 
 
+def _generate_video_only_fixture(path: Path, ffmpeg: str) -> None:
+    result = subprocess.run(  # noqa: S603 - exact executable and argv fixture.
+        (
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=160x120:rate=12:duration=1",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(path),
+        ),
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+
+
+def _generate_audio_only_fixture(path: Path, ffmpeg: str) -> None:
+    result = subprocess.run(  # noqa: S603 - exact executable and argv fixture.
+        (
+            ffmpeg,
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=1",
+            "-vn",
+            "-c:a",
+            "aac",
+            str(path),
+        ),
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+
+
 def test_real_ffprobe_topology_matches_closed_parser(tmp_path: Path) -> None:
     ffmpeg, ffprobe = _media_tools()
     media = (tmp_path / "fixture.mp4").absolute()
@@ -224,6 +272,70 @@ def _real_profile(tmp_path: Path, ffmpeg: str, ffprobe: str) -> ProductionRender
             )
         )
     return ProductionRenderQcCollectorProfile("real_ffmpeg_fixture_v1", *identities)
+
+
+def _run_real_media_qc(
+    tmp_path: Path,
+    media: Path,
+    ffmpeg: str,
+    ffprobe: str,
+) -> tuple[ProductionRenderQcAttempt, _RealMediaStore]:
+    content = media.read_bytes()
+    profile = _real_profile(tmp_path, ffmpeg, ffprobe)
+    now = datetime.now(timezone.utc)
+    output = BlobRef(uuid4(), _sha256(content), len(content), "video/mp4")
+    job_id = uuid4()
+    slot_id = uuid4()
+    render_attempt_id = uuid4()
+    attempt = ProductionRenderQcAttempt(
+        qc_attempt_id=uuid4(),
+        render_attempt_id=render_attempt_id,
+        job_id=job_id,
+        command_slot_id=slot_id,
+        rendered_version=2,
+        output_blob=output,
+        render_facts_sha256=_sha256(b"real-render-facts"),
+        qc_policy_sha256=_sha256(b"real-qc-policy"),
+        required_check_set_version=PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
+        qc_runner_identity_sha256=profile.qc_runner_identity_sha256,
+        state="scanning",
+        version=1,
+        reserved_at=now,
+        lease_expires_at=now + timedelta(minutes=10),
+    )
+    lease = ProductionRenderQcLease(
+        attempt.qc_attempt_id,
+        render_attempt_id,
+        job_id,
+        slot_id,
+        uuid4(),
+        now + timedelta(minutes=10),
+        1,
+    )
+    store = _RealMediaStore(media, attempt, tmp_path)
+    store.lease = lease
+    result = run_production_render_qc(
+        store,
+        job=Job(f"real-qc-{uuid4()}", "production"),
+        attempt=attempt,
+        lease=lease,
+        plan=ProductionRenderQcPlanProjection(attempt.render_facts_sha256, (450_000,)),
+        materialization_limits=MaterializationLimits(1024 * 1024, 16 * 1024 * 1024, 64, 4096),
+        ffmpeg_path=ffmpeg,
+        ffprobe_path=ffprobe,
+        profile=profile,
+        execution_limits=ProductionRenderQcExecutionLimits(
+            process_timeout_milliseconds=30_000,
+            tool_probe_timeout_milliseconds=10_000,
+            tool_version_max_bytes=64 * 1024,
+            diagnostic_max_bytes=64 * 1024,
+            topology_max_bytes=1024 * 1024,
+            evidence_max_bytes=2 * 1024 * 1024,
+            aggregate_evidence_max_bytes=16 * 1024 * 1024,
+            lease_seconds=60,
+        ),
+    )
+    return result, store
 
 
 def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_path: Path) -> None:
@@ -301,3 +413,80 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
     # The black fixture reaches EOF with a right-censored interval rather than
     # silently inventing an end timestamp; its bounded example is audit data.
     assert evidence[6]["examples"] == ["black:0:0/1:right_censored"]
+
+
+@pytest.mark.parametrize(
+    ("media_kind", "not_applicable"),
+    (
+        (
+            "video_only",
+            {
+                "full_audio_decode",
+                "audio_silence_intervals",
+                "audio_sample_health",
+                "av_presentation_envelope",
+            },
+        ),
+        (
+            "audio_only",
+            {
+                "full_video_decode",
+                "video_black_intervals",
+                "video_freeze_intervals",
+                "av_presentation_envelope",
+            },
+        ),
+    ),
+)
+def test_real_media_runner_marks_absent_media_family_not_applicable(
+    tmp_path: Path,
+    media_kind: str,
+    not_applicable: set[str],
+) -> None:
+    """A valid one-family container must not be mislabeled as an incomplete scan."""
+
+    ffmpeg, ffprobe = _media_tools()
+    media = (tmp_path / f"{media_kind}.mp4").absolute()
+    if media_kind == "video_only":
+        _generate_video_only_fixture(media, ffmpeg)
+    else:
+        _generate_audio_only_fixture(media, ffmpeg)
+
+    result, store = _run_real_media_qc(tmp_path, media, ffmpeg, ffprobe)
+
+    assert result.state == "evidence_ready"
+    assert store.report is not None
+    statuses = {
+        check.check_id: (check.collection_status, check.coverage)
+        for check in store.report.checks
+    }
+    assert {check_id for check_id, status in statuses.items() if status == ("not_applicable", "not_applicable")} == not_applicable
+    assert {
+        check_id for check_id, status in statuses.items() if status == ("completed", "full_file")
+    } == {spec.check_id for spec in PRODUCTION_QC_COLLECTORS} - not_applicable
+
+
+def test_real_media_runner_persists_corrupt_tail_as_incomplete_evidence(tmp_path: Path) -> None:
+    """A corrupted MP4 tail must yield denyable evidence, never a completed topology scan."""
+
+    ffmpeg, ffprobe = _media_tools()
+    complete = (tmp_path / "complete.mp4").absolute()
+    _generate_black_av_fixture(complete, ffmpeg)
+    damaged = (tmp_path / "damaged-tail.mp4").absolute()
+    payload = complete.read_bytes()
+    assert len(payload) > 512
+    damaged.write_bytes(payload[:-256])
+
+    result, store = _run_real_media_qc(tmp_path, damaged, ffmpeg, ffprobe)
+
+    assert result.state == "evidence_ready"
+    assert store.report is not None
+    first = store.report.checks[1]
+    assert first.check_id == "container_stream_topology"
+    assert (first.collection_status, first.coverage) == ("incomplete", "partial")
+    assert first.diagnostic_code in {"process_exit_nonzero", "parser_error"}
+    assert all(
+        (check.collection_status, check.coverage, check.diagnostic_code)
+        == ("not_run", "none", "dependency_failed")
+        for check in store.report.checks[2:]
+    )
