@@ -16,6 +16,7 @@ import httpx
 from loguru import logger
 
 from auto_cut_bot.config.schema import Config, ProviderConfig
+from auto_cut_bot.project_identity import OPENROUTER_ATTRIBUTION_HEADERS
 from auto_cut_bot.providers.registry import find_by_name
 from auto_cut_bot.security.network import (
     PinnedDNSAsyncTransport,
@@ -24,11 +25,6 @@ from auto_cut_bot.security.network import (
 )
 from auto_cut_bot.utils.helpers import detect_image_mime
 
-_OPENROUTER_ATTRIBUTION_HEADERS = {
-    "HTTP-Referer": "https://github.com/HKUDS/auto_cut_bot",
-    "X-OpenRouter-Title": "auto_cut_bot",
-    "X-OpenRouter-Categories": "cli-agent,personal-agent",
-}
 _DEFAULT_TIMEOUT_S = 120.0
 _IMAGE_DOWNLOAD_MAX_BYTES = 32 * 1024 * 1024
 _IMAGE_DOWNLOAD_MAX_REDIRECTS = 5
@@ -411,7 +407,7 @@ class OpenRouterImageGenerationClient(ImageGenerationProvider):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            **_OPENROUTER_ATTRIBUTION_HEADERS,
+            **OPENROUTER_ATTRIBUTION_HEADERS,
             **self.extra_headers,
         }
         url = f"{self.api_base}/chat/completions"

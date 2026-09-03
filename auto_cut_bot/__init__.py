@@ -8,9 +8,10 @@ from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .project_identity import DISTRIBUTION_NAME
+
 if TYPE_CHECKING:
     from .agent.tools.context import RequestContext
-    from .bus.runtime_events import SessionTurnPersisted
     from .auto_cut_bot import (
         STREAM_EVENT_REASONING_COMPLETED,
         STREAM_EVENT_REASONING_DELTA,
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
         StreamEvent,
         StreamEventType,
     )
+    from .bus.runtime_events import SessionTurnPersisted
     from .runtime_context import RuntimeContextBlock, RuntimeContextProvider
 
 
@@ -45,7 +47,7 @@ def _read_pyproject_version() -> str | None:
 
 def _resolve_version() -> str:
     try:
-        return _pkg_version("auto-cut-bot-ai")
+        return _pkg_version(DISTRIBUTION_NAME)
     except PackageNotFoundError:
         # Source checkouts often import auto_cut_bot without installed dist-info.
         return _read_pyproject_version() or "0.3.0"

@@ -518,7 +518,7 @@ async def test_openrouter_sets_default_attribution_headers() -> None:
         await provider._ensure_client()
 
     headers = mock_client_cls.call_args.kwargs["default_headers"]
-    assert headers["HTTP-Referer"] == "https://github.com/HKUDS/auto_cut_bot"
+    assert headers["HTTP-Referer"] == "https://github.com/2Red1Blue/auto_cut_bot"
     assert headers["X-OpenRouter-Title"] == "auto_cut_bot"
     assert headers["X-OpenRouter-Categories"] == "cli-agent,personal-agent"
     assert "x-session-affinity" in headers

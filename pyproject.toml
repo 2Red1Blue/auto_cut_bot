@@ -1,5 +1,5 @@
 [project]
-name = "auto_cut_bot"
+name = "auto-cut-bot-ai"
 version = "0.3.0"
 description = "A lightweight personal AI assistant framework"
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -107,6 +107,9 @@ dev = [
     "python-socketio>=5.16.0,<6.0.0",
     "msgpack>=1.1.0,<2.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/2Red1Blue/auto_cut_bot"
 
 [project.scripts]
 auto_cut_bot = "auto_cut_bot.cli.entry:main"

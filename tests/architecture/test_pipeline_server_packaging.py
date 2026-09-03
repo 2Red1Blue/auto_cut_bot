@@ -38,7 +38,7 @@ def test_root_wheel_installs_pipeline_server_with_postgres_dependency(tmp_path: 
         capture_output=True,
         text=True,
     )
-    wheel = next(wheelhouse.glob("auto_cut_bot-*.whl"))
+    wheel = next(wheelhouse.glob("auto_cut_bot_ai-*.whl"))
     with zipfile.ZipFile(wheel) as archive:
         names = frozenset(archive.namelist())
         metadata_name = next(
@@ -48,6 +48,8 @@ def test_root_wheel_installs_pipeline_server_with_postgres_dependency(tmp_path: 
     # The root package deliberately requests psycopg's binary extra so a clean
     # wheel install includes the libpq driver needed by the pipeline server.
     # Hatch normalizes the requirement ordering in wheel metadata.
+    assert "Name: auto-cut-bot-ai" in metadata
+    assert "Project-URL: Repository, https://github.com/2Red1Blue/auto_cut_bot" in metadata
     assert "Requires-Dist: psycopg[binary]<4.0.0,>=3.0.0" in metadata
     assert "autocut_kernel/__init__.py" in names
 

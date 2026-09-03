@@ -158,6 +158,9 @@ async def test_openrouter_image_generation_payload_and_response(tmp_path: Path) 
     call = fake.calls[0]
     assert call["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert call["headers"]["Authorization"] == "Bearer sk-or-test"
+    assert call["headers"]["HTTP-Referer"] == "https://github.com/2Red1Blue/auto_cut_bot"
+    assert call["headers"]["X-OpenRouter-Title"] == "auto_cut_bot"
+    assert call["headers"]["X-OpenRouter-Categories"] == "cli-agent,personal-agent"
     assert call["headers"]["X-Test"] == "1"
     body = call["json"]
     assert body["modalities"] == ["image", "text"]
@@ -173,6 +176,39 @@ async def test_openrouter_image_generation_requires_images() -> None:
 
     with pytest.raises(ImageGenerationError, match="returned no images"):
         await client.generate(prompt="draw", model="model")
+
+
+@pytest.mark.asyncio
+async def test_openrouter_image_generation_user_headers_override_attribution() -> None:
+    fake = FakeClient(
+        FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "done",
+                            "images": [{"image_url": {"url": PNG_DATA_URL}}],
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    client = OpenRouterImageGenerationClient(
+        api_key="sk-or-test",
+        extra_headers={
+            "HTTP-Referer": "https://example.test/custom-client",
+            "X-OpenRouter-Title": "Custom Client",
+        },
+        client=fake,  # type: ignore[arg-type]
+    )
+
+    await client.generate(prompt="draw", model="model")
+
+    headers = fake.calls[0]["headers"]
+    assert headers["HTTP-Referer"] == "https://example.test/custom-client"
+    assert headers["X-OpenRouter-Title"] == "Custom Client"
+    assert headers["X-OpenRouter-Categories"] == "cli-agent,personal-agent"
 
 
 @pytest.mark.asyncio

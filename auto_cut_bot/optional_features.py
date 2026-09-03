@@ -30,6 +30,7 @@ from auto_cut_bot.channels.contracts import (
 )
 from auto_cut_bot.channels.registry import channel_default_enabled
 from auto_cut_bot.config.schema import Config
+from auto_cut_bot.project_identity import DISTRIBUTION_NAME
 
 
 class OptionalFeatureError(Exception):
@@ -68,8 +69,8 @@ def optional_dependency_groups_from_metadata() -> dict[str, list[str] | None]:
     from importlib.metadata import metadata, requires
 
     try:
-        extras = metadata("auto-cut-bot-ai").get_all("Provides-Extra") or []
-        raw_requirements = requires("auto-cut-bot-ai") or []
+        extras = metadata(DISTRIBUTION_NAME).get_all("Provides-Extra") or []
+        raw_requirements = requires(DISTRIBUTION_NAME) or []
     except PackageNotFoundError:
         return {}
     groups: dict[str, list[str] | None] = {name: [] for name in extras if name != "dev"}
@@ -120,7 +121,7 @@ def install_args_for_extra(
         if install_args:
             return install_args, f"{extra} support"
         return [], f"{extra} support"
-    target = f"auto-cut-bot-ai[{extra}]"
+    target = f"{DISTRIBUTION_NAME}[{extra}]"
     return [target], f'"{target}"'
 
 

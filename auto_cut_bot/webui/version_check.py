@@ -13,10 +13,10 @@ import httpx
 from packaging.version import InvalidVersion, Version
 
 from auto_cut_bot import __version__
+from auto_cut_bot.project_identity import PYPI_JSON_URL, PYPI_PROJECT_URL
 
 logger = logging.getLogger(__name__)
 
-_PYPI_URL = "https://pypi.org/pypi/auto-cut-bot-ai/json"
 _CACHE_TTL_S = 300  # 5 minutes cache to avoid hammering PyPI
 
 _cache: tuple[float, str | None] = (0.0, None)
@@ -35,7 +35,7 @@ def check_for_update() -> dict[str, Any] | None:
         latest = cached_val
     else:
         try:
-            resp = httpx.get(_PYPI_URL, timeout=5.0, follow_redirects=True)
+            resp = httpx.get(PYPI_JSON_URL, timeout=5.0, follow_redirects=True)
             resp.raise_for_status()
             latest = resp.json().get("info", {}).get("version")
         except Exception:
@@ -54,5 +54,5 @@ def check_for_update() -> dict[str, Any] | None:
     return {
         "currentVersion": __version__,
         "latestVersion": latest,
-        "pypiUrl": "https://pypi.org/project/auto-cut-bot-ai/",
+        "pypiUrl": PYPI_PROJECT_URL,
     }

@@ -269,7 +269,13 @@ def test_isolated_wheel_reconstructs_all_three_exact_policies_without_applicatio
                                                destination_kernel_package=kernel_package)
     resource = _decode(json.loads((output / "local-run.json").read_bytes()))
     wheel_root = tmp_path / "wheel"
-    _build_and_load(source=build_root, expected_prefix="auto_cut_bot" if distribution == "root" else "autocut_kernel", tmp_path=wheel_root)
+    _build_and_load(
+        source=build_root,
+        expected_distribution_prefix=(
+            "auto_cut_bot_ai" if distribution == "root" else "autocut_kernel"
+        ),
+        tmp_path=wheel_root,
+    )
     python = wheel_root / "clean-environment" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     script = (
         "import json,sys; from autocut_kernel.registry.installed_local_run import load_installed_local_run_resource; "

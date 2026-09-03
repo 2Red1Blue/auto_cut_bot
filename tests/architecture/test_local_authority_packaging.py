@@ -54,7 +54,9 @@ def _standalone_build_source(tmp_path: Path) -> tuple[Path, Path]:
     return root, _copy_kernel_source(root / "src" / "autocut_kernel")
 
 
-def _build_and_load(*, source: Path, expected_prefix: str, tmp_path: Path) -> None:
+def _build_and_load(
+    *, source: Path, expected_distribution_prefix: str, tmp_path: Path
+) -> None:
     uv = shutil.which("uv")
     assert uv is not None
     tmp_path.mkdir()
@@ -68,7 +70,7 @@ def _build_and_load(*, source: Path, expected_prefix: str, tmp_path: Path) -> No
         capture_output=True,
         text=True,
     )
-    wheel = next(wheelhouse.glob(f"{expected_prefix}-*.whl"))
+    wheel = next(wheelhouse.glob(f"{expected_distribution_prefix}-*.whl"))
     with zipfile.ZipFile(wheel) as archive:
         assert _RESOURCE_NAMES <= frozenset(archive.namelist())
     environment = tmp_path / "clean-environment"
@@ -107,7 +109,7 @@ def test_root_and_standalone_wheels_load_prepared_resource_without_checkout_or_t
     authority_root.mkdir()
     sources, anchor = _synthetic_accepted_sources(authority_root)
     for name, builder, prefix in (
-        ("root", _root_build_source, "auto_cut_bot"),
+        ("root", _root_build_source, "auto_cut_bot_ai"),
         ("standalone", _standalone_build_source, "autocut_kernel"),
     ):
         build_root, kernel_package = builder(tmp_path / name)
@@ -116,4 +118,8 @@ def test_root_and_standalone_wheels_load_prepared_resource_without_checkout_or_t
             store=FakeAcceptedAnchorReader(anchor),
             destination_kernel_package=kernel_package,
         )
-        _build_and_load(source=build_root, expected_prefix=prefix, tmp_path=tmp_path / f"{name}-wheel")
+        _build_and_load(
+            source=build_root,
+            expected_distribution_prefix=prefix,
+            tmp_path=tmp_path / f"{name}-wheel",
+        )
