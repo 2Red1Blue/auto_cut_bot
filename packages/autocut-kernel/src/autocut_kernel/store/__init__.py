@@ -108,6 +108,16 @@ from .models import (
     VlmSemanticPackSetChild,
     WholeSeriesSourceManifestReference,
 )
+from .object_store import (
+    OBJECT_STORE_WRITE_SCHEMA_VERSION,
+    OBJECT_STORE_WRITE_STRATEGY,
+    ObjectStoreWriteError,
+    ObjectStoreWriteLimits,
+    PendingObjectIntent,
+    S3ObjectClient,
+    S3ObjectStoreConfig,
+    S3PendingObjectStore,
+)
 from .source_reuse import (
     SOURCE_REUSE_BINDING_ARTIFACT_TYPE,
     SOURCE_REUSE_BINDING_LOGICAL_ID,
@@ -128,6 +138,7 @@ def __getattr__(name: str) -> object:
 
         return PostgresRuntimeStore
     raise AttributeError(name)
+
 
 __all__ = [
     "ArtifactMember",
@@ -169,6 +180,11 @@ __all__ = [
     "MediaRecoveryState",
     "MediaOutputsIntegrityError",
     "MediaOutputsUnavailableError",
+    "OBJECT_STORE_WRITE_SCHEMA_VERSION",
+    "OBJECT_STORE_WRITE_STRATEGY",
+    "ObjectStoreWriteError",
+    "ObjectStoreWriteLimits",
+    "PendingObjectIntent",
     "PersistenceConflictError",
     "PostgresRuntimeStore",
     "PersistedCalibrationRecordAnchor",
@@ -192,6 +208,9 @@ __all__ = [
     "StoreConcurrencyError",
     "StoreValidationError",
     "SourceWindowIdentity",
+    "S3ObjectClient",
+    "S3ObjectStoreConfig",
+    "S3PendingObjectStore",
     "SHADOW_CALIBRATION_MEASUREMENT_COMMAND_NAME",
     "SHADOW_CALIBRATION_MEASUREMENT_PROTOCOL",
     "SHADOW_LOCAL_CALIBRATION_MEASUREMENT_COMMAND_NAME",
