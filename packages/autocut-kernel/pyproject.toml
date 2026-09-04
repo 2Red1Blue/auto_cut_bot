@@ -14,3 +14,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 autocut_kernel = ["_authority/local-run.json", "_authority/local-run.sha256"]
+"autocut_kernel.registry" = ["_production_qc/production-qc.json", "_production_qc/production-qc.sha256"]
