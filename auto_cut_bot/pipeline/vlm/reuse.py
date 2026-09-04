@@ -15,6 +15,7 @@ from autocut_kernel.vlm.reuse_identity import (
     VlmReuseIdentityV1,
     VlmSemanticPolicyIdentityV1,
 )
+from autocut_kernel.vlm.reuse_identity_v2 import VlmReuseIdentityV2
 
 from auto_cut_bot.pipeline.source_prep.command import PersistedPreparedSources
 
@@ -67,3 +68,19 @@ payload, Job, Receipt and ArtifactSet are not rewritten or redispatched.
         prompt_template=resolve_vlm_prompt_template(request.prompt_version),
     )
     return VlmReuseIdentityV1.from_request(facts, semantic_policy=policy)
+
+
+def derive_vlm_reuse_identity_v2(
+    request: GenerateVlmEvidenceRequest,
+    *,
+    source_bundle: PersistedPreparedSources,
+    provider_scope: VlmProviderScopeFacts,
+) -> VlmReuseIdentityV2:
+    """Explicit portable projection with the same exact source/request checks.
+
+The v1 entry point and historical hashes remain unchanged. This function does
+not bind a result to a target Job or expand the source operation grant.
+    """
+    return VlmReuseIdentityV2(derive_vlm_reuse_identity(
+        request, source_bundle=source_bundle, provider_scope=provider_scope,
+    ))

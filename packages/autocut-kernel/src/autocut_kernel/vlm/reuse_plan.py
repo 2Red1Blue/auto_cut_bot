@@ -15,14 +15,16 @@ selection is ``inspection``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from ..media.types import canonical_sha256, sha256_prefixed
 from .models import VlmValidationError
 from .reuse_identity import VlmReuseIdentityV1
+from .reuse_identity_v2 import VlmReuseIdentityV2
 
 VLM_REUSE_PLAN_SCHEMA_VERSION = "VlmReusePlan/v1"
+VLM_REUSE_PLAN_V2_SCHEMA_VERSION = "VlmReusePlan/v2"
 VlmReuseDecision = Literal["reuse", "execute"]
 VlmReuseResultScope = Literal["inspection", "complete_batch"]
 VlmReuseDecisionReason = Literal[
@@ -158,19 +160,19 @@ class VlmReusePlanEpisode:
     """One declared target episode and its explicit, optional base candidate."""
 
     episode_index: int
-    target_identity: VlmReuseIdentityV1
-    base_identity: VlmReuseIdentityV1 | None = None
+    target_identity: VlmReuseIdentityV1 | VlmReuseIdentityV2
+    base_identity: VlmReuseIdentityV1 | VlmReuseIdentityV2 | None = None
     origin: VlmReuseOriginClosureReference | None = None
 
     def __post_init__(self) -> None:
         episode_index = _episode_index(self.episode_index, "episode_index")
-        if type(self.target_identity) is not VlmReuseIdentityV1:  # noqa: E721
-            raise VlmValidationError("target_identity must be an exact VlmReuseIdentityV1")
+        if type(self.target_identity) not in (VlmReuseIdentityV1, VlmReuseIdentityV2):
+            raise VlmValidationError("target_identity must be an exact v1 or v2 reuse identity")
         if self.target_identity.episode_index != episode_index:
             raise VlmValidationError("target_identity must belong to episode_index")
         if self.base_identity is not None:
-            if type(self.base_identity) is not VlmReuseIdentityV1:  # noqa: E721
-                raise VlmValidationError("base_identity must be an exact VlmReuseIdentityV1")
+            if type(self.base_identity) is not type(self.target_identity):
+                raise VlmValidationError("base_identity and target_identity must use the same version")
             if self.base_identity.episode_index != episode_index:
                 raise VlmValidationError("base_identity must belong to episode_index")
         if self.origin is not None:
@@ -182,7 +184,7 @@ class VlmReusePlanEpisode:
     def census_mapping(self) -> dict[str, object]:
         """Canonical, explicit identity facts; origin is node-only evidence."""
 
-        return {
+        result: dict[str, object] = {
             "base_identity": (
                 None if self.base_identity is None else self.base_identity.to_mapping()
             ),
@@ -193,6 +195,47 @@ class VlmReusePlanEpisode:
             "target_identity": self.target_identity.to_mapping(),
             "target_identity_sha256": self.target_identity.canonical_hash,
         }
+        if isinstance(self.target_identity, VlmReuseIdentityV2):
+            result["target_provenance"] = self.target_identity.provenance_mapping()
+            result["base_provenance"] = (
+                self.base_identity.provenance_mapping()
+                if isinstance(self.base_identity, VlmReuseIdentityV2)
+                else None
+            )
+        return result
+
+
+def reproject_vlm_reuse_episode_v2(episode: VlmReusePlanEpisode) -> VlmReusePlanEpisode:
+    """Explicit pure migration of a reconstructed v1 candidate, without I/O.
+
+This records the original v1 hashes in the v2 census, preserves the origin's
+producer/member references and checks its claimed request binding. It does
+not prove the origin exists or succeeded: Store must independently reread it
+before calling this and again before committing a target-owned reuse result.
+No provider dispatch or implicit whole-batch migration is performed.
+"""
+    if type(episode) is not VlmReusePlanEpisode:  # noqa: E721
+        raise VlmValidationError("reprojection requires an exact VlmReusePlanEpisode")
+    if type(episode.target_identity) is not VlmReuseIdentityV1:  # noqa: E721
+        raise VlmValidationError("reprojection requires v1 target request facts")
+    base = episode.base_identity
+    origin = episode.origin
+    projected_base = None
+    if base is not None:
+        if type(base) is not VlmReuseIdentityV1:  # noqa: E721
+            raise VlmValidationError("reprojection requires v1 base request facts")
+        projected_base = VlmReuseIdentityV2(base)
+        if origin is not None:
+            if (
+                origin.origin_reuse_identity_sha256 != base.canonical_hash
+                or origin.origin_request_payload_sha256
+                != base.origin_request_identity.request_payload_sha256
+            ):
+                raise VlmValidationError("reprojection origin must bind the original v1 request facts")
+            origin = replace(origin, origin_reuse_identity_sha256=projected_base.canonical_hash)
+    return VlmReusePlanEpisode(
+        episode.episode_index, VlmReuseIdentityV2(episode.target_identity), projected_base, origin
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +369,8 @@ class VlmReusePlan:
             raise VlmValidationError("source_episode_census must not be empty")
         if any(type(episode) is not VlmReusePlanEpisode for episode in census):  # noqa: E721
             raise VlmValidationError("source_episode_census must contain exact VlmReusePlanEpisode values")
+        if len({type(episode.target_identity) for episode in census}) != 1:
+            raise VlmValidationError("source_episode_census must use one explicit identity version")
         expected_indexes = tuple(range(len(census)))
         actual_indexes = tuple(episode.episode_index for episode in census)
         if actual_indexes != expected_indexes:
@@ -373,7 +418,11 @@ class VlmReusePlan:
         return {
             "nodes": [node.to_mapping() for node in self.nodes],
             "result_scope": self.result_scope,
-            "schema_version": VLM_REUSE_PLAN_SCHEMA_VERSION,
+            "schema_version": (
+                VLM_REUSE_PLAN_V2_SCHEMA_VERSION
+                if isinstance(self.source_episode_census[0].target_identity, VlmReuseIdentityV2)
+                else VLM_REUSE_PLAN_SCHEMA_VERSION
+            ),
             "selected_episode_indexes": list(self.selected_episode_indexes),
             "source_episode_census": [
                 episode.census_mapping() for episode in self.source_episode_census
@@ -388,6 +437,7 @@ class VlmReusePlan:
 
 __all__ = [
     "VLM_REUSE_PLAN_SCHEMA_VERSION",
+    "VLM_REUSE_PLAN_V2_SCHEMA_VERSION",
     "VlmReuseDecision",
     "VlmReuseDecisionReason",
     "VlmReuseOriginClosureReference",
@@ -396,4 +446,5 @@ __all__ = [
     "VlmReusePlanNode",
     "VlmReuseResultScope",
     "VlmTargetCensusReference",
+    "reproject_vlm_reuse_episode_v2",
 ]
