@@ -68,12 +68,24 @@ def _build(source: Path, destination: Path, *, sdist: bool = False) -> Path:
     return artifacts[0]
 
 
-def _sdist_package_bytes(sdist: Path) -> dict[str, bytes]:
+def _sdist_package_bytes(
+    sdist: Path, expected_package: dict[str, bytes], pyproject: bytes
+) -> dict[str, bytes]:
     with tarfile.open(sdist) as source:
-        files = [member for member in source.getmembers() if member.isfile()]
+        files = source.getmembers()
+        assert all(member.isfile() for member in files), "sdist inventory has non-files"
+        names = [member.name for member in files]
+        assert len(names) == len(set(names)), "sdist inventory has duplicates"
         roots = {Path(member.name).parts[0] for member in files}
         assert len(roots) == 1
-        prefix = f"{roots.pop()}/src/autocut_kernel/"
+        root = roots.pop()
+        prefix = f"{root}/src/autocut_kernel/"
+        expected_names = {f"{prefix}{name}" for name in expected_package}
+        assert set(names) == expected_names | {f"{root}/pyproject.toml", f"{root}/PKG-INFO"}, "sdist inventory differs"
+        project = source.extractfile(f"{root}/pyproject.toml")
+        assert project is not None and project.read() == pyproject
+        metadata = source.extractfile(f"{root}/PKG-INFO")
+        assert metadata is not None and metadata.read(), "sdist metadata is empty"
         package: dict[str, bytes] = {}
         for member in files:
             if member.name.startswith(prefix):
@@ -108,7 +120,7 @@ def wheel_evidence(tmp_path_factory: pytest.TempPathFactory) -> _WheelEvidence:
     first = _build(first_source, root / "direct-one")
     second = _build(second_source, root / "direct-two")
     sdist = _build(source, root / "sdist", sdist=True)
-    assert _sdist_package_bytes(sdist) == expected_package
+    assert _sdist_package_bytes(sdist, expected_package, (source / "pyproject.toml").read_bytes()) == expected_package
     return _WheelEvidence(
         (first, second), _build(sdist, root / "from-sdist"), expected_package, version
     )
@@ -132,3 +144,24 @@ def test_sdist_wheel_preserves_the_archive_package_bytes(wheel_evidence: _WheelE
         distribution_version=wheel_evidence.version,
         committed_package_files=wheel_evidence.expected_package,
     )
+
+
+@pytest.mark.parametrize("extra", [True, False])
+def test_sdist_inventory_rejects_extra_or_missing_files(tmp_path: Path, extra: bool) -> None:
+    sdist = tmp_path / "source.tar.gz"
+    files = {
+        "kernel/pyproject.toml": b"project",
+        "kernel/PKG-INFO": b"metadata",
+        "kernel/src/autocut_kernel/__init__.py": b"code",
+    }
+    if extra:
+        files["kernel/unrelated.env"] = b"not a package input"
+    else:
+        del files["kernel/pyproject.toml"]
+    with tarfile.open(sdist, "w:gz") as archive:
+        for name, raw in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(raw)
+            archive.addfile(info, io.BytesIO(raw))
+    with pytest.raises(AssertionError, match="sdist inventory differs"):
+        _sdist_package_bytes(sdist, {"__init__.py": b"code"}, b"project")
