@@ -1,16 +1,16 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 7
+authority_revision: 8
 contract_version: 2.1.3
-seed_source_commit: 70a8164e170685981812cc7e92ac54dbd7741064
+seed_source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
 inventory:
   repository: auto_cut_bot
-  manifest_commit: 993aaaa733210f9e7f2d7bee762954dca0dfb1d2
+  manifest_commit: dfa5c29cec05a9061b39536738fa64fa37b60d03
   path: governance/authority-sources.yaml
-  sha256: sha256:fe99bebbcf046cbd31f0fb773ae5bf6de0d01bde1fac2931cac1cc2ee2c652fe
+  sha256: sha256:acdbfb6d8f81a9f2e2adc91f8ec21dd0c87d1c75829546f71aa4d38c03fc78ba
 repositories:
   auto_cut_bot:
-    source_commit: 70a8164e170685981812cc7e92ac54dbd7741064
+    source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
@@ -72,10 +72,6 @@ entries:
   sha256: sha256:f25884b04f11aa63d1788a2cf5258096e1eccb88878c5c1e4b80a362097e661c
 - class: production_contract
   repository: ac_auto_cut
-  path: 原理/v2.1-production-spec/v2-production-system-contracts.md
-  sha256: sha256:58d90861b8a2f14ec5da7e3312e59e3409ff036a4444508d2ee524f59cb99ffd
-- class: production_contract
-  repository: ac_auto_cut
   path: 原理/v2.1-production-spec/v2-stage-01-knowledge-chain-v2.md
   sha256: sha256:887732d5d993949003141070063e59ec0b2a2dd42808fcf4670441950c2772f0
 - class: production_contract
@@ -110,6 +106,18 @@ entries:
   repository: auto_cut_bot
   path: governance/model-role-policy.yaml
   sha256: sha256:2948155ee37f6bde274007185bc330c433f32ffd26ab7ac152f5c1532ef4b79f
+- class: registry_source
+  repository: auto_cut_bot
+  path: governance/production-qc-collector-capability-set-profile.json
+  sha256: sha256:550b4ab9d58874f4ec88081a11566659c09881fb9fffef4827adf515fb4cd436
+- class: registry_source
+  repository: auto_cut_bot
+  path: governance/production-qc-collector-policy.json
+  sha256: sha256:08fac2045023aa545c28392cd5dd40fc89e11e558e601e4da3a7ccf26bebb9b5
+- class: registry_source
+  repository: auto_cut_bot
+  path: governance/production-qc-collector-registry-snapshot.json
+  sha256: sha256:121af27590ce1fc4b50b2394cd73563dde6e5aee79dcd36ac24f3a8eaa45e820
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/protected-paths.yaml
@@ -121,7 +129,7 @@ entries:
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schema-index.yaml
-  sha256: sha256:aef52f7d6920b4bbf293b51902fa242d8b87d0bb7874eca29f234bdc79c801c1
+  sha256: sha256:7fcca21b8f20fbcba0081bbfc3cca8e11a33d71d05fd95e4f6a5784e749d54b2
 - class: schema_source
   repository: auto_cut_bot
   path: governance/schemas/activation-profiles.schema.json
@@ -204,6 +212,18 @@ entries:
   sha256: sha256:525320d6aa4a91a3191a624f763414d6f91b9d3d40f364495072b0b5debaa60b
 - class: schema_source
   repository: auto_cut_bot
+  path: governance/schemas/production-qc-collector-capability-set-profile.schema.json
+  sha256: sha256:62e6e69aa02d96741dd4c6f3913febacd0a012396949845680b57db9ad92777c
+- class: schema_source
+  repository: auto_cut_bot
+  path: governance/schemas/production-qc-collector-policy.schema.json
+  sha256: sha256:9b6c58f6592a0d76ab6c577a8a9a5611db35124b2371c2e44f15500a4aae0844
+- class: schema_source
+  repository: auto_cut_bot
+  path: governance/schemas/production-qc-collector-registry-snapshot.schema.json
+  sha256: sha256:366e0682872e8736e3b3056770396d452e071cc3fb1ccc1bffddec155a3390e7
+- class: schema_source
+  repository: auto_cut_bot
   path: governance/schemas/protected-paths.schema.json
   sha256: sha256:da19bc617c60ad3ab00afdb75fa286e1ac556ffba9dafdea5fc07bb4deea2e3b
 - class: schema_source
@@ -265,7 +285,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/task-authorizations.yaml
-  sha256: sha256:c2299c204de611af65dd1faf913eb673c20d2f38b9c5dfca2fec54601aa784f3
+  sha256: sha256:e2269e9dccc49b2c959fb8a0c5bac7ace3f7d9dec41615bbcf78f17dd5c22f6e
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/ac_auto_cut/backend/index.md
@@ -453,7 +473,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/conformance_gates.py
-  sha256: sha256:70086a110ccc9de40ac1b9264f9b0ef88c24e0a71465b59d267b6133e98ba137
+  sha256: sha256:f146e3579bee42e7c2639dadbcca467de8b667984aafb20b7155929f41353388
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/consumer_lock.py
@@ -494,4 +514,4 @@ entries:
   repository: auto_cut_bot
   path: tools/authority/trellis_sync.py
   sha256: sha256:f31bde7ca0d47d3da54d59bf9ab032a4f0277ba469d995d5c3215519ef804126
-bundle_hash: sha256:67e40a6a075848179cfdae6de9fb9ed9b00f575a9a514e160eff93a19fda4c7e
+bundle_hash: sha256:44a7436c22f2073e61ae9e6c3dda16c93fb3d7b777062fcf59cb7248762b49cf
