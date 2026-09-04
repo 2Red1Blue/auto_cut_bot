@@ -1,16 +1,16 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 8
+authority_revision: 9
 contract_version: 2.1.3
-seed_source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
+seed_source_commit: d0a637874771ee1401935defd0001ceaed538b49
 inventory:
   repository: auto_cut_bot
-  manifest_commit: dfa5c29cec05a9061b39536738fa64fa37b60d03
+  manifest_commit: 1f3941faf046699fe8c65c8a8050f96a7cd59080
   path: governance/authority-sources.yaml
-  sha256: sha256:acdbfb6d8f81a9f2e2adc91f8ec21dd0c87d1c75829546f71aa4d38c03fc78ba
+  sha256: sha256:5dda15fb7ad8ef81ace8759e95d77d690a6f92b6adfc376e243b717304c40931
 repositories:
   auto_cut_bot:
-    source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
+    source_commit: d0a637874771ee1401935defd0001ceaed538b49
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
@@ -285,7 +285,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/task-authorizations.yaml
-  sha256: sha256:e2269e9dccc49b2c959fb8a0c5bac7ace3f7d9dec41615bbcf78f17dd5c22f6e
+  sha256: sha256:3771800025ebcc43514be1fc96fbc32589f34fbb67d6d99ef6e9a980ecb315b3
 - class: architecture_gate
   repository: auto_cut_bot
   path: governance/trellis-spec/ac_auto_cut/backend/index.md
@@ -489,7 +489,7 @@ entries:
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/lock.py
-  sha256: sha256:2a570127724b912a2716f1464345ce6a27095055def0e1c85ef2ce7ac2025566
+  sha256: sha256:2d71961888692f182c9c725a7d1d5ba5da512d439d8718743a32199f58f49f37
 - class: architecture_gate
   repository: auto_cut_bot
   path: tools/authority/receipts.py
@@ -514,4 +514,4 @@ entries:
   repository: auto_cut_bot
   path: tools/authority/trellis_sync.py
   sha256: sha256:f31bde7ca0d47d3da54d59bf9ab032a4f0277ba469d995d5c3215519ef804126
-bundle_hash: sha256:44a7436c22f2073e61ae9e6c3dda16c93fb3d7b777062fcf59cb7248762b49cf
+bundle_hash: sha256:df6db536a305409eb0b2d87bbbd78c398e28369543f7440e1dc1373879bbce6f
