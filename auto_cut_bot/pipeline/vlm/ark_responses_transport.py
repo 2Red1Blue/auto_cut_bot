@@ -449,7 +449,8 @@ def _error_snapshot(error: Exception, result: ProviderResult, api_key: str) -> d
     body = getattr(error, "body", None)
     details: dict[str, str] = {}
     if isinstance(body, dict):
-        body = cast(dict[str, object], body).get("error", body)
+        envelope = cast(dict[str, object], body)
+        body = envelope.get("error", envelope)
         if isinstance(body, dict):
             error_fields = cast(dict[str, object], body)
             for key in ("code", "param", "type", "message"):
