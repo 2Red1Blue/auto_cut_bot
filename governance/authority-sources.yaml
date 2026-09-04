@@ -1,11 +1,11 @@
 schema_version: 1.0.0
 authority_id: autocut-v2.1.3-production-authority
-authority_revision: 8
+authority_revision: 9
 contract_version: 2.1.3
-seed_source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
+seed_source_commit: d0a637874771ee1401935defd0001ceaed538b49
 repositories:
   auto_cut_bot:
-    source_commit: 5da07ee26725f23d47f93f742c2d9dd6fc032719
+    source_commit: d0a637874771ee1401935defd0001ceaed538b49
   ac_auto_cut:
     source_commit: c9bbfd362dac96b7f52c3f14aa792fa1f34d90a6
 entries:
