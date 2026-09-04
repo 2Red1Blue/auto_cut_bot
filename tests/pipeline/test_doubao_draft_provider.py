@@ -222,7 +222,19 @@ def test_installed_sdk_serializes_v2_direct_format_unchanged():
     )
     result = adapter.dispatch(request(payload=encoded(value), callback=lambda _id: None))
     assert type(result) is ProviderCompleted
-    assert captured == [value]
+    assert len(captured) == 1
+    sent = captured[0]
+    assert {key: sent[key] for key in value} == value
+    # This SDK emits omitted optional parameters as JSON null. They must not
+    # become hidden non-null features; supplied prompt/schema remain exact.
+    nullable_sdk_fields = {
+        "instructions", "parallel_tool_calls", "previous_response_id", "thinking",
+        "caching", "tool_choice", "tools", "top_p", "max_tool_calls",
+        "context_management", "expire_at", "reasoning", "session", "service_tier",
+    }
+    extras = set(sent) - set(value)
+    assert extras <= nullable_sdk_fields
+    assert all(sent[key] is None for key in extras)
 
 
 @pytest.mark.parametrize("direct", [False, True])
