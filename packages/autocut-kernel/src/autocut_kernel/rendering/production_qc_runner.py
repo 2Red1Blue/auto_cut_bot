@@ -16,13 +16,17 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Protocol, cast
+from uuid import UUID
 
+from ..registry.installed_production_qc import load_installed_production_qc_resource
 from ..store.models import (
     PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
     BlobRef,
     Job,
     MaterializationError,
     MaterializationLimits,
+    PersistedProductionRenderQcCollectorCapability,
+    ProductionQcCollectorCapabilityBinding,
     ProductionRenderQcAttempt,
     ProductionRenderQcCheckEvidence,
     ProductionRenderQcEvidenceReport,
@@ -49,6 +53,11 @@ from .production_process import (
     run_bounded_process,
     run_streaming_process,
 )
+from .production_qc_collector_capability import (
+    ProductionQcCollectorCapabilityRequest,
+    ProductionQcCollectorExecutableIdentity,
+    ProductionQcCollectorLiveProfile,
+)
 from .production_qc_collectors import (
     PRODUCTION_QC_COLLECTORS,
     AstatsReducer,
@@ -67,6 +76,7 @@ from .production_qc_collectors import (
     parse_compact_record,
     parse_topology_json,
 )
+from .production_qc_evaluator import ProductionRenderQcCollectorIdentity
 
 _SHA256_EMPTY: Final = "sha256:" + hashlib.sha256(b"").hexdigest()
 _CHECK_EVIDENCE_AUTHORITY_CAP: Final = 2 * 1024 * 1024
@@ -100,6 +110,10 @@ class ProductionRenderQcIdentityDriftError(ProductionRenderQcRunnerError):
 
 class ProductionRenderQcStore(Protocol):
     """Narrow Store port required by the runner; no PostgreSQL dependency leaks in."""
+
+    def resolve_accepted_production_qc_collector_capability(
+        self, request: ProductionQcCollectorCapabilityRequest
+    ) -> PersistedProductionRenderQcCollectorCapability: ...
 
     def materialize_immutable_blob(
         self, job: Job, reference: BlobRef, limits: MaterializationLimits
@@ -214,6 +228,97 @@ class ProductionRenderQcCollectorProfile:
                 "runner_schema_version": "production-qc-runner-v1",
             }
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionRenderQcRuntimeCapability:
+    """Data-only accepted projection, rechecked through the composed Store at use.
+
+    Construction is not authorization. No reader, process or mutable policy
+    selector belongs to this object. Both identities derive from the same
+    persisted tools, independently of any QC report.
+    """
+
+    persisted: PersistedProductionRenderQcCollectorCapability
+
+    def __post_init__(self) -> None:
+        if type(self.persisted) is not PersistedProductionRenderQcCollectorCapability:  # noqa: E721
+            raise ProductionRenderQcInputError("production QC requires an exact persisted capability")
+
+    @property
+    def profile(self) -> ProductionRenderQcCollectorProfile:
+        live = self.persisted.request.live_profile
+        return ProductionRenderQcCollectorProfile(
+            live.profile_id,
+            _runtime_executable_identity(live.ffmpeg_identity),
+            _runtime_executable_identity(live.ffprobe_identity),
+        )
+
+    @property
+    def evaluator_identity(self) -> ProductionRenderQcCollectorIdentity:
+        profile = self.profile
+        return ProductionRenderQcCollectorIdentity(
+            profile.qc_runner_identity_sha256,
+            _canonical_hash(profile.ffmpeg_identity.to_mapping()),
+            _canonical_hash(profile.ffprobe_identity.to_mapping()),
+        )
+
+
+def _runtime_executable_identity(
+    identity: ProductionQcCollectorExecutableIdentity,
+) -> ProductionExecutableIdentity:
+    return ProductionExecutableIdentity(
+        identity.executable_sha256,
+        identity.executable_byte_length,
+        identity.version_output_sha256,
+    )
+
+
+def resolve_production_render_qc_runtime_capability(
+    store: ProductionRenderQcStore,
+    live_profile: ProductionQcCollectorLiveProfile,
+) -> ProductionRenderQcRuntimeCapability:
+    """Resolve fixed installed policy plus a fresh host measurement, read-only.
+
+    ``store`` is supplied by trusted application composition, never by request
+    data or the capability. Store errors propagate fail closed. The exact
+    reader owns validation of the succeeded Receipt/set/member joins; this
+    adapter also checks its returned projection against the installed binding.
+    """
+
+    if type(live_profile) is not ProductionQcCollectorLiveProfile:  # noqa: E721
+        raise ProductionRenderQcInputError("production QC requires an exact live profile")
+    installed = load_installed_production_qc_resource()
+    request = ProductionQcCollectorCapabilityRequest(installed.policy, live_profile)
+    binding = ProductionQcCollectorCapabilityBinding(request, installed.provenance)
+    persisted = store.resolve_accepted_production_qc_collector_capability(request)
+    if type(persisted) is not PersistedProductionRenderQcCollectorCapability:  # noqa: E721
+        raise ProductionRenderQcInputError("production QC Store returned no exact capability")
+    if (
+        persisted.request != request
+        or persisted.provenance != installed.provenance
+        or persisted.scope_key != binding.scope_key
+        or persisted.measurement_member_sha256 != binding.measurement_member.content_hash
+        or persisted.capability_member_sha256 != binding.decision_member.content_hash
+    ):
+        raise ProductionRenderQcInputError("production QC accepted capability binding differs")
+    for reference in (
+        persisted.receipt_id, persisted.artifact_set_id, persisted.command_slot_id
+    ):
+        if type(reference) is not UUID or reference.int == 0:  # noqa: E721
+            raise ProductionRenderQcInputError("production QC capability reference is invalid")
+    if persisted.accepted_at.utcoffset() is None:
+        raise ProductionRenderQcInputError("production QC capability acceptance time is invalid")
+    capability = ProductionRenderQcRuntimeCapability(persisted)
+    # SQL0059 retains the full LiveProfile hash. Attempts/reports deliberately
+    # retain the historical compact runner hash; these hashes are not equal.
+    if (
+        capability.profile.registry_sha256 != installed.policy.collector_registry_sha256
+        or _canonical_hash(dict(FIXED_PROCESS_ENVIRONMENT))
+        != installed.policy.fixed_environment_sha256
+    ):
+        raise ProductionRenderQcInputError("production QC installed collector identity differs")
+    return capability
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,7 +561,7 @@ def run_production_render_qc(
     materialization_limits: MaterializationLimits,
     ffmpeg_path: str | os.PathLike[str],
     ffprobe_path: str | os.PathLike[str],
-    profile: ProductionRenderQcCollectorProfile,
+    capability: ProductionRenderQcRuntimeCapability,
     execution_limits: ProductionRenderQcExecutionLimits,
     heartbeat: ProductionRenderQcHeartbeat | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -466,6 +571,16 @@ def run_production_render_qc(
 ) -> ProductionRenderQcAttempt:
     """Collect and atomically attach one complete ordered evidence journal."""
 
+    if type(capability) is not ProductionRenderQcRuntimeCapability:  # noqa: E721
+        raise ProductionRenderQcInputError("production QC requires an exact runtime capability")
+    # Re-read before materialization, lease renewal, probing, process startup or
+    # evidence writes. Never call a reader obtained from the supplied capability.
+    fresh = resolve_production_render_qc_runtime_capability(
+        store, capability.persisted.request.live_profile
+    )
+    if fresh.persisted != capability.persisted:
+        raise ProductionRenderQcInputError("production QC supplied capability differs from Store")
+    profile = fresh.profile
     _validate_inputs(job, attempt, lease, plan, materialization_limits, profile, execution_limits)
     controller = _LeaseController(store, lease, execution_limits, heartbeat, cancelled)
     materialized: VerifiedMaterializedBlob | None = None
@@ -1463,6 +1578,8 @@ __all__ = (
     "ProductionRenderQcPlanProjection",
     "ProductionRenderQcRetryableError",
     "ProductionRenderQcRunnerError",
+    "ProductionRenderQcRuntimeCapability",
     "ProductionRenderQcStore",
+    "resolve_production_render_qc_runtime_capability",
     "run_production_render_qc",
 )

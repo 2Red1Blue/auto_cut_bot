@@ -28,9 +28,10 @@ from autocut_kernel.rendering.production_qc_collectors import (
     parse_topology_json,
 )
 from autocut_kernel.rendering.production_qc_runner import (
-    ProductionRenderQcCollectorProfile,
     ProductionRenderQcExecutionLimits,
     ProductionRenderQcPlanProjection,
+    ProductionRenderQcRuntimeCapability,
+    resolve_production_render_qc_runtime_capability,
     run_production_render_qc,
 )
 from autocut_kernel.store.models import (
@@ -38,9 +39,14 @@ from autocut_kernel.store.models import (
     BlobRef,
     Job,
     MaterializationLimits,
+    PersistedProductionRenderQcCollectorCapability,
     ProductionRenderQcAttempt,
     ProductionRenderQcEvidenceReport,
     ProductionRenderQcLease,
+)
+from production_qc_capability_fixtures import (
+    FakeProductionQcCapabilityReader,
+    fake_accepted_capability,
 )
 
 
@@ -59,10 +65,17 @@ class _MaterializedFixture:
         self.path.unlink(missing_ok=True)
 
 
-class _RealMediaStore:
+class _RealMediaStore(FakeProductionQcCapabilityReader):
     """Narrow in-memory Store port; real tools operate only on copied bytes."""
 
-    def __init__(self, source: Path, attempt: ProductionRenderQcAttempt, root: Path) -> None:
+    def __init__(
+        self,
+        source: Path,
+        attempt: ProductionRenderQcAttempt,
+        root: Path,
+        accepted: PersistedProductionRenderQcCollectorCapability,
+    ) -> None:
+        self.accepted_capability = accepted
         self.source = source
         self.attempt = attempt
         self.root = root
@@ -310,7 +323,9 @@ def test_real_ffmpeg_detector_has_metadata_eof_and_terminal_progress(
     assert detector.right_censored_count == 1
 
 
-def _real_profile(tmp_path: Path, ffmpeg: str, ffprobe: str) -> ProductionRenderQcCollectorProfile:
+def _real_capability(
+    tmp_path: Path, ffmpeg: str, ffprobe: str
+) -> ProductionRenderQcRuntimeCapability:
     identities: list[ProductionExecutableIdentity] = []
     for executable, name in ((ffmpeg, "ffmpeg"), (ffprobe, "ffprobe")):
         source = resolve_executable(executable, default_name=name)
@@ -323,7 +338,7 @@ def _real_profile(tmp_path: Path, ffmpeg: str, ffprobe: str) -> ProductionRender
                 version.output_sha256,
             )
         )
-    return ProductionRenderQcCollectorProfile("real_ffmpeg_fixture_v1", *identities)
+    return ProductionRenderQcRuntimeCapability(fake_accepted_capability(*identities))
 
 
 def _run_real_media_qc(
@@ -335,7 +350,7 @@ def _run_real_media_qc(
     junction_timeline_ticks: tuple[int, ...] = (450_000,),
 ) -> tuple[ProductionRenderQcAttempt, _RealMediaStore]:
     content = media.read_bytes()
-    profile = _real_profile(tmp_path, ffmpeg, ffprobe)
+    capability = _real_capability(tmp_path, ffmpeg, ffprobe)
     now = datetime.now(timezone.utc)
     output = BlobRef(uuid4(), _sha256(content), len(content), "video/mp4")
     job_id = uuid4()
@@ -351,7 +366,7 @@ def _run_real_media_qc(
         render_facts_sha256=_sha256(b"real-render-facts"),
         qc_policy_sha256=_sha256(b"real-qc-policy"),
         required_check_set_version=PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
-        qc_runner_identity_sha256=profile.qc_runner_identity_sha256,
+        qc_runner_identity_sha256=capability.profile.qc_runner_identity_sha256,
         state="scanning",
         version=1,
         reserved_at=now,
@@ -366,7 +381,7 @@ def _run_real_media_qc(
         now + timedelta(minutes=10),
         1,
     )
-    store = _RealMediaStore(media, attempt, tmp_path)
+    store = _RealMediaStore(media, attempt, tmp_path, capability.persisted)
     store.lease = lease
     result = run_production_render_qc(
         store,
@@ -379,7 +394,9 @@ def _run_real_media_qc(
         materialization_limits=MaterializationLimits(1024 * 1024, 16 * 1024 * 1024, 64, 4096),
         ffmpeg_path=ffmpeg,
         ffprobe_path=ffprobe,
-        profile=profile,
+        capability=resolve_production_render_qc_runtime_capability(
+            store, capability.persisted.request.live_profile
+        ),
         execution_limits=ProductionRenderQcExecutionLimits(
             process_timeout_milliseconds=30_000,
             tool_probe_timeout_milliseconds=10_000,
@@ -399,7 +416,7 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
     media = (tmp_path / "fixture.mp4").absolute()
     _generate_black_av_fixture(media, ffmpeg)
     content = media.read_bytes()
-    profile = _real_profile(tmp_path, ffmpeg, ffprobe)
+    capability = _real_capability(tmp_path, ffmpeg, ffprobe)
     now = datetime.now(timezone.utc)
     output = BlobRef(uuid4(), _sha256(content), len(content), "video/mp4")
     job_id = uuid4()
@@ -415,7 +432,7 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
         render_facts_sha256=_sha256(b"real-render-facts"),
         qc_policy_sha256=_sha256(b"real-qc-policy"),
         required_check_set_version=PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
-        qc_runner_identity_sha256=profile.qc_runner_identity_sha256,
+        qc_runner_identity_sha256=capability.profile.qc_runner_identity_sha256,
         state="scanning",
         version=1,
         reserved_at=now,
@@ -430,7 +447,7 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
         now + timedelta(minutes=10),
         1,
     )
-    store = _RealMediaStore(media, attempt, tmp_path)
+    store = _RealMediaStore(media, attempt, tmp_path, capability.persisted)
     store.lease = lease
 
     result = run_production_render_qc(
@@ -442,7 +459,9 @@ def test_real_media_runner_collects_and_attaches_the_closed_evidence_set(tmp_pat
         materialization_limits=MaterializationLimits(1024 * 1024, 16 * 1024 * 1024, 64, 4096),
         ffmpeg_path=ffmpeg,
         ffprobe_path=ffprobe,
-        profile=profile,
+        capability=resolve_production_render_qc_runtime_capability(
+            store, capability.persisted.request.live_profile
+        ),
         execution_limits=ProductionRenderQcExecutionLimits(
             process_timeout_milliseconds=30_000,
             tool_probe_timeout_milliseconds=10_000,

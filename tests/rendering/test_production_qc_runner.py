@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
-from dataclasses import replace
+import subprocess
+import sys
+from dataclasses import fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from autocut_kernel.registry.installed_production_qc import InstalledProductionQcResourceError
 from autocut_kernel.rendering.production_process import (
     PinnedExecutable,
     ProductionExecutableIdentity,
@@ -19,25 +23,41 @@ from autocut_kernel.rendering.production_process import (
     ProductionStreamResult,
     close_process_pipe,
 )
+from autocut_kernel.rendering.production_qc_evaluator import (
+    ProductionRenderQcPolicy,
+    evaluate_production_render_qc,
+)
 from autocut_kernel.rendering.production_qc_runner import (
     ProductionRenderQcCancelledError,
-    ProductionRenderQcCollectorProfile,
     ProductionRenderQcExecutionLimits,
     ProductionRenderQcIdentityDriftError,
+    ProductionRenderQcInputError,
     ProductionRenderQcPlanProjection,
     ProductionRenderQcRetryableError,
+    ProductionRenderQcRuntimeCapability,
+    resolve_production_render_qc_runtime_capability,
     run_production_render_qc,
 )
-from autocut_kernel.store.errors import CommandStateError
+from autocut_kernel.store.errors import (
+    CommandStateError,
+    ProductionQcCollectorCapabilityIdentityDriftError,
+    ProductionQcCollectorCapabilityUnavailableError,
+    RuntimeStoreError,
+)
 from autocut_kernel.store.models import (
     PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
     PRODUCTION_RENDER_QC_REQUIRED_CHECKS,
     BlobRef,
     Job,
     MaterializationLimits,
+    PersistedProductionRenderQcCollectorCapability,
     ProductionRenderQcAttempt,
     ProductionRenderQcEvidenceReport,
     ProductionRenderQcLease,
+)
+from production_qc_capability_fixtures import (
+    FakeProductionQcCapabilityReader,
+    fake_accepted_capability,
 )
 
 
@@ -60,8 +80,15 @@ class _Materialized:
         self.path.unlink(missing_ok=True)
 
 
-class _Store:
-    def __init__(self, attempt: ProductionRenderQcAttempt, root: Path, content: bytes) -> None:
+class _Store(FakeProductionQcCapabilityReader):
+    def __init__(
+        self,
+        attempt: ProductionRenderQcAttempt,
+        root: Path,
+        content: bytes,
+        accepted: PersistedProductionRenderQcCollectorCapability,
+    ) -> None:
+        self.accepted_capability = accepted
         self.attempt = attempt
         self.root = root
         self.content = content
@@ -125,6 +152,7 @@ class _Processes:
         self.topology = topology
         self.timeout_check = timeout_check
         self.argv: list[tuple[str, ...]] = []
+        self.bounded_argv: list[tuple[str, ...]] = []
         self.malformed_frames = False
         self.empty_framehash_stream: str | None = None
 
@@ -138,6 +166,7 @@ class _Processes:
         pass_fds: tuple[int, ...],
     ) -> ProductionProcessResult:
         del timeout_milliseconds, stdout_max_bytes, stderr_max_bytes, pass_fds
+        self.bounded_argv.append(argv)
         name = Path(argv[0]).name
         return ProductionProcessResult(0, f"{name} fixture\n".encode(), b"")
 
@@ -276,8 +305,8 @@ def _case(tmp_path: Path, *, media: bytes = b"exact-media"):
     ffprobe_identity = ProductionExecutableIdentity(
         _hash(ffprobe.read_bytes()), len(ffprobe.read_bytes()), _hash(b"ffprobe fixture\n\0")
     )
-    profile = ProductionRenderQcCollectorProfile(
-        "fixture_profile_v1", ffmpeg_identity, ffprobe_identity
+    capability = ProductionRenderQcRuntimeCapability(
+        fake_accepted_capability(ffmpeg_identity, ffprobe_identity)
     )
     output = BlobRef(uuid4(), _hash(media), len(media), "video/mp4")
     now = datetime.now(timezone.utc)
@@ -294,7 +323,7 @@ def _case(tmp_path: Path, *, media: bytes = b"exact-media"):
         render_facts_sha256=_hash(b"render-facts"),
         qc_policy_sha256=_hash(b"qc-policy"),
         required_check_set_version=PRODUCTION_RENDER_QC_CHECK_SET_VERSION,
-        qc_runner_identity_sha256=profile.qc_runner_identity_sha256,
+        qc_runner_identity_sha256=capability.profile.qc_runner_identity_sha256,
         state="scanning",
         version=1,
         reserved_at=now,
@@ -309,7 +338,7 @@ def _case(tmp_path: Path, *, media: bytes = b"exact-media"):
         now + timedelta(minutes=5),
         1,
     )
-    store = _Store(attempt, tmp_path, media)
+    store = _Store(attempt, tmp_path, media, capability.persisted)
     store.current_lease = lease
     return {
         "store": store,
@@ -320,7 +349,9 @@ def _case(tmp_path: Path, *, media: bytes = b"exact-media"):
         "materialization_limits": MaterializationLimits(1024, 1024, 64, 4096),
         "ffmpeg_path": str(ffmpeg),
         "ffprobe_path": str(ffprobe),
-        "profile": profile,
+        "capability": resolve_production_render_qc_runtime_capability(
+            store, capability.persisted.request.live_profile
+        ),
         "execution_limits": ProductionRenderQcExecutionLimits(
             process_timeout_milliseconds=1000,
             tool_probe_timeout_milliseconds=1000,
@@ -571,3 +602,223 @@ def test_cleanup_reverification_failure_is_not_swallowed(tmp_path: Path) -> None
     with pytest.raises(ProductionRenderQcIdentityDriftError, match="reverification"):
         _run(case, processes, executable_reverifier=reverify)
     assert sum(calls.values()) == 4
+
+
+def _assert_no_collection_effects(case, processes: _Processes) -> None:
+    store = case["store"]
+    assert store.materialized is None
+    assert store.current_lease == case["lease"]
+    assert store.evidence == []
+    assert store.record_calls == 0
+    assert store.report is None
+    assert processes.bounded_argv == []
+    assert processes.argv == []
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    (
+        ProductionQcCollectorCapabilityUnavailableError,
+        ProductionQcCollectorCapabilityIdentityDriftError,
+        RuntimeStoreError,
+    ),
+)
+def test_capability_reader_failure_precedes_every_collection_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[RuntimeStoreError]
+) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    requests = []
+
+    def unavailable(request):
+        requests.append(request)
+        raise error_type("fixture accepted capability unavailable")
+
+    monkeypatch.setattr(case["store"], "resolve_accepted_production_qc_collector_capability", unavailable)
+    with pytest.raises(error_type):
+        _run(case, processes)
+    assert requests == [case["capability"].persisted.request]
+    _assert_no_collection_effects(case, processes)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "receipt_id", "artifact_set_id", "command_slot_id", "scope_key",
+        "measurement_member_sha256", "capability_member_sha256", "provenance",
+        "accepted_at", "request",
+    ),
+)
+def test_supplied_capability_cannot_substitute_any_persisted_field(
+    tmp_path: Path, field: str
+) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    record = case["capability"].persisted
+    changes = {
+        "receipt_id": uuid4(),
+        "artifact_set_id": uuid4(),
+        "command_slot_id": uuid4(),
+        "scope_key": "foreign-scope",
+        "measurement_member_sha256": _hash(b"forged-measurement"),
+        "capability_member_sha256": _hash(b"forged-capability"),
+        "provenance": replace(record.provenance, source_commit="a" * 40),
+        "accepted_at": record.accepted_at + timedelta(seconds=1),
+        "request": replace(
+            record.request,
+            live_profile=replace(
+                record.request.live_profile,
+                ffmpeg_identity=replace(
+                    record.request.live_profile.ffmpeg_identity,
+                    version_output_sha256=_hash(b"foreign-version"),
+                ),
+            ),
+        ),
+    }
+    forged = ProductionRenderQcRuntimeCapability(replace(record, **{field: changes[field]}))
+    # The composed Store returns its original exact record even for a substituted
+    # request, so the runner must validate the fresh response, not trust the DTO.
+    case["store"].resolve_accepted_production_qc_collector_capability = lambda request: record
+    with pytest.raises(ProductionRenderQcInputError, match="differs"):
+        _run(case, processes, capability=forged)
+    _assert_no_collection_effects(case, processes)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("provenance", "scope_key", "measurement_member_sha256", "capability_member_sha256"),
+)
+def test_resolver_checks_installed_binding_even_if_caller_and_reader_agree_on_tamper(
+    tmp_path: Path, field: str
+) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    record = case["capability"].persisted
+    changes = {
+        "provenance": replace(record.provenance, lock_commit="b" * 40),
+        "scope_key": "foreign-scope",
+        "measurement_member_sha256": _hash(b"forged-measurement"),
+        "capability_member_sha256": _hash(b"forged-capability"),
+    }
+    tampered = replace(record, **{field: changes[field]})
+    case["store"].accepted_capability = tampered
+    with pytest.raises(ProductionRenderQcInputError, match="binding differs"):
+        _run(case, processes, capability=ProductionRenderQcRuntimeCapability(tampered))
+    _assert_no_collection_effects(case, processes)
+
+
+@pytest.mark.parametrize("response", (None, {"decision": "denied"}, {"decision": "accepted"}))
+def test_untyped_or_denied_reader_response_never_collects(tmp_path: Path, response) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    case["store"].resolve_accepted_production_qc_collector_capability = lambda request: response
+    with pytest.raises(ProductionRenderQcInputError, match="no exact capability"):
+        _run(case, processes)
+    _assert_no_collection_effects(case, processes)
+
+
+def test_installed_resource_failure_never_collects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from autocut_kernel.rendering import production_qc_runner
+
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+
+    def unavailable():
+        raise InstalledProductionQcResourceError("fixture installed bytes drift")
+
+    monkeypatch.setattr(production_qc_runner, "load_installed_production_qc_resource", unavailable)
+    with pytest.raises(InstalledProductionQcResourceError):
+        _run(case, processes)
+    _assert_no_collection_effects(case, processes)
+
+
+def test_capability_is_data_only_and_cannot_supply_its_own_reader(tmp_path: Path) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+
+    class SelfReadingCapability:
+        persisted = case["capability"].persisted
+
+        def resolve_accepted_production_qc_collector_capability(self, request):
+            pytest.fail("caller-controlled reader must not run")
+
+    assert tuple(field.name for field in fields(ProductionRenderQcRuntimeCapability)) == ("persisted",)
+    assert tuple(inspect.signature(resolve_production_render_qc_runtime_capability).parameters) == (
+        "store", "live_profile"
+    )
+    for supplied in (case["capability"].profile, SelfReadingCapability()):
+        with pytest.raises(ProductionRenderQcInputError, match="exact runtime capability"):
+            _run(case, processes, capability=supplied)
+    arguments = dict(case)
+    arguments["profile"] = arguments.pop("capability").profile
+    with pytest.raises(TypeError, match="profile"):
+        run_production_render_qc(**arguments)
+    arguments = dict(case)
+    arguments.pop("store")
+    with pytest.raises(TypeError, match="store"):
+        run_production_render_qc(**arguments)
+    _assert_no_collection_effects(case, processes)
+
+
+def test_attempt_must_reserve_compact_identity_not_full_live_hash(tmp_path: Path) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    full_hash = case["capability"].persisted.request.live_profile.canonical_sha256
+    assert full_hash != case["capability"].profile.qc_runner_identity_sha256
+    attempt = replace(case["attempt"], qc_runner_identity_sha256=full_hash)
+    with pytest.raises(ProductionRenderQcInputError, match="not reserved"):
+        _run(case, processes, attempt=attempt)
+    _assert_no_collection_effects(case, processes)
+
+
+@pytest.mark.parametrize("tool", ("ffmpeg", "ffprobe"))
+def test_actual_tool_drift_still_fails_with_an_accepted_capability(tmp_path: Path, tool: str) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    Path(case[f"{tool}_path"]).write_bytes(b"changed-executable")
+    with pytest.raises(ProductionRenderQcRetryableError, match="reserved profile"):
+        _run(case, processes)
+    assert processes.argv == []
+    assert case["store"].evidence == []
+    assert case["store"].record_calls == 0
+
+
+def test_derived_identity_matches_report_and_independent_evaluator(tmp_path: Path) -> None:
+    case = _case(tmp_path)
+    processes = _Processes(topology=_topology())
+    policy = ProductionRenderQcPolicy()
+    case["attempt"] = replace(case["attempt"], qc_policy_sha256=policy.canonical_hash)
+    case["store"].attempt = case["attempt"]
+    before = case["capability"].evaluator_identity
+    _run(case, processes)
+    report = case["store"].report
+    assert report is not None
+    assert before == case["capability"].evaluator_identity
+    assert report.qc_runner_identity_sha256 == before.qc_runner_identity_sha256
+    evaluation = evaluate_production_render_qc(
+        report,
+        report_sha256=report.canonical_hash,
+        policy=policy,
+        evaluator_identity_sha256=policy.evaluator_identity_sha256,
+        collector_identity=before,
+    )
+    assert evaluation.technical_eligibility == "pass"
+    assert evaluation.eligibility == "deny"  # Stage 5 remains unavailable.
+
+
+@pytest.mark.parametrize("first", ("store.models", "registry.installed_production_qc", "rendering.production_qc_runner"))
+def test_capability_import_order_has_no_cycle(first: str) -> None:
+    code = (
+        f"import sys; sys.path[:0] = {sys.path!r}; import importlib; "
+        f"importlib.import_module('autocut_kernel.{first}'); "
+        "from autocut_kernel.rendering.production_qc_runner import "
+        "ProductionRenderQcRuntimeCapability; "
+        "from autocut_kernel.store.models import PersistedProductionRenderQcCollectorCapability"
+    )
+    result = subprocess.run(  # noqa: S603 - fixed local module import probe.
+        (sys.executable, "-c", code), capture_output=True, text=True, check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
