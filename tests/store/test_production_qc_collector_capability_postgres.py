@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ from autocut_kernel.store import (
     ProductionQcCollectorCapabilityBinding,
     ProductionQcCollectorCapabilityIdentityDriftError,
     ProductionQcCollectorCapabilityUnavailableError,
+    RuntimeStoreError,
 )
 
 from tests.store.test_production_qc_collector_capability_models import (
@@ -219,6 +221,73 @@ def test_commit_replay_after_response_lost_returns_same_closure(
     assert replay.state == "succeeded"
     assert replay.receipt_id == outcome.receipt_id
     assert replay.artifact_set_id == outcome.artifact_set_id
+
+
+def test_succeeded_command_replay_rejects_changed_provenance(
+    store: PostgresRuntimeStore,
+) -> None:
+    resource = _installed()
+    profile = _unique_profile("provenance-replay")
+    command = AcceptProductionRenderQcCollectorCapabilityCommand(store)
+    first = command.execute(resource, profile)
+    assert first.state == "succeeded"
+    changed = replace(
+        resource,
+        provenance=replace(resource.provenance, source_commit="a" * 40),
+    )
+    with pytest.raises(IdempotencyConflictError):
+        command.execute(changed, profile)
+    assert command.execute(resource, profile).receipt_id == first.receipt_id
+
+
+@pytest.mark.parametrize("ack_lost", [False, True], ids=["before-commit", "after-commit"])
+def test_ambiguous_commit_is_reconciled_without_rejection(
+    monkeypatch: pytest.MonkeyPatch, ack_lost: bool,
+) -> None:
+    """Inject a driver failure at the real connection's second commit (success)."""
+    commits = 0
+
+    class FaultingConnection:
+        def __init__(self) -> None:
+            self.connection = psycopg.connect(DSN)
+
+        def cursor(self):
+            return self.connection.cursor()
+
+        def commit(self) -> None:
+            nonlocal commits
+            commits += 1
+            if commits == 2:
+                if ack_lost:
+                    self.connection.commit()
+                raise psycopg.OperationalError("injected commit acknowledgement failure")
+            self.connection.commit()
+
+        def rollback(self) -> None:
+            self.connection.rollback()
+
+        def close(self) -> None:
+            self.connection.close()
+
+    faulting_store = PostgresRuntimeStore(FaultingConnection)
+
+    def forbidden_rejection(*args, **kwargs):
+        pytest.fail("an ambiguous commit must not write a rejection")
+
+    monkeypatch.setattr(faulting_store, "commit_command_rejection", forbidden_rejection)
+    resource = _installed()
+    profile = _unique_profile(f"commit-fault-{ack_lost}")
+    command = AcceptProductionRenderQcCollectorCapabilityCommand(faulting_store)
+    with pytest.raises(RuntimeStoreError, match="database operation failed"):
+        command.execute(resource, profile)
+    # The same identity resumes a rolled-back transaction or replays its commit;
+    # neither case generates another command slot or contradictory Receipt.
+    recovered = command.execute(resource, profile)
+    replay = command.execute(resource, profile)
+    assert recovered.state == replay.state == "succeeded"
+    assert recovered.command_slot_id == replay.command_slot_id
+    assert recovered.receipt_id == replay.receipt_id
+    assert recovered.artifact_set_id == replay.artifact_set_id
 
 
 def test_generic_command_boundary_rejects_protected_capability(store: PostgresRuntimeStore) -> None:

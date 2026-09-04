@@ -27,7 +27,6 @@ from ..store import (
     IdempotencyConflictError,
     PostgresRuntimeStore,
     ProductionQcCollectorCapabilityBinding,
-    RuntimeStoreError,
     StoreValidationError,
 )
 
@@ -58,8 +57,11 @@ class AcceptProductionRenderQcCollectorCapabilityCommand:
             ) from error
         binding = ProductionQcCollectorCapabilityBinding(request, resource.provenance)
         claimed = self.store.claim_qc_collector_capability_command(binding.claim)
-        if not claimed.is_fresh_claim:
+        if claimed.state in ("denied", "failed"):
             return claimed
+        # This command has no external effect: the protected transaction may
+        # safely resume a running slot and validate a succeeded replay. Returning
+        # the claim alone would strand interrupted commits and skip provenance.
         try:
             committed = self.store.commit_qc_collector_capability_success(
                 CommandSuccess(
@@ -69,15 +71,13 @@ class AcceptProductionRenderQcCollectorCapabilityCommand:
                 ),
                 binding,
             )
-            return replace(committed, is_fresh_claim=True)
+            return replace(committed, is_fresh_claim=claimed.is_fresh_claim)
         except IdempotencyConflictError:
             # A conflict means the durable identity already decided differently;
             # it must surface instead of being rewritten into a terminal receipt.
             raise
         except StoreValidationError as error:
             return self._reject(claimed.command_slot_id, str(error), "denied")
-        except (RuntimeStoreError, OSError) as error:
-            return self._reject(claimed.command_slot_id, type(error).__name__, "failed")
         # Commit failures/ambiguous outcomes are not rewritten into rejection:
         # the next call must reconcile/replay the Store's authoritative receipt.
 
