@@ -18,8 +18,8 @@ from tests.store.test_production_qc_collector_capability_postgres import (
     DSN,
     MIGRATIONS,
     _unique_binding,
-    migrated_database,  # noqa: F401 -- reuse the guarded, module-scoped fixture
-    store,  # noqa: F401 -- reuse the real Store fixture
+    migrated_database as migrated_database,
+    store as store,
 )
 
 psycopg = pytest.importorskip("psycopg")
