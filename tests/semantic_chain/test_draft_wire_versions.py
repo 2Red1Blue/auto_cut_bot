@@ -9,7 +9,11 @@ from autocut_kernel.pipeline.build_narrative_graph_request import prepare_stage1
 from autocut_kernel.pipeline.compile_story_portfolio_request import prepare_stage2_request
 from autocut_kernel.semantic_chain.draft_provider import (
     DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION as V2,
+)
+from autocut_kernel.semantic_chain.draft_provider import (
     DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION as V1,
+)
+from autocut_kernel.semantic_chain.draft_provider import (
     DraftProviderError,
     build_draft_text_format,
     decode_draft_text_format,

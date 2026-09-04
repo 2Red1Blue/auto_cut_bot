@@ -449,10 +449,11 @@ def _error_snapshot(error: Exception, result: ProviderResult, api_key: str) -> d
     body = getattr(error, "body", None)
     details: dict[str, str] = {}
     if isinstance(body, dict):
-        body = body.get("error", body)
+        body = cast(dict[str, object], body).get("error", body)
         if isinstance(body, dict):
+            error_fields = cast(dict[str, object], body)
             for key in ("code", "param", "type", "message"):
-                value = body.get(key)
+                value = error_fields.get(key)
                 if isinstance(value, str):
                     if len(value) > 65536:
                         details[key] = "[omitted: oversized provider diagnostic]"
