@@ -318,10 +318,16 @@ def parse_topology_json(raw: bytes, *, max_bytes: int = _MAX_TOPOLOGY_BYTES) -> 
     if type(parsed) is not dict:  # noqa: E721
         raise CollectorError("topology JSON root is not closed")
     root = cast(dict[str, object], parsed)
-    allowed_root = {"format", "programs", "stream_groups", "streams"}
-    if set(root) != allowed_root:
+    # FFprobe 6 omits stream_groups; newer writers emit the empty section
+    # even without -show_stream_groups. Accept these two observed wire shapes,
+    # not arbitrary missing sections or unknown keys. This collector does not
+    # infer stream-group absence from an older writer's missing section.
+    required_root = {"format", "programs", "streams"}
+    if set(root) not in (required_root, required_root | {"stream_groups"}):
         raise CollectorError("topology JSON root is not closed")
     for section in ("programs", "stream_groups"):
+        if section not in root:
+            continue
         if type(root[section]) is not list or root[section]:  # noqa: E721
             raise CollectorError(
                 "topology contains an unsupported nonempty program or stream group"

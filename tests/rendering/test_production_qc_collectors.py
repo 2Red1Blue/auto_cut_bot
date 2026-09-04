@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 from autocut_kernel.rendering.production_qc_collectors import (
@@ -65,6 +66,8 @@ def test_registry_is_the_closed_store_order_with_closed_measurement_schemas() ->
 def test_topology_rejects_duplicate_json_unknown_shape_and_preserves_absolute_indexes() -> None:
     raw = b'{"programs":[],"stream_groups":[],"format":{"format_name":"mov,mp4,m4a,3gp,3g2,mj2"},"streams":[{"index":7,"codec_type":"audio","codec_name":"aac","time_base":"1/48000","sample_rate":"48000","channels":2,"channel_layout":"stereo","nb_read_packets":"10"},{"index":3,"codec_type":"video","codec_name":"h264","time_base":"1/90000","width":720,"height":1280,"pix_fmt":"yuv420p","nb_read_packets":"11"}]}'
     topology = parse_topology_json(raw)
+    # The same pinned argv on PC FFprobe 6.1 omits this newer writer section.
+    assert parse_topology_json(raw.replace(b'"stream_groups":[],', b"")) == topology
     assert topology.streams == (
         StreamTopology(7, "audio", "aac", "1/48000", None, None, None, 48000, 2, "stereo", 10),
         StreamTopology(3, "video", "h264", "1/90000", 720, 1280, "yuv420p", None, None, None, 11),
@@ -80,6 +83,45 @@ def test_topology_rejects_duplicate_json_unknown_shape_and_preserves_absolute_in
     assert parse_topology_json(b'{"programs":[],"stream_groups":[],"format":{"format_name":"mp4"},"streams":[]}').streams == ()
     with pytest.raises(CollectorError, match="nonempty program"):
         parse_topology_json(b'{"programs":[{}],"stream_groups":[],"format":{"format_name":"mp4"},"streams":[]}')
+
+
+@pytest.mark.parametrize("with_groups", [False, True])
+@pytest.mark.parametrize("missing", ["format", "programs", "streams"])
+def test_topology_compatibility_still_requires_core_sections(
+    with_groups: bool, missing: str,
+) -> None:
+    document: dict[str, object] = {
+        "programs": [], "format": {"format_name": "mp4"}, "streams": [],
+    }
+    if with_groups:
+        document["stream_groups"] = []
+    del document[missing]
+    with pytest.raises(CollectorError, match="root is not closed"):
+        parse_topology_json(json.dumps(document).encode())
+
+
+@pytest.mark.parametrize("section", ["programs", "stream_groups"])
+@pytest.mark.parametrize("value", [None, {}, False, "", [{}]])
+def test_topology_compatibility_rejects_invalid_present_sections(
+    section: str, value: object,
+) -> None:
+    document = {
+        "programs": [], "stream_groups": [],
+        "format": {"format_name": "mp4"}, "streams": [], section: value,
+    }
+    with pytest.raises(CollectorError, match="unsupported nonempty"):
+        parse_topology_json(json.dumps(document).encode())
+
+
+@pytest.mark.parametrize("with_groups", [False, True])
+def test_topology_compatibility_does_not_ignore_unknown_root_keys(with_groups: bool) -> None:
+    document: dict[str, object] = {
+        "programs": [], "format": {"format_name": "mp4"}, "streams": [], "extra": [],
+    }
+    if with_groups:
+        document["stream_groups"] = []
+    with pytest.raises(CollectorError, match="root is not closed"):
+        parse_topology_json(json.dumps(document).encode())
 
 
 def test_online_reducers_track_complete_raw_stream_and_terminal_requirements() -> None:
