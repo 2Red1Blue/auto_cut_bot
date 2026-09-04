@@ -22,7 +22,8 @@ Codex 独立审查通过两项重放修复；Claude 超时，不能宣称双模�
 
 ## 尚未完成
 
-当前 HTTP registry 尚未接入 Stage 4 / Render / QC；QC runner 尚未消费持久化能力，
+当前 HTTP registry 尚未接入 Stage 4 / Render / QC；QC runner 的持久化能力接入已于
+`41cffe9a` 完成并在 PC 验证（见下文），
 Stage 5 完整性事实及本地 release 尚未闭合。不能将上述数据库测试称为真实剪辑 E2E。
 0060 验证后应接通后半程，用已有兼容的 VLM/ASR 结果续跑真实样本。
 本轮没有调用 VLM/ASR，没有修改 prompt，没有进行外部发布。
@@ -66,3 +67,27 @@ PC 真实工具探测已匹配已安装静态资源，request hash 为
 存放完整 LiveProfile hash；runner 自身同名属性是工具、环境与 registry 的紧凑
 身份。应从 Store 精确读取的同一份 accepted capability 显式派生 runner profile
 及 evaluator identity，不应直接将这两个不同投影的哈希判为相等或改写历史值。
+
+## 2026-09-05：Runner 消费持久化能力
+
+`41cffe9a` 已推送并以 Git fast-forward 同步 PC 验证 clone。
+Runner 接受纯数据 capability，通过独立传入的 Store 在收集副作用前复读完整
+accepted record，并从同一份工具身份派生 runner profile 与 evaluator identity。
+工具 pin/reverify 与已有哈希算法未改变；没有增加自动发布许可。
+
+- PC 五个定向测试模块（runner、real_media、collector_capability、collectors、
+  evaluator）：**90 passed，6.28 秒**。
+- 四个变更 Python 文件 Ruff 通过；runner BasedPyright 零错误、零警告。
+- JUnit：PC `/tmp/qc-runtime-binding-41cffe9a.xml`。
+- 另以 PC 实际 FFmpeg/FFprobe pin/probe，使用只读 PostgreSQL 连接解析前述
+  Receipt/set；新 resolver 返回完整相同 persisted record，工具身份一致。
+- 完整 LiveProfile hash：
+  `sha256:601a9bf6e195048ddf5a464fa3b12e554edbf398965dec81265d6217fc49b6a7`；
+  派生 runner hash：
+  `sha256:b62527cddefd60289c84ba3d34915d8bfeba66bbcef8a0d32f1c005ee693c30f`。
+  已实际断言二者不同，且 runner/evaluator 使用同一紧凑身份。
+
+Trellis 独立静态审查未发现具体缺陷；其提出的真实数据库投影验证缺口由上述
+PC 只读检查补充。外部 Codex patch 审查 APPROVE；Claude 超时。审查编号
+`94a4dc75-da87-43d4-bf40-01a9b11c7052`，不声明双模型审查全部通过。
+这仍不是 HTTP 剧集端到端验证；没有执行模型调用或修改业务库。

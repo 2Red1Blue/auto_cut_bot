@@ -48,3 +48,24 @@
 QC 工具和数据库验证记录见
 [QC能力验证](qc-capability-validation-2026-09-04.md)。数据库验收、媒体fixture成功
 都不能替代上述单集通过真实Stage4、Render、QC并产出本地视频。
+
+## 最新代码读取历史单集：已验证兼容
+
+在 PC 验证 clone 的 `41cffe9a`，通过原业务库只读连接实际执行：
+
+1. `PostgresPipelineRunStore.read_run` 成功解析上述历史 run。
+2. 读取其已提交 SourcePrep、WindowContextPackSet，并用保存的 execution profile
+   重建 VLM batch key。
+3. `read_committed_vlm_semantic_pack_set_reference` 与
+   `read_committed_semantic_inputs` 均通过，Source 与语义输入集数均为1。
+
+确切 batch key：
+`vlm-batch:ffcb29652a3696aecffb802ea96e70db36482209ebb50f584ef4766669b34320`。
+Aggregate hash：
+`sha256:c73f148a94ef581b3c619f8dd331300830b7e6ef6b2dd8ad8944aab644edd8d6`。
+
+结论：该 V22 单集产物能被当前 Kernel reader 完整读取，不需要仅因代码升级
+重跑 VLM。此检查不等于已将它绑定到新的语义链运行：当前 Stage1 HTTP adapter
+按目标 run/job 和 execution profile 重建前驱键，不能直接把历史成功 run 的冻结
+计划追加阶段。下一步应实现明确的后续运行/前驱复用绑定，并沿真实输入推进
+Stage1–3 和媒体证据；不要用修改旧 run 或重新全量 VLM 代替这部分接线。
