@@ -235,7 +235,7 @@ def test_succeeded_command_replay_rejects_changed_provenance(
         resource,
         provenance=replace(resource.provenance, source_commit="a" * 40),
     )
-    with pytest.raises(IdempotencyConflictError):
+    with pytest.raises(CommandStateError, match="different artifact set"):
         command.execute(changed, profile)
     assert command.execute(resource, profile).receipt_id == first.receipt_id
 
