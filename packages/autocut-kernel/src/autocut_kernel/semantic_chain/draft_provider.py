@@ -24,6 +24,11 @@ from ..vlm.provider_port import (
 # Structural safety ceiling, not an implicit model/prompt budget. The Command
 # freezes its tighter prompt policy; adapters require an explicit byte budget.
 MAX_DRAFT_REQUEST_BYTES = 16 * 1024 * 1024
+DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION = "doubao-ark-text-responses-stream-v1"
+DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION = "doubao-ark-text-responses-stream-v2"
+DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
+    DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION, DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION,
+})
 _MAX_DEPTH = 64
 _FIELDS = {"model", "input", "text", "max_output_tokens", "temperature", "stream", "store"}
 
@@ -89,6 +94,49 @@ def _json_values(value: object) -> None:
             raise DraftProviderError("nonfinite JSON numbers are forbidden")
 
 
+def decode_draft_text_format(
+    text: object, *, adapter_strategy_version: str | None = None,
+) -> dict[str, object]:
+    """Validate a registered wire shape without rewriting persisted request bytes."""
+    config = _closed(text, {"format"}, "text configuration")
+    value = config["format"]
+    if type(value) is not dict:  # noqa: E721
+        raise DraftProviderError("format must be an exact object")
+    mapping = cast(dict[str, object], value)
+    if set(mapping) == {"type", "json_schema"}:
+        strategy = DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION
+        descriptor = _closed(mapping["json_schema"], {"name", "strict", "schema"}, "json_schema")
+    else:
+        strategy = DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION
+        _closed(mapping, {"type", "name", "strict", "schema"}, "format")
+        descriptor = {key: mapping[key] for key in ("name", "strict", "schema")}
+    if adapter_strategy_version is not None and adapter_strategy_version != strategy:
+        raise DraftProviderError("draft format differs from registered adapter strategy")
+    if mapping["type"] != "json_schema":
+        raise DraftProviderError("draft format must be explicit json_schema")
+    name = _text(descriptor["name"], "schema name")
+    if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name) is None or descriptor["strict"] is not True:
+        raise DraftProviderError("draft schema name and strict mode must be explicit")
+    if type(descriptor["schema"]) is not dict or not descriptor["schema"]:  # noqa: E721
+        raise DraftProviderError("response schema must be a non-empty JSON object")
+    return descriptor
+
+
+def build_draft_text_format(
+    adapter_strategy_version: str, schema_name: str, response_schema: dict[str, object],
+) -> dict[str, object]:
+    """Choose the frozen policy's wire version, never the current SDK annotation."""
+    descriptor: dict[str, object] = {"name": schema_name, "strict": True, "schema": response_schema}
+    if adapter_strategy_version == DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION:
+        result = {"format": {"type": "json_schema", "json_schema": descriptor}}
+    elif adapter_strategy_version == DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION:
+        result = {"format": {"type": "json_schema", **descriptor}}
+    else:
+        raise DraftProviderError("unregistered draft adapter strategy")
+    decode_draft_text_format(result, adapter_strategy_version=adapter_strategy_version)
+    return cast(dict[str, object], result)
+
+
 def decode_draft_request_payload(raw: bytes) -> dict[str, object]:
     """Decode a fresh, closed SDK text body; no model output or schema is trusted."""
     if type(raw) is not bytes or not 0 < len(raw) <= MAX_DRAFT_REQUEST_BYTES:  # noqa: E721
@@ -115,16 +163,7 @@ def decode_draft_request_payload(raw: bytes) -> dict[str, object]:
     if part["type"] != "input_text":
         raise DraftProviderError("draft input must not contain media or file references")
     _text(part["text"], "prompt")
-    text = _closed(body["text"], {"format"}, "text configuration")
-    format_value = _closed(text["format"], {"type", "json_schema"}, "format")
-    if format_value["type"] != "json_schema":
-        raise DraftProviderError("draft format must be explicit json_schema")
-    schema = _closed(format_value["json_schema"], {"name", "strict", "schema"}, "json_schema")
-    name = _text(schema["name"], "schema name")
-    if re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", name) is None or schema["strict"] is not True:
-        raise DraftProviderError("draft schema name and strict mode must be explicit")
-    if type(schema["schema"]) is not dict or not schema["schema"]:  # noqa: E721
-        raise DraftProviderError("response schema must be a non-empty JSON object")
+    decode_draft_text_format(body["text"])
     tokens = body["max_output_tokens"]
     if type(tokens) is not int or not 1 <= tokens <= 32768:  # noqa: E721
         raise DraftProviderError("max_output_tokens must be an exact integer from 1 to 32768")

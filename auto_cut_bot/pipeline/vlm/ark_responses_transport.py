@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
@@ -151,7 +152,7 @@ class ArkResponsesTransport:
                 client = self.create_client()
             except Exception as error:
                 result = map_ark_client_error(error)
-                _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result))
+                _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result, self._config.api_key))
                 return result
         stream: object | None = None
         try:
@@ -166,7 +167,7 @@ class ArkResponsesTransport:
             )
         except Exception as error:
             result = _map_response_create_error(error)
-            _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result))
+            _capture_terminal(self._debug_sink, debug_context, "dispatch", _error_snapshot(error, result, self._config.api_key))
             return result
         finally:
             if stream is not None:
@@ -254,7 +255,7 @@ class ArkResponsesTransport:
             return result
         except Exception as error:
             result = _map_reconcile_error(error, response_id=query.provider_request_id)
-            _capture_terminal(self._debug_sink, context, "reconcile", _error_snapshot(error, result))
+            _capture_terminal(self._debug_sink, context, "reconcile", _error_snapshot(error, result, self._config.api_key))
             return result
         finally:
             if client is not None:
@@ -442,12 +443,29 @@ def _provider_result_snapshot(result: ProviderResult) -> dict[str, object]:
     }
 
 
-def _error_snapshot(error: Exception, result: ProviderResult) -> dict[str, object]:
+def _error_snapshot(error: Exception, result: ProviderResult, api_key: str) -> dict[str, object]:
+    # SDK error bodies are untrusted diagnostics, never retry authority. Do not
+    # serialize the exception/request/headers wholesale or fall back to str(error).
+    body = getattr(error, "body", None)
+    details: dict[str, str] = {}
+    if isinstance(body, dict):
+        body = body.get("error", body)
+        if isinstance(body, dict):
+            for key in ("code", "param", "type", "message"):
+                value = body.get(key)
+                if isinstance(value, str):
+                    if len(value) > 65536:
+                        details[key] = "[omitted: oversized provider diagnostic]"
+                        continue
+                    value = value.replace(api_key, "[REDACTED]")
+                    value = re.sub(r"(?i)bearer\s+[^\s\"',;]+", "Bearer [REDACTED]", value)
+                    details[key] = value[:2048]
     return {
         "error_type": type(error).__name__,
         "http_status": ark_error_status(error),
         "provider_trace_id": ark_trace_id(error),
         "result": _provider_result_snapshot(result),
+        "provider_error": details,
     }
 
 

@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import cast
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash, sha256_bytes
-from ..semantic_chain.draft_provider import decode_draft_request_payload
+from ..semantic_chain.draft_provider import build_draft_text_format, decode_draft_request_payload
 from ..semantic_chain.editorial_command_policy import Stage3CommandPolicy
 from ..semantic_chain.editorial_context import EditorialContextBatch, build_editorial_contexts
 from ..semantic_chain.editorial_context_models import EditorialContextPolicy
@@ -195,9 +195,8 @@ def prepare_stage3_request(
     body: dict[str, object] = {
         "model": request.generation.model_id,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-        "text": {"format": {"type": "json_schema", "json_schema": {
-            "name": "stage3_editorial_blueprint_draft_v1", "schema": schema, "strict": True,
-        }}},
+        "text": build_draft_text_format(request.generation.adapter_strategy_version,
+                                        "stage3_editorial_blueprint_draft_v1", schema),
         "max_output_tokens": request.generation.max_output_tokens,
         "temperature": float(Decimal(request.generation.temperature)),
         "stream": True,

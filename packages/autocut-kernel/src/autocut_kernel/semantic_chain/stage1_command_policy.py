@@ -12,13 +12,13 @@ from ..store.models import CommittedSemanticInputsRequest
 from ..vlm.retry_policy import GenerationRetryPolicy
 from .coverage_analysis import Stage1CoveragePolicy
 from .dependency_projection import DependencyProjectionPolicy
+from .draft_provider import DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS
 from .stage1_draft import Stage1DraftPolicy
 
 if TYPE_CHECKING:
     from ..pipeline.build_narrative_graph_request import BuildNarrativeGraphRequest
 
 _PROVIDER = "doubao-ark-text-responses-stream"
-_STRATEGY = "doubao-ark-text-responses-stream-v1"
 _SAFE = 2**53 - 1
 
 
@@ -48,7 +48,7 @@ class Stage1GenerationPolicy:
     def __post_init__(self) -> None:
         for field in ("provider_id", "model_id", "prompt_version", "prompt_template", "adapter_strategy_version"):
             require_nonempty_text(getattr(self, field), field)
-        if self.provider_id != _PROVIDER or self.adapter_strategy_version != _STRATEGY:
+        if self.provider_id != _PROVIDER or self.adapter_strategy_version not in DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS:
             raise ValueError("Stage 1 requires the registered text Responses provider strategy")
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 32768:  # noqa: E721
             raise ValueError("max_output_tokens must be a positive provider-bounded integer")

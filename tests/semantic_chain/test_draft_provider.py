@@ -159,12 +159,12 @@ def test_existing_finite_numeric_temperature_semantics_are_not_restricted(temper
     assert request(payload=encoded(mapping)).to_provider_body()["temperature"] == temperature
 
 
-def test_sdk_nested_schema_format_is_required_not_legacy_flat_shape():
+def test_direct_schema_format_is_decodable_without_rewriting_legacy_bytes():
     mapping = body()
     schema = mapping["text"]["format"].pop("json_schema")
     mapping["text"]["format"].update(schema)
-    with pytest.raises(DraftProviderError):
-        request(payload=encoded(mapping))
+    assert request(payload=encoded(mapping)).to_provider_body() == mapping
+    assert request().request_payload == encoded(body())
 
 
 @pytest.mark.parametrize(

@@ -607,6 +607,7 @@ def compose_pipeline_runtime_from_environment(
             stage1_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+        adapter_strategy_version=stage1_policy.generation.adapter_strategy_version,
         debug_sink=debug_sink,
     )
     source_stage = SourcePrepPipelineStage(kernel_store, catalog)
@@ -618,6 +619,7 @@ def compose_pipeline_runtime_from_environment(
             stage2_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage2_policy.max_prompt_bytes,
+        adapter_strategy_version=stage2_policy.generation.adapter_strategy_version,
         debug_sink=debug_sink,
     )
     blueprint_provider = DoubaoDraftProvider(
@@ -628,6 +630,7 @@ def compose_pipeline_runtime_from_environment(
             stage3_policy.draft_policy.max_response_bytes,
         ),
         max_request_bytes=stage3_policy.max_prompt_bytes,
+        adapter_strategy_version=stage3_policy.generation.adapter_strategy_version,
         debug_sink=debug_sink,
     )
     vlm_stage = VlmPipelineStage(
@@ -844,6 +847,7 @@ def _compose_semantic_only_runtime(
                                 stage1_policy.draft_policy.max_response_bytes,
                             ),
                             max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+                            adapter_strategy_version=stage1_policy.generation.adapter_strategy_version,
                             debug_sink=debug_sink,
                         ),
                         semantic_authority=semantic_authority,
@@ -861,6 +865,7 @@ def _compose_semantic_only_runtime(
                                 stage2_policy.draft_policy.max_response_bytes,
                             ),
                             max_request_bytes=stage2_policy.max_prompt_bytes,
+                            adapter_strategy_version=stage2_policy.generation.adapter_strategy_version,
                             debug_sink=debug_sink,
                         ),
                         semantic_authority=semantic_authority,
@@ -878,6 +883,7 @@ def _compose_semantic_only_runtime(
                                 stage3_policy.draft_policy.max_response_bytes,
                             ),
                             max_request_bytes=stage3_policy.max_prompt_bytes,
+                            adapter_strategy_version=stage3_policy.generation.adapter_strategy_version,
                             debug_sink=debug_sink,
                         ),
                         semantic_authority=semantic_authority,

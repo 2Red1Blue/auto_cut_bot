@@ -10,9 +10,12 @@ from __future__ import annotations
 from typing import cast
 
 from autocut_kernel.semantic_chain.draft_provider import (
+    DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION,
+    DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS,
     MAX_DRAFT_REQUEST_BYTES,
     DraftDispatchRequest,
     DraftProviderError,
+    decode_draft_text_format,
 )
 from autocut_kernel.vlm.provider_port import ProviderReconcileQuery, ProviderResult
 
@@ -26,7 +29,7 @@ from .ark_responses_transport import (
 )
 
 DOUBAO_DRAFT_PROVIDER_ID = "doubao-ark-text-responses-stream"
-DOUBAO_DRAFT_ADAPTER_STRATEGY_VERSION = "doubao-ark-text-responses-stream-v1"
+DOUBAO_DRAFT_ADAPTER_STRATEGY_VERSION = DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION
 
 
 class DoubaoDraftProvider:
@@ -38,6 +41,7 @@ class DoubaoDraftProvider:
         config: ArkResponsesTransportConfig,
         *,
         max_request_bytes: int,
+        adapter_strategy_version: str = DOUBAO_DRAFT_ADAPTER_STRATEGY_VERSION,
         client_factory: ClientFactory | None = None,
         debug_sink: ModelIoDebugSink | None = None,
     ) -> None:
@@ -46,6 +50,9 @@ class DoubaoDraftProvider:
             or not 0 < max_request_bytes <= MAX_DRAFT_REQUEST_BYTES
         ):  # noqa: E721
             raise ValueError("draft request byte budget must be explicit and bounded")
+        if adapter_strategy_version not in DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS:
+            raise ValueError("unregistered text Responses adapter strategy")
+        self.strategy_version = adapter_strategy_version
         self._max_request_bytes = max_request_bytes
         self._transport = ArkResponsesTransport(
             config,
@@ -70,11 +77,11 @@ class DoubaoDraftProvider:
             )
         try:
             body = request.to_provider_body()
+            schema = decode_draft_text_format(
+                body["text"], adapter_strategy_version=self.strategy_version,
+            )
         except DraftProviderError:
             return provider_failure("INVALID_PROVIDER_REQUEST")
-        text = cast(dict[str, object], body["text"])
-        format_value = cast(dict[str, object], text["format"])
-        schema = cast(dict[str, object], format_value["json_schema"])
         schema_name = cast(str, schema["name"])
         return self._transport.dispatch(
             body,

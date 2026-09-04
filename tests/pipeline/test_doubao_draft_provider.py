@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from typing import get_type_hints
 
 import pytest
-from autocut_kernel.semantic_chain.draft_provider import DraftProviderPort
+from autocut_kernel.semantic_chain.draft_provider import (
+    DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION,
+    DraftProviderPort,
+)
 from autocut_kernel.semantic_chain.stage1_draft import stage1_draft_response_schema
 from autocut_kernel.vlm.provider_port import (
     ProviderCompleted,
@@ -21,6 +24,7 @@ from autocut_kernel.vlm.provider_port import (
 from auto_cut_bot.pipeline.vlm.ark_responses_transport import (
     ArkResponsesTransport,
     ArkResponsesTransportConfig,
+    _error_snapshot,
     create_ark_client,
 )
 from auto_cut_bot.pipeline.vlm.doubao_draft_provider import (
@@ -110,10 +114,12 @@ class FakeSDK:
         self.closed += 1
 
 
-def provider(sdk, *, max_stream_bytes=10000, max_request_bytes=100000):
+def provider(sdk, *, max_stream_bytes=10000, max_request_bytes=100000,
+             adapter_strategy_version=DOUBAO_DRAFT_ADAPTER_STRATEGY_VERSION):
     return DoubaoDraftProvider(
         ArkResponsesTransportConfig("fake-key", "https://ark.invalid/api/v3", 20, max_stream_bytes),
         max_request_bytes=max_request_bytes,
+        adapter_strategy_version=adapter_strategy_version,
         client_factory=sdk.factory,
     )
 
@@ -153,7 +159,7 @@ def test_single_text_dispatch_exact_wire_and_callback_before_completion():
     assert not sdk.retrieves
 
 
-def test_installed_sdk_declares_nested_json_schema_format_and_text_create():
+def test_sdk_annotations_are_not_endpoint_acceptance_evidence():
     from volcenginesdkarkruntime.resources.responses import Responses
     from volcenginesdkarkruntime.types.responses.response_text_config_param import (
         ResponseTextConfigParam,
@@ -169,6 +175,56 @@ def test_installed_sdk_declares_nested_json_schema_format_and_text_create():
     # The SDK decorator erases inspect.signature; inspect installed source,
     # without constructing or sending a provider request.
     assert "text: ResponseTextConfigParam" in inspect.getsource(Responses)
+
+
+def test_v2_forwards_direct_schema_exactly_without_touching_prompt():
+    sdk = FakeSDK()
+    value = body()
+    descriptor = value["text"]["format"].pop("json_schema")
+    value["text"]["format"].update(descriptor)
+    adapter = provider(sdk, adapter_strategy_version=DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION)
+    result = adapter.dispatch(request(payload=encoded(value), callback=lambda _id: None))
+    assert type(result) is ProviderCompleted
+    assert sdk.creates == [value]
+
+
+@pytest.mark.parametrize("direct", [False, True])
+def test_wire_strategy_mismatch_rejected_before_client_creation(direct):
+    sdk = FakeSDK()
+    value = body()
+    if direct:
+        descriptor = value["text"]["format"].pop("json_schema")
+        value["text"]["format"].update(descriptor)
+    strategy = (DOUBAO_DRAFT_ADAPTER_STRATEGY_VERSION if direct
+                else DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION)
+    result = provider(sdk, adapter_strategy_version=strategy).dispatch(
+        request(payload=encoded(value), callback=lambda _id: None))
+    assert type(result) is ProviderFailed
+    assert result.failure_code == "INVALID_PROVIDER_REQUEST"
+    assert not sdk.factories and not sdk.creates
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_error_diagnostics_are_bounded_redacted_and_not_retry_authority(nested):
+    error = RuntimeError("must not serialize exception")
+    details = {"code": "InvalidParameter", "param": "text.format", "type": "invalid_request",
+               "message": "bad fake-key Bearer other-secret " + "x" * 3000,
+               "headers": {"Authorization": "secret"}, "request": "do not copy"}
+    error.body = {"error": details} if nested else details
+    sdk = FakeSDK()
+    sdk.create_error = error
+    error.status_code = 400
+    result = provider(sdk).dispatch(request(callback=lambda _id: None))
+    snapshot = _error_snapshot(error, result, "fake-key")
+    saved = snapshot["provider_error"]
+    assert saved["param"] == "text.format"
+    assert set(saved) == {"code", "param", "type", "message"}
+    assert len(saved["message"]) == 2048
+    assert "fake-key" not in json.dumps(snapshot) and "other-secret" not in json.dumps(snapshot)
+    assert result.disposition is ProviderFailureDisposition.NONRETRYABLE
+    assert len(sdk.creates) == 1
+    error.body = {"message": "x" * 65537}
+    assert _error_snapshot(error, result, "fake-key")["provider_error"]["message"].startswith("[omitted")
 
 
 def test_default_sdk_factory_explicitly_disables_environment_proxy_and_retries(monkeypatch):

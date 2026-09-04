@@ -15,7 +15,7 @@ from ..contracts.compiler.canonical import (
 )
 from ..semantic_chain.coverage_analysis import Stage1CoveragePolicy
 from ..semantic_chain.dependency_projection import DependencyProjectionPolicy
-from ..semantic_chain.draft_provider import decode_draft_request_payload
+from ..semantic_chain.draft_provider import build_draft_text_format, decode_draft_request_payload
 from ..semantic_chain.stage1_command_policy import (
     Stage1CommandPolicy,
     Stage1GenerationPolicy,
@@ -141,7 +141,8 @@ def prepare_stage1_request(request: BuildNarrativeGraphRequest, inputs: Committe
     body: dict[str, object] = {
         "model": request.generation.model_id,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-        "text": {"format": {"type": "json_schema", "json_schema": {"name": "stage1_cross_window_draft_v1", "schema": stage1_draft_response_schema(request.draft_policy), "strict": True}}},
+        "text": build_draft_text_format(request.generation.adapter_strategy_version,
+                                        "stage1_cross_window_draft_v1", stage1_draft_response_schema(request.draft_policy)),
         "max_output_tokens": request.generation.max_output_tokens, "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
     }
     if not math.isfinite(cast(float, body["temperature"])):

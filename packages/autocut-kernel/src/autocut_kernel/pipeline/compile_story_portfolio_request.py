@@ -18,7 +18,7 @@ from ..semantic_chain.candidate_projection import (
     CandidateCatalogProjection,
     project_candidate_catalog,
 )
-from ..semantic_chain.draft_provider import decode_draft_request_payload
+from ..semantic_chain.draft_provider import build_draft_text_format, decode_draft_request_payload
 from ..semantic_chain.member_refs import SemanticMemberIdentity
 from ..semantic_chain.stage1_command_policy import (
     Stage1GenerationPolicy,
@@ -175,9 +175,8 @@ def prepare_stage2_request(
     body = {
         "model": request.generation.model_id,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-        "text": {"format": {"type": "json_schema", "json_schema": {
-            "name": "stage2_story_design_draft_v1", "schema": schema, "strict": True,
-        }}},
+        "text": build_draft_text_format(request.generation.adapter_strategy_version,
+                                        "stage2_story_design_draft_v1", schema),
         "max_output_tokens": request.generation.max_output_tokens,
         "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
     }
