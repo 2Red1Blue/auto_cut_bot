@@ -111,3 +111,23 @@ Two additional observations from actual execution:
    optional top-level fields as null. The mock-HTTP serializer test checks all
    supplied fields exactly and only permits the observed optional null fields;
    it must not claim SDK HTTP bytes equal the pre-SDK request bytes.
+
+### Final checks and next integration boundary
+
+PC `3d5a23c7`: all changed Python files pass Ruff; four modified provider/policy
+modules pass BasedPyright (0 errors, 0 warnings); focused tests **220 passed in
+4.66s**, including the real SDK serializer over mock HTTP. JUnit:
+`/tmp/stage123-wire-focused-3d5a23c7.xml`.
+
+The next real Stage 2 preparation called `read_committed_story_design_inputs`
+and stopped at `SourcePurposeDeniedError: render_source`. The old Source grant
+authorizes semantic analysis only. No Stage 2 provider call or new generation
+charge occurred. User intent already includes local rendered output; this is a
+missing durable local-render successor/source-purpose binding, not a request to
+obtain permission for external publication. Preserve the immutable old Source
+and successful Stage 1 receipts; do not remove `require_purpose`, mutate the old
+HTTP run, or rerun all VLM to conceal the missing reuse integration.
+
+Next work: an explicit local-render run/source grant referencing the same media,
+compatible committed VLM/semantic reuse, then real Stage 2/3 and physical E2E.
+The global Task07 remains `in_progress`; it must not be archived as completed.
