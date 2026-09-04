@@ -18,7 +18,11 @@ from tests.store.test_production_qc_collector_capability_postgres import (
     DSN,
     MIGRATIONS,
     _unique_binding,
+)
+from tests.store.test_production_qc_collector_capability_postgres import (
     migrated_database as migrated_database,
+)
+from tests.store.test_production_qc_collector_capability_postgres import (
     store as store,
 )
 
