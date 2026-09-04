@@ -19,6 +19,10 @@ from ..media.calibration_record import (
     runtime_calibration_profile_key,
 )
 from ..media.runtime_measurement_identity import RuntimeMeasurementIdentity
+from ..rendering.production_qc_collector_capability import (
+    ProductionQcCollectorCapabilityRequest,
+    ProductionQcCollectorPolicySource,
+)
 from ..source_manifest import (
     SourceManifestDecodeError,
     SourceOperationGrant,
@@ -29,6 +33,7 @@ from ..vlm.semantic_pack_v4 import VlmSemanticPackV4
 from .errors import StoreValidationError
 
 if TYPE_CHECKING:
+    from ..registry.installed_production_qc import ProductionQcSourceProvenance
     from ..rendering.production_ffmpeg_renderer import ProductionRenderAttemptFacts
 
 CommandOutcomeKind = Literal["pending", "running", "succeeded", "denied", "failed"]
@@ -101,6 +106,13 @@ PRODUCTION_RENDER_QC_REQUIRED_CHECKS = (
     "av_presentation_envelope",
     "edit_junction_continuity",
 )
+PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME = "AcceptProductionRenderQcCollectorCapability@1"
+PRODUCTION_QC_COLLECTOR_CAPABILITY_IDEMPOTENCY_PREFIX = "production-qc-collector-capability:"
+PRODUCTION_QC_COLLECTOR_MEASUREMENT_ARTIFACT_TYPE = "production_qc_collector_measurement"
+PRODUCTION_QC_COLLECTOR_DECISION_ARTIFACT_TYPE = "production_qc_collector_capability"
+PRODUCTION_QC_COLLECTOR_MEASUREMENT_MEMBER_SCHEMA = "production-qc-collector-measurement-v1"
+PRODUCTION_QC_COLLECTOR_DECISION_MEMBER_SCHEMA = "production-qc-collector-decision-v1"
+PRODUCTION_QC_COLLECTOR_CAPABILITY_SCOPE_KIND = "production_qc_collector_capability"
 GenerationAttemptState = Literal[
     "reserved",
     "dispatched",
@@ -1195,6 +1207,221 @@ class CalibrationValidationBinding:
             self.request_hash,
             execution_kind="deterministic",
         )
+
+
+def production_qc_collector_measurement_payload(
+    request: ProductionQcCollectorCapabilityRequest,
+) -> str:
+    """Canonical measurement-member payload shared by writer and reader."""
+
+    return json.dumps(
+        {
+            "capability_request_sha256": request.canonical_sha256,
+            "live_profile": request.live_profile.to_mapping(),
+            "schema_version": PRODUCTION_QC_COLLECTOR_MEASUREMENT_MEMBER_SCHEMA,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def production_qc_collector_decision_payload(
+    request: ProductionQcCollectorCapabilityRequest,
+    provenance_mapping: dict[str, object],
+    measurement_member_sha256: str,
+) -> str:
+    """Canonical decision-member payload shared by writer and reader."""
+
+    return json.dumps(
+        {
+            "authority_provenance": provenance_mapping,
+            "capability_request_sha256": request.canonical_sha256,
+            "decision": "accepted",
+            "measurement_member_sha256": measurement_member_sha256,
+            "policy_source": request.policy_source.to_mapping(),
+            "schema_version": PRODUCTION_QC_COLLECTOR_DECISION_MEMBER_SCHEMA,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ProductionQcCollectorCapabilityBinding:
+    """Immutable validator inputs for one exact collector capability acceptance.
+
+    The authority Job is derived from the ``(profile_id, policy_source_sha256,
+    registry_snapshot_sha256)`` lineage; the attempt idempotency key pins the
+    complete request so a replay can never widen an accepted capability.
+    """
+
+    request: ProductionQcCollectorCapabilityRequest
+    provenance: ProductionQcSourceProvenance
+
+    def __post_init__(self) -> None:
+        from ..registry.installed_production_qc import ProductionQcSourceProvenance
+
+        if type(self.request) is not ProductionQcCollectorCapabilityRequest:  # noqa: E721
+            raise StoreValidationError("capability binding request must be exact")
+        if type(self.provenance) is not ProductionQcSourceProvenance:  # noqa: E721
+            raise StoreValidationError("capability binding provenance must be exact")
+        if self.provenance.authority_revision < 1:
+            raise StoreValidationError("capability binding authority_revision must be positive")
+
+    def _canonical_text(self, payload: dict[str, object]) -> str:
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    @property
+    def policy(self) -> ProductionQcCollectorPolicySource:
+        return self.request.policy_source
+
+    @property
+    def job(self) -> Job:
+        """The dedicated authority Job binds the complete claimed identity.
+
+        The live runner measurement is part of the claim, so a later tool
+        measurement under the same policy lineage receives its own fresh
+        authority Job instead of colliding with the terminal predecessor.
+        """
+
+        return Job(
+            "autocut_production_qc_collector_validator:"
+            f"{self.policy.profile_id}"
+            f":{self.policy.policy_source_sha256.removeprefix('sha256:')}"
+            f":{self.policy.registry_snapshot_sha256.removeprefix('sha256:')}"
+            f":{self.request.live_profile.canonical_sha256.removeprefix('sha256:')}",
+            "authority",
+        )
+
+    @property
+    def attempt_idempotency_key(self) -> str:
+        return (
+            PRODUCTION_QC_COLLECTOR_CAPABILITY_IDEMPOTENCY_PREFIX
+            + f"{self.policy.profile_id}"
+            + f":{self.policy.policy_source_sha256.removeprefix('sha256:')}"
+            + f":{self.policy.registry_snapshot_sha256.removeprefix('sha256:')}"
+            + f":{self.request.canonical_sha256.removeprefix('sha256:')}"
+        )
+
+    @property
+    def scope_key(self) -> str:
+        return (
+            "production_qc_collector_capability:"
+            + f"{self.policy.profile_id}"
+            + f":{self.policy.policy_source_sha256.removeprefix('sha256:')}"
+            + f":{self.policy.registry_snapshot_sha256.removeprefix('sha256:')}"
+            + f":{self.request.live_profile.canonical_sha256.removeprefix('sha256:')}"
+        )
+
+    @property
+    def scope(self) -> ArtifactScope:
+        return ArtifactScope(
+            "autocut_authority",
+            PRODUCTION_QC_COLLECTOR_CAPABILITY_SCOPE_KIND,
+            self.scope_key,
+        )
+
+    @property
+    def request_hash(self) -> str:
+        return canonical_payload_hash(
+            self._canonical_text(
+                {
+                    "command": PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME,
+                    "request": self.request.to_mapping(),
+                }
+            )
+        )
+
+    @property
+    def claim(self) -> CommandClaim:
+        return CommandClaim(
+            self.job,
+            self.attempt_idempotency_key,
+            PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME,
+            self.request_hash,
+            execution_kind="deterministic",
+        )
+
+    @property
+    def measurement_payload_json(self) -> str:
+        return production_qc_collector_measurement_payload(self.request)
+
+    @property
+    def measurement_member(self) -> ArtifactMember:
+        payload_json = self.measurement_payload_json
+        return ArtifactMember(
+            PRODUCTION_QC_COLLECTOR_MEASUREMENT_ARTIFACT_TYPE,
+            "measurement",
+            1,
+            self.scope,
+            canonical_payload_hash(payload_json),
+            payload_json,
+        )
+
+    @property
+    def decision_payload_json(self) -> str:
+        return production_qc_collector_decision_payload(
+            self.request,
+            self.provenance.to_mapping(),
+            self.measurement_member.content_hash,
+        )
+
+    @property
+    def decision_member(self) -> ArtifactMember:
+        payload_json = self.decision_payload_json
+        return ArtifactMember(
+            PRODUCTION_QC_COLLECTOR_DECISION_ARTIFACT_TYPE,
+            "decision",
+            1,
+            self.scope,
+            canonical_payload_hash(payload_json),
+            payload_json,
+        )
+
+    @property
+    def members(self) -> tuple[ArtifactMember, ArtifactMember]:
+        return (self.measurement_member, self.decision_member)
+
+    @property
+    def expected_set_hash(self) -> str:
+        return artifact_set_hash(self.members)
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedProductionRenderQcCollectorCapability:
+    """One exact accepted collector capability reached through its immutable row.
+
+    Every field is independently re-read and revalidated from the authority
+    Job, validator command, Receipt, ArtifactSet and both required members;
+    the row itself is never trusted alone.
+    """
+
+    request: ProductionQcCollectorCapabilityRequest
+    provenance: ProductionQcSourceProvenance
+    scope_key: str
+    receipt_id: UUID
+    artifact_set_id: UUID
+    command_slot_id: UUID
+    measurement_member_sha256: str
+    capability_member_sha256: str
+    accepted_at: datetime
+
+    def __post_init__(self) -> None:
+        from ..registry.installed_production_qc import ProductionQcSourceProvenance
+
+        if type(self.request) is not ProductionQcCollectorCapabilityRequest:  # noqa: E721
+            raise StoreValidationError("persisted capability request must be exact")
+        if type(self.provenance) is not ProductionQcSourceProvenance:  # noqa: E721
+            raise StoreValidationError("persisted capability provenance must be exact")
+        for name in (
+            "measurement_member_sha256",
+            "capability_member_sha256",
+        ):
+            _sha256(getattr(self, name), name)
+        if type(self.accepted_at) is not datetime:  # noqa: E721
+            raise StoreValidationError("persisted capability accepted_at must be a datetime")
 
 
 @dataclass(frozen=True, slots=True)

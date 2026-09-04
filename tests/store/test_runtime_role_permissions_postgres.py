@@ -40,6 +40,7 @@ _AUTHORITY_OWNED_RELATIONS = (
     "runtime.artifact_set_members",
     "runtime.command_receipts",
     "runtime.logical_heads",
+    "runtime.production_qc_collector_capabilities",
 )
 
 

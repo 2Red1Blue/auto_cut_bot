@@ -79,3 +79,11 @@ class MediaOutputsUnavailableError(RuntimeStoreError):
 
 class MediaOutputsIntegrityError(RuntimeStoreError):
     """A succeeded media-output pair violates its shared immutable provenance."""
+
+
+class ProductionQcCollectorCapabilityUnavailableError(RuntimeStoreError):
+    """No accepted collector capability exists for the exact policy lineage."""
+
+
+class ProductionQcCollectorCapabilityIdentityDriftError(RuntimeStoreError):
+    """The live collector measurement drifted from the accepted capability identity."""

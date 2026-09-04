@@ -80,6 +80,8 @@ from .errors import (
     MediaOutputsIntegrityError,
     MediaOutputsUnavailableError,
     PersistenceConflictError,
+    ProductionQcCollectorCapabilityIdentityDriftError,
+    ProductionQcCollectorCapabilityUnavailableError,
     RecipeIntegrityError,
     RecipeUnavailableError,
     RuntimeCalibrationIdentityMismatchError,
@@ -97,6 +99,8 @@ from .media_recovery_frontier import (
     MediaRecoveryPlan,
 )
 from .models import (
+    PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME,
+    PRODUCTION_QC_COLLECTOR_CAPABILITY_IDEMPOTENCY_PREFIX,
     PRODUCTION_RECIPE_COMMAND_NAME,
     PRODUCTION_RENDER_COMMAND_NAME,
     PRODUCTION_RENDER_QC_EVIDENCE_SCHEMA_VERSION,
@@ -133,6 +137,7 @@ from .models import (
     PersistedCommittedArtifactSet,
     PersistedMediaEvidence,
     PersistedMediaOutputs,
+    PersistedProductionRenderQcCollectorCapability,
     PersistedRecipe,
     PersistedRuntimeCalibrationCapability,
     PersistedShadowCalibrationMeasurement,
@@ -140,6 +145,8 @@ from .models import (
     PersistedVlmSemanticPack,
     PersistedVlmSemanticPackV4,
     PersistedWholeSeriesSourceManifest,
+    ProductionQcCollectorCapabilityBinding,
+    ProductionQcCollectorCapabilityRequest,
     ProductionRenderAttempt,
     ProductionRenderLease,
     ProductionRenderQcAttempt,
@@ -184,6 +191,8 @@ from .models import (
     artifact_set_hash,
     canonical_payload_hash,
     canonical_recipe_scope,
+    production_qc_collector_decision_payload,
+    production_qc_collector_measurement_payload,
 )
 from .object_store import (
     ObjectStoreReadError,
@@ -1612,6 +1621,16 @@ class PostgresRuntimeStore:
         if claim.idempotency_key.startswith("shadow-local-measurement:"):
             raise CommandStateError(
                 "shadow-local-measurement idempotency keys require the explicit local shadow owner API"
+            )
+        if (
+            claim.command_name == PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME
+            or claim.idempotency_key.startswith(
+                PRODUCTION_QC_COLLECTOR_CAPABILITY_IDEMPOTENCY_PREFIX
+            )
+        ):
+            raise CommandStateError(
+                "AcceptProductionRenderQcCollectorCapability@1 requires the explicit"
+                " production QC collector capability owner API"
             )
         if (
             claim.command_name == VLM_BATCH_FINALIZER_COMMAND_NAME
@@ -3151,6 +3170,11 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "CompileProductionRecipeCommand@1 success requires the Stage 4 owner API"
                 )
+            if command_name == PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME:
+                raise CommandStateError(
+                    "AcceptProductionRenderQcCollectorCapability@1 success requires the"
+                    " production QC collector capability owner API"
+                )
             self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
             if state != "running":
                 return self._replay_or_raise(
@@ -3684,6 +3708,475 @@ class PostgresRuntimeStore:
                 )
             self._assert_vlm_batch_child_closure(cursor, job, decoded)
             return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def claim_qc_collector_capability_command(self, claim: CommandClaim) -> CommandOutcome:
+        """Claim the reserved production-QC collector capability validator identity."""
+
+        if claim.command_name != PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME:
+            raise CommandStateError(
+                "production QC collector capability owner API accepts only"
+                " AcceptProductionRenderQcCollectorCapability@1"
+            )
+        if not claim.idempotency_key.startswith(
+            PRODUCTION_QC_COLLECTOR_CAPABILITY_IDEMPOTENCY_PREFIX
+        ):
+            raise CommandStateError(
+                "production QC collector capability owner API requires its reserved"
+                " idempotency identity"
+            )
+        if claim.execution_kind != "deterministic":
+            raise CommandStateError(
+                "production QC collector capability owner API requires a deterministic"
+                " execution kind"
+            )
+        return self._claim_command(claim)
+
+    def commit_qc_collector_capability_success(
+        self,
+        success: CommandSuccess,
+        binding: ProductionQcCollectorCapabilityBinding,
+    ) -> CommandOutcome:
+        """Close the accepted capability set, Receipt, authority Job and capability row."""
+
+        if len(success.artifacts) != 2:
+            raise StoreValidationError(
+                "production QC collector capability success requires exactly two members"
+            )
+        measurement, decision = success.artifacts
+        expected_measurement, expected_decision = binding.members
+        if (measurement, decision) != (expected_measurement, expected_decision):
+            raise StoreValidationError(
+                "production QC collector capability members do not match its binding"
+            )
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(
+                cursor, success.command_slot_id
+            )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            cursor.execute(
+                "SELECT job.job_key, job.profile, slot.idempotency_key FROM runtime.jobs AS job"
+                " JOIN runtime.command_slots AS slot ON slot.job_id = job.job_id"
+                " WHERE job.job_id = %s AND slot.command_slot_id = %s",
+                (job_id, success.command_slot_id),
+            )
+            row = cursor.fetchone()
+            if (
+                command_name != PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME
+                or row is None
+                or Job(_text(row[0]), cast(JobProfile, _text(row[1]))) != binding.job
+            ):
+                raise CommandStateError(
+                    "capability writer requires its exact dedicated authority Job"
+                )
+            if _text(row[2]) != binding.attempt_idempotency_key or request_hash != binding.request_hash:
+                raise IdempotencyConflictError(
+                    "capability slot does not bind the exact acceptance request"
+                )
+            if state != "running":
+                outcome = self._replay_or_raise(
+                    cursor, success.command_slot_id, job_id, "succeeded", success.set_hash
+                )
+                self._require_matching_capability_row(cursor, binding, outcome)
+                return outcome
+
+            cursor.execute(
+                """
+                SELECT capability_request_sha256
+                  FROM runtime.production_qc_collector_capabilities
+                 WHERE profile_id = %s
+                   AND qc_runner_identity_sha256 = %s
+                   AND policy_source_sha256 = %s
+                   AND registry_snapshot_sha256 = %s
+                """,
+                (
+                    binding.policy.profile_id,
+                    binding.request.live_profile.canonical_sha256,
+                    binding.policy.policy_source_sha256,
+                    binding.policy.registry_snapshot_sha256,
+                ),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                if _text(existing[0]) != binding.request.canonical_sha256:
+                    raise IdempotencyConflictError(
+                        "an accepted capability row already exists with different request content"
+                    )
+                raise CommandStateError(
+                    "accepted capability row exists without its validator command outcome"
+                )
+
+            outcome = self._write_success(cursor, success, job_id)
+            live = binding.request.live_profile
+            policy = binding.policy
+            provenance = binding.provenance
+            cursor.execute(
+                """
+                INSERT INTO runtime.production_qc_collector_capabilities (
+                    namespace, scope_kind, scope_key,
+                    profile_id, qc_runner_identity_sha256,
+                    policy_source_sha256, registry_snapshot_sha256,
+                    collector_registry_sha256, required_check_set_version,
+                    runner_schema_version, fixed_environment_sha256,
+                    ffmpeg_executable_sha256, ffmpeg_executable_byte_length,
+                    ffmpeg_version_output_sha256,
+                    ffprobe_executable_sha256, ffprobe_executable_byte_length,
+                    ffprobe_version_output_sha256,
+                    capability_request_json, capability_request_sha256,
+                    measurement_member_sha256, capability_member_sha256,
+                    decision, receipt_id, artifact_set_id, command_slot_id,
+                    authority_revision, authority_bundle_sha256,
+                    source_commit, inventory_commit, lock_commit
+                ) VALUES (
+                    'autocut_authority', 'production_qc_collector_capability', %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, 'accepted', %s, %s, %s,
+                    %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    binding.scope_key,
+                    policy.profile_id,
+                    live.canonical_sha256,
+                    policy.policy_source_sha256,
+                    policy.registry_snapshot_sha256,
+                    policy.collector_registry_sha256,
+                    policy.required_check_set_version,
+                    policy.runner_schema_version,
+                    policy.fixed_environment_sha256,
+                    live.ffmpeg_identity.executable_sha256,
+                    live.ffmpeg_identity.executable_byte_length,
+                    live.ffmpeg_identity.version_output_sha256,
+                    live.ffprobe_identity.executable_sha256,
+                    live.ffprobe_identity.executable_byte_length,
+                    live.ffprobe_identity.version_output_sha256,
+                    canonical_json_bytes(binding.request.to_mapping()).decode("utf-8"),
+                    binding.request.canonical_sha256,
+                    measurement.content_hash,
+                    decision.content_hash,
+                    outcome.receipt_id,
+                    outcome.artifact_set_id,
+                    success.command_slot_id,
+                    provenance.authority_revision,
+                    provenance.authority_bundle_sha256,
+                    provenance.source_commit,
+                    provenance.inventory_commit,
+                    provenance.lock_commit,
+                ),
+            )
+            cursor.execute(
+                "UPDATE runtime.jobs SET state = 'succeeded' WHERE job_id = %s AND state = 'running'",
+                (job_id,),
+            )
+            if cursor.rowcount != 1:
+                raise CommandStateError("capability authority Job is not running")
+            return outcome
+
+        return self._transaction(operation)
+
+    def _require_matching_capability_row(
+        self,
+        cursor: DbCursor,
+        binding: ProductionQcCollectorCapabilityBinding,
+        outcome: CommandOutcome,
+    ) -> None:
+        cursor.execute(
+            """
+            SELECT receipt_id, artifact_set_id, command_slot_id,
+                   capability_request_sha256, measurement_member_sha256,
+                   capability_member_sha256
+              FROM runtime.production_qc_collector_capabilities
+             WHERE profile_id = %s
+               AND qc_runner_identity_sha256 = %s
+               AND policy_source_sha256 = %s
+               AND registry_snapshot_sha256 = %s
+            """,
+            (
+                binding.policy.profile_id,
+                binding.request.live_profile.canonical_sha256,
+                binding.policy.policy_source_sha256,
+                binding.policy.registry_snapshot_sha256,
+            ),
+        )
+        row = cursor.fetchone()
+        if (
+            row is None
+            or cursor.fetchone() is not None
+            or row[0] != outcome.receipt_id
+            or row[1] != outcome.artifact_set_id
+            or row[2] != outcome.command_slot_id
+            or _text(row[3]) != binding.request.canonical_sha256
+            or _text(row[4]) != binding.measurement_member.content_hash
+            or _text(row[5]) != binding.decision_member.content_hash
+        ):
+            raise IdempotencyConflictError(
+                "capability replay does not match its immutable accepted row"
+            )
+
+    def resolve_accepted_production_qc_collector_capability(
+        self,
+        request: ProductionQcCollectorCapabilityRequest,
+    ) -> PersistedProductionRenderQcCollectorCapability:
+        """Independently re-read one accepted collector capability, or fail closed."""
+
+        from ..registry.installed_production_qc import ProductionQcSourceProvenance
+        from ..rendering.production_qc_collector_capability import (
+            ProductionQcCollectorCapabilityRequest as _Request,
+        )
+
+        if type(request) is not _Request:  # noqa: E721
+            raise StoreValidationError("capability resolution requires an exact request")
+        policy = request.policy_source
+        live = request.live_profile
+        request_json = canonical_json_bytes(request.to_mapping()).decode("utf-8")
+
+        def operation(cursor: DbCursor) -> PersistedProductionRenderQcCollectorCapability:
+            cursor.execute(
+                """
+                SELECT scope_key, capability_request_json, capability_request_sha256,
+                       measurement_member_sha256, capability_member_sha256,
+                       receipt_id, artifact_set_id, command_slot_id,
+                       authority_revision, authority_bundle_sha256,
+                       source_commit, inventory_commit, lock_commit, accepted_at,
+                       collector_registry_sha256, required_check_set_version,
+                       runner_schema_version, fixed_environment_sha256,
+                       ffmpeg_executable_sha256, ffmpeg_executable_byte_length,
+                       ffmpeg_version_output_sha256,
+                       ffprobe_executable_sha256, ffprobe_executable_byte_length,
+                       ffprobe_version_output_sha256
+                  FROM runtime.production_qc_collector_capabilities
+                 WHERE profile_id = %s
+                   AND qc_runner_identity_sha256 = %s
+                   AND policy_source_sha256 = %s
+                   AND registry_snapshot_sha256 = %s
+                """,
+                (
+                    policy.profile_id,
+                    live.canonical_sha256,
+                    policy.policy_source_sha256,
+                    policy.registry_snapshot_sha256,
+                ),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM runtime.production_qc_collector_capabilities
+                     WHERE profile_id = %s
+                       AND policy_source_sha256 = %s
+                       AND registry_snapshot_sha256 = %s
+                    """,
+                    (
+                        policy.profile_id,
+                        policy.policy_source_sha256,
+                        policy.registry_snapshot_sha256,
+                    ),
+                )
+                if cursor.fetchone() is not None:
+                    raise ProductionQcCollectorCapabilityIdentityDriftError(
+                        "an accepted capability exists for this policy lineage with a"
+                        " different live tool measurement; re-acceptance is required"
+                    )
+                raise ProductionQcCollectorCapabilityUnavailableError(
+                    "no accepted collector capability exists for the exact policy lineage"
+                )
+            if cursor.fetchone() is not None:
+                raise RuntimeStoreError(
+                    "more than one capability row matches one exact collector identity"
+                )
+            (
+                scope_key,
+                stored_request_json,
+                stored_request_sha256,
+                measurement_sha256,
+                capability_sha256,
+                receipt_id,
+                artifact_set_id,
+                command_slot_id,
+                authority_revision,
+                authority_bundle_sha256,
+                source_commit,
+                inventory_commit,
+                lock_commit,
+                accepted_at,
+                stored_collector_registry_sha256,
+                stored_check_set_version,
+                stored_runner_schema_version,
+                stored_fixed_environment_sha256,
+                stored_ffmpeg_sha256,
+                stored_ffmpeg_byte_length,
+                stored_ffmpeg_version_sha256,
+                stored_ffprobe_sha256,
+                stored_ffprobe_byte_length,
+                stored_ffprobe_version_sha256,
+            ) = row
+
+            # Row identity must be internally closed before any authority join.
+            if (
+                _text(stored_request_json) != request_json
+                or _text(stored_request_sha256) != request.canonical_sha256
+                or _text(stored_collector_registry_sha256) != policy.collector_registry_sha256
+                or _text(stored_check_set_version) != policy.required_check_set_version
+                or _text(stored_runner_schema_version) != policy.runner_schema_version
+                or _text(stored_fixed_environment_sha256) != policy.fixed_environment_sha256
+                or int(_text(stored_ffmpeg_byte_length)) != live.ffmpeg_identity.executable_byte_length
+                or _text(stored_ffmpeg_sha256) != live.ffmpeg_identity.executable_sha256
+                or _text(stored_ffmpeg_version_sha256)
+                != live.ffmpeg_identity.version_output_sha256
+                or int(_text(stored_ffprobe_byte_length)) != live.ffprobe_identity.executable_byte_length
+                or _text(stored_ffprobe_sha256) != live.ffprobe_identity.executable_sha256
+                or _text(stored_ffprobe_version_sha256)
+                != live.ffprobe_identity.version_output_sha256
+            ):
+                raise ProductionQcCollectorCapabilityIdentityDriftError(
+                    "accepted capability row content drifted from the exact request"
+                )
+
+            # Authority Job, validator command, Receipt and exact ArtifactSet.
+            cursor.execute(
+                """
+                SELECT slot.command_name, slot.state, job.job_key, job.profile,
+                       receipt.outcome, receipt.result_artifact_set_id,
+                       artifact_set.member_count
+                  FROM runtime.production_qc_collector_capabilities AS capability
+                  JOIN runtime.command_slots AS slot
+                    ON slot.command_slot_id = capability.command_slot_id
+                  JOIN runtime.jobs AS job ON job.job_id = slot.job_id
+                  JOIN runtime.command_receipts AS receipt
+                    ON receipt.receipt_id = capability.receipt_id
+                  JOIN runtime.artifact_sets AS artifact_set
+                    ON artifact_set.artifact_set_id = capability.artifact_set_id
+                 WHERE capability.profile_id = %s
+                   AND capability.qc_runner_identity_sha256 = %s
+                   AND capability.policy_source_sha256 = %s
+                   AND capability.registry_snapshot_sha256 = %s
+                """,
+                (
+                    policy.profile_id,
+                    live.canonical_sha256,
+                    policy.policy_source_sha256,
+                    policy.registry_snapshot_sha256,
+                ),
+            )
+            closure = cursor.fetchone()
+            if (
+                closure is None
+                or _text(closure[0]) != PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME
+                or _text(closure[1]) != "succeeded"
+                or _text(closure[3]) != "authority"
+                or _text(closure[4]) != "succeeded"
+                or closure[5] != artifact_set_id
+                or int(_text(closure[6])) != 2
+            ):
+                raise RuntimeStoreError(
+                    "accepted capability row lacks its exact validator authority closure"
+                )
+            expected_job_key = (
+                "autocut_production_qc_collector_validator:"
+                f"{policy.profile_id}"
+                f":{policy.policy_source_sha256.removeprefix('sha256:')}"
+                f":{policy.registry_snapshot_sha256.removeprefix('sha256:')}"
+                f":{live.canonical_sha256.removeprefix('sha256:')}"
+            )
+            if _text(closure[2]) != expected_job_key:
+                raise RuntimeStoreError("accepted capability Job does not bind its lineage")
+
+            # Both required members: ordinals, types, logical ids, revisions and
+            # recomputed content hashes.
+            cursor.execute(
+                """
+                SELECT member.ordinal, artifact.artifact_type, artifact.logical_id,
+                       artifact.revision, artifact.content_hash, artifact.payload_json
+                  FROM runtime.artifact_set_members AS member
+                  JOIN runtime.artifacts AS artifact
+                    ON artifact.artifact_id = member.artifact_id
+                 WHERE member.artifact_set_id = %s
+                 ORDER BY member.ordinal
+                """,
+                (artifact_set_id,),
+            )
+            members: list[tuple[int, str, str, int, str, object]] = []
+            while (member_row := cursor.fetchone()) is not None:
+                members.append(
+                    (
+                        int(_text(member_row[0])),
+                        _text(member_row[1]),
+                        _text(member_row[2]),
+                        int(_text(member_row[3])),
+                        _text(member_row[4]),
+                        member_row[5],
+                    )
+                )
+            if len(members) != 2 or [member[0] for member in members] != [0, 1]:
+                raise RuntimeStoreError("accepted capability set does not have two ordered members")
+            measurement_payload = production_qc_collector_measurement_payload(request)
+            provenance = ProductionQcSourceProvenance(
+                int(_text(authority_revision)),
+                _text(authority_bundle_sha256),
+                _text(source_commit),
+                _text(inventory_commit),
+                _text(lock_commit),
+            )
+            decision_payload = production_qc_collector_decision_payload(
+                request,
+                provenance.to_mapping(),
+                _text(measurement_sha256),
+            )
+            expected_members = (
+                (
+                    0,
+                    "production_qc_collector_measurement",
+                    "measurement",
+                    measurement_payload,
+                    _text(measurement_sha256),
+                ),
+                (
+                    1,
+                    "production_qc_collector_capability",
+                    "decision",
+                    decision_payload,
+                    _text(capability_sha256),
+                ),
+            )
+            def _member_payload_text(value: object) -> str:
+                # jsonb arrives pre-parsed; canonicalize without trusting text bytes.
+                if isinstance(value, str):
+                    return value
+                return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+            for member, expected in zip(members, expected_members):
+                ordinal, artifact_type, logical_id, revision, content_hash, payload_json = member
+                member_text = _member_payload_text(payload_json)
+                if (
+                    int(ordinal) != expected[0]
+                    or _text(artifact_type) != expected[1]
+                    or _text(logical_id) != expected[2]
+                    or int(revision) != 1
+                    or _text(content_hash) != expected[4]
+                    # payload_json is jsonb: compare by canonical re-serialization,
+                    # never by stored text bytes.
+                    or canonical_payload_hash(member_text) != _text(content_hash)
+                    or canonical_payload_hash(member_text)
+                    != canonical_payload_hash(expected[3])
+                ):
+                    raise RuntimeStoreError(
+                        "accepted capability member does not match its immutable decision"
+                    )
+
+            return PersistedProductionRenderQcCollectorCapability(
+                request=request,
+                provenance=provenance,
+                scope_key=_text(scope_key),
+                receipt_id=UUID(str(receipt_id)),
+                artifact_set_id=UUID(str(artifact_set_id)),
+                command_slot_id=UUID(str(command_slot_id)),
+                measurement_member_sha256=_text(measurement_sha256),
+                capability_member_sha256=_text(capability_sha256),
+                accepted_at=cast("datetime", accepted_at),
+            )
 
         return self._transaction(operation)
 
