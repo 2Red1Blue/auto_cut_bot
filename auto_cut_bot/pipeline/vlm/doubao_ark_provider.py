@@ -203,8 +203,8 @@ class DoubaoArkVlmProvider:
                 raise ValueError("request model_id does not match dispatch identity")
             if payload["proxy_blob"] != request.proxy_blob_ref.to_mapping():
                 raise ValueError("request proxy_blob does not match dispatch identity")
-        except ValueError:
-            return provider_failure("INVALID_PROVIDER_REQUEST")
+        except ValueError as error:
+            return provider_failure("INVALID_PROVIDER_REQUEST", validation_message=str(error))
         try:
             client = self._transport.create_client()
         except Exception as error:
