@@ -7,6 +7,8 @@ activation_profile_bindings:
     required_profile: authority_package_skeleton
   - task_id: 08-25-lock-real-test-authority-profiles
     required_profile: authority_bootstrap
+  - task_id: 09-04-production-qc-collector-policy-authority-amendment
+    required_profile: authority_bootstrap
 authorizations:
   - authorization_id: user-approved-v213-authority-bootstrap-20260821
     task_id: 08-21-00-trellis-authority-sync
@@ -18,7 +20,7 @@ authorizations:
       - {repository: ac_auto_cut, pattern: governance/**}
       - {repository: ac_auto_cut, pattern: tests/authority_consumer/**}
     approved_by: user-explicit-authorization
-  - authorization_id: user-approved-v213-local-authority-calibration-20260825
+  - authorization_id: user-approved-v213-qc-policy-bootstrap-20260904
     task_id: 08-25-lock-real-test-authority-profiles
     task_type: authority_change
     allowed_protected_paths:
@@ -30,4 +32,15 @@ authorizations:
       - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/registry/**}
       - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/store/**}
       - {repository: auto_cut_bot, pattern: packages/autocut-kernel/migrations/**}
-    approved_by: user-explicit-approval-20260825
+    approved_by: user-explicit-approval-20260904
+  - authorization_id: user-approved-v213-qc-policy-authority-amendment-20260904
+    task_id: 09-04-production-qc-collector-policy-authority-amendment
+    task_type: authority_change
+    allowed_protected_paths:
+      - {repository: auto_cut_bot, pattern: governance/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/registry/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/src/autocut_kernel/rendering/**}
+      - {repository: auto_cut_bot, pattern: packages/autocut-kernel/pyproject.toml}
+      - {repository: auto_cut_bot, pattern: tests/authority/**}
+      - {repository: auto_cut_bot, pattern: tests/rendering/**}
+    approved_by: user-explicit-approval-20260904

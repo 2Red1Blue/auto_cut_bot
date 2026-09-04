@@ -813,14 +813,47 @@ def test_candidate_audit_scans_full_tree_for_nfc_casefold_collisions(tmp_path: P
         )
 
 
-def test_candidate_audit_rejects_privacy_content_in_unchanged_blob(tmp_path: Path) -> None:
+def test_candidate_audit_allows_unchanged_sensitive_baseline_path(tmp_path: Path) -> None:
     root, lock, _lock_path, _model_path, _protected_path = _fixture_repository(tmp_path)
-    private = root / "runtime/sessions/ws.json"
-    private.parent.mkdir(parents=True)
-    private.write_text("runtime transcript\n", encoding="utf-8")
-    predecessor = _commit(root, "accidentally track runtime session")
+    baseline_env = root / "deploy/funasr/.env.example"
+    baseline_env.parent.mkdir(parents=True)
+    baseline_env.write_text("MODEL_PATH=/models/funasr\n", encoding="utf-8")
+    predecessor = _commit(root, "track environment example")
     (root / "safe.py").write_text("VALUE = 1\n", encoding="utf-8")
     _git(root, "add", "safe.py")
+    receipt = audit_candidate_tree(
+        root=root,
+        predecessor_commit=predecessor,
+        task_id="task",
+        authority_lock_hash=lock["bundle_hash"],
+    )
+    assert receipt["decision"] == "allow"
+
+
+def test_candidate_audit_rejects_added_sensitive_path(tmp_path: Path) -> None:
+    root, lock, _lock_path, _model_path, _protected_path = _fixture_repository(tmp_path)
+    predecessor = _git(root, "rev-parse", "HEAD")
+    candidate_env = root / "deploy/funasr/.env.example"
+    candidate_env.parent.mkdir(parents=True)
+    candidate_env.write_text("MODEL_PATH=/models/funasr\n", encoding="utf-8")
+    _git(root, "add", "deploy/funasr/.env.example")
+    with pytest.raises(GateViolation, match="AUTH-CANDIDATE-UNSAFE.*sensitive_path"):
+        audit_candidate_tree(
+            root=root,
+            predecessor_commit=predecessor,
+            task_id="task",
+            authority_lock_hash=lock["bundle_hash"],
+        )
+
+
+def test_candidate_audit_rejects_modified_sensitive_baseline_path(tmp_path: Path) -> None:
+    root, lock, _lock_path, _model_path, _protected_path = _fixture_repository(tmp_path)
+    baseline_env = root / "deploy/funasr/.env.example"
+    baseline_env.parent.mkdir(parents=True)
+    baseline_env.write_text("MODEL_PATH=/models/funasr\n", encoding="utf-8")
+    predecessor = _commit(root, "track environment example")
+    baseline_env.write_text("MODEL_PATH=/models/funasr-v2\n", encoding="utf-8")
+    _git(root, "add", "deploy/funasr/.env.example")
     with pytest.raises(GateViolation, match="AUTH-CANDIDATE-UNSAFE.*sensitive_path"):
         audit_candidate_tree(
             root=root,

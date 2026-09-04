@@ -37,3 +37,6 @@ schemas:
   TaskAuthorizations: schemas/task-authorizations.schema.json
   ActivationProfiles: schemas/activation-profiles.schema.json
   SyntheticSensitiveFixtureManifest: schemas/synthetic-sensitive-fixture-manifest.schema.json
+  ProductionQcCollectorRegistrySnapshot: schemas/production-qc-collector-registry-snapshot.schema.json
+  ProductionQcCollectorPolicySource: schemas/production-qc-collector-policy.schema.json
+  ProductionQcCollectorCapabilitySetProfile: schemas/production-qc-collector-capability-set-profile.schema.json

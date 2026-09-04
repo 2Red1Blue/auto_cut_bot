@@ -71,6 +71,21 @@ def _pre_a_repository(tmp_path: Path) -> tuple[Path, str, str]:
     return root, predecessor, manifest_path
 
 
+def _static_qc_source_candidate(tmp_path: Path) -> tuple[Path, str, str]:
+    root, _predecessor, manifest_path = _pre_a_repository(tmp_path)
+    predecessor = _commit(root, "seed synthetic fixture")
+    static_sources = {
+        "governance/qc/static-checks.yaml": "schema_version: 1.0.0\nchecks: []\n",
+        "governance/schemas/qc-static-checks.schema.json": '{"type": "object"}\n',
+    }
+    for path, content in static_sources.items():
+        source = root / path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(content, encoding="utf-8")
+    _git(root, "add", "governance")
+    return root, predecessor, manifest_path
+
+
 def test_pre_a_source_candidate_allows_exact_synthetic_fixture_and_cli(tmp_path: Path) -> None:
     root, predecessor, manifest_path = _pre_a_repository(tmp_path)
     receipt = verify_pre_a_source_candidate(
@@ -93,6 +108,34 @@ def test_pre_a_source_candidate_allows_exact_synthetic_fixture_and_cli(tmp_path:
         )
         == 0
     )
+
+
+def test_pre_a_allows_static_qc_sources_under_governance(tmp_path: Path) -> None:
+    root, predecessor, manifest_path = _static_qc_source_candidate(tmp_path)
+    receipt = verify_pre_a_source_candidate(
+        root=root,
+        predecessor_commit=predecessor,
+        synthetic_fixture_manifest_path=manifest_path,
+    )
+    assert receipt["decision"] == "allow"
+
+
+@pytest.mark.parametrize(
+    "later_phase_path",
+    ("governance/authority-sources.yaml", "governance/authority-lock.yaml"),
+)
+def test_pre_a_rejects_later_phase_artifact_mixed_with_static_qc_sources(
+    tmp_path: Path, later_phase_path: str
+) -> None:
+    root, predecessor, manifest_path = _static_qc_source_candidate(tmp_path)
+    (root / later_phase_path).write_text("schema_version: 1.0.0\n", encoding="utf-8")
+    _git(root, "add", later_phase_path)
+    with pytest.raises(GateViolation, match="AUTH-PRE-A-PHASE-MIX"):
+        verify_pre_a_source_candidate(
+            root=root,
+            predecessor_commit=predecessor,
+            synthetic_fixture_manifest_path=manifest_path,
+        )
 
 
 def test_pre_a_rejects_inventory_mixed_into_source_commit(tmp_path: Path) -> None:

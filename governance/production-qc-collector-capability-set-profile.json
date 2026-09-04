@@ -1,0 +1,1 @@
+{"artifact_set_profile":"production_qc_collector_capability_v1","members":[{"artifact_type":"production_qc_collector_measurement","logical_id":"measurement","ordinal":0,"revision":1},{"artifact_type":"production_qc_collector_capability","logical_id":"decision","ordinal":1,"revision":1}],"schema_version":"production-qc-collector-capability-set-profile-v1"}

@@ -237,7 +237,7 @@ def audit_candidate_tree(
         if mode in {"120000", "160000"}:
             findings.append(f"non_regular_entry:{path}")
             continue
-        if _sensitive_path(path):
+        if path in changed_set and _sensitive_path(path):
             findings.append(f"sensitive_path:{path}")
         raw = git_index_bytes(root, path)
         findings.extend(_conflict_findings(path, raw))
