@@ -188,6 +188,43 @@ def test_v2_forwards_direct_schema_exactly_without_touching_prompt():
     assert sdk.creates == [value]
 
 
+def test_installed_sdk_serializes_v2_direct_format_unchanged():
+    """Exercise the real SDK serializer over an in-memory HTTP transport."""
+    import httpx
+    from volcenginesdkarkruntime import Ark
+
+    captured = []
+
+    def respond(http_request):
+        captured.append(json.loads(http_request.content))
+        base = {"id": RESPONSE, "model": MODEL, "created_at": 0,
+                "object": "response", "tools": [], "output": []}
+        created_body = {**base, "status": "in_progress"}
+        completed_body = {**base, "status": "completed", "output": [
+            {"type": "message", "role": "assistant", "id": "message-1",
+             "content": [{"type": "output_text", "text": "{}", "annotations": []}]}]}
+        events = [{"type": "response.created", "response": created_body},
+                  {"type": "response.completed", "response": completed_body}]
+        stream = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=stream)
+
+    def factory(**kwargs):
+        return Ark(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(respond)))
+
+    value = body()
+    descriptor = value["text"]["format"].pop("json_schema")
+    value["text"]["format"].update(descriptor)
+    adapter = DoubaoDraftProvider(
+        ArkResponsesTransportConfig("fake-key", "https://ark.invalid/api/v3", 20, 10000),
+        max_request_bytes=100000,
+        adapter_strategy_version=DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION,
+        client_factory=factory,
+    )
+    result = adapter.dispatch(request(payload=encoded(value), callback=lambda _id: None))
+    assert type(result) is ProviderCompleted
+    assert captured == [value]
+
+
 @pytest.mark.parametrize("direct", [False, True])
 def test_wire_strategy_mismatch_rejected_before_client_creation(direct):
     sdk = FakeSDK()
