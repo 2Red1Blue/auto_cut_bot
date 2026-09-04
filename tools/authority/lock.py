@@ -34,6 +34,35 @@ LOCK_CLASSES = {
     "blocking_fixture",
 }
 
+_TASK_AUTHORIZATIONS_PATH = "governance/task-authorizations.yaml"
+
+
+def _verify_authorization_source(
+    *, raw: bytes, source_class: str, authority_revision: object, already_seen: bool
+) -> None:
+    """A hash-valid bundle must also authorize tasks at its own revision.
+
+    This application-specific source is optional for generic authority bundles.
+    When present, only its immutable Git bytes participate in the check.
+    """
+    if already_seen or source_class != "architecture_gate":
+        raise GateViolation(
+            "AUTH-LOCK-AUTHORIZATION-SOURCE",
+            "task authorizations must have one architecture_gate source",
+        )
+    source = load_mapping_bytes(raw, where=_TASK_AUTHORIZATIONS_PATH, suffix=".yaml")
+    revision = source.get("authority_revision")
+    if (
+        type(revision) is not int
+        or type(authority_revision) is not int
+        or revision < 1
+        or revision != authority_revision
+    ):
+        raise GateViolation(
+            "AUTH-LOCK-AUTHORIZATION-REVISION",
+            "task authorization source revision differs from authority revision",
+        )
+
 
 def build_authority_lock(
     *,
@@ -96,6 +125,7 @@ def build_authority_lock(
 
     entries: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    authorization_seen = False
     for index, item in enumerate(require_list(source["entries"], where="entries", non_empty=True)):
         if not isinstance(item, dict):
             raise GateViolation("AUTH-SOURCE-ENTRY", f"entries[{index}] must be an object")
@@ -111,18 +141,21 @@ def build_authority_lock(
         if identity in seen:
             raise GateViolation("AUTH-SOURCE-DUPLICATE", f"duplicate source: {identity}")
         seen.add(identity)
+        raw = git_bytes(
+            repository_roots[repository], repositories[repository]["source_commit"], path
+        )
+        if path == _TASK_AUTHORIZATIONS_PATH:
+            _verify_authorization_source(
+                raw=raw, source_class=class_name,
+                authority_revision=source["authority_revision"], already_seen=authorization_seen,
+            )
+            authorization_seen = True
         entries.append(
             {
                 "class": class_name,
                 "repository": repository,
                 "path": path,
-                "sha256": sha256_bytes(
-                    git_bytes(
-                        repository_roots[repository],
-                        repositories[repository]["source_commit"],
-                        path,
-                    )
-                ),
+                "sha256": sha256_bytes(raw),
             }
         )
     entries.sort(key=lambda item: (item["repository"], item["path"], item["class"]))
@@ -311,17 +344,23 @@ def verify_authority_lock_data(
     if inventory_actual != inventory["sha256"]:
         raise GateViolation("AUTH-LOCK-INVENTORY-HASH", "inventory blob hash mismatch")
     verified: dict[str, str] = {"inventory": inventory_actual}
+    authorization_seen = False
     for entry in lock["entries"]:
         identity = f"{entry['repository']}:{entry['path']}"
-        actual = sha256_bytes(
-            git_bytes(
-                roots[entry["repository"]],
-                lock["repositories"][entry["repository"]]["source_commit"],
-                entry["path"],
-            )
+        raw = git_bytes(
+            roots[entry["repository"]],
+            lock["repositories"][entry["repository"]]["source_commit"],
+            entry["path"],
         )
+        actual = sha256_bytes(raw)
         if actual != entry["sha256"]:
             raise GateViolation("AUTH-LOCK-FILE-HASH", f"hash mismatch for {identity}")
+        if entry["path"] == _TASK_AUTHORIZATIONS_PATH:
+            _verify_authorization_source(
+                raw=raw, source_class=entry["class"],
+                authority_revision=lock["authority_revision"], already_seen=authorization_seen,
+            )
+            authorization_seen = True
         verified[identity] = actual
     return verified
 
