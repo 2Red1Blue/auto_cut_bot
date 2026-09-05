@@ -9,11 +9,12 @@ from autocut_kernel.pipeline.compile_story_portfolio_command import CompileStory
 from autocut_kernel.pipeline.story_design_diagnostics import story_design_failure_detail
 from autocut_kernel.semantic_chain.story_design_validation import StoryProposalValidationError
 
+from tests.semantic_chain.test_build_narrative_graph_command import ScriptedDraftProvider
 from tests.semantic_chain.test_compile_story_portfolio_command import command_case
 
 
 def test_wrong_person_type_survives_material_wrapper_and_durable_denial():
-    store, _, _, raw = command_case()
+    store, _, request, raw = command_case()
     graph_member = next(m for m in store.predecessor.record.artifacts if m.artifact_type == "narrative_graph")
     graph = json.loads(graph_member.payload_json)
     person = next(node for node in graph["nodes"] if node["node_type"] == "entity"
@@ -24,7 +25,8 @@ def test_wrong_person_type_survives_material_wrapper_and_durable_denial():
         "member_ref": graph_owner, "object_type": "character", "object_id": person["node_id"],
     }]
     raw = canonical_json_bytes(payload)
-    store, provider, request, _ = command_case(raw=raw)
+    # Keep the exact request binding/owners used to create this response.
+    provider = ScriptedDraftProvider(raw)
     command = CompileStoryPortfolioCommand(store, provider)
     result = command.execute(request)
     assert result.outcome.state == "denied"

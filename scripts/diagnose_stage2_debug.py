@@ -41,19 +41,19 @@ _CONTEXT_KEYS = {
 }
 
 
-class UnsupportedDiagnosticInput(ValueError):
+class UnsupportedDiagnosticInputError(ValueError):
     """The saved context cannot supply unambiguous proposal-rule inputs."""
 
 
 def _mapping(value: object) -> dict[str, object]:
     if type(value) is not dict:  # noqa: E721
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     return cast(dict[str, object], value)
 
 
 def _array(value: object) -> list[object]:
     if type(value) is not list:  # noqa: E721
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     return cast(list[object], value)
 
 
@@ -64,7 +64,7 @@ def _context_inputs(value: object) -> tuple[
     context = _mapping(value)
     if (set(context) != _CONTEXT_KEYS
             or context["schema_version"] != "stage2-proposal-context-v1"):
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     graph_data = _mapping(context["narrative_graph"])
     graph = NarrativeGraph.from_mapping(graph_data["payload"])
     graph_owner = SemanticMemberIdentity.from_mapping(graph_data["member_ref"])
@@ -77,14 +77,14 @@ def _context_inputs(value: object) -> tuple[
     if (len(owners) != 1 or any(ref.object_type != "source" for ref in candidate_sources)
             or any(owner.artifact_type != "whole_series_source_manifest"
                    or owner.scope != graph_owner.scope for owner in owners)):
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     source_owner = next(iter(owners))
     grant = _mapping(context["source_grant"])
     source_ids = tuple(_mapping(item)["source_id"] for item in _array(grant["sources"]))
     if (not source_ids or any(type(item) is not str or not item.strip() for item in source_ids)
             or len(set(source_ids)) != len(source_ids)
             or not {ref.object_id for ref in candidate_sources} <= set(source_ids)):
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     source_refs = tuple(SemanticObjectRef(source_owner, "source", cast(str, item))
                         for item in source_ids)
     policies = _mapping(context["policies"])
@@ -92,7 +92,7 @@ def _context_inputs(value: object) -> tuple[
     story = StoryDesignPolicy.from_mapping(policies["story_policy"])
     binding = context["input_binding_sha256"]
     if type(binding) is not str:
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     return binding, graph, graph_refs, source_refs, job, story
 
 
@@ -123,7 +123,7 @@ def diagnose(context_raw: bytes, response_raw: bytes) -> tuple[dict[str, object]
         phase = "response_structure"
         draft = ProposalDraftSet.from_mapping(response)
         if draft.input_binding_sha256 != binding:
-            raise UnsupportedDiagnosticInput
+            raise UnsupportedDiagnosticInputError
         report.update({"proposal_count": len(draft.proposals), "graph_node_count": len(graph.nodes),
                        "source_count": len(source_refs)})
         phase = "proposal_rules"
@@ -138,7 +138,7 @@ def diagnose(context_raw: bytes, response_raw: bytes) -> tuple[dict[str, object]
     except (ValueError, TypeError, KeyError, RecursionError, OverflowError) as error:
         report.update({
             "status": "unsupported_diagnostic_input" if phase == "context_inputs"
-            or type(error) is UnsupportedDiagnosticInput else "invalid_diagnostic_input",
+            or type(error) is UnsupportedDiagnosticInputError else "invalid_diagnostic_input",
             "phase": phase, "error_code": "OFFLINE_DIAGNOSTIC_INPUT_REJECTED",
             "exception_kind": type(error).__name__,
         })
@@ -151,7 +151,7 @@ def _read_bounded(path: Path) -> bytes:
     with path.open("rb") as stream:
         raw = stream.read(MAX_FILE_BYTES + 1)
     if len(raw) > MAX_FILE_BYTES:
-        raise UnsupportedDiagnosticInput
+        raise UnsupportedDiagnosticInputError
     return raw
 
 

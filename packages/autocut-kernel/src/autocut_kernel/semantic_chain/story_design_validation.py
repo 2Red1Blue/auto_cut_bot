@@ -14,7 +14,6 @@ from .narrative_models import NarrativeGraph, ObligationAttributes
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import JobPolicy, SourceConstraints, StoryDesignPolicy
 
-
 _DIAGNOSTIC_RULE_IDS = frozenset({
     "SD-IN-001", "SD-IN-002", "SD-PROP-001", "SD-REF-001", "SD-ENUM-001",
     "SD-DUR-001", "SD-MAT-001", "SD-PHYS-DEFER-001",
