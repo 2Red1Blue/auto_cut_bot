@@ -327,6 +327,35 @@ def test_nonterminal_outcomes_are_not_reported_as_permanent_denials(harness, mon
     assert "members" not in report and store.commits == 0
 
 
+@pytest.mark.parametrize("failure", ["missing_evidence", "member_reference"])
+def test_reprocess_postcommit_report_failure_keeps_success(harness, monkeypatch, capsys, failure):
+    store, path, request, _ = harness("reprocess")
+    if failure == "missing_evidence":
+        execute = cli.ReprocessVlmEvidenceCommand.execute
+
+        def execute_without_report(command, request):
+            result = execute(command, request)
+            return reprocess_core.ReprocessVlmEvidenceResult(result.outcome)
+
+        monkeypatch.setattr(cli.ReprocessVlmEvidenceCommand, "execute", execute_without_report)
+    else:
+        def unavailable(*_args):
+            raise RuntimeError("private-report-secret")
+
+        monkeypatch.setattr(cli, "_member_refs", unavailable)
+    assert cli.main(["--mode", "reprocess", "--request", str(path), "--execute"], store=store) == 3
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert report["status"] == "succeeded_reporting_incomplete"
+    assert report["command_state"] == "succeeded"
+    assert report["receipt_id"] == str(store.outcome.receipt_id)
+    assert report["artifact_set_id"] == str(store.outcome.artifact_set_id)
+    assert report["idempotency_key"] == request.idempotency_key
+    assert report["members"] == report["artifacts"] == []
+    assert store.claims == store.commits == 1
+    assert "private-report-secret" not in output.out + output.err
+
+
 def test_no_environment_configuration_is_safe_and_does_not_execute(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("AUTO_CUT_BOT_PIPELINE_KERNEL_POSTGRES_DSN", raising=False)
     monkeypatch.delenv("AUTO_CUT_BOT_PIPELINE_POSTGRES_DSN", raising=False)
