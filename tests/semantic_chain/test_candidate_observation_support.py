@@ -191,7 +191,7 @@ def _v4_projection_inputs(*, frame_anchored=False):
     committed = replace(original, request_identity=identity, semantic_pack=persisted,
                         raw_response=replace(original.raw_response, content_hash=pack.raw_response_sha256,
                                              byte_length=len(raw)))
-    return replace(inputs, inputs=(committed,),
+    return replace(inputs, inputs=(committed,), vlm_aggregate_policy=child.request_policy,
                    vlm_batch_strategy_version=VLM_BATCH_FINALIZER_STRATEGY_VERSION_V4)
 
 
