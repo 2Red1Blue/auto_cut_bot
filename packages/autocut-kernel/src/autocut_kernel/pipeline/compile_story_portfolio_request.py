@@ -222,7 +222,9 @@ def prepare_stage2_request(
                 "prompt_version": request.generation.prompt_version,
                 "wire_schema_version": "stage2-story-design-compact-v2",
                 "domain_schema_version": "stage2-story-design-domain-v2",
-                "implementation_sha256": compact_contract_sha256(),
+                "implementation_sha256": compact_contract_sha256(
+                    prompt_template=request.generation.prompt_template,
+                ),
                 "reference_map": private_mapping,
                 "reference_map_sha256": canonical_json_hash(private_mapping),
             },

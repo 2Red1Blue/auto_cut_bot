@@ -12,8 +12,8 @@ from .story_design_compact_context import (
     StoryDesignCompactContext,
     build_story_design_compact_context,
 )
-from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
 from .story_design_compact_errors import CompactDraftError
+from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
 from .story_design_draft import StoryDesignDraftError, StoryDesignDraftPolicy, _bounded_value, _check_limits
 from .story_design_models import (
     PHYSICAL_REQUIREMENT_MODES,
@@ -39,15 +39,21 @@ _PROPOSAL_FIELDS = (
 _REQUIREMENT_FIELDS = ("obligation_ref", "minimum_usable_seconds", "additional_checks", "source_constraints")
 
 
-def compact_contract_sha256() -> str:
+def compact_contract_sha256(*, prompt_template: str | None = None) -> str:
     """Exact installed v2 implementation identity; never used for legacy v1."""
+    # Import at call time: the dispatcher imports this module, but is fully
+    # initialized before any request identity is prepared.
+    from .story_design_boundary import STAGE2_COMPACT_PROMPT
+
+    effective_prompt = _text(STAGE2_COMPACT_PROMPT if prompt_template is None else prompt_template)
     directory = Path(__file__).parent
     names = ("story_design_compact.py", "story_design_compact_context.py", "story_design_compact_models.py",
-             "story_design_compact_errors.py",
+             "story_design_compact_errors.py", "story_design_boundary.py",
              "story_design_draft.py", "story_design_models.py", "story_design_validation.py")
     return canonical_json_hash({
         "prompt_version": COMPACT_PROMPT_VERSION, "wire_schema_version": COMPACT_WIRE_SCHEMA_VERSION,
         "projection_version": COMPACT_PROJECTION_VERSION,
+        "prompt_template_sha256": sha256_bytes(effective_prompt.encode("utf-8")),
         "implementation": {name: sha256_bytes((directory / name).read_bytes()) for name in names},
     })
 
@@ -149,6 +155,8 @@ def decode_story_design_compact(
     if root["schema_version"] != COMPACT_WIRE_SCHEMA_VERSION:
         raise CompactDraftError("COMPACT_SCHEMA_UNSUPPORTED", json_path="$.schema_version")
     items = _at("$.proposals", None, lambda: _array(root["proposals"], lambda row: row))
+    if not items:
+        raise CompactDraftError("COMPACT_FIELD_INVALID", json_path="$.proposals")
     nodes = {node.node_id: node for node in context.graph.nodes}
     profiles = sorted(context.story_policy.editing_profiles, key=lambda row: canonical_json_bytes(row.to_mapping()))
     profile_refs = {f"style{index}": profile for index, profile in enumerate(profiles, 1)}
@@ -161,6 +169,8 @@ def decode_story_design_compact(
                                           "input_binding_sha256": context.input_binding_sha256,
                                           "proposal_ordinal": ordinal})
         obligations = _references(item["obligation_refs"], context, "o", path=f"{path}.obligation_refs", proposal_index=proposal_index)
+        if not obligations:
+            raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{path}.obligation_refs", proposal_index=proposal_index)
         facts: set[SemanticObjectRef] = set()
         for ref in obligations:
             attributes = nodes[ref.object_id].attributes
@@ -182,9 +192,12 @@ def decode_story_design_compact(
                 raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{requirement_path}.additional_checks", proposal_index=proposal_index)
             physical = tuple(sorted(set(additional) | set(context.story_policy.required_physical_requirements),
                                     key=lambda check: check.requirement_kind))
+            obligation = _at(f"{requirement_path}.obligation_ref", proposal_index, lambda: context.resolve(row["obligation_ref"], "o"))
+            if obligation not in obligations:
+                raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{requirement_path}.obligation_ref", proposal_index=proposal_index)
             requirements.append(MaterialRequirement(
                 canonical_json_hash({"proposal_id": proposal_id, "requirement_ordinal": index}),
-                _at(f"{requirement_path}.obligation_ref", proposal_index, lambda: context.resolve(row["obligation_ref"], "o")),
+                obligation,
                 _at(f"{requirement_path}.minimum_usable_seconds", proposal_index, lambda: _positive(row["minimum_usable_seconds"])),
                 physical, merge_compact_source_constraints(row["source_constraints"], context,
                                                            path=f"{requirement_path}.source_constraints", proposal_index=proposal_index),
@@ -192,12 +205,25 @@ def decode_story_design_compact(
         profile_alias = _at(f"{path}.editing_profile_ref", proposal_index, lambda: _text(item["editing_profile_ref"]))
         if profile_alias not in profile_refs:
             raise CompactDraftError("COMPACT_EDITING_PROFILE_NOT_FOUND", json_path=f"{path}.editing_profile_ref", proposal_index=proposal_index)
+        genres = _at(f"{path}.genre_tags", proposal_index, lambda: _array(item["genre_tags"], _text))
+        if not genres or len(set(genres)) != len(genres) or not set(genres) <= set(context.story_policy.allowed_genre_tags):
+            raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{path}.genre_tags", proposal_index=proposal_index)
+        teaser = _at(f"{path}.teaser_strategy", proposal_index, lambda: _text(item["teaser_strategy"]))
+        if teaser not in context.story_policy.teaser_strategies:
+            raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{path}.teaser_strategy", proposal_index=proposal_index)
+        duration = _at(f"{path}.target_duration_seconds", proposal_index, lambda: IntegerRange.from_mapping(item["target_duration_seconds"]))
+        bounds = context.job_policy.target_duration_seconds
+        if not bounds.minimum <= duration.minimum <= duration.maximum <= bounds.maximum:
+            raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{path}.target_duration_seconds", proposal_index=proposal_index)
+        if {row.obligation_ref for row in requirements} != set(obligations):
+            raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{path}.material_requirements", proposal_index=proposal_index)
         proposals.append(ProposalDraftV2(
-            proposal_id, _text(item["title"]), _text(item["narrative_claim"]),
+            proposal_id, _at(f"{path}.title", proposal_index, lambda: _text(item["title"])),
+            _at(f"{path}.narrative_claim", proposal_index, lambda: _text(item["narrative_claim"])),
             _references(item["thread_refs"], context, "t", path=f"{path}.thread_refs", proposal_index=proposal_index), obligations, _ordered_refs(facts),
-            _references(item["key_subject_refs"], context, "p", path=f"{path}.key_subject_refs", proposal_index=proposal_index), _array(item["genre_tags"], _text),
-            profile_refs[profile_alias], IntegerRange.from_mapping(item["target_duration_seconds"]),
-            _text(item["teaser_strategy"]), _text(item["audience_hook"]), tuple(requirements),
+            _references(item["key_subject_refs"], context, "p", path=f"{path}.key_subject_refs", proposal_index=proposal_index), genres,
+            profile_refs[profile_alias], duration, teaser,
+            _at(f"{path}.audience_hook", proposal_index, lambda: _text(item["audience_hook"])), tuple(requirements),
         ))
     result = ProposalDraftSetV2(context.input_binding_sha256, tuple(proposals))
     # Bounds include program expansion: compact spelling cannot bypass domain
@@ -261,7 +287,7 @@ def story_design_compact_response_schema(policy: StoryDesignDraftPolicy) -> dict
     })
     return {"$schema": "https://json-schema.org/draft/2020-12/schema", **obj({
         "schema_version": {"const": COMPACT_WIRE_SCHEMA_VERSION},
-        "proposals": {"type": "array", "items": proposal, "maxItems": policy.max_proposals},
+        "proposals": {"type": "array", "items": proposal, "minItems": 1, "maxItems": policy.max_proposals},
     })}
 
 

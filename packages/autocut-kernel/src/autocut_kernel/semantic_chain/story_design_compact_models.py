@@ -107,7 +107,9 @@ class ProposalDraftSetV2:
 
     def __post_init__(self) -> None:
         _binding(self.input_binding_sha256)
-        rows = _tuple(self.proposals, ProposalDraftV2)
+        # Compact domain values cannot become an empty, codec-ambiguous
+        # MaterialSupportEvaluation. Historical v1 empty drafts are unchanged.
+        rows = _tuple(self.proposals, ProposalDraftV2, nonempty=True)
         if len({row.proposal_id for row in rows}) != len(rows):
             raise StoryDesignDraftError("proposal IDs must be unique")
         graph_owners = {ref.member_ref for row in rows for ref in row.narrative_refs}

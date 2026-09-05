@@ -3,12 +3,14 @@
 import json
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
-from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes
+from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
 from autocut_kernel.semantic_chain.material_support import evaluate_material_support
 from autocut_kernel.semantic_chain.material_support_models import MaterialSupportEvaluation
 from autocut_kernel.semantic_chain.member_refs import SemanticObjectRef
+from autocut_kernel.semantic_chain.story_design_boundary import STAGE2_COMPACT_PROMPT
 from autocut_kernel.semantic_chain.story_design_compact import (
     COMPACT_WIRE_SCHEMA_VERSION,
     build_story_design_compact_context,
@@ -17,6 +19,7 @@ from autocut_kernel.semantic_chain.story_design_compact import (
     merge_compact_source_constraints,
     story_design_compact_response_schema,
 )
+from autocut_kernel.semantic_chain.story_design_compact_errors import CompactDraftError
 from autocut_kernel.semantic_chain.story_design_compact_migration import migrate_story_design_v1_to_compact
 from autocut_kernel.semantic_chain.story_design_compact_models import ProposalDraftSetV2
 from autocut_kernel.semantic_chain.story_design_draft import ProposalDraftSet, decode_story_design_draft
@@ -214,3 +217,117 @@ def test_explicit_migration_repairs_only_bound_person_and_derives_fact_closure(c
     proposal_wire["proposals"][0]["key_character_refs"] = [foreign.to_mapping()]
     with pytest.raises(ValueError):
         migrate_story_design_v1_to_compact(canonical_json_bytes(proposal_wire), context=context, policy=POLICY)
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("key_subject_refs", ["private-token-do-not-export"], "COMPACT_REFERENCE_TYPE_MISMATCH"),
+    ("thread_refs", ["t999999"], "COMPACT_REFERENCE_NOT_FOUND"),
+    ("obligation_refs", ["o1", "o1"], "COMPACT_DUPLICATE_REFERENCE"),
+])
+def test_typed_reference_diagnostics_export_only_local_path(compact_case, field, value, code):
+    _, context, migration = compact_case
+    wire = json.loads(migration.wire_bytes)
+    wire["proposals"][0][field] = value
+    with pytest.raises(CompactDraftError) as rejected:
+        decode_story_design_compact(canonical_json_bytes(wire), context=context, policy=POLICY)
+    diagnostic = rejected.value.to_diagnostic()
+    assert diagnostic["error_code"] == code
+    assert diagnostic["proposal_index"] == 0
+    assert diagnostic["json_path"] == f"$.proposals[0].{field}[{len(value) - 1}]"
+    assert "private-token" not in json.dumps(diagnostic)
+    assert "sha256:" not in json.dumps(diagnostic)
+
+
+def test_diagnostic_revalidates_mutable_exception_metadata():
+    error = CompactDraftError("COMPACT_REFERENCE_NOT_FOUND", json_path="$.proposals[0].thread_refs[2]", proposal_index=0)
+    error.error_code = "SECRET-provider-url"
+    error.json_path = "$.proposals[0].SECRET-provider-url"
+    error.proposal_index = True
+    diagnostic = error.to_diagnostic()
+    assert diagnostic["error_code"] == "COMPACT_FIELD_INVALID"
+    assert diagnostic["json_path"] == "$" and diagnostic["proposal_index"] is None
+    assert "SECRET" not in json.dumps(diagnostic)
+
+
+def test_source_constraints_can_only_shrink_job_and_grant_universe(compact_case):
+    # Pure merger algebra over synthetic values is not a committed SourceGrant.
+    _, original, _ = compact_case
+    first = original.granted_sources[0]
+    sources = (first, replace(first, object_id="synthetic-second"), replace(first, object_id="synthetic-third"))
+    aliases = tuple((alias, ref) for alias, ref in original.aliases if not alias.startswith("s"))
+    aliases += tuple((f"s{index}", ref) for index, ref in enumerate(sources, 1))
+    job = replace(original.job_policy, source_constraints=SourceConstraints(sources[:2], (sources[2],), "render_source"))
+    context = replace(original, aliases=aliases, granted_sources=sources, job_policy=job)
+    base = {"source_selection": "all_granted", "allowed_source_refs": [], "forbidden_source_refs": []}
+    baseline = merge_compact_source_constraints(base, context)
+    assert set(baseline.allowed_source_refs) == set(sources[:2])
+    narrowed = merge_compact_source_constraints({**base, "source_selection": "subset", "allowed_source_refs": ["s1", "s3"]}, context)
+    assert narrowed.allowed_source_refs == (first,)
+    assert set(narrowed.allowed_source_refs) <= set(baseline.allowed_source_refs)
+    with pytest.raises(CompactDraftError, match="COMPACT_MATERIAL_INFEASIBLE"):
+        merge_compact_source_constraints({**base, "source_selection": "subset", "allowed_source_refs": ["s3"]}, context)
+
+
+def test_source_error_path_has_requirement_and_original_ref_index(compact_case):
+    _, context, migration = compact_case
+    wire = json.loads(migration.wire_bytes)
+    source = wire["proposals"][1]["material_requirements"][0]["source_constraints"]
+    source["forbidden_source_refs"] = ["s999999"]
+    with pytest.raises(CompactDraftError) as rejected:
+        decode_story_design_compact(canonical_json_bytes(wire), context=context, policy=POLICY)
+    assert rejected.value.to_diagnostic()["json_path"] == "$.proposals[1].material_requirements[0].source_constraints.forbidden_source_refs[0]"
+    assert rejected.value.to_diagnostic()["proposal_index"] == 1
+
+
+@pytest.mark.parametrize("filename", ["story_design_boundary.py", "story_design_compact_errors.py"])
+def test_compact_identity_binds_dispatcher_and_diagnostic_implementation(monkeypatch, filename):
+    original_hash = compact_contract_sha256()
+    original_read = Path.read_bytes
+
+    def changed_read(path):
+        content = original_read(path)
+        return content + b"\n# simulated implementation revision\n" if path.name == filename else content
+
+    monkeypatch.setattr(Path, "read_bytes", changed_read)
+    assert compact_contract_sha256() != original_hash
+
+
+def test_compact_identity_binds_effective_prompt_text():
+    original_hash = compact_contract_sha256()
+    assert compact_contract_sha256(prompt_template=STAGE2_COMPACT_PROMPT) == original_hash
+    assert compact_contract_sha256(prompt_template=STAGE2_COMPACT_PROMPT + "\nAdditional frozen guidance.") != original_hash
+    with pytest.raises(ValueError):
+        compact_contract_sha256(prompt_template="")
+
+
+def test_compact_empty_draft_is_rejected_without_changing_legacy_empty_wire(compact_case):
+    _, context, migration = compact_case
+    with pytest.raises(ValueError):
+        ProposalDraftSetV2(context.input_binding_sha256, ())
+    domain = {**migration.draft.to_mapping(), "proposals": []}
+    with pytest.raises(ValueError):
+        ProposalDraftSetV2.from_mapping(domain)
+    raw = canonical_json_bytes({"schema_version": COMPACT_WIRE_SCHEMA_VERSION, "proposals": []})
+    with pytest.raises(CompactDraftError) as rejected:
+        decode_story_design_compact(raw, context=context, policy=POLICY)
+    assert rejected.value.to_diagnostic()["json_path"] == "$.proposals"
+    assert not Draft202012Validator(story_design_compact_response_schema(POLICY)).is_valid(json.loads(raw))
+    legacy = ProposalDraftSet(context.input_binding_sha256, ())
+    assert decode_story_design_draft(canonical_json_bytes(legacy.to_mapping()),
+                                     expected_input_binding_sha256=context.input_binding_sha256, policy=POLICY) == legacy
+
+
+def test_empty_material_v2_cannot_be_decoded_or_serialized_as_v1(compact_case):
+    case, context, migration = compact_case
+    support = evaluate_material_support(case["inputs"], case["stage1"], case["projection"], migration.draft,
+                                        **{key: case[key] for key in ("job_policy", "story_policy", "candidate_policy")})
+    legacy_draft = ProposalDraftSet(context.input_binding_sha256, ())
+    empty = replace(support, proposals=(), draft_sha256=legacy_draft.canonical_hash)
+    assert empty.to_mapping()["schema_version"] == "stage2-material-support-v1"
+    assert MaterialSupportEvaluation.from_mapping(empty.to_mapping()) == empty
+    # An explicit v2 marker cannot be discarded even with the matching v1 hash.
+    with pytest.raises(ValueError):
+        MaterialSupportEvaluation.from_mapping({**empty.to_mapping(), "schema_version": "stage2-material-support-v2"})
+    empty_v2_hash = canonical_json_hash({**migration.draft.to_mapping(), "proposals": []})
+    with pytest.raises(ValueError):
+        replace(support, proposals=(), draft_sha256=empty_v2_hash)

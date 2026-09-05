@@ -19,6 +19,8 @@ from ..source_manifest import decode_source_manifest
 from ..store.models import (
     ArtifactMember, BlobRef, CommandClaim, CommandOutcome, CommandRejection, CommandSuccess,
     GenerationAttempt, Job, PersistedCommittedArtifactSet, PersistedWholeSeriesSourceManifest,
+    CommittedArtifactMemberReference, CommittedVlmSemanticInput, PersistedReprocessedVlmChild,
+    PersistedVlmSemanticPackV4, SourceWindowIdentity, VlmSemanticPackReference,
     artifact_set_hash, canonical_payload_hash, canonical_recipe_scope,
 )
 from ..vlm.enum_normalization import NormalizedVlmResponse, normalize_vlm_enum_sets
@@ -96,6 +98,23 @@ class ReprocessVlmEvidenceRequest:
     def idempotency_key(self) -> str:
         return "vlm-reprocess:" + self.request_hash[7:]
 
+    @classmethod
+    def from_mapping(cls, value: object) -> ReprocessVlmEvidenceRequest:
+        if type(value) is not dict or type(value.get("job")) is not dict:
+            raise ValueError("reprocess selector must be a closed object")
+        try:
+            result = cls(
+                Job(**value["job"]), UUID(value["parent_command_slot_id"]), UUID(value["parent_receipt_id"]),
+                UUID(value["parent_attempt_id"]), value["parent_request_hash"], value["parent_request_payload_sha256"],
+                value["parent_raw_response_sha256"], UUID(value["source_artifact_set_id"]), value["episode_index"],
+                value["parent_artifact_revision"], value["target_parser_contract_sha256"],
+            )
+        except (KeyError, TypeError, AttributeError) as error:
+            raise ValueError("reprocess selector is malformed") from error
+        if result.to_mapping() != value:
+            raise ValueError("reprocess selector is noncanonical or contains unknown fields")
+        return result
+
 
 class VlmReprocessStore(Protocol):
     def read_vlm_reprocess_parent(self, job: Job, *, command_slot_id: UUID, receipt_id: UUID,
@@ -123,6 +142,14 @@ class ReprocessedVlmEvidence:
     semantic_pack: VlmSemanticPackV4
     normalization: NormalizedVlmResponse
     artifact: ArtifactMember
+    pack_artifact: ArtifactMember
+    request_identity: VlmRequestIdentity
+    source: PersistedWholeSeriesSourceManifest
+    parent_attempt: GenerationAttempt
+
+    @property
+    def artifacts(self) -> tuple[ArtifactMember, ...]:
+        return (self.artifact, self.pack_artifact)
 
 
 def rebuild_reprocessed_vlm_evidence(
@@ -161,12 +188,10 @@ def rebuild_reprocessed_vlm_evidence(
     if frozen["provider_id"] != attempt.provider_id:
         raise ValueError("reprocess parent provider binding differs")
     schema = frozen["response_schema"]
-    if (type(schema) is not dict or type(schema.get("properties")) is not dict
-            or schema["properties"].get("schema_version") != {"const": 4}):
-        # Real response schemas may additionally declare a type on the discriminator.
-        version = schema.get("properties", {}).get("schema_version", {}) if type(schema) is dict else {}
-        if type(version) is not dict or type(version.get("const")) is not int or version["const"] != 4:
-            raise ValueError("reprocess parent did not request the V4 wire schema")
+    properties = schema.get("properties") if type(schema) is dict else None
+    version = properties.get("schema_version") if type(properties) is dict else None
+    if type(version) is not dict or type(version.get("const")) is not int or version["const"] != 4:
+        raise ValueError("reprocess parent did not request the V4 wire schema")
     policy_value = frozen["parse_policy"]
     retry_value = frozen["retry_policy"]
     if type(policy_value) is not dict or type(retry_value) is not dict:
@@ -174,6 +199,8 @@ def rebuild_reprocessed_vlm_evidence(
     policy = VlmParsePolicy(**policy_value)
     if set(retry_value) != {"strategy_version", "max_attempts", "backoff_seconds"}:
         raise ValueError("reprocess parent retry policy has unknown or missing fields")
+    if type(retry_value["backoff_seconds"]) is not list:
+        raise ValueError("reprocess parent backoff must be an exact array")
     retry = GenerationRetryPolicy(retry_value["strategy_version"], retry_value["max_attempts"], tuple(retry_value["backoff_seconds"]))
     if (policy.to_mapping() != policy_value or retry.canonical_hash != frozen["retry_policy_sha256"]
             or retry.canonical_hash != attempt.retry_policy_hash or retry.max_attempts != attempt.max_attempts):
@@ -240,7 +267,10 @@ def rebuild_reprocessed_vlm_evidence(
     serialized = _bytes(payload).decode("utf-8")
     artifact = ArtifactMember("reprocessed_vlm_evidence", "reprocessed_vlm_" + request.request_hash[7:],
                               1, scope, canonical_payload_hash(serialized), serialized)
-    return ReprocessedVlmEvidence(request, pack, normalized, artifact)
+    pack_json = _bytes(pack.to_mapping()).decode("utf-8")
+    pack_artifact = ArtifactMember("vlm_semantic_pack", "reprocessed_semantic_pack_" + request.request_hash[7:],
+                                   1, scope, canonical_payload_hash(pack_json), pack_json)
+    return ReprocessedVlmEvidence(request, pack, normalized, artifact, pack_artifact, identity, source, attempt)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,17 +290,52 @@ def read_reprocessed_vlm_evidence(
         expected_command_name=REPROCESS_VLM_COMMAND, expected_execution_kind="deterministic",
     )
     evidence = rebuild_reprocessed_vlm_evidence(store, request)
-    if len(committed.members) != 1:
-        raise ValueError("reprocessed evidence requires its singleton artifact")
-    member = committed.members[0]
-    expected = evidence.artifact
-    if (member.reference.artifact_type != expected.artifact_type or member.reference.logical_id != expected.logical_id
-            or member.reference.revision != expected.revision or member.reference.scope != expected.scope
-            or member.reference.content_hash != expected.content_hash
-            or canonical_payload_hash(member.payload_json) != expected.content_hash
-            or json.loads(member.payload_json) != json.loads(expected.payload_json)):
-        raise ValueError("reprocessed evidence differs from exact parent raw reconstruction")
+    if len(committed.members) != len(evidence.artifacts):
+        raise ValueError("reprocessed evidence requires its exact provenance and pack artifacts")
+    for ordinal, (member, expected) in enumerate(zip(committed.members, evidence.artifacts, strict=True)):
+        if (member.reference.member_ordinal != ordinal or member.reference.artifact_type != expected.artifact_type
+                or member.reference.logical_id != expected.logical_id
+                or member.reference.revision != expected.revision or member.reference.scope != expected.scope
+                or member.reference.content_hash != expected.content_hash
+                or canonical_payload_hash(member.payload_json) != expected.content_hash
+                or json.loads(member.payload_json) != json.loads(expected.payload_json)):
+            raise ValueError("reprocessed evidence differs from exact parent raw reconstruction")
     return evidence
+
+
+def project_reprocessed_semantic_input(
+    store: VlmReprocessStore, request: ReprocessVlmEvidenceRequest, outcome: CommandOutcome,
+) -> CommittedVlmSemanticInput:
+    """Expose audited derived V4 observations without inventing a generation success."""
+    evidence = read_reprocessed_vlm_evidence(store, request, outcome)
+    if outcome.receipt_id is None or outcome.artifact_set_id is None:
+        raise ValueError("derived observation projection requires a committed outcome")
+    artifact, pack_artifact = evidence.artifacts
+    provenance = CommittedArtifactMemberReference(
+        outcome.receipt_id, outcome.artifact_set_id, 0, artifact.scope, artifact.artifact_type,
+        artifact.logical_id, artifact.revision, artifact.content_hash,
+    )
+    child = PersistedReprocessedVlmChild(
+        provenance, artifact.payload_json, request.job, evidence.source.job_id,
+        outcome.command_slot_id, request.request_hash, request.parent_attempt_id,
+        request.parent_receipt_id, evidence.request_identity, evidence.parent_attempt.request_payload,
+        evidence.source.reference.content_hash, evidence.source.canonical_hash, request.episode_index,
+    )
+    persisted = PersistedVlmSemanticPackV4(
+        VlmSemanticPackReference(pack_artifact.scope, pack_artifact.logical_id, pack_artifact.revision, pack_artifact.content_hash),
+        pack_artifact.payload_json, evidence.semantic_pack, child,
+    )
+    source = decode_source_manifest(evidence.source.payload_json, evidence.source.proxy_blobs)
+    episode = source.episodes[request.episode_index]
+    manifest = episode.manifest
+    window = SourceWindowIdentity(
+        request.episode_index, manifest.stream_index, manifest.core_range.start_pts, manifest.core_range.end_pts,
+        manifest.canonical_hash, manifest.source_id, manifest.source_sha256, manifest.source_clock_id,
+        episode.manifest_set.canonical_hash, evidence.source.proxy_blobs[request.episode_index],
+    )
+    if evidence.parent_attempt.raw_response is None:
+        raise ValueError("derived observation lost its original response")
+    return CommittedVlmSemanticInput(window, evidence.request_identity, persisted, provenance, evidence.parent_attempt.raw_response)
 
 
 class ReprocessVlmEvidenceCommand:
@@ -296,6 +361,6 @@ class ReprocessVlmEvidenceCommand:
                         "provider_call_budget": 0, "retryability": "local_reprocess_denied"}).decode("utf-8"),
             ))
             return ReprocessVlmEvidenceResult(rejected)
-        success = CommandSuccess(outcome.command_slot_id, artifact_set_hash((evidence.artifact,)), (evidence.artifact,))
+        success = CommandSuccess(outcome.command_slot_id, artifact_set_hash(evidence.artifacts), evidence.artifacts)
         committed = self._store.commit_reprocessed_vlm_success(request, success)
         return ReprocessVlmEvidenceResult(committed, read_reprocessed_vlm_evidence(self._store, request, committed))

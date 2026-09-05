@@ -8,7 +8,7 @@ import pytest
 
 from autocut_kernel.vlm.enum_normalization import normalize_vlm_enum_sets
 from autocut_kernel.vlm.normalized_contracts import (
-    VLM_PARSER_NORMALIZED_V4, ParserImplementationUnavailable,
+    VLM_PARSER_NORMALIZED_V4, ParserImplementationUnavailableError,
     parse_registered_vlm_response, parser_contract_sha256_for, require_parser_contract,
 )
 from autocut_kernel.vlm.parser import VlmResponseIndeterminate, VlmResponseRejected
@@ -77,7 +77,7 @@ def test_byte_budget_precedes_parsing():
 def test_legacy_bundle_identity_is_preserved_and_unknown_history_is_unavailable():
     for strategy in ("strict-semantic-pack-v3", "strict-semantic-pack-v4"):
         assert parser_contract_sha256_for(strategy) == legacy_contract(strategy)
-    with pytest.raises(ParserImplementationUnavailable, match="PARSER_IMPLEMENTATION_UNAVAILABLE"):
+    with pytest.raises(ParserImplementationUnavailableError, match="PARSER_IMPLEMENTATION_UNAVAILABLE"):
         require_parser_contract("strict-semantic-pack-v4", "sha256:" + "0" * 64)
-    with pytest.raises(ParserImplementationUnavailable):
+    with pytest.raises(ParserImplementationUnavailableError):
         require_parser_contract(VLM_PARSER_NORMALIZED_V4, legacy_contract("strict-semantic-pack-v4"))

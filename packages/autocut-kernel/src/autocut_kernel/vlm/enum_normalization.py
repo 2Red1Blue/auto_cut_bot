@@ -26,7 +26,11 @@ def _hash(raw: bytes) -> str:
 
 
 def normalizer_contract_sha256() -> str:
-    return _hash(resources.files("autocut_kernel").joinpath("vlm/enum_normalization.py").read_bytes())
+    with resources.files("autocut_kernel").joinpath("vlm/enum_normalization.py").open("rb") as stream:
+        raw = stream.read(4 * 1024 * 1024 + 1)
+    if not 0 < len(raw) <= 4 * 1024 * 1024:
+        raise ValueError("normalizer implementation source size is invalid")
+    return _hash(raw)
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,6 +16,7 @@ from ..vlm.normalized_contracts import (
     parse_registered_vlm_response, require_parser_contract,
 )
 from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4
+from ..vlm.enum_normalization import normalize_vlm_enum_sets
 from .errors import StoreValidationError
 from .models import (
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,
@@ -64,6 +65,18 @@ def generation_semantic_version(
         if type(constant) is not int or constant != 4:  # noqa: E721
             raise StoreValidationError("V4 frozen request must declare response schema version four")
     return cast(str, parser), schema
+
+
+def verified_response_record(
+    value: dict[str, object], *, strategy: str, raw: bytes, policy: VlmParsePolicy,
+) -> dict[str, object]:
+    """Verify derived metadata and return the unchanged legacy provenance fields."""
+    if strategy != VLM_PARSER_NORMALIZED_V4:
+        return value
+    expected = normalize_vlm_enum_sets(raw, policy).to_mapping()
+    if value.get("normalization") != expected:
+        raise StoreValidationError("normalized VLM response does not match exact raw derivation")
+    return {key: member for key, member in value.items() if key != "normalization"}
 
 
 def verify_v4_semantic_pack(

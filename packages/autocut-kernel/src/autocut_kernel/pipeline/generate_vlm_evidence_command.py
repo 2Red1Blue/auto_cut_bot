@@ -46,7 +46,6 @@ from ..vlm import (
 )
 from ..vlm.normalized_contracts import (
     REGISTERED_VLM_PARSERS,
-    VLM_PARSER_V4,
     V4_PARSERS,
     VLM_PARSER_NORMALIZED_V4,
     SemanticPackValue,

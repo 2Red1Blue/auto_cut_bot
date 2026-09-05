@@ -227,6 +227,7 @@ from .vlm_v4 import (
     generation_semantic_version,
     require_batch_child_version,
     verify_v4_semantic_pack,
+    verified_response_record,
 )
 
 
@@ -1606,6 +1607,8 @@ class PostgresRuntimeStore:
                 CALIBRATION_VALIDATOR_COMMAND,
                 BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
                 "FinalizeRunOutcome",
+                "ReprocessVlmEvidenceCommand@1",
+                "FinalizeDerivedVlmBatchCommand@1",
             )
             and claim.execution_kind != "deterministic"
         ):
@@ -3148,6 +3151,8 @@ class PostgresRuntimeStore:
                 )
             if command_name == "ReprocessVlmEvidenceCommand@1":
                 raise CommandStateError("VLM reprocess success requires its audited deterministic writer")
+            if command_name == "FinalizeDerivedVlmBatchCommand@1":
+                raise CommandStateError("derived VLM batch success requires its audited writer")
             if command_name == VLM_BATCH_FINALIZER_COMMAND_NAME:
                 raise CommandStateError(
                     "FinalizeVlmBatchCommand success requires the explicit VLM batch owner API"
@@ -3195,7 +3200,7 @@ class PostgresRuntimeStore:
         if type(request) is not ReprocessVlmEvidenceRequest:
             raise StoreValidationError("VLM reprocess writer requires its exact request")
         evidence = rebuild_reprocessed_vlm_evidence(self, request)
-        if success.artifacts != (evidence.artifact,):
+        if success.artifacts != evidence.artifacts:
             raise StoreValidationError("VLM reprocess result differs from audited parent derivation")
 
         def operation(cursor: DbCursor) -> CommandOutcome:
@@ -3244,6 +3249,32 @@ class PostgresRuntimeStore:
         if declared != tuple(str(item.attempt_id) for item in chain):
             raise StoreValidationError("terminal VLM Receipt does not bind the complete original attempt chain")
         return attempt
+
+    def commit_derived_vlm_batch_success(self, request: object, success: CommandSuccess) -> CommandOutcome:
+        """Reconstruct source coverage and each selected producer before aggregate commit."""
+        from ..pipeline.reprocess_vlm_batch_command import (
+            FINALIZE_DERIVED_VLM_BATCH_COMMAND, FinalizeDerivedVlmBatchRequest, rebuild_derived_vlm_batch,
+        )
+
+        if type(request) is not FinalizeDerivedVlmBatchRequest:
+            raise StoreValidationError("derived VLM batch requires an exact typed request")
+        artifact, *_ = rebuild_derived_vlm_batch(self, request)
+        if success.artifacts != (artifact,):
+            raise StoreValidationError("derived VLM batch differs from audited source and children")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(cursor, success.command_slot_id)
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            cursor.execute("SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s", (job_id,))
+            owner = cursor.fetchone()
+            if (command_name != FINALIZE_DERIVED_VLM_BATCH_COMMAND or request_hash != request.request_hash
+                    or owner is None or (_text(owner[0]), _text(owner[1])) != (request.job.job_key, request.job.profile)):
+                raise StoreValidationError("derived batch writer does not bind the exact command and Job")
+            if state != "running":
+                return self._replay_or_raise(cursor, success.command_slot_id, job_id, "succeeded", success.set_hash)
+            return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
 
     def commit_production_recipe_success(
         self,
@@ -8827,6 +8858,13 @@ class PostgresRuntimeStore:
                 "request must be a CommittedSemanticInputsRequest"
             )
 
+        aggregate_member = self.read_committed_artifact_member(request.vlm_semantic_pack_set)
+        aggregate_payload = _strict_json_object(aggregate_member.payload_json, "VLM aggregate")
+        if aggregate_payload.get("schema_version") == "vlm-semantic-pack-set-derived-v1":
+            from ..pipeline.reprocess_vlm_batch_command import read_derived_vlm_semantic_inputs
+
+            return read_derived_vlm_semantic_inputs(self, request)
+
         def operation(cursor: DbCursor) -> CommittedSemanticInputs:
             source_set = self._read_exact_committed_set(
                 cursor,
@@ -9176,7 +9214,7 @@ class PostgresRuntimeStore:
                             source_child=child,
                         )
                     response = _closed_mapping(
-                        response_payload,
+                        verified_response_record(response_payload, strategy=parser_version, raw=raw_bytes, policy=parse_policy),
                         frozenset(
                             {
                                 "attempt_id",
@@ -9702,9 +9740,11 @@ class PostgresRuntimeStore:
                 )
                 decoded_raw_hash = decoded.raw_response_sha256
             response = _closed_mapping(
-                _strict_json_object(
-                    response_record.payload_json,
-                    "VLM response record",
+                verified_response_record(
+                    _strict_json_object(response_record.payload_json, "VLM response record"),
+                    strategy=parser_version,
+                    raw=_exact_blob_bytes(cursor, raw_response, "VLM raw response"),
+                    policy=_decode_parse_policy(frozen_request["parse_policy"]),
                 ),
                 frozenset(
                     {

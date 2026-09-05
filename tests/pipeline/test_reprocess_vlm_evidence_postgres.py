@@ -1,5 +1,8 @@
 """Durable derivation and restart readback use no provider object or invocation."""
 
+# Imported pytest fixture names intentionally match test parameters.
+# ruff: noqa: F811
+
 import hashlib
 import json
 from dataclasses import replace
@@ -9,10 +12,10 @@ import pytest
 
 from autocut_kernel.pipeline.reprocess_vlm_evidence_command import (
     ReprocessVlmEvidenceCommand, ReprocessVlmEvidenceRequest, rebuild_reprocessed_vlm_evidence,
-    read_reprocessed_vlm_evidence,
 )
 from autocut_kernel.store import CommandClaim, CommandRejection, CommandSuccess, PostgresRuntimeStore
 from autocut_kernel.store.models import artifact_set_hash
+from autocut_kernel.store.errors import CommandStateError, SemanticInputUnavailableError, StoreValidationError
 from autocut_kernel.vlm.normalized_contracts import VLM_PARSER_NORMALIZED_V4, parser_contract_sha256_for
 from tests.pipeline.test_vlm_v4_store_postgres import DSN, prepared, psycopg  # noqa: F401
 from tests.vlm.test_semantic_pack_v4 import _wire
@@ -94,19 +97,69 @@ def test_remaining_reference_error_commits_new_denial_without_generation(prepare
 def test_parent_hash_mismatch_cannot_be_admitted(prepared, field):
     request, _, _ = _failed_parent(prepared)
     wrong = replace(request, **{field: "sha256:" + "0" * 64})
-    with pytest.raises(ValueError):
+    with pytest.raises((ValueError, StoreValidationError, SemanticInputUnavailableError)):
         rebuild_reprocessed_vlm_evidence(prepared.store, wrong)
 
 
 def test_forged_parent_attempt_and_generic_success_writer_are_rejected(prepared):
     request, _, _ = _failed_parent(prepared)
-    with pytest.raises(ValueError):
+    with pytest.raises(StoreValidationError):
         rebuild_reprocessed_vlm_evidence(prepared.store, replace(request, parent_attempt_id=uuid4()))
     evidence = rebuild_reprocessed_vlm_evidence(prepared.store, request)
     from autocut_kernel.pipeline.reprocess_vlm_evidence_command import REPROCESS_VLM_COMMAND
 
     claimed = prepared.store.claim_command(CommandClaim(request.job, request.idempotency_key, REPROCESS_VLM_COMMAND,
                                                          request.request_hash, execution_kind="deterministic"))
-    with pytest.raises(ValueError):
+    with pytest.raises(CommandStateError):
         prepared.store.commit_command_success(CommandSuccess(claimed.command_slot_id,
             artifact_set_hash((evidence.artifact,)), (evidence.artifact,)))
+
+
+def test_complete_derived_batch_reenters_normal_stage1_reader_after_restart(prepared):
+    from autocut_kernel.pipeline.reprocess_vlm_batch_command import (
+        DERIVED_VLM_BATCH_STRATEGY, FinalizeDerivedVlmBatchCommand, FinalizeDerivedVlmBatchRequest,
+        VlmBatchEvidenceSelection, rebuild_derived_vlm_batch,
+    )
+    from autocut_kernel.store.models import CommittedArtifactMemberReference, CommittedSemanticInputsRequest, PersistedReprocessedVlmChild
+    from autocut_kernel.semantic_chain.core_observations import semantic_pack
+    from autocut_kernel.semantic_chain.stage1_draft import stage1_draft_prompt_inputs
+    from tests.semantic_chain.test_stage1_draft import POLICY
+
+    request, parent, _ = _failed_parent(prepared)
+    derived = ReprocessVlmEvidenceCommand(prepared.store).execute(request)
+    artifact = derived.evidence.artifact
+    reference = CommittedArtifactMemberReference(derived.outcome.receipt_id, derived.outcome.artifact_set_id, 0,
+        artifact.scope, artifact.artifact_type, artifact.logical_id, artifact.revision, artifact.content_hash)
+    batch = FinalizeDerivedVlmBatchRequest(request.job, prepared.source_reference,
+        (VlmBatchEvidenceSelection(0, request.idempotency_key, reference),))
+    outcome = FinalizeDerivedVlmBatchCommand(prepared.store).execute(batch)
+    assert outcome.state == "succeeded"
+    aggregate, *_ = rebuild_derived_vlm_batch(prepared.store, batch)
+    aggregate_ref = CommittedArtifactMemberReference(outcome.receipt_id, outcome.artifact_set_id, 0,
+        aggregate.scope, aggregate.artifact_type, aggregate.logical_id, aggregate.revision, aggregate.content_hash)
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    inputs = restarted.read_committed_semantic_inputs(CommittedSemanticInputsRequest(request.job, prepared.source_reference, aggregate_ref))
+    assert inputs.vlm_batch_strategy_version == DERIVED_VLM_BATCH_STRATEGY
+    assert type(inputs.inputs[0].semantic_pack.source_child) is PersistedReprocessedVlmChild
+    assert semantic_pack(inputs.inputs[0]) == derived.evidence.semantic_pack
+    assert stage1_draft_prompt_inputs(inputs, policy=POLICY)["input_binding_sha256"]
+    assert restarted.read_generation_attempt(parent.attempt_id) == parent
+    assert FinalizeDerivedVlmBatchCommand(restarted).execute(batch).receipt_id == outcome.receipt_id
+
+
+def test_new_normalized_generation_reader_replays_derived_metadata(prepared):
+    from autocut_kernel.pipeline import GenerateVlmEvidenceCommand
+    from tests.pipeline.test_vlm_v4_store_postgres import FixtureProvider, NoProvider
+
+    request = replace(prepared.request, parser_strategy_version=VLM_PARSER_NORMALIZED_V4,
+                      parser_contract_sha256=parser_contract_sha256_for(VLM_PARSER_NORMALIZED_V4))
+    wire = _wire()
+    wire["candidate_hypotheses"][0]["tags"] = ["reveal", "dialogue"]
+    provider = FixtureProvider(json.dumps(wire).encode())
+    generated = GenerateVlmEvidenceCommand(prepared.store, provider).execute(request)
+    assert generated.outcome.state == "succeeded" and provider.calls == 1
+    inspected = prepared.store.read_committed_v4_semantic_child_inspection(request.job, request.idempotency_key)
+    assert inspected.semantic_input.semantic_pack.semantic_pack == generated.semantic_pack
+    response = json.loads(inspected.semantic_input.response_payload_json)
+    assert response["normalization"]["transformations"][0]["path"] == "$.candidate_hypotheses[0].tags"
+    assert GenerateVlmEvidenceCommand(prepared.store, NoProvider()).execute(request).outcome.receipt_id == generated.outcome.receipt_id
