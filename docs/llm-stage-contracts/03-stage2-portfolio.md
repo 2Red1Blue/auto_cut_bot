@@ -1,5 +1,29 @@
 # 03 Stage 2：故事设计与组合
 
+版本说明：下文 v1 仍用于旧请求。新代码还支持显式 `generation.prompt_version=stage2-proposal-compact-v2`，
+尚未全局替换 HTTP 默认。新版本调用前必须同时选取对应 prompt/schema/decoder，不能只改提示词文本。
+
+## compact-v2 的差异
+
+模型仍获得分集、主体、事实、事件、故事线、义务、候选和策略选择；完整 owner/hash 留私有 envelope。
+短引用按请求绑定为 p/f/e/t/o/c/s，辅助图节点使用仅输入的 n 命名空间；不能跨请求复用短 ID。
+
+| 模型输出 | 程序处理 |
+|---|---|
+| `title/narrative_claim/audience_hook` | 保留模型叙事表达 |
+| `thread_refs/obligation_refs/key_subject_refs` | 从私有映射恢复准确引用；主体允许 observed person 或已建立 character，绝不混称 |
+| `genre_tags/editing_profile_ref/teaser_strategy/target_duration_seconds` | 检查给定策略，恢复精确版本化配置 |
+| `material_requirements` | 绑定所选义务，合并强制安全检查；源允许范围只能收紧 |
+
+v2 根只有 schema discriminator 与非空 proposals；模型不再回填 input hash、proposal ID、required fact closure。
+每个材料项返回 `obligation_ref/minimum_usable_seconds/additional_checks/source_constraints`。
+`source_constraints.source_selection` 为 all_granted 或 subset，后者必须有合法非空 allowed_source_refs。
+未知字段/引用仍拒绝，不做拼写猜测和业务默认补全。v1→v2 纯迁移会记录类型与事实闭包差异，
+不等于已经提供了可提交的 Stage 2 派生 Command。
+
+详细字段边界见 [09 §4](./09-model-boundary-refactor.md#4-stage-2-compact-v2-的可实施合同)，
+单阶段入口见 [10](./10-local-recovery-and-stage2-runbook.md)。
+
 ## 调用前输入
 
 Stage 2 只在 Stage 1 成功并可重建同一份 request/outcome/content 后运行。模型 context 为
