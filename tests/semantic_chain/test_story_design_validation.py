@@ -55,6 +55,18 @@ def test_validates_without_rewriting_draft(case):
     assert draft.to_mapping() == before
 
 
+def test_reference_diagnostic_walk_matches_complete_derived_property(case):
+    draft, _ = case
+    original = draft.proposals[0]
+    proposal = replace(original, key_character_refs=(SemanticObjectRef(
+        original.required_fact_refs[0].member_ref, "character", "synthetic-character",
+    ),))
+    assert proposal.narrative_refs == (
+        proposal.thread_refs + proposal.required_obligation_refs
+        + proposal.required_fact_refs + proposal.key_character_refs
+    )
+
+
 def test_graph_hash_is_computed_once_not_once_per_reference(case, monkeypatch):
     draft, kwargs = case
     graph = kwargs["graph"]
