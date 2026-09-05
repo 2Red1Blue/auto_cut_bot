@@ -1632,6 +1632,23 @@ class PersistedReprocessedVlmChild:
         request = payload.get("request")
         if type(request) is not dict or canonical_sha256(request) != self.request_hash:
             raise StoreValidationError("reprocessed VLM child request hash differs")
+        schema = payload.get("schema_version")
+        if schema == "reprocessed-vlm-evidence-v1":
+            if (request.get("strategy_version") != "reprocess-vlm-evidence-v1"
+                    or "projection_version" in request
+                    or any(name in payload for name in ("request_identity", "parse_policy", "proxy_blob"))):
+                raise StoreValidationError("reprocessed VLM v1 projection must retain its exact legacy shape")
+        elif schema == "reprocessed-vlm-evidence-v2":
+            if (request.get("strategy_version") != "reprocess-vlm-evidence-v2"
+                    or type(request.get("projection_version")) is not int or request["projection_version"] != 2
+                    or payload.get("request_identity") != self.request_identity.to_mapping()
+                    or type(payload.get("parse_policy")) is not dict
+                    or canonical_sha256(payload["parse_policy"]) != self.request_identity.parse_policy_sha256
+                    or type(payload.get("proxy_blob")) is not dict
+                    or canonical_sha256(payload["proxy_blob"]) != self.request_identity.proxy_blob_ref_sha256):
+                raise StoreValidationError("reprocessed VLM v2 projection differs from the frozen parent request")
+        else:
+            raise StoreValidationError("reprocessed VLM child projection version is unsupported")
         if (request.get("parent_attempt_id") != str(self.parent_attempt_id)
                 or request.get("parent_receipt_id") != str(self.parent_receipt_id)
                 or request.get("episode_index") != self.episode_index

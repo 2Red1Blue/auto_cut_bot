@@ -7,6 +7,8 @@ from typing import Literal
 
 from ..media.types import canonical_sha256, sha256_prefixed
 from ..store import CommittedSemanticInputs
+from ..store.models import PersistedReprocessedVlmChild
+from .derived_input_binding import bind_derived_input
 
 _Status = Literal["resolved", "tainted", "unresolved", "conflicted"]
 _OBLIGATION_IDS = ("cross_window_merge", "semantic_closure")
@@ -49,13 +51,19 @@ def _committed_input_binding(inputs: CommittedSemanticInputs) -> str:
         source = item.source_window
         pack = item.semantic_pack
         child = pack.source_child
+        derived = type(child) is PersistedReprocessedVlmChild  # noqa: E721
+        if derived:
+            try:
+                bind_derived_input(item, inputs)
+            except ValueError as error:
+                raise Stage1AuthorityError("committed derived VLM provenance is not closed") from error
         if (
             source.window_manifest_sha256 != item.request_identity.window_manifest_sha256
             or source.window_manifest_sha256 != pack.semantic_pack.window_manifest_sha256
             or source.window_manifest_sha256 != child.window_manifest_sha256
             or pack.semantic_pack.request_identity_sha256 != child.request_identity_sha256
             or item.request_identity.canonical_hash != child.request_identity_sha256
-            or item.response_record.content_hash != pack.semantic_pack.raw_response_sha256
+            or (not derived and item.response_record.content_hash != pack.semantic_pack.raw_response_sha256)
         ):
             raise Stage1AuthorityError("committed VLM input provenance is not closed")
         members.append(

@@ -29,9 +29,12 @@ from ..store.models import (
     canonical_payload_hash,
 )
 from ..vlm.decoder import decode_vlm_semantic_pack
-from ..vlm.models import VlmRequestIdentity, VlmSemanticPack
+from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
+from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4
 from .candidate_catalog import CandidateCatalogPolicy
 from .candidate_projection import CandidateCatalogProjection, project_candidate_catalog
+from .core_observations import CoreSemanticPack
+from .derived_input_binding import derived_record
 from .editorial_context_models import (
     EditorialContextError,
     EditorialContextManifest,
@@ -84,6 +87,8 @@ def _blob(value: object) -> BlobRef:
 
 
 def _request(member: ExactContextMember) -> tuple[dict[str, object], VlmRequestIdentity, BlobRef]:
+    if member.member_ref.artifact_type == "reprocessed_vlm_evidence":
+        return _derived_request(member)
     # There is no standalone public request-record decoder. Decode only its
     # closed persisted value shape here, reusing the identity/blob value owners;
     # never fabricate a PersistedVlmGenerationChild or its commit provenance.
@@ -112,8 +117,56 @@ def _request(member: ExactContextMember) -> tuple[dict[str, object], VlmRequestI
     return item, identity, proxy
 
 
+def _derived_request(member: ExactContextMember) -> tuple[dict[str, object], VlmRequestIdentity, BlobRef]:
+    record = derived_record(member.payload_json)
+    if record["schema_version"] != "reprocessed-vlm-evidence-v2":
+        raise EditorialContextError("derived v1 lacks exact Stage 3 projection; reprocess locally to v2")
+    fields = editorial_mapping(record["request_identity"], tuple(VLM_REQUEST_IDENTITY_FIELDS))
+    identity = VlmRequestIdentity(**{name: editorial_hash(value) if name.endswith("_sha256") else editorial_text(value)
+                                     for name, value in fields.items()})
+    policy = _derived_policy(record)
+    proxy = _blob(record["proxy_blob"])
+    request = cast(dict[str, object], record["request"])
+    request_hash = canonical_json_hash(request)
+    if (member.member_ref.logical_id != "reprocessed_vlm_" + request_hash[7:]
+            or record["window_manifest_sha256"] != identity.window_manifest_sha256
+            or record["window_manifest_set_sha256"] != identity.window_manifest_set_sha256
+            or request.get("parent_request_payload_sha256") != identity.request_payload_sha256
+            or policy.canonical_hash != identity.parse_policy_sha256
+            or canonical_json_hash(record["proxy_blob"]) != identity.proxy_blob_ref_sha256):
+        raise EditorialContextError("derived projection differs from its exact request identity")
+    # A local content join view, never a synthetic generation request member.
+    return {**record, "episode_index": request["episode_index"]}, identity, proxy
+
+
+def _derived_policy(record: dict[str, object]) -> VlmParsePolicy:
+    fields = editorial_mapping(record["parse_policy"], tuple(VlmParsePolicy.__dataclass_fields__))
+    return VlmParsePolicy(**{key: editorial_integer(value, minimum=1) for key, value in fields.items()})
+
+
+def _raw_packs(pool: tuple[ExactContextMember, ...]) -> tuple[CoreSemanticPack, ...]:
+    requests = tuple(_request(member) for member in pool[1:-13:2])
+    source = decode_source_manifest(pool[0].payload_json, tuple(proxy for _, _, proxy in requests))
+    packs: list[CoreSemanticPack] = []
+    for request, episode, owner, member in zip(requests, source.episodes, pool[1:-13:2], pool[2:-13:2], strict=True):
+        record, identity, _ = request
+        raw = load_canonical_json_bytes(member.payload_json.encode(), origin="context VLM pack")[0]
+        if owner.member_ref.artifact_type == "reprocessed_vlm_evidence":
+            pack = decode_vlm_semantic_pack_v4(raw, manifest=episode.manifest, manifest_set=episode.manifest_set,
+                                             request_identity=identity, policy=_derived_policy(record))
+            request_fields = cast(dict[str, object], record["request"])
+            if raw != record["semantic_pack"] or pack.raw_response_sha256 != request_fields["parent_raw_response_sha256"]:
+                raise EditorialContextError("derived provenance differs from its exact V4 semantic member")
+            packs.append(pack)
+        else:
+            if type(raw) is dict and raw.get("schema_version") == 4:
+                raise EditorialContextError("generation V4 lacks persisted parse policy; explicit derived v2 projection required")
+            packs.append(decode_vlm_semantic_pack(raw))
+    return tuple(packs)
+
+
 def _raw_pool(
-    pool: tuple[ExactContextMember, ...], packs: tuple[VlmSemanticPack, ...], source_grant_sha256: str,
+    pool: tuple[ExactContextMember, ...], packs: tuple[CoreSemanticPack, ...], source_grant_sha256: str,
 ) -> set[SemanticObjectRef]:
     requests = tuple(_request(member) for member in pool[1:-13:2])
     source = decode_source_manifest(pool[0].payload_json, tuple(proxy for _, _, proxy in requests))
@@ -127,10 +180,13 @@ def _raw_pool(
     )):
         record, identity, _ = request
         identity.assert_manifest_binding(episode.manifest, episode.manifest_set)
+        expected_pack_id = ("reprocessed_semantic_pack_" + canonical_json_hash(record["request"])[7:]
+                            if request_member.member_ref.artifact_type == "reprocessed_vlm_evidence"
+                            else f"semantic_pack_{pack.window_manifest_sha256[7:39]}")
         if (record["episode_index"] != ordinal or record["source_manifest_sha256"] != pool[0].member_ref.content_hash
                 or pack.request_identity_sha256 != identity.canonical_hash
                 or pack.window_manifest_sha256 != identity.window_manifest_sha256
-                or pack_member.member_ref.logical_id != f"semantic_pack_{pack.window_manifest_sha256[7:39]}"
+                or pack_member.member_ref.logical_id != expected_pack_id
                 or pack_member.member_ref.revision != request_member.member_ref.revision):
             raise EditorialContextError("context request/pack/Source window pair does not close")
         provenance.add(editorial_hash(record["source_provenance_sha256"]))
@@ -182,14 +238,14 @@ def _pool_values(pool: tuple[ExactContextMember, ...]) -> tuple[Stage1Values, St
             or tuple(ref.artifact_type for ref in refs[-13:]) != (*STAGE1_MEMBER_TYPES, *STAGE2_MEMBER_TYPES)):
         raise EditorialContextError("context pool has missing, extra or reordered predecessor kinds")
     raw_refs = refs[1:-13]
-    if len(raw_refs) % 2 or tuple(ref.artifact_type for ref in raw_refs) != ("vlm_request_record", "vlm_semantic_pack") * (len(raw_refs) // 2):
+    if (len(raw_refs) % 2 or any(ref.artifact_type not in ("vlm_request_record", "reprocessed_vlm_evidence")
+                               for ref in raw_refs[::2])
+            or any(ref.artifact_type != "vlm_semantic_pack" for ref in raw_refs[1::2])):
         raise EditorialContextError("context pool requires every ordered VLM request/semantic pair")
     if (len({(ref.artifact_type, ref.logical_id) for ref in refs}) != len(refs)
             or any(ref.scope != refs[0].scope for ref in refs)):
         raise EditorialContextError("context pool repeats an owner or mixes scopes")
-    packs = tuple(decode_vlm_semantic_pack(load_canonical_json_bytes(
-        member.payload_json.encode(), origin="context VLM pack",
-    )[0]) for member in pool[2:-13:2])
+    packs = _raw_packs(pool)
     stage1 = decode_stage1_members(tuple(member.as_artifact_member() for member in pool[-13:-5]), scope=refs[0].scope)
     stage2 = decode_story_design_members(tuple(member.as_artifact_member() for member in pool[-5:]), scope=refs[0].scope)
     _reference_owners(pool, _raw_pool(pool, packs, stage2.business.candidate_catalog.source_grant_sha256))

@@ -176,7 +176,7 @@ def test_other_wire_versions_are_not_reinterpreted(version: object) -> None:
     "unknown_subject", "unknown_object", "unknown_participant", "unknown_fact", "unknown_cause",
     "duplicate_reference", "self_loop", "unknown_summary_ref", "bad_continuity", "bad_entry",
     "overlapping_segments", "reverse_segments", "unknown_anchor", "missing_payoff", "empty_measurements",
-    "unknown_measurement_ref", "unsupported_enum", "wrong_boolean", "noncanonical_tags", "no_event_overlap",
+    "unknown_measurement_ref", "unsupported_enum", "wrong_boolean", "duplicate_tags", "no_event_overlap",
     "no_candidate_overlap", "video_frame_field", "fake_accepted",
 ])
 def test_semantic_constraints_fail_closed(mutation: str) -> None:
@@ -229,8 +229,10 @@ def test_semantic_constraints_fail_closed(mutation: str) -> None:
         wire["facts"][0]["fact_kind"] = "physical_safe"
     elif mutation == "wrong_boolean":
         wire["continuity"]["starts_mid_event"] = 0
-    elif mutation == "noncanonical_tags":
-        wire["candidate_hypotheses"][0]["tags"] = ["reveal", "dialogue"]
+    elif mutation == "duplicate_tags":
+        # The pre-refactor shared parser already orders valid sets. Duplicate
+        # members remain invalid; do not redefine historical execution here.
+        wire["candidate_hypotheses"][0]["tags"] = ["dialogue", "dialogue"]
     elif mutation == "no_event_overlap":
         wire["events"][0]["support"] = _support(60, 70)
     elif mutation == "no_candidate_overlap":

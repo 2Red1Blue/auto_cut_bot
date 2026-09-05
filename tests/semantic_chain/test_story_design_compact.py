@@ -225,7 +225,7 @@ def test_explicit_migration_repairs_only_bound_person_and_derives_fact_closure(c
 
 
 @pytest.mark.parametrize("field,value,code", [
-    ("key_subject_refs", ["private-token-do-not-export"], "COMPACT_REFERENCE_TYPE_MISMATCH"),
+    ("key_subject_refs", ["private-token-do-not-export"], "COMPACT_REFERENCE_NOT_FOUND"),
     ("thread_refs", ["t999999"], "COMPACT_REFERENCE_NOT_FOUND"),
     ("obligation_refs", ["o1", "o1"], "COMPACT_DUPLICATE_REFERENCE"),
 ])

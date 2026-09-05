@@ -74,6 +74,7 @@ class ReprocessVlmEvidenceRequest:
     episode_index: int
     parent_artifact_revision: int
     target_parser_contract_sha256: str
+    projection_version: int = 2
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:
@@ -87,11 +88,13 @@ class ReprocessVlmEvidenceRequest:
             raise ValueError("episode_index must be non-negative")
         if type(self.parent_artifact_revision) is not int or self.parent_artifact_revision < 1:
             raise ValueError("parent_artifact_revision must be positive")
+        if type(self.projection_version) is not int or self.projection_version not in (1, 2):
+            raise ValueError("reprocess projection_version must explicitly select 1 or 2")
         require_parser_contract(VLM_PARSER_NORMALIZED_V4, self.target_parser_contract_sha256)
 
     def to_mapping(self) -> dict[str, object]:
-        return {
-            "strategy_version": "reprocess-vlm-evidence-v1",
+        value = {
+            "strategy_version": f"reprocess-vlm-evidence-v{self.projection_version}",
             "target_parser_strategy": VLM_PARSER_NORMALIZED_V4,
             "target_parser_contract_sha256": self.target_parser_contract_sha256,
             "job": {"job_key": self.job.job_key, "profile": self.job.profile},
@@ -106,6 +109,10 @@ class ReprocessVlmEvidenceRequest:
             "parent_artifact_revision": self.parent_artifact_revision,
             "provider_call_budget": 0,
         }
+        # v1 is already durable: never add a field to its serialized request.
+        if self.projection_version == 2:
+            value["projection_version"] = 2
+        return value
 
     @property
     def request_hash(self) -> str:
@@ -119,12 +126,19 @@ class ReprocessVlmEvidenceRequest:
     def from_mapping(cls, value: object) -> ReprocessVlmEvidenceRequest:
         if type(value) is not dict or type(value.get("job")) is not dict:
             raise ValueError("reprocess selector must be a closed object")
+        versions = {"reprocess-vlm-evidence-v1": 1, "reprocess-vlm-evidence-v2": 2}
+        strategy = value.get("strategy_version")
+        if type(strategy) is not str or strategy not in versions:
+            raise ValueError("reprocess selector requires an explicitly supported strategy")
+        if versions[strategy] == 2 and (type(value.get("projection_version")) is not int or value["projection_version"] != 2):
+            raise ValueError("reprocess v2 selector requires exact integer projection_version 2")
         try:
             result = cls(
                 Job(**value["job"]), UUID(value["parent_command_slot_id"]), UUID(value["parent_receipt_id"]),
                 UUID(value["parent_attempt_id"]), value["parent_request_hash"], value["parent_request_payload_sha256"],
                 value["parent_raw_response_sha256"], UUID(value["source_artifact_set_id"]), value["episode_index"],
                 value["parent_artifact_revision"], value["target_parser_contract_sha256"],
+                projection_version=versions[strategy],
             )
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError("reprocess selector is malformed") from error
@@ -190,8 +204,12 @@ def rebuild_reprocessed_vlm_evidence(
     raw_request = store.read_immutable_blob(request.job, attempt.request_payload)
     if len(raw_request) > _MAX_REQUEST_BYTES or _hash(raw_request) != request.parent_request_payload_sha256:
         raise ValueError("reprocess parent request bytes differ from frozen identity")
-    frozen = json.loads(raw_request.decode("utf-8", "strict"), object_pairs_hook=_pairs_object,
-                        parse_constant=_constant)
+    try:
+        frozen = json.loads(raw_request.decode("utf-8", "strict"), object_pairs_hook=_pairs_object,
+                            parse_constant=_constant)
+    except (VlmResponseRejected, VlmResponseIndeterminate) as error:
+        # Frozen request corruption is an input audit failure, not a response denial.
+        raise ValueError("reprocess parent request is not strict JSON") from error
     fields = {"model_id", "parse_policy", "parser_strategy_version", "parser_contract_sha256", "prompt", "prompt_version",
               "provider_id", "proxy_blob", "request_parameters", "retry_policy", "retry_policy_sha256", "response_schema",
               "window_manifest_sha256", "window_manifest_set_sha256"}
@@ -273,7 +291,7 @@ def rebuild_reprocessed_vlm_evidence(
     if type(pack) is not VlmSemanticPackV4:
         raise ValueError("reprocess target did not produce an exact V4 pack")
     payload = {
-        "schema_version": "reprocessed-vlm-evidence-v1", "request": request.to_mapping(),
+        "schema_version": f"reprocessed-vlm-evidence-v{request.projection_version}", "request": request.to_mapping(),
         "parent_parser_strategy": frozen["parser_strategy_version"],
         "parent_parser_contract_sha256": frozen["parser_contract_sha256"],
         "parent_provider_request_id": attempt.provider_request_id,
@@ -281,6 +299,11 @@ def rebuild_reprocessed_vlm_evidence(
         "window_manifest_sha256": manifest.canonical_hash, "window_manifest_set_sha256": manifests.canonical_hash,
         "normalization": normalized.to_mapping(), "semantic_pack": pack.to_mapping(),
     }
+    if request.projection_version == 2:
+        # These are verified original request values, not inferred from hashes.
+        # The versioned request gives this richer projection its own durable slot.
+        payload.update({"request_identity": identity.to_mapping(), "parse_policy": policy.to_mapping(),
+                        "proxy_blob": frozen["proxy_blob"]})
     serialized = _bytes(payload).decode("utf-8")
     artifact = ArtifactMember("reprocessed_vlm_evidence", "reprocessed_vlm_" + request.request_hash[7:],
                               1, scope, canonical_payload_hash(serialized), serialized)
@@ -360,6 +383,14 @@ class ReprocessVlmEvidenceCommand:
         self._store = store
 
     def execute(self, request: ReprocessVlmEvidenceRequest) -> ReprocessVlmEvidenceResult:
+        # Audit immutable parent/source ownership before creating a durable slot.
+        # Only a response rejection after that audit may become a new denial.
+        evidence = None
+        parser_failure = None
+        try:
+            evidence = rebuild_reprocessed_vlm_evidence(self._store, request)
+        except (VlmResponseRejected, VlmResponseIndeterminate) as error:
+            parser_failure = error
         outcome = self._store.claim_command(CommandClaim(
             request.job, request.idempotency_key, REPROCESS_VLM_COMMAND, request.request_hash,
             execution_kind="deterministic",
@@ -368,16 +399,16 @@ class ReprocessVlmEvidenceCommand:
             return ReprocessVlmEvidenceResult(outcome)
         if outcome.state == "succeeded":
             return ReprocessVlmEvidenceResult(outcome, read_reprocessed_vlm_evidence(self._store, request, outcome))
-        try:
-            evidence = rebuild_reprocessed_vlm_evidence(self._store, request)
-        except (VlmResponseRejected, VlmResponseIndeterminate) as error:
+        if parser_failure is not None:
             rejected = self._store.commit_command_rejection(CommandRejection(
-                outcome.command_slot_id, error.code,
-                _bytes({"parser_message": str(error), "parent_attempt_id": str(request.parent_attempt_id),
+                outcome.command_slot_id, parser_failure.code,
+                _bytes({"parser_message": str(parser_failure), "parent_attempt_id": str(request.parent_attempt_id),
                         "raw_response_sha256": request.parent_raw_response_sha256,
                         "provider_call_budget": 0, "retryability": "local_reprocess_denied"}).decode("utf-8"),
             ))
             return ReprocessVlmEvidenceResult(rejected)
+        if evidence is None:
+            raise RuntimeError("reprocess audit did not produce evidence or a parser rejection")
         success = CommandSuccess(outcome.command_slot_id, artifact_set_hash(evidence.artifacts), evidence.artifacts)
         committed = self._store.commit_reprocessed_vlm_success(request, success)
         return ReprocessVlmEvidenceResult(committed, read_reprocessed_vlm_evidence(self._store, request, committed))

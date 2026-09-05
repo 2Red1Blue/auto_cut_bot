@@ -26,8 +26,11 @@ from ..store.models import (
     CommittedArtifactMemberReference,
     CommittedSemanticInputs,
     CommittedVlmSemanticInput,
+    PersistedReprocessedVlmChild,
+    PersistedVlmGenerationChild,
 )
 from .core_observations import semantic_pack
+from .derived_input_binding import bind_derived_input
 
 STAGE1_DRAFT_SCHEMA_VERSION = "stage1-cross-window-draft-v1"
 _ID_PATTERN = r"[a-z][a-z0-9_]{0,63}"
@@ -236,11 +239,45 @@ def _member_binding(
         or child.source_job != inputs.source_manifest.source_job
         or persisted.reference.scope != inputs.source_manifest.reference.scope
         or inputs.vlm_semantic_pack_set.scope != persisted.reference.scope
-        or response.artifact_type != "vlm_response_record"
-        or response.member_ordinal != 1
-        or response.logical_id != f"vlm_response_{source.window_manifest_sha256[7:31]}"
     ):
         raise Stage1DraftError("committed VLM input identities do not close")
+    if type(child) is PersistedReprocessedVlmChild:  # noqa: E721
+        try:
+            pack_ref, record = bind_derived_input(item, inputs)
+        except ValueError as error:
+            raise Stage1DraftError("committed derived VLM identities do not close") from error
+        lineage = {
+            "derivation_child": {"reference": child.reference.to_mapping(), "request": record["request"]},
+            "derivation_owner": {
+                "job_key": child.source_job.job_key, "profile": child.source_job.profile,
+                "kernel_job_id": str(child.kernel_job_id), "command_slot_id": str(child.command_slot_id),
+            },
+        }
+    else:
+        if (response.artifact_type != "vlm_response_record" or response.member_ordinal != 1
+                or response.logical_id != f"vlm_response_{source.window_manifest_sha256[7:31]}"):
+            raise Stage1DraftError("committed VLM input identities do not close")
+        return _generation_member_binding(item)
+    return {
+        **lineage, "request_identity": identity.to_mapping(), "response_record": response.to_mapping(),
+        "raw_response": _blob_mapping(item.raw_response), "semantic_pack": pack_ref.to_mapping(),
+        "semantic_pack_sha256": pack.canonical_hash,
+        "source_window": {
+            "episode_index": source.episode_index, "stream_index": source.stream_index,
+            "core_start_pts": source.core_start_pts, "core_end_pts": source.core_end_pts,
+            "window_manifest_sha256": source.window_manifest_sha256,
+            "window_manifest_set_sha256": source.window_manifest_set_sha256,
+            "source_id": source.source_id, "source_sha256": source.source_sha256,
+            "source_clock_id": source.source_clock_id, "proxy_blob": _blob_mapping(source.proxy_blob),
+        },
+    }
+
+
+def _generation_member_binding(item: CommittedVlmSemanticInput) -> dict[str, object]:
+    source, identity, persisted = item.source_window, item.request_identity, item.semantic_pack
+    pack, child, response = semantic_pack(item), persisted.source_child, item.response_record
+    if type(child) is not PersistedVlmGenerationChild:  # noqa: E721
+        raise Stage1DraftError("generation binding requires an exact generation child")
     pack_ref = CommittedArtifactMemberReference(
         child.receipt_id,
         child.artifact_set_id,

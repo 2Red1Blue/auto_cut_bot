@@ -107,18 +107,68 @@ def test_remaining_reference_error_commits_new_denial_without_generation(prepare
     assert prepared.store.read_generation_attempt(parent.attempt_id) == parent
 
 
+def test_v1_replay_and_explicit_v2_projection_use_distinct_durable_receipts(prepared):
+    from autocut_kernel.pipeline.reprocess_vlm_evidence_command import project_reprocessed_semantic_input
+    from autocut_kernel.store.models import canonical_payload_hash
+
+    request, parent, _ = _failed_parent(prepared)
+    v1 = replace(request, projection_version=1)
+    old = ReprocessVlmEvidenceCommand(prepared.store).execute(v1)
+    old_mapping = json.loads(old.evidence.artifact.payload_json)
+    assert old_mapping["schema_version"] == "reprocessed-vlm-evidence-v1"
+    assert not {"request_identity", "parse_policy", "proxy_blob"} & old_mapping.keys()
+    restarted = PostgresRuntimeStore(lambda: psycopg.connect(DSN))
+    restored_v1 = ReprocessVlmEvidenceRequest.from_mapping(old_mapping["request"])
+    replay = ReprocessVlmEvidenceCommand(restarted).execute(restored_v1)
+    assert replay.outcome.receipt_id == old.outcome.receipt_id and replay.evidence.artifacts == old.evidence.artifacts
+    assert project_reprocessed_semantic_input(restarted, restored_v1, replay.outcome).request_identity == old.evidence.request_identity
+
+    new = ReprocessVlmEvidenceCommand(restarted).execute(request)
+    assert new.outcome.receipt_id != old.outcome.receipt_id
+    assert new.outcome.command_slot_id != old.outcome.command_slot_id
+    assert new.outcome.artifact_set_id != old.outcome.artifact_set_id
+    payload = json.loads(new.evidence.artifact.payload_json)
+    frozen = json.loads(prepared.request.request_payload)
+    assert payload["schema_version"] == "reprocessed-vlm-evidence-v2"
+    assert payload["request_identity"] == old.evidence.request_identity.to_mapping()
+    assert payload["parse_policy"] == frozen["parse_policy"]
+    assert payload["proxy_blob"] == frozen["proxy_blob"]
+    assert new.evidence.semantic_pack == old.evidence.semantic_pack
+    projected = project_reprocessed_semantic_input(restarted, request, new.outcome)
+    assert projected.request_identity == old.evidence.request_identity
+    for field in ("request_identity", "parse_policy", "proxy_blob"):
+        tampered = json.dumps({**payload, field: {}}, sort_keys=True, separators=(",", ":"))
+        child = projected.semantic_pack.source_child
+        with pytest.raises(StoreValidationError):
+            replace(child, payload_json=tampered,
+                    reference=replace(child.reference, content_hash=canonical_payload_hash(tampered)))
+    assert restarted.read_generation_attempt(parent.attempt_id) == parent
+    assert ReprocessVlmEvidenceCommand(restarted).execute(restored_v1).evidence.artifacts == old.evidence.artifacts
+
+
 @pytest.mark.parametrize("field", ["parent_request_hash", "parent_request_payload_sha256", "parent_raw_response_sha256"])
 def test_parent_hash_mismatch_cannot_be_admitted(prepared, field):
     request, _, _ = _failed_parent(prepared)
     wrong = replace(request, **{field: "sha256:" + "0" * 64})
     with pytest.raises((ValueError, StoreValidationError, SemanticInputUnavailableError)):
         rebuild_reprocessed_vlm_evidence(prepared.store, wrong)
+    with pytest.raises((ValueError, StoreValidationError, SemanticInputUnavailableError)):
+        ReprocessVlmEvidenceCommand(prepared.store).execute(wrong)
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM runtime.command_slots WHERE idempotency_key = %s", (wrong.idempotency_key,))
+        assert cursor.fetchone()[0] == 0
 
 
 def test_forged_parent_attempt_and_generic_success_writer_are_rejected(prepared):
     request, _, _ = _failed_parent(prepared)
     with pytest.raises(StoreValidationError):
         rebuild_reprocessed_vlm_evidence(prepared.store, replace(request, parent_attempt_id=uuid4()))
+    wrong_owner = replace(request, parent_attempt_id=uuid4())
+    with pytest.raises(StoreValidationError):
+        ReprocessVlmEvidenceCommand(prepared.store).execute(wrong_owner)
+    with psycopg.connect(DSN) as connection, connection.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM runtime.command_slots WHERE idempotency_key = %s", (wrong_owner.idempotency_key,))
+        assert cursor.fetchone()[0] == 0
     evidence = rebuild_reprocessed_vlm_evidence(prepared.store, request)
     from autocut_kernel.pipeline.reprocess_vlm_evidence_command import REPROCESS_VLM_COMMAND
 

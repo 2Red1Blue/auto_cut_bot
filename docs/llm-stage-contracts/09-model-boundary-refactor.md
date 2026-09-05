@@ -2,7 +2,7 @@
 
 ## 1. 状态、范围和依据
 
-状态：2026-09-05 的待实施方案。不是已上线行为，也不是新的整套生产契约。
+状态：2026-09-05 已进入实现与 PC 验证，分项证据见 §10。不是全部已上线，也不是新的整套生产契约。
 代码调查基线为 `eb2358b7`；执行分支仍为 `feat/v213-contract-codegen`。
 本方案细化 [06 责任边界](./06-llm-program-responsibility-redesign.md)、
 [07 字段保真账本](./07-v23-field-parity-and-external-references.md) 和
@@ -300,7 +300,7 @@ Debug 按 stage/operation/attempt 保存 request、raw、normalized、projection
 
 ## 9. A 首批实现与真实响应诊断（2026-09-05）
 
-已提交 Stage 2 精确诊断与只读离线工具，尚未实现 B compact、C 持久化 reprocess、D 候选支持类型或 E 新真实运行。
+本节为 A 提交时点记录；B/C/D 后续实现及 E 验证进展见 §10，不能用本节推断当前仍只有 A。
 本批不改 Prompt/Schema/校验准入，不改原始响应，不重跑 VLM，不切换 operational 服务。
 
 ### 交付与用法
@@ -351,3 +351,55 @@ Debug 按 stage/operation/attempt 保存 request、raw、normalized、projection
 - 最终加入 DTO 种类校验与引用遍历回归后，在代码 `3d7a68a0` 上 PC WSL **145 passed（21.31s）**，
   七个目标文件 Ruff 全通过，`git diff --check` 通过。测试使用真实 compiler + synthetic provider/Store，
   不声称实际 Ark 请求或 PostgreSQL 事务测试；真实保存 raw 的离线结果单列于上。
+
+## 10. B/C/D 实现与真实恢复证据（2026-09-05）
+
+### 已提交的能力与启用边界
+
+- Stage 2 compact 输入保留语义图节点、边、分集信息与候选价值，技术 owner/hash 留在私有请求。
+  输出用短引用；`key_subject_refs` 保留 person entity 与 character 的类型区别；必选事实闭包由程序推导。
+  context/schema/decoder/compiler/evaluator/Command 和 Stage 3 版本读者已经接线。
+- 新 compact 实现 hash 绑定有效 prompt、dispatcher、decoder、错误契约及领域类型源码；空 v2 proposals 拒绝，
+  v1 字节和空集合行为不被隐式迁移。新策略必须显式选择，尚未替换运行中的 HTTP 服务默认值。
+- `candidate-catalog-observation-v2` 显式区分 video observation 与 frame anchored；视频粗区间不再填充全窗口帧。
+  老 v1 仅保留历史重放行为，新策略不能回落到老的伪帧支持。
+- `ReprocessVlmEvidenceCommand@1` 无 Provider 依赖，追加派生 provenance 与 semantic pack 两个 Artifact。
+  `FinalizeDerivedVlmBatchCommand@1` 对完整 source census 逐项验证生成/派生子结果，再原子提交新批次。
+  不修改原 generation attempt、失败 Receipt 或 raw；没有缺集成功，也没有伪造生成成功。
+- 派生结果使用独立 `PersistedReprocessedVlmChild`；普通语义消费者的版本化读取正在最终回归，
+  不以“数据库已保存”替代“Stage 1/3 能消费”的验证。
+
+### PC WSL 验证与真实数据
+
+所有 pytest 在 `/home/laiu/auto_cut_bot-v213-validation` 执行；Mac 只编辑与审查。
+PostgreSQL 回归使用独立 `autocut_test_boundary_20260905`，没有重置真实数据库。
+
+| 范围 | 已观察结果 | 限制 |
+|---|---|---|
+| 关键 Stage 2 / Candidate / normalizer 定向集，`665041a7` | 54 passed，3 个 Candidate fixture 失败 | fixture 时间与 aggregate policy 已另提交修正 |
+| semantic_chain 全目录，`4ef0125f` | 2694 passed，11 failed | 11 项为 `eb2358b7` 的 thinking 请求字段未同步测试；本次保留旧 golden 并显式验证该历史差异 |
+| C 首次持久化集 | 4 passed，2 个负例异常类型断言错误 | 修测试异常集合，未放宽 Store 验证 |
+| C 含批次桥接第二轮 | 7 passed，1 failed | 真断点为 Stage 1 仍硬编码 generation 三成员序号；需显式派生消费分支，不改成伪 generation |
+
+真实 run `pipeline_run_b0bb0b8b6ba4417999cdbcf2e9397592` 的三个旧 Attempt：
+
+| Attempt | 原 raw 经完整目标解析 | Provider 新调用 |
+|---|---|---|
+| `a489036f-48b1-4c00-aee0-401bdb625d4f` | 拒绝：measurement 引用不属于候选语义闭包 | 0 |
+| `e73c6541-552f-4758-aa03-023215c4267e` | 拒绝：event support 未覆盖其直接引用的每个 fact support | 0 |
+| `ee8f919f-5124-423c-b9fd-013954df07ab` | 两处 enum 集合重排后完整解析通过 | 0 |
+
+第三个响应已在真实库通过确定性 Command 提交，Receipt 为 `17c42cee-03d3-4410-9b3b-f6e07a050be0`，
+ArtifactSet 为 `77922218-88c5-46aa-8afd-0907052c5182`。再次执行返回相同 Receipt，原 Attempt 对象逐字段不变。
+这证明真实 VLM 恢复与重放，不证明完整 Pipeline、成片或发布已通过。私有 raw/模型上下文不进入 Git。
+
+### 独立审查与未完成验收
+
+- `0086dbcb-1974-4f3e-a76b-fea3cbdd9814`：Codex 指 compact hash 未覆盖 boundary 与空 v2 版本歧义；
+  已补有效 prompt/源码绑定并拒绝空 v2。Claude 超时，不能记录为通过。
+- `f5982086-c591-4409-937d-6f6a95ac3ced`：Codex 指 normalization readback 丢字段；完整 Store 路径保留
+  `response_record.payload_json`，局部副本只参与旧 provenance 校验，PC normalized generation readback 测试通过。
+  完整 parser hash 经 legacy V4/V3 bundle 传递绑定 enum 与 JSON 校验依赖；不能把单模块审计 hash 当作完整执行身份。
+  Claude 超时，未形成有效结论。多集混合/并发、消费兼容与最终 review 仍需要明确证据。
+- 本次没有自动付费重跑 VLM/Stage 1。单次新 Stage 2 真调用必须先读回精确已提交 Stage 1；
+  上游不能验证时停止在具体原因，不以全量新 run 掩盖。E 与视频语义人工对照未完成前，不宣称整个任务完成。
