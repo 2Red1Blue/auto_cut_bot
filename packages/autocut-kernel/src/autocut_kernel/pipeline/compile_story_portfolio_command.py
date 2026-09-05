@@ -38,6 +38,7 @@ from .draft_generation_lifecycle import (
     read_committed_draft_audit,
     read_draft_response_bytes,
 )
+from .story_design_diagnostics import story_design_failure_detail
 from .story_design_inputs import CommittedStoryDesignInputs, read_committed_story_design_inputs
 
 COMMAND_NAME = "CompileStoryPortfolioCommand"
@@ -161,7 +162,9 @@ class CompileStoryPortfolioCommand:
                 story_policy=request.story_policy, draft_policy=request.draft_policy,
             )
         except ValueError as error:
-            return self._deny(prepared, outcome, attempt, "STAGE2_DRAFT_OR_COMPILATION_REJECTED", {"reason": str(error)})
+            return self._deny(prepared, outcome, attempt, "STAGE2_DRAFT_OR_COMPILATION_REJECTED", story_design_failure_detail(
+                error, phase="compilation", raw=raw, attempt_id=attempt.attempt_id,
+            ))
         if compilation.search.status != "feasible":
             code = ("STAGE2_PORTFOLIO_INFEASIBLE" if compilation.search.status == "infeasible"
                     else "STAGE2_MATERIAL_INDETERMINATE")
@@ -174,7 +177,9 @@ class CompileStoryPortfolioCommand:
         try:
             admission = _evaluate(prepared, inputs, raw, business)
         except ValueError as error:
-            return self._deny(prepared, outcome, attempt, "STAGE2_DRAFT_OR_COMPILATION_REJECTED", {"reason": str(error)})
+            return self._deny(prepared, outcome, attempt, "STAGE2_DRAFT_OR_COMPILATION_REJECTED", story_design_failure_detail(
+                error, phase="independent_evaluation", raw=raw, attempt_id=attempt.attempt_id,
+            ))
         if admission.next_action != "continue":
             return self._deny(prepared, outcome, attempt, "STAGE2_ADMISSION_REJECTED", admission.to_mapping())
         artifacts = (*business, ArtifactMember(

@@ -1,5 +1,6 @@
-"""Whole-proposal checks over real decoded Stage1 values, no provider or DB."""
+"""Whole-proposal checks over synthetic decoded Stage1 values, no live provider or DB."""
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -80,6 +81,11 @@ def test_required_facts_cannot_be_missing_or_outside_material_obligations(case, 
     with pytest.raises(StoryProposalValidationError) as error:
         validate_story_proposals(replace(draft, proposals=(replace(proposal, required_fact_refs=facts),)), **kwargs)
     assert error.value.rule_id == "SD-MAT-001"
+    diagnostic = error.value.to_diagnostic()
+    assert diagnostic["error_code"] == "REQUIRED_FACT_CLOSURE_MISMATCH"
+    assert diagnostic["json_path"] == "$.proposals[0].required_fact_refs"
+    assert diagnostic["missing_count"] == (0 if extra else len(proposal.required_fact_refs))
+    assert diagnostic["unexpected_count"] == (1 if extra else 0)
 
 
 @pytest.mark.parametrize(("mutation", "rule"), [
@@ -130,3 +136,142 @@ def test_input_and_policy_binding(case, target):
         kwargs["job_policy"] = replace(kwargs["job_policy"], selected_story_count=2)
     with pytest.raises(StoryProposalValidationError):
         validate_story_proposals(draft, **kwargs)
+
+
+def test_person_entity_mislabeled_character_reports_actual_type_without_rewriting(case):
+    draft, kwargs = case
+    person_ids = {
+        node.node_id for node in kwargs["graph"].nodes
+        if node.node_type == "entity" and node.attributes.entity_kind == "person"
+    }
+    person = next(ref for ref in kwargs["graph_object_refs"] if ref.object_id in person_ids)
+    wrong_character = replace(person, object_type="character")
+    changed = replace(draft, proposals=(
+        replace(draft.proposals[0], key_character_refs=(wrong_character,)),
+    ))
+    before = changed.to_mapping()
+    with pytest.raises(StoryProposalValidationError) as caught:
+        validate_story_proposals(changed, **kwargs)
+    assert caught.value.to_diagnostic() == {
+        "rule_id": "SD-REF-001", "proposal_index": 0,
+        "json_path": "$.proposals[0].key_character_refs[0]",
+        "error_code": "GRAPH_REFERENCE_TYPE_MISMATCH",
+        "expected_object_type": "character", "actual_object_type": "entity",
+        "missing_count": None, "unexpected_count": None,
+    }
+    assert changed.to_mapping() == before
+    assert wrong_character.object_type == "character"
+    assert person.object_type == "entity"
+
+
+@pytest.mark.parametrize("same_id", [False, True])
+def test_foreign_graph_owner_is_not_reported_as_local_missing_or_type_mismatch(case, same_id):
+    draft, kwargs = case
+    person = next(ref for ref in kwargs["graph_object_refs"] if ref.object_type == "entity")
+    foreign = replace(
+        person, object_type="character", object_id=person.object_id if same_id else "absent",
+        member_ref=replace(person.member_ref, logical_id="foreign-graph"),
+    )
+    # Keep this synthetic DTO structurally valid with one owner; missing material
+    # is deliberately secondary to the existing Graph reference rule.
+    proposal = replace(
+        draft.proposals[0], thread_refs=(), required_obligation_refs=(), required_fact_refs=(),
+        key_character_refs=(foreign,), material_requirements=(),
+    )
+    with pytest.raises(StoryProposalValidationError) as caught:
+        validate_story_proposals(replace(draft, proposals=(proposal,)), **kwargs)
+    diagnostic = caught.value.to_diagnostic()
+    assert diagnostic["rule_id"] == "SD-REF-001"
+    assert diagnostic["error_code"] == "GRAPH_REFERENCE_FOREIGN_OWNER"
+    assert diagnostic["json_path"] == "$.proposals[0].key_character_refs[0]"
+    assert diagnostic["expected_object_type"] == "character"
+    assert diagnostic["actual_object_type"] is None
+
+
+def test_graph_failure_path_preserves_original_field_and_reference_order(case):
+    draft, kwargs = case
+    original = draft.proposals[0]
+    missing_thread = replace(original.thread_refs[0], object_id="absent-thread")
+    missing_fact = replace(original.required_fact_refs[0], object_id="absent-fact")
+    proposal = replace(
+        original, proposal_id="p1", thread_refs=(*original.thread_refs, missing_thread),
+        required_fact_refs=(missing_fact,), genre_tags=("outside-policy",),
+    )
+    changed = replace(draft, proposals=(original, proposal))
+    with pytest.raises(StoryProposalValidationError) as caught:
+        validate_story_proposals(changed, **kwargs)
+    diagnostic = caught.value.to_diagnostic()
+    assert diagnostic["rule_id"] == "SD-REF-001"
+    assert diagnostic["error_code"] == "GRAPH_REFERENCE_NOT_FOUND"
+    assert diagnostic["json_path"] == f"$.proposals[1].thread_refs[{len(original.thread_refs)}]"
+    assert diagnostic["expected_object_type"] == "story_thread"
+    assert diagnostic["actual_object_type"] is None
+
+
+def test_fact_closure_reports_both_missing_and_unexpected_counts(case):
+    draft, kwargs = case
+    original = draft.proposals[0]
+    unexpected = next(
+        ref for ref in kwargs["graph_object_refs"]
+        if ref.object_type == "fact" and ref not in original.required_fact_refs
+    )
+    changed = replace(draft, proposals=(replace(original, required_fact_refs=(unexpected,)),))
+    with pytest.raises(StoryProposalValidationError) as caught:
+        validate_story_proposals(changed, **kwargs)
+    diagnostic = caught.value.to_diagnostic()
+    assert diagnostic["rule_id"] == "SD-MAT-001"
+    assert diagnostic["error_code"] == "REQUIRED_FACT_CLOSURE_MISMATCH"
+    assert diagnostic["missing_count"] == len(original.required_fact_refs)
+    assert diagnostic["unexpected_count"] == 1
+    assert unexpected.object_id not in json.dumps(diagnostic)
+
+
+@pytest.mark.parametrize("foreign_owner", [False, True])
+def test_material_source_failure_reports_exact_requirement_path(case, foreign_owner):
+    draft, kwargs = case
+    original = draft.proposals[0]
+    source = kwargs["source_refs"][0]
+    invalid_source = (
+        replace(source, member_ref=replace(source.member_ref, logical_id="foreign-source"))
+        if foreign_owner else replace(source, object_id="absent-source")
+    )
+    requirement = replace(
+        original.material_requirements[0],
+        source_constraints=SourceConstraints((invalid_source,), (), "render_source"),
+    )
+    with pytest.raises(StoryProposalValidationError) as caught:
+        validate_story_proposals(replace(draft, proposals=(
+            replace(original, material_requirements=(requirement,)),
+        )), **kwargs)
+    diagnostic = caught.value.to_diagnostic()
+    assert diagnostic["json_path"] == (
+        "$.proposals[0].material_requirements[0].source_constraints.allowed_source_refs[0]"
+    )
+    assert diagnostic["error_code"] == (
+        "SOURCE_REFERENCE_FOREIGN_OWNER" if foreign_owner else "SOURCE_REFERENCE_NOT_FOUND"
+    )
+
+
+def test_legacy_error_constructor_keeps_detail_but_diagnostic_excludes_it():
+    error = StoryProposalValidationError("SD-REF-001", "private-prompt-and-signed-url", 2)
+    assert str(error) == "private-prompt-and-signed-url"
+    assert error.args == ("private-prompt-and-signed-url",)
+    assert error.rule_id == "SD-REF-001"
+    assert error.proposal_index == 2
+    assert error.to_diagnostic()["proposal_index"] == 2
+    assert "private-prompt-and-signed-url" not in json.dumps(error.to_diagnostic())
+
+
+def test_diagnostic_boundary_rejects_untrusted_strings_and_non_integer_counts():
+    private = "private-prompt-and-signed-url"
+    error = StoryProposalValidationError(
+        private, private, True, json_path=f"$.proposals[0].{private}", error_code=private,
+        expected_object_type=private, actual_object_type=private,
+        missing_count=-1, unexpected_count=True,
+    )
+    assert error.to_diagnostic() == {
+        "rule_id": None, "proposal_index": None, "json_path": "$",
+        "error_code": "STORY_PROPOSAL_VALIDATION_FAILED",
+        "expected_object_type": None, "actual_object_type": None,
+        "missing_count": None, "unexpected_count": None,
+    }
