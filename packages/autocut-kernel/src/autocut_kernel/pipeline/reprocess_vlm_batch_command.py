@@ -9,13 +9,25 @@ from typing import Protocol
 from ..media.types import canonical_sha256
 from ..source_manifest import decode_source_manifest
 from ..store.models import (
-    ArtifactMember, CommandClaim, CommandOutcome, CommandSuccess, CommittedArtifactMemberReference,
-    CommittedSemanticInputs, CommittedSemanticInputsRequest, CommittedV4SemanticChildInspection,
-    CommittedVlmSemanticInput, Job, PersistedCommittedArtifactMember, artifact_set_hash,
-    canonical_payload_hash, canonical_recipe_scope,
+    ArtifactMember,
+    CommandClaim,
+    CommandOutcome,
+    CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedSemanticInputs,
+    CommittedSemanticInputsRequest,
+    CommittedV4SemanticChildInspection,
+    CommittedVlmSemanticInput,
+    Job,
+    PersistedCommittedArtifactMember,
+    artifact_set_hash,
+    canonical_payload_hash,
+    canonical_recipe_scope,
 )
 from .reprocess_vlm_evidence_command import (
-    ReprocessVlmEvidenceRequest, VlmReprocessStore, project_reprocessed_semantic_input,
+    ReprocessVlmEvidenceRequest,
+    VlmReprocessStore,
+    project_reprocessed_semantic_input,
 )
 
 FINALIZE_DERIVED_VLM_BATCH_COMMAND = "FinalizeDerivedVlmBatchCommand@1"

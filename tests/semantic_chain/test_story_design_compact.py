@@ -20,9 +20,14 @@ from autocut_kernel.semantic_chain.story_design_compact import (
     story_design_compact_response_schema,
 )
 from autocut_kernel.semantic_chain.story_design_compact_errors import CompactDraftError
-from autocut_kernel.semantic_chain.story_design_compact_migration import migrate_story_design_v1_to_compact
+from autocut_kernel.semantic_chain.story_design_compact_migration import (
+    migrate_story_design_v1_to_compact,
+)
 from autocut_kernel.semantic_chain.story_design_compact_models import ProposalDraftSetV2
-from autocut_kernel.semantic_chain.story_design_draft import ProposalDraftSet, decode_story_design_draft
+from autocut_kernel.semantic_chain.story_design_draft import (
+    ProposalDraftSet,
+    decode_story_design_draft,
+)
 from autocut_kernel.semantic_chain.story_design_models import SourceConstraints
 from autocut_kernel.semantic_chain.story_design_validation import validate_story_proposals
 from jsonschema import Draft202012Validator

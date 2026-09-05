@@ -5,14 +5,17 @@ import json
 from dataclasses import replace
 
 import pytest
-
 from autocut_kernel.vlm.enum_normalization import normalize_vlm_enum_sets
 from autocut_kernel.vlm.normalized_contracts import (
-    VLM_PARSER_NORMALIZED_V4, ParserImplementationUnavailableError,
-    parse_registered_vlm_response, parser_contract_sha256_for, require_parser_contract,
+    VLM_PARSER_NORMALIZED_V4,
+    ParserImplementationUnavailableError,
+    parse_registered_vlm_response,
+    parser_contract_sha256_for,
+    require_parser_contract,
 )
 from autocut_kernel.vlm.parser import VlmResponseIndeterminate, VlmResponseRejected
 from autocut_kernel.vlm.semantic_contracts import parser_contract_sha256_for as legacy_contract
+
 from tests.vlm.test_semantic_pack_v4 import _v4_context, _wire
 
 

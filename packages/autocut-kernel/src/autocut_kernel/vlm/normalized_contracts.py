@@ -8,9 +8,13 @@ from importlib import resources
 
 from ..media.types import canonical_sha256
 from . import semantic_contracts as legacy
-from .enum_normalization import VLM_ENUM_NORMALIZER, normalize_vlm_enum_sets, normalizer_contract_sha256
+from .enum_normalization import (
+    VLM_ENUM_NORMALIZER,
+    normalize_vlm_enum_sets,
+    normalizer_contract_sha256,
+)
 from .models import VlmParsePolicy, VlmRequestIdentity
-from .semantic_contracts import SemanticPackValue, VLM_PARSER_V3, VLM_PARSER_V4
+from .semantic_contracts import VLM_PARSER_V3, VLM_PARSER_V4, SemanticPackValue
 from .semantic_parser_v4 import parse_vlm_response_v4
 from .window import WindowManifest, WindowManifestSet
 

@@ -9,14 +9,18 @@ from typing import cast
 from ..context_pack import WindowContextPack
 from ..media.types import canonical_sha256
 from ..source_manifest import decode_source_manifest
-from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
-from ..vlm.retry_policy import GenerationRetryPolicy
-from ..vlm.normalized_contracts import (
-    VLM_PARSER_V3, VLM_PARSER_V4, VLM_PARSER_NORMALIZED_V4, V4_PARSERS,
-    parse_registered_vlm_response, require_parser_contract,
-)
-from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4
 from ..vlm.enum_normalization import normalize_vlm_enum_sets
+from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
+from ..vlm.normalized_contracts import (
+    V4_PARSERS,
+    VLM_PARSER_NORMALIZED_V4,
+    VLM_PARSER_V3,
+    VLM_PARSER_V4,
+    parse_registered_vlm_response,
+    require_parser_contract,
+)
+from ..vlm.retry_policy import GenerationRetryPolicy
+from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4
 from .errors import StoreValidationError
 from .models import (
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,

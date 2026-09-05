@@ -226,8 +226,8 @@ from .vlm_v4 import (
     batch_version_fields,
     generation_semantic_version,
     require_batch_child_version,
-    verify_v4_semantic_pack,
     verified_response_record,
+    verify_v4_semantic_pack,
 )
 
 
@@ -3194,7 +3194,9 @@ class PostgresRuntimeStore:
     def commit_reprocessed_vlm_success(self, request: object, success: CommandSuccess) -> CommandOutcome:
         """Independently reconstruct a zero-provider derivation before its atomic commit."""
         from ..pipeline.reprocess_vlm_evidence_command import (
-            REPROCESS_VLM_COMMAND, ReprocessVlmEvidenceRequest, rebuild_reprocessed_vlm_evidence,
+            REPROCESS_VLM_COMMAND,
+            ReprocessVlmEvidenceRequest,
+            rebuild_reprocessed_vlm_evidence,
         )
 
         if type(request) is not ReprocessVlmEvidenceRequest:
@@ -3253,7 +3255,9 @@ class PostgresRuntimeStore:
     def commit_derived_vlm_batch_success(self, request: object, success: CommandSuccess) -> CommandOutcome:
         """Reconstruct source coverage and each selected producer before aggregate commit."""
         from ..pipeline.reprocess_vlm_batch_command import (
-            FINALIZE_DERIVED_VLM_BATCH_COMMAND, FinalizeDerivedVlmBatchRequest, rebuild_derived_vlm_batch,
+            FINALIZE_DERIVED_VLM_BATCH_COMMAND,
+            FinalizeDerivedVlmBatchRequest,
+            rebuild_derived_vlm_batch,
         )
 
         if type(request) is not FinalizeDerivedVlmBatchRequest:

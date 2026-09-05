@@ -16,8 +16,8 @@ from .member_refs import SemanticObjectRef
 from .portfolio_admission import SD_RULE_IDS, Stage2Check
 from .portfolio_search import PortfolioSearchError, verify_assignment
 from .stage1_result import Stage1Values
-from .story_design_compiler import material_search_universe, select_material_portfolio
 from .story_design_boundary import decode_bound_story_draft
+from .story_design_compiler import material_search_universe, select_material_portfolio
 from .story_design_draft import StoryDesignDraftPolicy
 from .story_design_members import decode_story_design_business_members
 from .story_design_models import JobPolicy, StoryDesignPolicy

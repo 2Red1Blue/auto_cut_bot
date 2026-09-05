@@ -13,7 +13,10 @@ from ..contracts.compiler.canonical import canonical_json_bytes, sha256_bytes
 from ..semantic_chain.draft_provider import DraftProviderPort
 from ..semantic_chain.member_refs import SemanticMemberIdentity
 from ..semantic_chain.portfolio_admission import PortfolioAdmission, Stage2Check
-from ..semantic_chain.story_design_boundary import decode_bound_story_draft, uses_compact_story_design
+from ..semantic_chain.story_design_boundary import (
+    decode_bound_story_draft,
+    uses_compact_story_design,
+)
 from ..semantic_chain.story_design_compiler import compile_story_design
 from ..semantic_chain.story_design_evaluation import evaluate_story_design_business_members
 from ..semantic_chain.story_design_members import decode_story_design_business_members

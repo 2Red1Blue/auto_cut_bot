@@ -12,7 +12,10 @@ from autocut_kernel.pipeline.build_narrative_graph_request import (
     prepare_stage1_request,
 )
 from autocut_kernel.semantic_chain.dependency_projection import DependencyProjectionPolicy
-from autocut_kernel.semantic_chain.draft_provider import decode_draft_request_payload
+from autocut_kernel.semantic_chain.draft_provider import (
+    DraftProviderError,
+    decode_draft_request_payload,
+)
 from autocut_kernel.semantic_chain.stage1_command_policy import Stage1GenerationPolicy
 from autocut_kernel.store import CommittedArtifactMemberReference, CommittedSemanticInputsRequest
 from autocut_kernel.vlm.retry_policy import GenerationRetryPolicy
@@ -125,8 +128,14 @@ def test_changed_generation_policy_changes_durable_hash_and_attempt_keys():
     assert first.provider_idempotency_key_for(1) != changed.provider_idempotency_key_for(1)
 
 
-def test_policy_extraction_preserves_preexisting_request_wire_and_prepared_bytes():
-    """Golden hashes captured before extraction from this synthetic input fixture."""
+def test_policy_extraction_golden_diff_is_only_explicit_thinking_wire_change():
+    """Keep the original golden bytes as evidence of eb2358b7's explicit wire delta.
+
+    That commit added thinking=disabled before the model-boundary refactor,
+    changing provider/durable hashes and attempt keys without changing the
+    command policy. Reconstruct its prior bytes only within this test; this is
+    not a production decoder fallback or a claim of historical request replay.
+    """
     inputs, request = _request()
     rebuilt = request.command_policy.build_request(request.inputs, request.idempotency_key)
     assert rebuilt == request
@@ -137,7 +146,21 @@ def test_policy_extraction_preserves_preexisting_request_wire_and_prepared_bytes
     assert sha256_bytes(canonical_json_bytes(rebuilt.to_mapping())) == (
         "sha256:0ed8743fb83fbaeac405f61342595fdb53df77e6fcf6ad89093ed41986c13773"
     )
-    prepared = prepare_stage1_request(rebuilt, inputs)
+    current = prepare_stage1_request(rebuilt, inputs)
+    provider_body = decode_draft_request_payload(current.provider_payload)
+    assert provider_body.pop("thinking") == {"type": "disabled"}
+    historical_provider_payload = json.dumps(
+        provider_body, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False,
+    ).encode("utf-8")
+    envelope = json.loads(current.request_payload)
+    assert envelope["provider_request_json"] == current.provider_payload.decode("utf-8")
+    assert envelope["provider_request_sha256"] == sha256_bytes(current.provider_payload)
+    envelope["provider_request_json"] = historical_provider_payload.decode("utf-8")
+    envelope["provider_request_sha256"] = sha256_bytes(historical_provider_payload)
+    prepared = replace(current, provider_payload=historical_provider_payload,
+                       request_payload=canonical_json_bytes(envelope))
+    # All original constants remain unchanged, so any unrelated input or
+    # serialization drift still fails the historical byte/identity checks.
     assert prepared.request_hash == "sha256:ef10f0750177fcc4859c06463eb4735ebcc589e791950dae32784447a8a6517b"
     assert len(prepared.request_payload) == 14371
     assert sha256_bytes(prepared.provider_payload) == (
@@ -148,3 +171,8 @@ def test_policy_extraction_preserves_preexisting_request_wire_and_prepared_bytes
         "sha256:d35a95ee61e934f58d01ec08d47329b4401ebfbece0fd7291312f8360a22d88a",
         "sha256:33a2ad8de26282c7b47579f8d51b25d6b62e300195326416e0079a8d57764ca5",
     ]
+    assert current.request_hash != prepared.request_hash
+    assert all(current.provider_idempotency_key_for(ordinal)
+               != prepared.provider_idempotency_key_for(ordinal) for ordinal in (1, 2))
+    with pytest.raises(DraftProviderError):
+        decode_draft_request_payload(historical_provider_payload)

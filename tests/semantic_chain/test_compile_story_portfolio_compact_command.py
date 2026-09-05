@@ -16,9 +16,14 @@ from autocut_kernel.semantic_chain.story_design_compact import (
     COMPACT_PROMPT_VERSION,
     build_story_design_compact_context,
 )
-from autocut_kernel.semantic_chain.story_design_compact_migration import migrate_story_design_v1_to_compact
+from autocut_kernel.semantic_chain.story_design_compact_migration import (
+    migrate_story_design_v1_to_compact,
+)
 
-from tests.semantic_chain.test_build_editorial_blueprint_command import MemoryEditorialBlueprintStore, _raw_for
+from tests.semantic_chain.test_build_editorial_blueprint_command import (
+    MemoryEditorialBlueprintStore,
+    _raw_for,
+)
 from tests.semantic_chain.test_build_editorial_blueprint_request import _policy
 from tests.semantic_chain.test_build_narrative_graph_command import ScriptedDraftProvider
 from tests.semantic_chain.test_compile_story_portfolio_command import command_case

@@ -9,14 +9,28 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
-
 from autocut_kernel.pipeline.reprocess_vlm_evidence_command import (
-    ReprocessVlmEvidenceCommand, ReprocessVlmEvidenceRequest, rebuild_reprocessed_vlm_evidence,
+    ReprocessVlmEvidenceCommand,
+    ReprocessVlmEvidenceRequest,
+    rebuild_reprocessed_vlm_evidence,
 )
-from autocut_kernel.store import CommandClaim, CommandRejection, CommandSuccess, PostgresRuntimeStore
+from autocut_kernel.store import (
+    CommandClaim,
+    CommandRejection,
+    CommandSuccess,
+    PostgresRuntimeStore,
+)
+from autocut_kernel.store.errors import (
+    CommandStateError,
+    SemanticInputUnavailableError,
+    StoreValidationError,
+)
 from autocut_kernel.store.models import artifact_set_hash
-from autocut_kernel.store.errors import CommandStateError, SemanticInputUnavailableError, StoreValidationError
-from autocut_kernel.vlm.normalized_contracts import VLM_PARSER_NORMALIZED_V4, parser_contract_sha256_for
+from autocut_kernel.vlm.normalized_contracts import (
+    VLM_PARSER_NORMALIZED_V4,
+    parser_contract_sha256_for,
+)
+
 from tests.pipeline.test_vlm_v4_store_postgres import DSN, prepared, psycopg  # noqa: F401
 from tests.vlm.test_semantic_pack_v4 import _wire
 
@@ -117,12 +131,20 @@ def test_forged_parent_attempt_and_generic_success_writer_are_rejected(prepared)
 
 def test_complete_derived_batch_reenters_normal_stage1_reader_after_restart(prepared):
     from autocut_kernel.pipeline.reprocess_vlm_batch_command import (
-        DERIVED_VLM_BATCH_STRATEGY, FinalizeDerivedVlmBatchCommand, FinalizeDerivedVlmBatchRequest,
-        VlmBatchEvidenceSelection, rebuild_derived_vlm_batch,
+        DERIVED_VLM_BATCH_STRATEGY,
+        FinalizeDerivedVlmBatchCommand,
+        FinalizeDerivedVlmBatchRequest,
+        VlmBatchEvidenceSelection,
+        rebuild_derived_vlm_batch,
     )
-    from autocut_kernel.store.models import CommittedArtifactMemberReference, CommittedSemanticInputsRequest, PersistedReprocessedVlmChild
     from autocut_kernel.semantic_chain.core_observations import semantic_pack
     from autocut_kernel.semantic_chain.stage1_draft import stage1_draft_prompt_inputs
+    from autocut_kernel.store.models import (
+        CommittedArtifactMemberReference,
+        CommittedSemanticInputsRequest,
+        PersistedReprocessedVlmChild,
+    )
+
     from tests.semantic_chain.test_stage1_draft import POLICY
 
     request, parent, _ = _failed_parent(prepared)
@@ -149,6 +171,7 @@ def test_complete_derived_batch_reenters_normal_stage1_reader_after_restart(prep
 
 def test_new_normalized_generation_reader_replays_derived_metadata(prepared):
     from autocut_kernel.pipeline import GenerateVlmEvidenceCommand
+
     from tests.pipeline.test_vlm_v4_store_postgres import FixtureProvider, NoProvider
 
     request = replace(prepared.request, parser_strategy_version=VLM_PARSER_NORMALIZED_V4,

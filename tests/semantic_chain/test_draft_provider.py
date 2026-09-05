@@ -41,6 +41,7 @@ def body():
             }
         },
         "max_output_tokens": 4096,
+        "thinking": {"type": "disabled"},
         "temperature": 0.25,
         "stream": True,
         "store": True,
@@ -137,6 +138,10 @@ def test_only_exact_nonempty_input_text_is_allowed(part):
         ("max_output_tokens", 1.5),
         ("max_output_tokens", 0),
         ("max_output_tokens", 32769),
+        ("thinking", {}),
+        ("thinking", None),
+        ("thinking", {"type": "enabled"}),
+        ("thinking", {"type": "disabled", "budget": 1000}),
         ("stream", False),
         ("stream", 1),
         ("store", False),

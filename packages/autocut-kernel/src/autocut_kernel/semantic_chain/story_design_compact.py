@@ -14,7 +14,12 @@ from .story_design_compact_context import (
 )
 from .story_design_compact_errors import CompactDraftError
 from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
-from .story_design_draft import StoryDesignDraftError, StoryDesignDraftPolicy, _bounded_value, _check_limits
+from .story_design_draft import (
+    StoryDesignDraftError,
+    StoryDesignDraftPolicy,
+    _bounded_value,
+    _check_limits,
+)
 from .story_design_models import (
     PHYSICAL_REQUIREMENT_MODES,
     IntegerRange,

@@ -46,8 +46,8 @@ from .narrative_models import (
     ObligationAttributes,
 )
 from .stage1_result import Stage1Values
-from .story_design_context import story_design_input_binding
 from .story_design_compact_models import ProposalDraftSetV2
+from .story_design_context import story_design_input_binding
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import (
     JobPolicy,

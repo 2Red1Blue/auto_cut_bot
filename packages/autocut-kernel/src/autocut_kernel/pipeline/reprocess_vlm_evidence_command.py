@@ -17,16 +17,33 @@ from ..context_pack import WindowContextPack
 from ..media.types import canonical_sha256, sha256_prefixed
 from ..source_manifest import decode_source_manifest
 from ..store.models import (
-    ArtifactMember, BlobRef, CommandClaim, CommandOutcome, CommandRejection, CommandSuccess,
-    GenerationAttempt, Job, PersistedCommittedArtifactSet, PersistedWholeSeriesSourceManifest,
-    CommittedArtifactMemberReference, CommittedVlmSemanticInput, PersistedReprocessedVlmChild,
-    PersistedVlmSemanticPackV4, SourceWindowIdentity, VlmSemanticPackReference,
-    artifact_set_hash, canonical_payload_hash, canonical_recipe_scope,
+    ArtifactMember,
+    BlobRef,
+    CommandClaim,
+    CommandOutcome,
+    CommandRejection,
+    CommandSuccess,
+    CommittedArtifactMemberReference,
+    CommittedVlmSemanticInput,
+    GenerationAttempt,
+    Job,
+    PersistedCommittedArtifactSet,
+    PersistedReprocessedVlmChild,
+    PersistedVlmSemanticPackV4,
+    PersistedWholeSeriesSourceManifest,
+    SourceWindowIdentity,
+    VlmSemanticPackReference,
+    artifact_set_hash,
+    canonical_payload_hash,
+    canonical_recipe_scope,
 )
 from ..vlm.enum_normalization import NormalizedVlmResponse, normalize_vlm_enum_sets
 from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
 from ..vlm.normalized_contracts import (
-    V4_PARSERS, VLM_PARSER_NORMALIZED_V4, parse_registered_vlm_response, require_parser_contract,
+    V4_PARSERS,
+    VLM_PARSER_NORMALIZED_V4,
+    parse_registered_vlm_response,
+    require_parser_contract,
 )
 from ..vlm.parser import VlmResponseIndeterminate, VlmResponseRejected, _constant, _pairs_object
 from ..vlm.retry_policy import GenerationRetryPolicy
