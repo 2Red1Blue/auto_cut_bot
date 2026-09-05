@@ -11,7 +11,7 @@ Use tmux only when you need an interactive TTY. Prefer exec background mode for 
 ## Quickstart (isolated socket, exec tool)
 
 ```bash
-SOCKET_DIR="${AUTO_CUT_BOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/auto_cut_bot-tmux-sockets}"
+SOCKET_DIR="${NANOBOT_TMUX_SOCKET_DIR:-${TMPDIR:-/tmp}/auto_cut_bot-tmux-sockets}"
 mkdir -p "$SOCKET_DIR"
 SOCKET="$SOCKET_DIR/auto_cut_bot.sock"
 SESSION=auto_cut_bot-python
@@ -31,8 +31,8 @@ To monitor:
 
 ## Socket convention
 
-- Use `AUTO_CUT_BOT_TMUX_SOCKET_DIR` environment variable.
-- Default socket path: `"$AUTO_CUT_BOT_TMUX_SOCKET_DIR/auto_cut_bot.sock"`.
+- Use `NANOBOT_TMUX_SOCKET_DIR` environment variable.
+- Default socket path: `"$NANOBOT_TMUX_SOCKET_DIR/auto_cut_bot.sock"`.
 
 ## Targeting panes and naming
 
@@ -43,7 +43,7 @@ To monitor:
 ## Finding sessions
 
 - List sessions on your socket: `{baseDir}/scripts/find-sessions.sh -S "$SOCKET"`.
-- Scan all sockets: `{baseDir}/scripts/find-sessions.sh --all` (uses `AUTO_CUT_BOT_TMUX_SOCKET_DIR`).
+- Scan all sockets: `{baseDir}/scripts/find-sessions.sh --all` (uses `NANOBOT_TMUX_SOCKET_DIR`).
 
 ## Sending input safely
 

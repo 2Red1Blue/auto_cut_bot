@@ -68,8 +68,8 @@ def optional_dependency_groups_from_metadata() -> dict[str, list[str] | None]:
     from importlib.metadata import metadata, requires
 
     try:
-        extras = metadata("auto-cut-bot-ai").get_all("Provides-Extra") or []
-        raw_requirements = requires("auto-cut-bot-ai") or []
+        extras = metadata("auto_cut_bot-ai").get_all("Provides-Extra") or []
+        raw_requirements = requires("auto_cut_bot-ai") or []
     except PackageNotFoundError:
         return {}
     groups: dict[str, list[str] | None] = {name: [] for name in extras if name != "dev"}
@@ -120,7 +120,7 @@ def install_args_for_extra(
         if install_args:
             return install_args, f"{extra} support"
         return [], f"{extra} support"
-    target = f"auto-cut-bot-ai[{extra}]"
+    target = f"auto_cut_bot-ai[{extra}]"
     return [target], f'"{target}"'
 
 

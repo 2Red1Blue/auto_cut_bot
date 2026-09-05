@@ -1,7 +1,7 @@
 
 import pytest
-from auto_cut_bot.agents.spec import AgentSpec, ToolMount, EDITOR_SPEC, REVIEWER_SPEC
-from auto_cut_bot.agents.registry import AgentRegistry, AgentBuilder, AgentInstance
+from auto_cut_bot.agents.registry import AgentBuilder, AgentInstance, AgentRegistry
+from auto_cut_bot.agents.spec import AgentSpec, EDITOR_SPEC, REVIEWER_SPEC
 
 
 class TestAgentSpec:

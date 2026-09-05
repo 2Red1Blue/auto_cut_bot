@@ -161,6 +161,7 @@ const LOCALIZED_SETTINGS_COPY_KEYS = [
   "settings.rows.fileEditDisplay",
   "settings.rows.codeWrap",
   "settings.rows.brandLogos",
+  "settings.rows.browserNotifications",
   "settings.rows.currentModel",
   "settings.rows.localServiceAccess",
   "settings.rows.webuiDefaultAccess",
@@ -172,6 +173,7 @@ const LOCALIZED_SETTINGS_COPY_KEYS = [
   "settings.help.fileEditDisplay",
   "settings.help.codeWrap",
   "settings.help.brandLogos",
+  "settings.help.browserNotifications",
   "settings.help.currentModel",
   "settings.help.localServiceAccess",
   "settings.help.webuiDefaultAccess",
@@ -252,6 +254,7 @@ const LOCALIZED_NEW_SURFACE_KEYS = [
   "chat.activity.running",
   "chat.activity.complete",
   "chat.activity.updated",
+  "chat.activity.recovery",
   "chat.pin",
   "chat.unpin",
   "chat.rename",
@@ -293,6 +296,16 @@ const LOCALIZED_NEW_SURFACE_KEYS = [
   "message.skill",
   "settings.channels.connectionChecks",
   "settings.channels.open",
+  "recovery.actionFailed",
+  "recovery.interrupted",
+  "recovery.completed",
+  "recovery.failed",
+  "recovery.failedHelp",
+  "recovery.resuming",
+  "recovery.review",
+  "recovery.safeResume",
+  "recovery.dismiss",
+  "recovery.continue",
 ];
 const ACCIDENTALLY_SPANISH_SETTINGS_KEYS = [
   "settings.help.provider",
@@ -437,6 +450,17 @@ describe("webui i18n", () => {
 
     localStorage.setItem(LOCALE_STORAGE_KEY, "zh-CN");
     expect(resolveInitialLocale()).toBe("zh-CN");
+  });
+
+  it("lists each language by its native name", async () => {
+    const user = userEvent.setup();
+
+    render(<LanguageSwitcher />);
+    await user.click(screen.getByRole("button", { name: "Change language" }));
+
+    for (const { nativeLabel } of supportedLocales) {
+      expect(screen.getByRole("menuitemradio", { name: nativeLabel })).toBeInTheDocument();
+    }
   });
 
   it("switches UI copy and document locale through the language switcher", async () => {

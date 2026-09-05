@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from auto_cut_bot.agent.context import TranscriptInput
 from auto_cut_bot.agent.loop import AgentLoop, TurnContext, TurnKind
+from auto_cut_bot.agent.tools.context import RequestContext
 from auto_cut_bot.agent.tools.filesystem import ReadFileTool
 from auto_cut_bot.bus.events import InboundMessage
 from auto_cut_bot.bus.queue import MessageBus
@@ -53,7 +55,7 @@ async def test_document_attachment_is_referenced_and_read_on_demand(
     media_dir = tmp_path / "media"
     media_dir.mkdir()
     csv_path = media_dir / "report.csv"
-    csv_path.write_text("name,value\nauto_cut_bot,1", encoding="utf-8")
+    csv_path.write_text("name,value\nnanobot,1", encoding="utf-8")
     monkeypatch.setattr("auto_cut_bot.agent.tools.path_utils.get_media_dir", lambda: media_dir)
 
     loop = _make_loop(
@@ -79,7 +81,7 @@ async def test_document_attachment_is_referenced_and_read_on_demand(
     result = await read_tool.execute(path=str(csv_path))
 
     assert "1| name,value" in result
-    assert "2| auto_cut_bot,1" in result
+    assert "2| nanobot,1" in result
 
 
 @pytest.mark.asyncio
@@ -128,7 +130,7 @@ async def test_pending_document_attachment_keeps_body_out_of_prompt(
         nonlocal call_count
         call_count += 1
         captured_messages.append([dict(message) for message in messages])
-        return LLMResponse(content=f"answer-{call_count}", tool_calls=[], usage={})
+        return LLMResponse(content=f"answer-{call_count}", tool_calls=[], usage=None)
 
     loop = _make_loop(workspace)
     loop.provider.chat_with_retry = chat_with_retry
@@ -145,16 +147,19 @@ async def test_pending_document_attachment_keeps_body_out_of_prompt(
         )
     )
 
-    final_content, _, _, _, had_injections = await loop._run_agent_loop(
-        [{"role": "user", "content": "hello"}],
-        runtime=loop.llm_runtime(),
-        channel="cli",
-        chat_id="c",
+    runtime = loop.llm_runtime()
+    result = await loop._run_agent_loop(
+        TranscriptInput(
+            history=[{"role": "user", "content": "hello"}],
+            current_message=None,
+        ),
+        runtime=runtime,
+        request_context=RequestContext(channel="cli", chat_id="c", runtime=runtime),
         pending_queue=pending_queue,
     )
 
-    assert final_content == "answer-2"
-    assert had_injections is True
+    assert result.final_content == "answer-2"
+    assert result.had_injections is True
     injected_user_content = [
         message["content"]
         for message in captured_messages[-1]

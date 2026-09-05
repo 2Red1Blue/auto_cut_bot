@@ -105,7 +105,7 @@ def test_interactive_agent_routes_a_complete_user_turn(
     monkeypatch.setattr("auto_cut_bot.cli.agent._load_runtime_config", lambda *_args: config)
     monkeypatch.setattr("auto_cut_bot.cli.agent.sync_workspace_templates", lambda *_args: None)
     monkeypatch.setattr("auto_cut_bot.cli.agent.is_default_workspace", lambda *_args: False)
-    monkeypatch.setattr("auto_cut_bot.cli.agent._set_auto_cut_bot_logs", lambda *_args: None)
+    monkeypatch.setattr("auto_cut_bot.cli.agent._set_nanobot_logs", lambda *_args: None)
     monkeypatch.setattr("auto_cut_bot.cli.agent._model_display", lambda *_args: ("test-model", ""))
     monkeypatch.setattr("auto_cut_bot.cli.agent.consume_restart_notice_from_env", lambda: None)
     monkeypatch.setattr("auto_cut_bot.cli.agent.AgentLoop", _AgentLoop)
@@ -123,7 +123,7 @@ def test_interactive_agent_routes_a_complete_user_turn(
     monkeypatch.setattr("auto_cut_bot.cli.terminal._read_interactive_input_async", read_input)
     monkeypatch.setattr("auto_cut_bot.cli.terminal._print_agent_response", print_response)
 
-    result = runner.invoke(app, ["agent", "--session", "cli:journey"])
+    result = runner.invoke(app, ["agent", "--classic", "--session", "cli:journey"])
 
     assert result.exit_code == 0, result.output
     inbound = seen["inbound"]

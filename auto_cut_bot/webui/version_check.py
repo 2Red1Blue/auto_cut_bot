@@ -1,4 +1,4 @@
-"""On-demand version checker for auto-cut-bot-ai releases.
+"""On-demand version checker for auto_cut_bot-ai releases.
 
 Checks PyPI for newer versions when explicitly requested (no background polling).
 """
@@ -16,7 +16,7 @@ from auto_cut_bot import __version__
 
 logger = logging.getLogger(__name__)
 
-_PYPI_URL = "https://pypi.org/pypi/auto-cut-bot-ai/json"
+_PYPI_URL = "https://pypi.org/pypi/auto_cut_bot-ai/json"
 _CACHE_TTL_S = 300  # 5 minutes cache to avoid hammering PyPI
 
 _cache: tuple[float, str | None] = (0.0, None)
@@ -54,5 +54,5 @@ def check_for_update() -> dict[str, Any] | None:
     return {
         "currentVersion": __version__,
         "latestVersion": latest,
-        "pypiUrl": "https://pypi.org/project/auto-cut-bot-ai/",
+        "pypiUrl": "https://pypi.org/project/auto_cut_bot-ai/",
     }

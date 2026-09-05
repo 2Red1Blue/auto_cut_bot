@@ -31,10 +31,10 @@ MCP_OAUTH_CALLBACK_PATH = "/auth/mcp/callback"
 _STORE_VERSION = 1
 _STORE_LOCK_TIMEOUT_S = 15
 _DEFAULT_REDIRECT_URI = f"http://127.0.0.1{MCP_OAUTH_CALLBACK_PATH}"
-_CLIENT_URI = AnyHttpUrl("https://github.com/HKUDS/nanobot")
+_CLIENT_URI = AnyHttpUrl("https://github.com/HKUDS/auto_cut_bot")
 _LOGO_URI = AnyHttpUrl(
-    "https://raw.githubusercontent.com/HKUDS/nanobot/main/"
-    "webui/public/brand/auto_cut_bot_apple_touch.png"
+    "https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/"
+    "webui/public/brand/nanobot_apple_touch.png"
 )
 
 
@@ -370,7 +370,7 @@ async def create_mcp_oauth_auth(
         client_name="auto_cut_bot",
         client_uri=_CLIENT_URI,
         logo_uri=_LOGO_URI,
-        software_id="https://github.com/HKUDS/nanobot",
+        software_id="https://github.com/HKUDS/auto_cut_bot",
     )
     return OAuthClientProvider(
         server_url,

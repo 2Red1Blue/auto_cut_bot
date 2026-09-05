@@ -27,9 +27,9 @@ keep going and show the useful output:
 
 ```
 command -v auto_cut_bot || true
-python -m pip show auto-cut-bot-ai || true
-pipx list | sed -n '/auto-cut-bot-ai/,+3p' || true
-uv tool list | sed -n '/auto-cut-bot-ai/,+3p' || true
+python -m pip show auto_cut_bot-ai || true
+pipx list | sed -n '/auto_cut_bot-ai/,+3p' || true
+uv tool list | sed -n '/auto_cut_bot-ai/,+3p' || true
 ```
 
 Summarize what you found in one short paragraph. Use the clues only to suggest a
@@ -85,9 +85,9 @@ Determine the upgrade command from the install method:
 
 | Method | Command |
 |--------|---------|
-| uv | `uv tool install "auto-cut-bot-ai[EXTRAS]" --force` |
-| pipx | `pipx install --force "auto-cut-bot-ai[EXTRAS]"` |
-| pip | `python -m pip install --upgrade "auto-cut-bot-ai[EXTRAS]"` |
+| uv | `uv tool install "auto_cut_bot-ai[EXTRAS]" --force` |
+| pipx | `pipx install --force "auto_cut_bot-ai[EXTRAS]"` |
+| pip | `python -m pip install --upgrade "auto_cut_bot-ai[EXTRAS]"` |
 | source | `cd <SOURCE_CHECKOUT> && git pull && python -m pip install -e ".[EXTRAS]"` |
 
 For source installs, include extras in the editable install command when selected. Quote the source checkout path if it contains spaces.
@@ -111,7 +111,7 @@ Use `write_file` to write `<agent-workspace>/skills/update/SKILL.md` with this c
 ```
 ---
 name: update
-description: "Upgrade auto_cut_bot to the latest version. Triggers: upgrade auto_cut_bot, update auto_cut_bot, 升级auto_cut_bot, 更新auto_cut_bot."
+description: "Upgrade auto_cut_bot to the latest version. Triggers: upgrade auto_cut_bot, update auto_cut_bot, 升级nanobot, 更新nanobot."
 ---
 
 # Update Nanobot

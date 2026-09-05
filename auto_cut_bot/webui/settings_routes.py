@@ -30,13 +30,12 @@ from auto_cut_bot.webui.mcp_presets_api import (
     ensure_mcp_oauth_server,
     mcp_presets_settings_action,
 )
-from auto_cut_bot.webui.auto_cut_bot_features_api import (
-    auto_cut_bot_feature_instance_target,
-    auto_cut_bot_features_action,
-    auto_cut_bot_features_payload,
+from auto_cut_bot.webui.nanobot_features_api import (
+    nanobot_feature_instance_target,
+    nanobot_features_action,
+    nanobot_features_payload,
 )
 from auto_cut_bot.webui.settings_api import (
-    WebUISettingsError,
     complete_oauth_provider,
     create_model_configuration,
     create_provider_settings,
@@ -66,8 +65,8 @@ from auto_cut_bot.webui.settings_contracts import (
 from auto_cut_bot.webui.settings_services import WebUISettingsServices
 from auto_cut_bot.webui.version_check import check_for_update
 
-_WEBUI_MUTATION_PAYLOAD_ATTR = "_auto_cut_bot_webui_mutation_payload"
-_WEBUI_MUTATION_REQUEST_ATTR = "_auto_cut_bot_webui_mutation_request"
+_WEBUI_MUTATION_PAYLOAD_ATTR = "_nanobot_webui_mutation_payload"
+_WEBUI_MUTATION_REQUEST_ATTR = "_nanobot_webui_mutation_request"
 _CHANNEL_CONNECT_ACTIONS = frozenset({"start", "poll", "cancel"})
 _MCP_OAUTH_CALLBACK_URL_MAX_BYTES = 8 * 1024
 _MCP_RELOAD_TIMEOUT_SECONDS = 15.0
@@ -285,9 +284,9 @@ class WebUISettingsRouter:
         if not self._authorized(request):
             return self._unauthorized()
         if route == ("root", "settings"):
-            return self._handle_settings()
+            return await asyncio.to_thread(self._handle_settings)
         if route == ("root", "usage"):
-            return self._handle_settings_usage()
+            return await asyncio.to_thread(self._handle_settings_usage)
 
         domain, action = route
         domain_request = self._domain_request(
@@ -456,7 +455,7 @@ class WebUISettingsRouter:
             update_image=update_image_generation_settings,
             update_transcription=update_transcription_settings,
             update_network=update_network_safety_settings,
-            auto_cut_bot_features_action=auto_cut_bot_features_action,
+            nanobot_features_action=nanobot_features_action,
             api_runtime=self._api_runtime,
             reload_image=lambda: request_image_generation_reload(self.bus),
         )
@@ -465,9 +464,9 @@ class WebUISettingsRouter:
         return system_domain.SystemSettingsOperations(
             cli_apps_payload=cli_apps_payload,
             cli_apps_action=cli_apps_action,
-            auto_cut_bot_features_payload=auto_cut_bot_features_payload,
-            auto_cut_bot_features_action=auto_cut_bot_features_action,
-            auto_cut_bot_feature_instance_target=auto_cut_bot_feature_instance_target,
+            nanobot_features_payload=nanobot_features_payload,
+            nanobot_features_action=nanobot_features_action,
+            nanobot_feature_instance_target=nanobot_feature_instance_target,
             validate_channel_config=validate_channel_config,
             load_channel_plugin=load_channel_plugin,
             list_pending=list_pending,
@@ -489,17 +488,6 @@ class WebUISettingsRouter:
             payload,
             lambda: request_image_generation_reload(self.bus),
         )
-
-    async def _apply_image_generation_runtime_change(
-        self,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        updated, restart_cleared = (
-            await self._apply_image_generation_runtime_change_result(payload)
-        )
-        if restart_cleared:
-            self._restart_sections.discard("image")
-        return updated
 
     async def _reload_mcp_runtime(self) -> dict[str, Any]:
         if self._mcp_reload is None:
@@ -531,46 +519,8 @@ class WebUISettingsRouter:
     def _parse_mcp_settings_query(self, request: WsRequest) -> QueryParams:
         return self._query(request)
 
-    def _parse_provider_settings_query(self, request: WsRequest) -> QueryParams:
-        return self._query(request)
-
-    def _parse_api_service_settings_query(self, request: WsRequest) -> QueryParams:
-        payload = _mutation_payload(request)
-        if payload is not None:
-            api_key = payload.get("api_key")
-            if api_key is not None and not isinstance(api_key, str):
-                raise WebUISettingsError("API service API key must be a string")
-        return self._query(request)
-
     def _api_runtime(self) -> ApiRuntime:
         return ApiRuntime(paths=api_runtime_paths(self.settings.config.path))
-
-    def _api_service_payload(
-        self,
-        *,
-        last_action: str | None = None,
-    ) -> dict[str, Any]:
-        return capability_domain.api_service_payload(
-            self.settings,
-            self._api_runtime(),
-            last_action=last_action,
-        )
-
-    @staticmethod
-    def _masked_secret(value: str) -> str | None:
-        return capability_domain.masked_api_secret(value)
-
-    @staticmethod
-    def _api_runtime_message(message: str) -> str:
-        return capability_domain.api_runtime_message(message)
-
-    def _parse_channel_values(self, request: WsRequest) -> dict[str, Any]:
-        return self._system.parse_channel_values(
-            SettingsRequest(
-                query=self._query(request),
-                payload=_mutation_payload(request),
-            )
-        )
 
     def _save_channel_config_values(
         self,
@@ -593,10 +543,10 @@ class WebUISettingsRouter:
         system_domain.assign_channel_config_value
     )
 
-    def _auto_cut_bot_features_payload(self) -> dict[str, Any]:
-        return auto_cut_bot_features_payload(config_path=self.settings.config.path)
+    def _nanobot_features_payload(self) -> dict[str, Any]:
+        return nanobot_features_payload(config_path=self.settings.config.path)
 
-    def _auto_cut_bot_features_action(
+    def _nanobot_features_action(
         self,
         action: str,
         query: QueryParams,
@@ -604,21 +554,10 @@ class WebUISettingsRouter:
         allow_install: bool = True,
     ) -> dict[str, Any]:
         return self.settings.mutate(
-            auto_cut_bot_features_action,
+            nanobot_features_action,
             action,
             query,
             allow_install=allow_install,
-        )
-
-    @staticmethod
-    def _feature_runtime_fallback(
-        payload: dict[str, Any],
-        *,
-        message: str,
-    ) -> dict[str, Any]:
-        return system_domain.SystemSettingsHandler.feature_runtime_fallback(
-            payload,
-            message=message,
         )
 
     def _allow_feature_package_install(

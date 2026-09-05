@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-from typing import Any
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -174,6 +172,7 @@ def _make_provider_core(
             default_model=model,
             proxy=getattr(p, "proxy", None) if p else None,
             extra_body=p.extra_body if p else None,
+            provider_name=provider_name,
         )
     elif backend == "xai_grok":
         from auto_cut_bot.providers.xai_grok_provider import XAIGrokProvider
@@ -182,6 +181,7 @@ def _make_provider_core(
             default_model=model,
             proxy=getattr(p, "proxy", None) if p else None,
             extra_body=p.extra_body if p else None,
+            provider_name=provider_name,
         )
     elif backend == "azure_openai":
         from auto_cut_bot.providers.azure_openai_provider import AzureOpenAIProvider
@@ -192,11 +192,12 @@ def _make_provider_core(
             api_key=p.api_key or "",
             api_base=p.api_base,
             default_model=model,
+            provider_name=provider_name,
         )
     elif backend == "github_copilot":
         from auto_cut_bot.providers.github_copilot_provider import GitHubCopilotProvider
 
-        provider = GitHubCopilotProvider(default_model=model)
+        provider = GitHubCopilotProvider(default_model=model, provider_name=provider_name)
     elif backend == "anthropic":
         from auto_cut_bot.providers.anthropic_provider import AnthropicProvider
 
@@ -205,6 +206,7 @@ def _make_provider_core(
             api_base=config.get_api_base(model, preset=preset),
             default_model=model,
             extra_headers=_provider_extra_headers(spec, p),
+            provider_name=provider_name,
         )
     elif backend == "bedrock":
         from auto_cut_bot.providers.bedrock_provider import BedrockProvider
@@ -216,33 +218,22 @@ def _make_provider_core(
             region=getattr(p, "region", None) if p else None,
             profile=getattr(p, "profile", None) if p else None,
             extra_body=p.extra_body if p else None,
+            provider_name=provider_name,
         )
     else:
         from auto_cut_bot.providers.openai_compat_provider import OpenAICompatProvider
-
-        # Apply config-level overrides to spec (responses_api, responses_models)
-        effective_spec = spec
-        if effective_spec is not None and p is not None:
-            replace_kwargs: dict[str, Any] = {}
-            if getattr(p, 'responses_api', None) is not None:
-                replace_kwargs['responses_api'] = bool(p.responses_api)
-            if getattr(p, 'responses_models', None):
-                config_models = tuple(p.responses_models)
-                spec_models = getattr(effective_spec, 'responses_models', ())
-                replace_kwargs['responses_models'] = tuple(set(spec_models + config_models))
-            if replace_kwargs:
-                effective_spec = dataclasses.replace(effective_spec, **replace_kwargs)
 
         provider = OpenAICompatProvider(
             api_key=p.api_key if p else None,
             api_base=config.get_api_base(model, preset=preset),
             default_model=model,
             extra_headers=_provider_extra_headers(spec, p),
-            spec=effective_spec,
+            spec=spec,
             extra_body=p.extra_body if p else None,
-            api_type=p.api_type if p else "auto",
+            api_type=p.api_type if p and provider_name == "openai" else "auto",
             extra_query=p.extra_query if p else None,
             proxy=p.proxy if p else None,
+            provider_name=provider_name,
         )
 
     provider.generation = preset.to_generation_settings()

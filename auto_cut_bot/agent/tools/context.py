@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.agent.subagent import SubagentManager
     from auto_cut_bot.agent.tools.exec_session import ExecSessionManager
     from auto_cut_bot.agent.tools.file_state import FileStates
+    from auto_cut_bot.agent.tools.runtime_control import RuntimeControl
     from auto_cut_bot.bus.queue import MessageBus
     from auto_cut_bot.bus.runtime_events import RuntimeEventBus
     from auto_cut_bot.config.schema import ProviderConfig, ToolsConfig
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 _CURRENT_REQUEST_CONTEXT: ContextVar["RequestContext | None"] = ContextVar(
-    "auto_cut_bot_tool_request_context",
+    "nanobot_tool_request_context",
     default=None,
 )
 
@@ -90,3 +91,4 @@ class ToolContext:
     timezone: str = "UTC"
     workspace_sandbox: WorkspaceSandboxStatus | None = None
     runtime_events: RuntimeEventBus | None = None
+    runtime_control: RuntimeControl | None = None

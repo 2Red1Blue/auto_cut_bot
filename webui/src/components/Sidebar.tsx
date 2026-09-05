@@ -82,6 +82,7 @@ interface SidebarProps {
   collapsedGroups?: Record<string, boolean>;
   runningChatIds?: string[];
   updatedChatIds?: string[];
+  recoveryChatIds?: string[];
   viewState?: SidebarViewState;
   showArchived?: boolean;
   archivedCount?: number;
@@ -129,13 +130,14 @@ export function Sidebar(props: SidebarProps) {
       )}
     >
       <div
+        data-testid="sidebar-brand-row"
         className={cn(
-          "flex items-center px-3 pb-2.5",
-          props.hostChromeInset ? "pt-[2.85rem]" : "pt-3",
+          "flex items-start px-3 pb-2.5 pt-3",
           collapsed ? "w-14 justify-start" : "justify-between",
         )}
       >
         <button
+          data-testid="sidebar-brand-mark"
           type="button"
           aria-label={collapsed ? toggleLabel : undefined}
           aria-hidden={collapsed ? undefined : true}
@@ -143,7 +145,8 @@ export function Sidebar(props: SidebarProps) {
           onClick={collapsed ? props.onExpand : undefined}
           tabIndex={collapsed ? 0 : -1}
           className={cn(
-            "flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors",
+            "host-no-drag flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl transition-colors",
+            props.hostChromeInset && "mt-5",
             collapsed
               ? "-ml-0.5 hover:bg-sidebar-accent/75"
               : "pointer-events-none -ml-0.5",
@@ -156,13 +159,13 @@ export function Sidebar(props: SidebarProps) {
             draggable={false}
           />
         </button>
-        {!collapsed && !props.hostChromeInset && (
+        {!collapsed && (
           <Button
             variant="ghost"
             size="icon"
             aria-label={t("sidebar.collapse")}
             onClick={props.onCollapse}
-            className="h-7 w-7 rounded-lg text-muted-foreground/85 hover:bg-sidebar-accent/75 hover:text-sidebar-foreground"
+            className="host-no-drag mt-1 h-7 w-7 rounded-lg text-muted-foreground/85 hover:bg-sidebar-accent/75 hover:text-sidebar-foreground"
           >
             <Menu className="h-3.5 w-3.5" />
           </Button>
@@ -270,6 +273,7 @@ export function Sidebar(props: SidebarProps) {
             collapsedGroups={props.collapsedGroups}
             runningChatIds={props.runningChatIds}
             updatedChatIds={props.updatedChatIds}
+            recoveryChatIds={props.recoveryChatIds}
             density={props.viewState?.density}
             showPreviews={props.viewState?.show_previews}
             showTimestamps={props.viewState?.show_timestamps}

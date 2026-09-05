@@ -261,7 +261,7 @@ def test_installed_payload_enriches_apps_from_cached_catalog(
     assert app["logo_url"] == "https://cdn.simpleicons.org/gimp/5C5543"
 
 
-def test_payload_includes_auto_cut_bot_extension_registry(tmp_path: Path) -> None:
+def test_payload_includes_nanobot_extension_registry(tmp_path: Path) -> None:
     manager = _manager(tmp_path)
     _write_cache(manager._cache_path("harness"), {"meta": {"updated": "2026-04-16"}, "clis": []})
     _write_cache(manager._cache_path("public"), {"meta": {"updated": "2026-04-18"}, "clis": []})
@@ -297,8 +297,8 @@ def test_payload_includes_auto_cut_bot_extension_registry(tmp_path: Path) -> Non
     assert app["logo_url"] == "https://raw.githubusercontent.com/heygen-com/hyperframes/main/assets/logo.png"
     assert app["brand_color"] == "#111827"
     assert app["install_supported"] is True
-    assert app["manifest"]["source"] == "nanobot-extension"
-    assert app["manifest"]["trust"]["registry"] == "nanobot-extension"
+    assert app["manifest"]["source"] == "auto_cut_bot-extension"
+    assert app["manifest"]["trust"]["registry"] == "auto_cut_bot-extension"
 
 
 def test_optional_extension_registry_failure_does_not_break_payload(
@@ -707,12 +707,12 @@ def test_fetch_skill_content_uses_extension_raw_base_for_relative_skills(
     content = manager._fetch_skill_content({
         "name": "hyperframes",
         "skill_md": "skills/hyperframes/SKILL.md",
-        "_raw_base": "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main",
+        "_raw_base": "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main",
     })
 
     assert content and "# HyperFrames" in content
     assert seen == [
-        "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main/skills/hyperframes/SKILL.md"
+        "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main/skills/hyperframes/SKILL.md"
     ]
 
 

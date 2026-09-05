@@ -128,8 +128,7 @@ class AgentDefaults(Base):
     temperature: float = 0.1
     fallback_models: list[FallbackCandidate] = Field(default_factory=list)
     max_tool_iterations: int = 200
-    max_concurrent_subagents: int = Field(default=1, ge=1)
-    fail_on_tool_error: bool = True
+    max_concurrent_subagents: int = Field(default=4, ge=1)
     max_tool_result_chars: int = 16_000
     provider_retry_mode: Literal["standard", "persistent"] = "standard"
     tool_hint_max_length: int = Field(
@@ -156,13 +155,6 @@ class AgentDefaults(Base):
         default=60,
         ge=0,
     )  # Minimum interval in seconds between scans for idle sessions
-    consolidation_ratio: float = Field(
-        default=0.5,
-        ge=0.1,
-        le=0.95,
-        validation_alias=AliasChoices("consolidationRatio"),
-        serialization_alias="consolidationRatio",
-    )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
 
     @model_validator(mode="before")
@@ -210,8 +202,6 @@ class ProviderConfig(Base):
     api_key: str | None = Field(default=None, repr=False)
     api_base: str | None = None
     api_type: Literal["auto", "chat_completions", "responses"] = "auto"  # Request API surface
-    responses_api: bool | None = None  # Force Responses API for all models (None = follow spec default)
-    responses_models: list[str] | None = None  # Additional model names that support Responses API
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
     extra_body: dict[str, Any] | None = None  # Extra provider request fields; shape depends on provider/API surface
     extra_query: dict[str, str] | None = None  # Extra query params (e.g. api-version for Azure-style gateways)
@@ -322,9 +312,15 @@ class ProvidersConfig(Base):
 
     @model_validator(mode="after")
     def _validate_api_type_scope(self) -> "ProvidersConfig":
-        # api_type and responses_api are now supported for all providers,
-        # not just openai. Any provider whose backend is openai_compat can
-        # opt into Responses API via these config fields.
+        for name in self.__class__.model_fields:
+            if name == "openai":
+                continue
+            provider = getattr(self, name, None)
+            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
+                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
+        for provider in (self.model_extra or {}).values():
+            if isinstance(provider, ProviderConfig) and provider.api_type != "auto":
+                raise ValueError("providers.<name>.api_type is only supported for providers.openai")
         return self
 
 
@@ -333,7 +329,6 @@ class HeartbeatConfig(Base):
 
     enabled: bool = True
     interval_s: int = 30 * 60  # 30 minutes
-    keep_recent_messages: int = 8
 
 
 class ApiConfig(Base):
@@ -403,6 +398,7 @@ class ToolsConfig(Base):
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("auto_cut_bot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
+    max_session_messages_per_minute: int = Field(default=6, ge=1)
     restrict_to_workspace: bool = False  # policy intent: keep tool access inside workspace when possible
     webui_allow_local_service_access: bool = Field(
         default=True,
@@ -441,7 +437,6 @@ class Config(BaseSettings):
         validation_alias=AliasChoices("modelPresets", "model_presets"),
         serialization_alias="modelPresets",
     )
-    pipeline: dict[str, Any] = Field(default_factory=dict)
 
     def __init__(self, **values: Any) -> None:
         if not type(self).__pydantic_complete__:

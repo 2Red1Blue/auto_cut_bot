@@ -101,19 +101,7 @@ def _bwrap(
     return shlex.join(args)
 
 
-def _none(
-    command: str,
-    workspace: str,
-    cwd: str,
-    *,
-    sandbox_ro_binds: Iterable[str] | None = None,
-    sandbox_rw_binds: Iterable[str] | None = None,
-) -> str:
-    """No sandbox — pass command through as-is."""
-    return command
-
-
-_BACKENDS = {"bwrap": _bwrap, "none": _none}
+_BACKENDS = {"bwrap": _bwrap}
 
 
 def wrap_command(

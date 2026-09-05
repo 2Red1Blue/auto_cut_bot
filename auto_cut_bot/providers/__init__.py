@@ -5,11 +5,12 @@ from __future__ import annotations
 from importlib import import_module
 from typing import TYPE_CHECKING
 
-from auto_cut_bot.providers.base import LLMProvider, LLMResponse
+from auto_cut_bot.providers.base import LLMProvider, LLMResponse, LLMUsage
 
 __all__ = [
     "LLMProvider",
     "LLMResponse",
+    "LLMUsage",
     "AnthropicProvider",
     "OpenAICompatProvider",
     "OpenAICodexProvider",

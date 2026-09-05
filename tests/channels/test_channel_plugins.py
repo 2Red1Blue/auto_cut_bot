@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tomllib
+from collections import OrderedDict
 from dataclasses import replace
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
@@ -32,7 +33,7 @@ from auto_cut_bot.channels.contracts import (
     SetupRequirement,
     channel_default_config,
 )
-from auto_cut_bot.channels.manager import ChannelManager
+from auto_cut_bot.channels.manager import ORIGIN_REPLY_FINGERPRINTS_MAX_SIZE, ChannelManager
 from auto_cut_bot.channels.plugin import ChannelPlugin, load_channel_package
 from auto_cut_bot.config.loader import load_config, save_config
 from auto_cut_bot.config.schema import ChannelsConfig, Config
@@ -407,7 +408,7 @@ def test_multi_plugin_action_defaults_to_default_instance(
     tmp_path,
 ):
     from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
+    from auto_cut_bot.webui.nanobot_features_api import nanobot_features_action
 
     class _ManagedMultiPlugin(_FakeMultiChannel):
         name = "managedmulti"
@@ -434,19 +435,19 @@ def test_multi_plugin_action_defaults_to_default_instance(
     )
     monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
 
-    disabled = auto_cut_bot_features_action("disable", {"name": ["managedmulti"]})
+    disabled = nanobot_features_action("disable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [False, True]
     assert disabled["features"][0]["enabled"] is True
 
-    enabled = auto_cut_bot_features_action("enable", {"name": ["managedmulti"]})
+    enabled = nanobot_features_action("enable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [True, True]
     assert enabled["features"][0]["enabled"] is True
 
-    explicit = auto_cut_bot_features_action(
+    explicit = nanobot_features_action(
         "disable",
         {"name": ["managedmulti"], "instance_id": ["default"]},
     )
@@ -461,7 +462,7 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
     tmp_path,
 ):
     from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
+    from auto_cut_bot.webui.nanobot_features_api import nanobot_features_action
 
     class _SingleDefaultsPlugin(_FakePlugin):
         name = "singleplugin"
@@ -492,7 +493,7 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
         MessageBus(),
     )
 
-    payload = auto_cut_bot_features_action("enable", {"name": ["singleplugin"]})
+    payload = nanobot_features_action("enable", {"name": ["singleplugin"]})
     hot_reload = await manager.apply_channel_feature_action("enable", "singleplugin")
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["singleplugin"]
@@ -1397,7 +1398,7 @@ def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_pat
     commands: list[list[str]] = []
     log_flags: list[bool] = []
     config_path = tmp_path / "config.json"
-    original_set_logs = cli_commands._set_auto_cut_bot_logs
+    original_set_logs = cli_commands._set_nanobot_logs
 
     def _set_logs(enabled: bool) -> None:
         log_flags.append(enabled)
@@ -1410,7 +1411,7 @@ def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_pat
         installed=False,
         commands=commands,
     )
-    monkeypatch.setattr("auto_cut_bot.cli.commands._set_auto_cut_bot_logs", _set_logs)
+    monkeypatch.setattr("auto_cut_bot.cli.commands._set_nanobot_logs", _set_logs)
 
     result = runner.invoke(app, ["plugins", "enable", "bedrock", "--config", str(config_path)])
 
@@ -1421,7 +1422,7 @@ def test_plugins_enable_extra_without_channel_only_installs(monkeypatch, tmp_pat
     assert not config_path.exists()
 
 
-def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_path):
+def test_plugins_enable_logs_option_enables_nanobot_logs(monkeypatch, tmp_path):
     from typer.testing import CliRunner
 
     from auto_cut_bot.cli import commands as cli_commands
@@ -1429,7 +1430,7 @@ def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_p
 
     config_path = tmp_path / "config.json"
     log_flags: list[bool] = []
-    original_set_logs = cli_commands._set_auto_cut_bot_logs
+    original_set_logs = cli_commands._set_nanobot_logs
 
     def _set_logs(enabled: bool) -> None:
         log_flags.append(enabled)
@@ -1442,7 +1443,7 @@ def test_plugins_enable_logs_option_enables_auto_cut_bot_logs(monkeypatch, tmp_p
         installed=False,
         commands=[],
     )
-    monkeypatch.setattr("auto_cut_bot.cli.commands._set_auto_cut_bot_logs", _set_logs)
+    monkeypatch.setattr("auto_cut_bot.cli.commands._set_nanobot_logs", _set_logs)
 
     result = runner.invoke(
         app,
@@ -3179,7 +3180,7 @@ def test_outbound_duplicate_suppression_is_scoped_to_origin_message() -> None:
     mgr.bus = MessageBus()
     mgr.channels = {}
     mgr._dispatch_task = None
-    mgr._origin_reply_fingerprints = {}
+    mgr._origin_reply_fingerprints = OrderedDict()
 
     first = OutboundMessage(
         channel="feishu",
@@ -3210,6 +3211,39 @@ def test_outbound_duplicate_suppression_is_scoped_to_origin_message() -> None:
     assert mgr._should_suppress_outbound(duplicate) is True
     assert mgr._should_suppress_outbound(separate_turn) is False
     assert mgr._should_suppress_outbound(new_origin_content) is False
+
+
+def test_outbound_duplicate_suppression_cache_is_bounded() -> None:
+    mgr = ChannelManager.__new__(ChannelManager)
+    mgr._origin_reply_fingerprints = OrderedDict()
+
+    for index in range(ORIGIN_REPLY_FINGERPRINTS_MAX_SIZE):
+        msg = OutboundMessage(
+            channel="feishu",
+            chat_id="chat123",
+            content="Done",
+            metadata={"message_id": f"msg-{index}"},
+        )
+        assert mgr._should_suppress_outbound(msg) is False
+
+    duplicate = OutboundMessage(
+        channel="feishu",
+        chat_id="chat123",
+        content="Done",
+        metadata={"origin_message_id": "msg-0"},
+    )
+    newest = OutboundMessage(
+        channel="feishu",
+        chat_id="chat123",
+        content="Done",
+        metadata={"message_id": f"msg-{ORIGIN_REPLY_FINGERPRINTS_MAX_SIZE}"},
+    )
+
+    assert mgr._should_suppress_outbound(duplicate) is True
+    assert mgr._should_suppress_outbound(newest) is False
+    assert len(mgr._origin_reply_fingerprints) == ORIGIN_REPLY_FINGERPRINTS_MAX_SIZE
+    assert ("feishu", "chat123", "msg-0") in mgr._origin_reply_fingerprints
+    assert ("feishu", "chat123", "msg-1") not in mgr._origin_reply_fingerprints
 
 
 @pytest.mark.asyncio
@@ -3719,6 +3753,27 @@ async def test_notify_restart_done_waits_until_channel_starts():
     assert sent_msg.channel == "feishu"
     assert sent_msg.chat_id == "oc_123"
     assert sent_msg.content.startswith("Restart completed")
+
+
+@pytest.mark.asyncio
+async def test_websocket_restart_notice_does_not_overwrite_recovery_state():
+    """WebSocket attach/recovery events already own reconnect state."""
+    fake_config = SimpleNamespace(
+        channels=ChannelsConfig(),
+        providers=SimpleNamespace(groq=SimpleNamespace(api_key="")),
+    )
+    mgr = ChannelManager.__new__(ChannelManager)
+    mgr.config = fake_config
+    mgr.bus = MessageBus()
+    channel = _StartableChannel(fake_config, mgr.bus)
+    channel._running = True
+    mgr.channels = {"websocket": channel}
+    mgr._send_with_retry = AsyncMock()
+
+    notice = RestartNotice(channel="websocket", chat_id="chat", started_at_raw="100.0")
+    await mgr._send_restart_notice_when_started(notice)
+
+    mgr._send_with_retry.assert_not_awaited()
 
 
 @pytest.mark.asyncio

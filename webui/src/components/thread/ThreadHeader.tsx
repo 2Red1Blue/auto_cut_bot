@@ -3,6 +3,7 @@ import { type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
+import { SessionHandleLabel } from "@/components/SessionHandleLabel";
 import {
   Tooltip,
   TooltipContent,
@@ -10,15 +11,16 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import type { SessionHandle } from "@/lib/types";
 
 interface ThreadHeaderProps {
   title: string;
+  handle?: SessionHandle | null;
   onToggleSidebar: () => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
   hideSidebarToggleForHostChrome?: boolean;
   hideSidebarToggle?: boolean;
-  hostChromeTitleInset?: boolean;
   hideThemeButton?: boolean;
   hideTitle?: boolean;
   actions?: ReactNode;
@@ -32,12 +34,12 @@ interface ThreadHeaderProps {
 
 export function ThreadHeader({
   title,
+  handle = null,
   onToggleSidebar,
   theme,
   onToggleTheme,
   hideSidebarToggleForHostChrome = false,
   hideSidebarToggle = false,
-  hostChromeTitleInset = false,
   hideThemeButton = false,
   hideTitle = false,
   actions,
@@ -54,9 +56,8 @@ export function ThreadHeader({
     <div
       data-testid="thread-header"
       className={cn(
-        "relative z-30 flex items-center justify-between gap-3 px-3 py-2",
+        "relative z-30 flex items-center justify-between gap-3 px-3 py-1",
         minimal && "h-11",
-        !minimal && hostChromeTitleInset && "lg:pl-[128px]",
       )}
     >
       <div className="relative flex min-w-0 items-center gap-2">
@@ -78,6 +79,15 @@ export function ThreadHeader({
           <div className="flex min-w-0 items-center rounded-md px-1.5 py-1 text-[12px] font-medium text-muted-foreground">
             <span className="max-w-[min(60vw,32rem)] truncate">{title}</span>
           </div>
+        ) : null}
+        {handle ? (
+          <span
+            className="flex shrink-0 items-center rounded-md px-1.5 py-1 text-[12px] font-medium"
+          >
+            <SessionHandleLabel id={handle.id}>
+              @{handle.name}
+            </SessionHandleLabel>
+          </span>
         ) : null}
       </div>
 

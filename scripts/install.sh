@@ -32,11 +32,13 @@ install_failure_hint() {
 
 usage() {
   cat <<'EOF'
-Usage: install.sh [--dev] [--dry-run]
+Usage: install.sh [--dry-run]
 
 By default this installs or upgrades auto-cut-bot-ai from PyPI.
 Use --dev to install from the current main branch on GitHub.
 Use --dry-run to print what would happen without installing or starting setup.
+
+For current main, clone the repository and run `python -m pip install -e .`.
 EOF
 }
 
@@ -200,8 +202,7 @@ PY
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dev)
-      install_target="$main_source"
-      install_source="GitHub main"
+      fail "--dev installed an untracked main snapshot and is no longer supported; clone the repository and run 'python -m pip install -e .' instead"
       ;;
     --dry-run)
       dry_run="1"

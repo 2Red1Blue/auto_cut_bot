@@ -1106,7 +1106,7 @@ class TestMainMenuUpdate:
         assert onboard_wizard._quick_start_oauth_login(Config(), "openai_codex") is False
         assert messages == [
             "[red]This auto_cut_bot installation is missing the required oauth-cli-kit package. "
-            "Reinstall or upgrade auto-cut-bot-ai using the same installation method.[/red]"
+            "Reinstall or upgrade auto_cut_bot-ai using the same installation method.[/red]"
         ]
 
     def test_quick_start_openai_codex_runs_interactive_login_for_bad_cached_token(

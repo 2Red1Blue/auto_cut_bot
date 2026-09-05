@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Any, cast
 
 from auto_cut_bot.bus.events import OutboundMessage
+from auto_cut_bot.providers.base import LLMUsage
 
 
 class OutboundEvent:
@@ -58,6 +59,18 @@ class StreamedResponseEvent(OutboundEvent):
 class TurnEndEvent(OutboundEvent):
     latency_ms: int | None = None
     goal_state: dict[str, Any] | None = None
+    usage: LLMUsage | None = None
+    round_usages: tuple[LLMUsage, ...] = ()
+    context_window_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class RecoveryStateEvent(OutboundEvent):
+    status: str
+    recovery_id: str
+    reason: str | None = None
+    attempts: int = 0
+    can_continue: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +90,15 @@ class SessionUpdatedEvent(OutboundEvent):
 
 
 @dataclass(frozen=True)
+class UserInputEvent(OutboundEvent):
+    """A user-input row projected by an edge adapter."""
+
+    content: str
+    created_at_ms: int
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class RuntimeModelUpdatedEvent(OutboundEvent):
     model: str | None
     model_preset: str | None = None
@@ -88,6 +110,8 @@ class TurnModelUpdatedEvent(OutboundEvent):
 
     model: str
     model_preset: str | None = None
+    context_window_tokens: int | None = None
+    fallback: bool = False
 
 
 def outbound_message_for_event(
@@ -133,7 +157,10 @@ def replace_outbound_event(
 
 
 def _event_content(event: OutboundEvent) -> str:
-    if isinstance(event, ProgressEvent | RetryWaitEvent | StreamDeltaEvent | StreamEndEvent):
+    if isinstance(
+        event,
+        ProgressEvent | RetryWaitEvent | StreamDeltaEvent | StreamEndEvent | UserInputEvent,
+    ):
         return event.content
     return ""
 
@@ -172,6 +199,7 @@ def _legacy_event_from_metadata(msg: OutboundMessage) -> OutboundEvent | None:
         return TurnEndEvent(
             latency_ms=_metadata_int(meta, "latency_ms"),
             goal_state=cast(dict[str, Any], goal_state) if isinstance(goal_state, dict) else None,
+            context_window_tokens=_metadata_int(meta, "context_window_tokens"),
         )
     if meta.get("_session_updated"):
         return SessionUpdatedEvent(scope=_metadata_str(meta, "_session_update_scope"))

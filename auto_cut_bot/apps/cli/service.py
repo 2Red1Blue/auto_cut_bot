@@ -29,12 +29,12 @@ CLI_ANYTHING_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/registry.json"
 CLI_ANYTHING_PUBLIC_REGISTRY_URL = "https://hkuds.github.io/CLI-Anything/public_registry.json"
 CLI_ANYTHING_RAW_BASE = "https://raw.githubusercontent.com/HKUDS/CLI-Anything/main"
 AGENT_PLUGIN_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
-NANOBOT_EXTENSION_REGISTRY_URL = "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main/registry.json"
-NANOBOT_EXTENSION_RAW_BASE = "https://raw.githubusercontent.com/Re-bin/nanobot-extension/main"
+AUTO_CUT_BOT_EXTENSION_REGISTRY_URL = "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main/registry.json"
+AUTO_CUT_BOT_EXTENSION_RAW_BASE = "https://raw.githubusercontent.com/Re-bin/auto_cut_bot-extension/main"
 _CATALOG_SOURCES = (
     ("harness", CLI_ANYTHING_REGISTRY_URL, CLI_ANYTHING_RAW_BASE, True),
     ("public", CLI_ANYTHING_PUBLIC_REGISTRY_URL, CLI_ANYTHING_RAW_BASE, True),
-    ("extensions", NANOBOT_EXTENSION_REGISTRY_URL, NANOBOT_EXTENSION_RAW_BASE, False),
+    ("extensions", AUTO_CUT_BOT_EXTENSION_REGISTRY_URL, AUTO_CUT_BOT_EXTENSION_RAW_BASE, False),
 )
 
 _MAX_TOOL_OUTPUT_CHARS = 12_000
@@ -603,11 +603,11 @@ class CliAppManager:
     def _manifest_source(self, app: dict[str, Any]) -> str:
         source = str(app.get("_source") or "harness")
         if source == "extensions":
-            return "nanobot-extension"
+            return "auto_cut_bot-extension"
         return f"cli-anything:{source}"
 
     def _trust_registry(self, app: dict[str, Any]) -> str:
-        return "nanobot-extension" if str(app.get("_source") or "") == "extensions" else "cli-anything"
+        return "auto_cut_bot-extension" if str(app.get("_source") or "") == "extensions" else "cli-anything"
 
     def get_app(self, name: str, *, force_refresh: bool = False) -> dict[str, Any]:
         wanted = name.lower()
@@ -762,7 +762,7 @@ class CliAppManager:
             "verification": (
                 ["package_manager_ok", "entry_point_absent", "managed_paths_absent"]
                 if strategy not in {"bundled", "unsupported"}
-                else ["auto_cut_bot_state_absent", "managed_paths_absent"]
+                else ["nanobot_state_absent", "managed_paths_absent"]
             ),
         })
         return app_manifest(
@@ -1110,7 +1110,7 @@ If the user attached `@{name}` in chat, treat that as the selected app for the c
 Prefer machine-readable output when the CLI supports `--json`.
 """
 
-    def _with_auto_cut_bot_skill_note(self, content: str, app: dict[str, Any]) -> str:
+    def _with_nanobot_skill_note(self, content: str, app: dict[str, Any]) -> str:
         name = str(app.get("name") or "unknown")
         skill_name = _skill_name(name)
         metadata = parse_skill_metadata(content)
@@ -1139,7 +1139,7 @@ Use the `run_cli_app` tool with `name="{name}"` for command execution. Do not in
         path = self.workspace / _plugin_skill_relative_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         content = self._fetch_skill_content(app) or self._fallback_skill(app)
-        content = self._with_auto_cut_bot_skill_note(content, app)
+        content = self._with_nanobot_skill_note(content, app)
         path.write_text(content, encoding="utf-8")
         plugin_root = path.parents[2]
         manifest = compact_dict({

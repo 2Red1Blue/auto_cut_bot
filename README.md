@@ -77,7 +77,12 @@ auto_cut_bot is a self-hosted personal AI agent runtime. It can:
 
 Pick **one** install method:
 
-Prerequisites: Python 3.11 or newer. Git is only needed for a source install. Published packages already include the WebUI; a current-source install needs `bun` or `npm` to build it.
+| Track | Install with | Update with | What runs |
+|---|---|---|---|
+| Stable | installer, `uv`, or pip | the same package tool | one released Python/WebUI/TUI version |
+| Current source | editable Git checkout | `git pull --ff-only` + editable dependency sync | Python, WebUI, and TUI from that checkout |
+
+Prerequisites: Python 3.11 or newer. Git and [Bun](https://bun.sh/) are only needed for a source install. Published packages include the WebUI and fetch a checksummed, version-matched TUI archive—with its licenses, notices, corresponding application source, source offer, and relinking instructions—on first use.
 
 If terminals, API keys, or config files are new to you, use the guided zero-background walkthrough in [Start Without Technical Background](./docs/start-without-technical-background.md) instead of this compact README path.
 
@@ -97,7 +102,7 @@ irm https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.ps
 
 The default command installs or upgrades `auto-cut-bot-ai` from PyPI. On a fresh local desktop, it then starts `auto_cut_bot webui` so you can configure the first provider and model in **Settings → Models**. SSH, headless, existing-config, and older-release paths keep the terminal setup wizard. The installer avoids system-wide pip installs by using an active virtual environment, `uv`, `pipx`, or a managed venv under `~/.auto_cut_bot/venv`. It also prints the exact command it used to run auto_cut_bot; reuse that full command below if `auto_cut_bot` is not on `PATH`.
 
-To preview the plan without changing your environment, pass `--dry-run`; combine it with `--dev` when you want to preview the main-branch install.
+To preview the plan without changing your environment, pass `--dry-run`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HKUDS/auto_cut_bot/main/scripts/install.sh | sh -s -- --dry-run
@@ -135,7 +140,8 @@ If pip reports `externally-managed-environment` on macOS or Linux, use the one-c
 
 **Install from source**
 
-`bun` or `npm` must be available. From an activated virtual environment:
+Clone the repository and install it in editable mode. Bun is required because the source
+checkout runs the matching TUI directly instead of downloading an older release binary.
 
 ```bash
 git clone https://github.com/HKUDS/auto_cut_bot.git
@@ -143,7 +149,18 @@ cd auto_cut_bot
 python -m pip install .
 ```
 
-On Windows, if pip reports that it cannot launch `npm`, run `cd webui`, `npm.cmd install --package-lock=false`, `npm.cmd run build`, and `cd ..` in order, then retry the install. Contributors who need an editable checkout should follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) and [`webui/README.md`](./webui/README.md).
+Activate it with `source .venv/bin/activate` on macOS/Linux or
+`.venv\Scripts\Activate.ps1` in Windows PowerShell, then run:
+
+```bash
+python -m pip install -e .
+```
+
+After that, the normal commands are identical to a stable install. `nanobot` runs the TUI
+from this checkout, and `nanobot webui` rebuilds stale frontend assets automatically. A later
+`git pull --ff-only` updates the Python, TUI, and WebUI source together; rerun
+`python -m pip install -e .` when Python dependencies change. Contributors should also read
+[`CONTRIBUTING.md`](./CONTRIBUTING.md).
 
 Verify the install:
 
@@ -161,7 +178,7 @@ If `auto_cut_bot` is not on `PATH`, invoke it through the method that installed 
 auto_cut_bot webui
 ```
 
-This is the recommended first run. The launcher creates the config and workspace when needed, safely enables the local WebSocket channel after confirmation, starts the gateway, and opens [`http://127.0.0.1:8765`](http://127.0.0.1:8765). A fresh install can open before a model is configured, so setup continues in the browser instead of beginning in a JSON file. The first-run WebUI binds to localhost by default and is not exposed to your LAN.
+This is the recommended first run. The launcher creates the config and workspace when needed, safely enables the local WebSocket channel after confirmation, starts or joins the shared local gateway, and opens [`http://127.0.0.1:8765`](http://127.0.0.1:8765). A fresh install can open before a model is configured, so setup continues in the browser instead of beginning in a JSON file. The first-run WebUI binds to localhost by default and is not exposed to your LAN.
 
 **Your first three steps**
 
@@ -202,7 +219,13 @@ Use `auto_cut_bot gateway --background` for the same direct entry point without 
 auto_cut_bot agent
 ```
 
-This opens an interactive terminal chat with the same configured model, workspace, and tools while keeping its own CLI session history. It does not open a browser or keep chat channels and automations running after you exit. Type `exit` or press `Ctrl+C` when you are done.
+This opens the native terminal client with the launch directory as its workspace. It shares saved conversations and the local gateway with the WebUI. The explicit `nanobot agent` form remains available for compatibility.
+
+- Type `/` to discover commands, `/sessions` to switch conversations, or `@` to mention an app, MCP server, or saved session.
+- Press `Enter` to send. While nanobot is working, `Enter` sends now and `Tab` sends after the current response. Press `Shift+Enter` to add a newline (`Ctrl+J` works in terminals that cannot distinguish modified Enter keys).
+- Use `/detach` to leave the current task running, or start with `nanobot gateway --background` when nanobot should stay online after all local clients exit.
+
+Each launch starts a new session by default. Use `--session` to resume one and `--workspace` to choose another workspace. See the [CLI reference](./docs/cli-reference.md#agent-cli) for session branching, diffs, history, shortcuts, gateway lifecycle, and compatibility options.
 
 For one request and an immediate exit, use:
 
@@ -321,11 +344,16 @@ Use auto_cut_bot for a real task, report what broke, and then pick a focused imp
 - Browse [open issues](https://github.com/HKUDS/auto_cut_bot/issues) for problems to investigate.
 - Open a [pull request](https://github.com/HKUDS/auto_cut_bot/pulls) for a focused fix or integration.
 
-## Contact
+## Maintainers
 
-Nanobot was started by [Xubin Ren](https://github.com/re-bin) as a personal open-source project and is now maintained collaboratively with contributors from the open-source community. Feel free to contact [xubinrencs@gmail.com](mailto:xubinrencs@gmail.com) for questions, ideas, or collaboration.
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/re-bin"><img src="https://avatars.githubusercontent.com/u/52506698?v=4&s=80" width="80" height="80" alt="Xubin Ren"><br><strong>Xubin Ren</strong></a><br><a href="https://x.com/xubinrencs"><img src="https://img.shields.io/badge/@xubinrencs-000000?style=flat&logo=x&logoColor=white" alt="Xubin Ren on X"></a></td>
+    <td align="center"><a href="https://github.com/chengyongru"><img src="https://avatars.githubusercontent.com/u/61816729?v=4&s=80" width="80" height="80" alt="Yongru Chen"><br><strong>Yongru Chen</strong></a><br><a href="https://x.com/chengyongru"><img src="https://img.shields.io/badge/@chengyongru-000000?style=flat&logo=x&logoColor=white" alt="Yongru Chen on X"></a></td>
+  </tr>
+</table>
 
-### Contributors
+## Community Contributors
 
 <a href="https://github.com/HKUDS/auto_cut_bot/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=HKUDS/auto_cut_bot&max=100&columns=12&updated=20260210" alt="Contributors" />

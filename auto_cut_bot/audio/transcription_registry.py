@@ -80,12 +80,6 @@ TRANSCRIPTION_PROVIDERS: tuple[TranscriptionProviderSpec, ...] = (
         adapter="auto_cut_bot.providers.transcription:OpenAITranscriptionProvider",
         aliases=("silicon",),
     ),
-    TranscriptionProviderSpec(
-        name="funasr",
-        default_model="sensevoice",
-        adapter="auto_cut_bot.providers.transcription:FunASRTranscriptionProvider",
-        aliases=("funasr_local", "sensevoice"),
-    ),
 )
 
 _BY_NAME = {spec.name: spec for spec in TRANSCRIPTION_PROVIDERS}

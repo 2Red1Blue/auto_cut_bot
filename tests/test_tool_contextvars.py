@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -11,6 +12,7 @@ from auto_cut_bot.agent.tools.message import MessageTool
 from auto_cut_bot.agent.tools.spawn import SpawnTool
 from auto_cut_bot.cron.service import CronService
 from auto_cut_bot.providers.base import GenerationSettings, LLMProvider
+from auto_cut_bot.runtime_context import RUNTIME_CONTEXT_INPUT_META, RuntimeContextBlock
 from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY
 from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
@@ -297,6 +299,41 @@ async def test_webui_cron_tool_uses_origin_session_when_unified_enabled(tmp_path
     assert jobs[0].payload.origin_channel == "websocket"
     assert jobs[0].payload.origin_chat_id == "chat-123"
     assert jobs[0].payload.origin_metadata == {"webui": True}
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_snapshots_only_persistable_request_metadata(tmp_path) -> None:
+    """Live runtime context must not poison a persisted WebUI cron job."""
+    store_path = tmp_path / "jobs.json"
+    service = CronService(store_path)
+    tool = CronTool(service)
+    await service.start()
+    try:
+        with request_context(
+            RequestContext(
+                channel="websocket",
+                chat_id="chat-123",
+                metadata={
+                    "webui": True,
+                    RUNTIME_CONTEXT_INPUT_META: [
+                        RuntimeContextBlock(source="webui_quote", content="quoted reply")
+                    ],
+                    "opaque": object(),
+                },
+                session_key=UNIFIED_SESSION_KEY,
+            )
+        ):
+            result = await tool.execute(action="add", message="standup", every_seconds=300)
+
+        assert result.startswith("Created job")
+        jobs = service.list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].payload.origin_metadata == {"webui": True}
+
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+        assert raw["jobs"][0]["payload"]["originMetadata"] == {"webui": True}
+    finally:
+        service.stop()
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,9 +53,9 @@ def _router(
 
 def _mutation_request(path: str, payload: dict[str, object]) -> SimpleNamespace:
     request = SimpleNamespace(path=path, headers=Headers())
-    request._auto_cut_bot_webui_mutation_request = True
-    request._auto_cut_bot_webui_mutation_payload = payload
-    request._auto_cut_bot_trusted_proxy_authenticated = True
+    request._nanobot_webui_mutation_request = True
+    request._nanobot_webui_mutation_payload = payload
+    request._nanobot_trusted_proxy_authenticated = True
     return request
 
 
@@ -96,6 +97,45 @@ async def test_mcp_list_serializes_local_runtime_failure_snapshot(tmp_path) -> N
     assert row["runtime_status"] == "failed"
     assert b'"runtime_status": "failed"' in response.body
     assert snapshot_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_usage_query_runs_off_the_event_loop(monkeypatch) -> None:
+    calling_thread = threading.get_ident()
+    worker_threads: list[int] = []
+
+    def usage_payload(**_kwargs):
+        worker_threads.append(threading.get_ident())
+        return {"days": []}
+
+    monkeypatch.setattr("auto_cut_bot.webui.settings_routes.settings_usage_payload", usage_payload)
+    request = SimpleNamespace(path="/api/settings/usage", headers=Headers())
+
+    response = await _router().dispatch(None, request, request.path)
+
+    assert response is not None
+    assert response.status_code == 200
+    assert worker_threads and worker_threads[0] != calling_thread
+
+
+@pytest.mark.asyncio
+async def test_full_settings_query_runs_off_the_event_loop(monkeypatch) -> None:
+    calling_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    router = _router()
+
+    def settings_response():
+        worker_threads.append(threading.get_ident())
+        return http_json_response({"ok": True})
+
+    monkeypatch.setattr(router, "_handle_settings", settings_response)
+    request = SimpleNamespace(path="/api/settings", headers=Headers())
+
+    response = await router.dispatch(None, request, request.path)
+
+    assert response is not None
+    assert response.status_code == 200
+    assert worker_threads and worker_threads[0] != calling_thread
 
 
 @pytest.mark.asyncio

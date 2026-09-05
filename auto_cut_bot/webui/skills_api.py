@@ -184,7 +184,7 @@ def _description(metadata: dict[str, Any] | None, fallback: str) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else fallback
 
 
-def _auto_cut_bot_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+def _nanobot_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     if metadata is None:
         return {}
     raw = metadata.get("metadata")
@@ -202,7 +202,7 @@ def _auto_cut_bot_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 
 def _install_options(metadata: dict[str, Any] | None) -> list[dict[str, str]]:
     """Return safe, copyable setup commands declared by a skill."""
-    raw_install = _auto_cut_bot_metadata(metadata).get("install")
+    raw_install = _nanobot_metadata(metadata).get("install")
     if not isinstance(raw_install, list):
         return []
     install = cast(list[object], raw_install)

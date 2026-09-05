@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         STREAM_EVENT_TOOL_FAILED,
         STREAM_EVENT_TOOL_STARTED,
         STREAM_EVENT_TYPES,
+        LLMUsage,
         Nanobot,
         RunResult,
         RunStream,
@@ -45,7 +46,7 @@ def _read_pyproject_version() -> str | None:
 
 def _resolve_version() -> str:
     try:
-        return _pkg_version("auto-cut-bot-ai")
+        return _pkg_version("auto_cut_bot-ai")
     except PackageNotFoundError:
         # Source checkouts often import auto_cut_bot without installed dist-info.
         return _read_pyproject_version() or "0.3.0"
@@ -56,6 +57,7 @@ __logo__ = "🐈"
 
 _LAZY_EXPORTS = {
     "Nanobot": ".auto_cut_bot",
+    "LLMUsage": ".auto_cut_bot",
     "RunStream": ".auto_cut_bot",
     "RunResult": ".auto_cut_bot",
     "RequestContext": ".agent.tools.context",
@@ -93,6 +95,7 @@ def __getattr__(name: str) -> Any:
 
 __all__ = [
     "Nanobot",
+    "LLMUsage",
     "RunResult",
     "RequestContext",
     "RuntimeContextBlock",

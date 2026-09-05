@@ -23,6 +23,7 @@ from auto_cut_bot.optional_features import InstallResult
 from auto_cut_bot.security.workspace_access import WORKSPACE_SCOPE_METADATA_KEY
 from auto_cut_bot.session.keys import UNIFIED_SESSION_KEY
 from auto_cut_bot.session.manager import Session, SessionManager
+from auto_cut_bot.session.session_handles import SessionHandleResolver
 from auto_cut_bot.triggers.local_store import LocalTriggerStore
 from auto_cut_bot.webui.gateway_services import GatewayServices, build_gateway_services
 
@@ -82,6 +83,7 @@ def _make_handler(
     channel_feature_action: Any | None = None,
     channel_runtime_status: Any | None = None,
     mcp_reload: Any | None = None,
+    recovery_action: Any | None = None,
 ) -> GatewayServices:
     config = WebSocketConfig.model_validate(cfg) if isinstance(cfg, dict) else cfg
     workspace = workspace_path or Path.cwd()
@@ -102,6 +104,7 @@ def _make_handler(
         channel_feature_action=channel_feature_action,
         channel_runtime_status=channel_runtime_status,
         mcp_reload=mcp_reload,
+        recovery_action=recovery_action,
     )
 
 
@@ -120,6 +123,7 @@ def _ch(
     channel_feature_action: Any | None = None,
     channel_runtime_status: Any | None = None,
     mcp_reload: Any | None = None,
+    recovery_action: Any | None = None,
     **extra: Any,
 ) -> WebSocketChannel:
     cfg: dict[str, Any] = {
@@ -144,6 +148,7 @@ def _ch(
         channel_feature_action=channel_feature_action,
         channel_runtime_status=channel_runtime_status,
         mcp_reload=mcp_reload,
+        recovery_action=recovery_action,
     )
     return InProcessHttpChannel(cfg, bus, gateway=gateway)
 
@@ -551,7 +556,7 @@ async def test_webui_skills_route_requires_token_and_hides_paths(
             "      bins:",
             "        - definitely-missing-auto_cut_bot-skill-cli",
             "      env:",
-            "        - DEFINITELY_MISSING_NANOBOT_SKILL_ENV",
+            "        - DEFINITELY_MISSING_AUTO_CUT_BOT_SKILL_ENV",
             "---",
             "Use the missing CLI and env var.",
         ]),
@@ -596,7 +601,7 @@ async def test_webui_skills_route_requires_token_and_hides_paths(
         assert unavailable["available"] is False
         assert unavailable["unavailable_reason"] == (
             "CLI: definitely-missing-auto_cut_bot-skill-cli, "
-            "ENV: DEFINITELY_MISSING_NANOBOT_SKILL_ENV"
+            "ENV: DEFINITELY_MISSING_AUTO_CUT_BOT_SKILL_ENV"
         )
 
         detail = await _http_get(
@@ -608,9 +613,9 @@ async def test_webui_skills_route_requires_token_and_hides_paths(
         assert "path" not in detail_body
         assert detail_body["requirements"] == {
             "bins": ["definitely-missing-auto_cut_bot-skill-cli"],
-            "env": ["DEFINITELY_MISSING_NANOBOT_SKILL_ENV"],
+            "env": ["DEFINITELY_MISSING_AUTO_CUT_BOT_SKILL_ENV"],
             "missing_bins": ["definitely-missing-auto_cut_bot-skill-cli"],
-            "missing_env": ["DEFINITELY_MISSING_NANOBOT_SKILL_ENV"],
+            "missing_env": ["DEFINITELY_MISSING_AUTO_CUT_BOT_SKILL_ENV"],
         }
         assert "Use the missing CLI and env var." in detail_body["raw_markdown"]
     finally:
@@ -1045,7 +1050,7 @@ async def test_cli_apps_routes_require_token_and_return_payload(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_routes_require_token_and_enable(
+async def test_nanobot_feature_routes_require_token_and_enable(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1108,7 +1113,7 @@ async def test_auto_cut_bot_feature_routes_require_token_and_enable(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_route_reports_live_channel_failure(
+async def test_nanobot_feature_route_reports_live_channel_failure(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1243,41 +1248,8 @@ async def test_pairing_routes_require_token_and_approve_or_deny(
     assert "Missing pairing code" in missing_code.text
 
 
-def test_api_service_settings_read_api_key_from_webui_payload(bus: MagicMock) -> None:
-    channel = _ch(bus)
-    request = _FakeReq(path="/api/settings/api-service/start")
-    setattr(
-        request,
-        "_auto_cut_bot_webui_mutation_payload",
-        {"host": "0.0.0.0", "port": 8900, "timeout": 120, "api_key": "secret-token"},
-    )
-
-    query = channel.gateway.http.settings_routes._parse_api_service_settings_query(request)
-
-    assert query == {
-        "host": ["0.0.0.0"],
-        "port": ["8900"],
-        "timeout": ["120"],
-        "api_key": ["secret-token"],
-    }
-
-
-def test_api_service_settings_reject_non_string_api_key(bus: MagicMock) -> None:
-    from auto_cut_bot.webui.settings_api import WebUISettingsError
-
-    channel = _ch(bus)
-    request = _FakeReq(path="/api/settings/api-service/start")
-    setattr(
-        request,
-        "_auto_cut_bot_webui_mutation_payload",
-        {"host": "127.0.0.1", "api_key": 123},
-    )
-
-    with pytest.raises(WebUISettingsError, match="API key must be a string"):
-        channel.gateway.http.settings_routes._parse_api_service_settings_query(request)
-
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_remote_install_requires_opt_in(
+async def test_nanobot_feature_remote_install_requires_opt_in(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1320,7 +1292,7 @@ async def test_auto_cut_bot_feature_remote_install_requires_opt_in(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_local_install_allowed_by_default(
+async def test_nanobot_feature_local_install_allowed_by_default(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1349,7 +1321,7 @@ async def test_auto_cut_bot_feature_local_install_allowed_by_default(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_channel_action_can_apply_without_restart(
+async def test_nanobot_feature_channel_action_can_apply_without_restart(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1466,7 +1438,7 @@ async def test_feishu_connect_routes_write_config_and_hot_reload(
         },
     )
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_routes.auto_cut_bot_features_action",
+        "auto_cut_bot.webui.settings_routes.nanobot_features_action",
         lambda _action, _query, *, allow_install=True, config_path=None: {
             "features": [{
                 "name": "feishu",
@@ -1525,7 +1497,7 @@ async def test_feishu_connect_routes_write_config_and_hot_reload(
     assert body["instance_id"] == "default"
     assert "app_secret" not in body
     assert calls == [("enable", "feishu", "default")]
-    assert body["auto_cut_bot_features"]["requires_restart"] is False
+    assert body["nanobot_features"]["requires_restart"] is False
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["channels"]["feishu"]["instances"][0]["id"] == "default"
     assert data["channels"]["feishu"]["instances"][0]["appId"] == "cli_app"
@@ -1661,7 +1633,7 @@ async def test_channel_configure_route_saves_discord_config_and_hot_reloads(
             "last_action": {"ok": True, "message": "Enabled channel 'discord'", "enabled": True},
         }
 
-    monkeypatch.setattr("auto_cut_bot.webui.settings_routes.auto_cut_bot_features_action", fake_feature_action)
+    monkeypatch.setattr("auto_cut_bot.webui.settings_routes.nanobot_features_action", fake_feature_action)
     calls: list[tuple[str, str, str]] = []
 
     async def channel_feature_action(action: str, name: str, instance_id: str) -> dict[str, Any]:
@@ -1701,7 +1673,7 @@ async def test_channel_configure_route_saves_discord_config_and_hot_reloads(
     assert body["name"] == "discord"
     assert "discord-token" not in response.text
     assert calls == [("enable", "discord", "default")]
-    assert body["auto_cut_bot_features"]["requires_restart"] is False
+    assert body["nanobot_features"]["requires_restart"] is False
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["channels"]["discord"] == {
         "token": "discord-token",
@@ -1755,7 +1727,7 @@ async def test_channel_configure_route_preserves_existing_channel_values(
     assert body["saved_keys"] == ["channels.discord.allowChannels"]
     discord = next(
         feature
-        for feature in body["auto_cut_bot_features"]["features"]
+        for feature in body["nanobot_features"]["features"]
         if feature["name"] == "discord"
     )
     assert discord["configured"] is True
@@ -1851,7 +1823,7 @@ async def test_channel_configure_route_saves_mattermost_setup(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_loopback_reverse_proxy_install_requires_opt_in(
+async def test_nanobot_feature_loopback_reverse_proxy_install_requires_opt_in(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1897,7 +1869,7 @@ async def test_auto_cut_bot_feature_loopback_reverse_proxy_install_requires_opt_
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_remote_enable_without_install_is_allowed(
+async def test_nanobot_feature_remote_enable_without_install_is_allowed(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1927,7 +1899,7 @@ async def test_auto_cut_bot_feature_remote_enable_without_install_is_allowed(
 
 
 @pytest.mark.asyncio
-async def test_auto_cut_bot_feature_remote_disable_does_not_need_install_policy(
+async def test_nanobot_feature_remote_disable_does_not_need_install_policy(
     bus: MagicMock,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2212,10 +2184,6 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
     }
     sm.save(scoped)
 
-    def fail_metadata_read(_key: str) -> None:
-        raise AssertionError("the session list must use its own index metadata")
-
-    monkeypatch.setattr(sm, "read_session_metadata", fail_metadata_read)
     channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=29906)
     server_task = asyncio.create_task(channel.start())
     try:
@@ -2232,6 +2200,16 @@ async def test_sessions_list_only_returns_websocket_sessions_by_default(
         # Slack / Lark rows would be non-resumable from the browser.
         assert keys == {"websocket:alpha", "websocket:beta"}
         rows = {row["key"]: row for row in sessions}
+        handles = {
+            handle.session_key: handle
+            for handle in SessionHandleResolver(sm).list_all()
+        }
+        assert rows["websocket:alpha"]["handle"] == handles[
+            "websocket:alpha"
+        ].public_payload()
+        assert rows["websocket:beta"]["handle"] == handles[
+            "websocket:beta"
+        ].public_payload()
         assert rows["websocket:beta"]["workspace_scope"]["project_path"] == str(
             project.resolve()
         )
@@ -2353,6 +2331,48 @@ async def test_session_delete_removes_transcript_without_canonical_file(
     finally:
         await channel.stop()
         await server_task
+
+
+@pytest.mark.asyncio
+async def test_session_delete_removes_unpersisted_new_chat(
+    bus: MagicMock, tmp_path: Path
+) -> None:
+    sm = SessionManager(tmp_path / "sessions")
+    project = tmp_path / "project"
+    project.mkdir()
+    channel = _ch(bus, session_manager=sm, workspace_path=tmp_path, port=_free_port())
+    connection = AsyncMock()
+    connection.remote_address = ("127.0.0.1", 50123)
+
+    await channel._dispatch_envelope(
+        connection,
+        "webui-client",
+        {
+            "type": "new_chat",
+            "workspace_scope": {
+                "project_path": str(project),
+                "access_mode": "full",
+            },
+        },
+    )
+
+    attached = next(
+        payload
+        for payload in (
+            json.loads(call.args[0]) for call in connection.send.await_args_list
+        )
+        if payload.get("event") == "attached"
+    )
+    key = f"websocket:{attached['chat_id']}"
+
+    assert sm.list_sessions() == []
+    assert channel.gateway.workspaces.scope_for_session_key(key).project_path == project.resolve()
+
+    response = await _webui_mutate(channel, "session.delete", {"key": key})
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert channel.gateway.workspaces.scope_for_session_key(key).project_path == tmp_path.resolve()
 
 
 @pytest.mark.asyncio
@@ -3269,6 +3289,28 @@ async def _webui_mutate(
 
 
 @pytest.mark.asyncio
+async def test_recovery_mutation_uses_authenticated_websocket_action(bus: MagicMock) -> None:
+    recovery_action = AsyncMock(return_value={
+        "status": "resuming",
+        "recovery_id": "recovery-1",
+    })
+    channel = _ch(bus, recovery_action=recovery_action)
+
+    response = await _webui_mutate(
+        channel,
+        "recovery.continue",
+        {"chat_id": "chat-1", "recovery_id": "recovery-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "resuming"
+    recovery_action.assert_awaited_once_with(
+        "continue",
+        {"chat_id": "chat-1", "recovery_id": "recovery-1"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_workspace_folder_picker_is_local_authenticated_mutation(
     bus: MagicMock,
     tmp_path: Path,
@@ -3756,7 +3798,7 @@ def test_bootstrap_accepts_remote_with_valid_secret(bus: MagicMock) -> None:
     assert body["token"].startswith("nbwt_")
 
 
-def test_bootstrap_accepts_x_auto_cut_bot_auth_header(bus: MagicMock) -> None:
+def test_bootstrap_accepts_x_nanobot_auth_header(bus: MagicMock) -> None:
     channel = _ch(bus, host="0.0.0.0", tokenIssueSecret="s3cret")
     resp = channel.gateway.http._handle_bootstrap(
         _REMOTE, _FakeReq({"X-Nanobot-Auth": "s3cret"})

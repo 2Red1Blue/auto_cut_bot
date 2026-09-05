@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from auto_cut_bot.agent.tools.exec_session import ExecSessionManager, WriteStdinTool
+from auto_cut_bot.agent.tools.exec_session import ExecSessionManager, ExecSessionTool
 from auto_cut_bot.agent.tools.shell import ExecTool
 
 _WINDOWS_ENV_KEYS = {
@@ -896,30 +896,33 @@ class TestWindowsRealExec:
     @pytest.mark.asyncio
     async def test_windows_powershell_session_output_is_utf8(self):
         manager = ExecSessionManager()
-        result = await ExecTool(timeout=180, session_manager=manager).execute(
-            command="Start-Sleep -Milliseconds 1500; Write-Output 'café λ 你好'",
-            shell="powershell",
-            yield_time_ms=1000,
-        )
-
-        if "session_id:" in result:
-            session_id = result.split("session_id:", 1)[1].splitlines()[0].strip()
-            poll_result = await WriteStdinTool(manager=manager).execute(
-                session_id=session_id,
-                chars="",
-                wait_for="café λ 你好",
-                wait_timeout_ms=120_000,
+        try:
+            result = await ExecTool(timeout=180, session_manager=manager).execute(
+                command="Start-Sleep -Milliseconds 1500; Write-Output 'café λ 你好'",
+                shell="powershell",
+                yield_time_ms=1000,
             )
-            result += "\n" + poll_result
-            if "Process running." in poll_result:
-                final_result = await WriteStdinTool(manager=manager).execute(
-                    session_id=session_id,
-                    chars="",
-                    yield_time_ms=30_000,
-                )
-                result += "\n" + final_result
-                assert "Process running." not in final_result
 
-        assert "café λ 你好" in result
-        assert "Exit code: 0" in result
-        assert "\x00" not in result
+            if "session_id:" in result:
+                session_id = result.split("session_id:", 1)[1].splitlines()[0].strip()
+                poll_result = await ExecSessionTool(manager=manager).execute(
+                    session_id=session_id,
+                    input="",
+                    wait_for="café λ 你好",
+                    timeout_ms=120_000,
+                )
+                result += "\n" + poll_result
+                if "Process running." in poll_result:
+                    final_result = await ExecSessionTool(manager=manager).execute(
+                        session_id=session_id,
+                        input="",
+                        timeout_ms=30_000,
+                    )
+                    result += "\n" + final_result
+                    assert "Process running." not in final_result
+
+            assert "café λ 你好" in result
+            assert "Exit code: 0" in result
+            assert "\x00" not in result
+        finally:
+            await manager.close_all()

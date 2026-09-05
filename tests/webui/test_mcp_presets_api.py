@@ -43,7 +43,7 @@ def _write_agent_plugin(workspace: Path) -> None:
                 "name": "desktop",
                 "description": "Control the local desktop.",
                 "extensions": {
-                    "dev.nanobot": {
+                    "dev.auto_cut_bot": {
                         "displayName": "Desktop Control",
                         "permissions": ["screen-recording"],
                     }

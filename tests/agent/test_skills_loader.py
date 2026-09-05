@@ -133,13 +133,13 @@ def test_list_skills_filter_unavailable_excludes_unmet_bin_requirement(
     _write_skill(
         skills_root,
         "needs_bin",
-        metadata_json={"requires": {"bins": ["auto_cut_bot_test_fake_binary"]}},
+        metadata_json={"requires": {"bins": ["nanobot_test_fake_binary"]}},
     )
     builtin = tmp_path / "builtin"
     builtin.mkdir()
 
     def fake_which(cmd: str) -> str | None:
-        if cmd == "auto_cut_bot_test_fake_binary":
+        if cmd == "nanobot_test_fake_binary":
             return None
         return "/usr/bin/true"
 
@@ -158,14 +158,14 @@ def test_list_skills_filter_unavailable_includes_when_bin_requirement_met(
     skill_path = _write_skill(
         skills_root,
         "has_bin",
-        metadata_json={"requires": {"bins": ["auto_cut_bot_test_fake_binary"]}},
+        metadata_json={"requires": {"bins": ["nanobot_test_fake_binary"]}},
     )
     builtin = tmp_path / "builtin"
     builtin.mkdir()
 
     def fake_which(cmd: str) -> str | None:
-        if cmd == "auto_cut_bot_test_fake_binary":
-            return "/fake/auto_cut_bot_test_fake_binary"
+        if cmd == "nanobot_test_fake_binary":
+            return "/fake/nanobot_test_fake_binary"
         return None
 
     monkeypatch.setattr("auto_cut_bot.agent.skills.shutil.which", fake_which)
@@ -186,7 +186,7 @@ def test_list_skills_filter_unavailable_false_keeps_unmet_requirements(
     skill_path = _write_skill(
         skills_root,
         "blocked",
-        metadata_json={"requires": {"bins": ["auto_cut_bot_test_fake_binary"]}},
+        metadata_json={"requires": {"bins": ["nanobot_test_fake_binary"]}},
     )
     builtin = tmp_path / "builtin"
     builtin.mkdir()
@@ -229,7 +229,7 @@ def test_list_skills_openclaw_metadata_parsed_for_requirements(
     skill_dir = skills_root / "openclaw_skill"
     skill_dir.mkdir(parents=True)
     skill_path = skill_dir / "SKILL.md"
-    oc_payload = json.dumps({"openclaw": {"requires": {"bins": ["auto_cut_bot_oc_bin"]}}}, separators=(",", ":"))
+    oc_payload = json.dumps({"openclaw": {"requires": {"bins": ["nanobot_oc_bin"]}}}, separators=(",", ":"))
     skill_path.write_text(
         "\n".join(["---", f"metadata: {oc_payload}", "---", "", "# OC"]),
         encoding="utf-8",
@@ -244,7 +244,7 @@ def test_list_skills_openclaw_metadata_parsed_for_requirements(
 
     monkeypatch.setattr(
         "auto_cut_bot.agent.skills.shutil.which",
-        lambda cmd: "/x" if cmd == "auto_cut_bot_oc_bin" else None,
+        lambda cmd: "/x" if cmd == "nanobot_oc_bin" else None,
     )
     entries = loader.list_skills(filter_unavailable=True)
     assert entries == [
@@ -298,7 +298,7 @@ def test_disabled_skills_excluded_from_build_skills_summary(tmp_path: Path) -> N
     assert "beta" in summary
 
 
-def test_build_skills_summary_groups_paths_by_root(tmp_path: Path) -> None:
+def test_build_skills_summary_uses_relative_roots_in_agent_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
     workspace_skills = workspace / "skills"
     workspace_skills.mkdir(parents=True)
@@ -308,12 +308,32 @@ def test_build_skills_summary_groups_paths_by_root(tmp_path: Path) -> None:
 
     summary = SkillsLoader(workspace, builtin_skills_dir=builtin).build_skills_summary()
 
-    assert summary.count(str(workspace_skills)) == 1
-    assert summary.count(str(builtin)) == 1
+    assert str(workspace_skills) not in summary
+    assert str(builtin) not in summary
     assert str(workspace_path) not in summary
     assert str(builtin_path) not in summary
+    assert summary.count("(`skills`)") == 2
     assert "`alpha/SKILL.md`" in summary
     assert "`beta/SKILL.md`" in summary
+
+
+def test_build_skills_summary_keeps_absolute_roots_for_selected_project(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace_skills = workspace / "skills"
+    workspace_skills.mkdir(parents=True)
+    _write_skill(workspace_skills, "alpha", body="# Alpha")
+    builtin = tmp_path / "builtin"
+    _write_skill(builtin, "beta", body="# Beta")
+    project = tmp_path / "project"
+    project.mkdir()
+
+    summary = SkillsLoader(workspace, builtin_skills_dir=builtin).build_skills_summary(
+        workspace=project,
+    )
+
+    assert summary.count(str(workspace_skills.resolve())) == 1
+    assert summary.count(str(builtin.resolve())) == 1
+    assert str(project.resolve()) not in summary
 
 
 def test_bundled_update_setup_description_is_valid_yaml(tmp_path: Path) -> None:
@@ -381,6 +401,36 @@ def test_explicit_skill_references_resolve_available_enabled_names_in_order(
     )
 
     assert invoked == ["alpha"]
+
+
+def test_multiple_explicit_skills_share_one_ordered_runtime_context(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    skills_root = workspace / "skills"
+    skills_root.mkdir(parents=True)
+    _write_skill(skills_root, "alpha", body="Alpha instructions")
+    _write_skill(skills_root, "beta", body="Beta instructions")
+    _write_skill(
+        skills_root,
+        "always",
+        metadata_json={"always": True},
+        body="Always instructions",
+    )
+    builtin = tmp_path / "builtin"
+    builtin.mkdir()
+    loader = SkillsLoader(workspace, builtin_skills_dir=builtin)
+
+    context = loader.build_explicit_skill_runtime_context(
+        "Use $beta, then $alpha, $beta again, and $always."
+    )
+
+    assert context is not None
+    assert context.source == "explicit_skills"
+    assert context.content.count("### Skill: beta") == 1
+    assert context.content.count("### Skill: alpha") == 1
+    assert context.content.index("### Skill: beta") < context.content.index(
+        "### Skill: alpha"
+    )
+    assert "### Skill: always" not in context.content
 
 
 # -- multiline description tests (YAML folded > and literal |) -----------------

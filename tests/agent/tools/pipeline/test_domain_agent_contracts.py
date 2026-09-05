@@ -12,6 +12,7 @@ from auto_cut_bot.agent.tools.pipeline._domain_registry import (
     get_agent_for_tool,
     get_tools_for_agent,
 )
+from auto_cut_bot.cli.agent import agent
 
 
 class TestDomainAgentContracts:

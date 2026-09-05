@@ -58,7 +58,7 @@ class CapabilitySettingsOperations:
     update_image: SettingsOperation
     update_transcription: SettingsOperation
     update_network: SettingsOperation
-    auto_cut_bot_features_action: SettingsOperation
+    nanobot_features_action: SettingsOperation
     api_runtime: Callable[[], ApiRuntime]
     reload_image: Callable[[], Awaitable[dict[str, Any]]]
 
@@ -729,7 +729,7 @@ class CapabilitySettingsHandler:
         try:
             await asyncio.to_thread(
                 self.settings.mutate,
-                operations.auto_cut_bot_features_action,
+                operations.nanobot_features_action,
                 "enable",
                 {"name": ["api"]},
                 allow_install=self._allow_feature_package_install(request),

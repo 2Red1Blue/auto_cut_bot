@@ -161,6 +161,7 @@
       "webuiDefaultAccess": "Acceso predeterminado",
       "currentModel": "Configuración actual",
       "brandLogos": "Logos de marca",
+      "browserNotifications": "Notificaciones de tareas",
       "cliAppsCatalog": "Catálogo",
       "cliAppsFilter": "Filtro",
       "engine": "Motor",
@@ -269,7 +270,7 @@
       "save": "Guardar",
       "saving": "Guardando",
       "saveOrder": "Guardar orden",
-      "savePreset": "Guardar preajuste",
+      "savePreset": "Guardar",
       "delete": "Eliminar",
       "deleting": "Eliminando...",
       "edit": "Editar",
@@ -421,7 +422,7 @@
       "presetName": "Nombre del preajuste",
       "presetNameHelp": "Se usa en la interfaz y en /model. Los nombres deben ser únicos.",
       "presetNameDuplicate": "Ya existe un preajuste con este nombre.",
-      "presetNamePlaceholder": "Escritura rápida",
+      "presetNamePlaceholder": "p. ej., Escritura rápida",
       "advancedOptions": "Opciones avanzadas",
       "advancedSummary": "Contexto {{context}} · Máx. {{max}} tokens",
       "maxTokens": "Máx. tokens de salida",
@@ -1000,7 +1001,8 @@
     "activity": {
       "running": "Agente en ejecución",
       "complete": "Agente terminado",
-      "updated": "Nueva actividad"
+      "updated": "Nueva actividad",
+      "recovery": "Esta conversación requiere tu atención"
     },
     "pin": "Fijar",
     "unpin": "Desfijar",
@@ -1179,6 +1181,21 @@
       "removeQuotedContext": "Quitar contexto citado",
       "modelNotConfigured": "Modelo no configurado",
       "configureModel": "Configurar modelo",
+      "chooseAI": "Elige tu IA",
+      "switchModel": "Cambiar el modelo de este chat",
+      "manageModels": "Gestionar modelos",
+      "context": {
+        "tooltip": "Contexto {{percent}}%",
+        "detailsLabel": "Abrir uso del contexto",
+        "panelTitle": "Uso del contexto",
+        "contextTitle": "Contexto",
+        "recentRounds": "Rondas recientes",
+        "inputTrend": "Tokens de entrada",
+        "input": "Tokens de entrada",
+        "cacheHitRate": "Tasa de aciertos de KV Cache",
+        "output": "Tokens de salida",
+        "duration": "Tiempo de generación"
+      },
       "queued": {
         "label": "Guía en cola",
         "guide": "Guiar",
@@ -1395,6 +1412,11 @@
     "fileEditShowFewerLines": "Mostrar menos líneas",
     "fileEditOpenFile": "Abrir archivo",
     "fileEditDiffTruncated": "Diferencias truncadas. Abre el archivo para ver el cambio completo.",
+    "usage": {
+      "context": "Contexto más reciente: {{tokens}}{{capacity}} tokens",
+      "requests": "{{count}} solicitudes al modelo",
+      "estimated": "Incluye uso estimado"
+    },
     "activityThinkingFor": "Pensando durante {{duration}}",
     "activityThought": "Pensamiento completado",
     "activityThoughtFor": "Pensó durante {{duration}}",
@@ -1412,6 +1434,18 @@
     "cliRunFailed": "Falló",
     "automationSourceFallback": "Automatización",
     "automationTriggered": "Activada automáticamente"
+  },
+  "recovery": {
+    "actionFailed": "La recuperación falló. Inténtalo de nuevo.",
+    "interrupted": "Tarea interrumpida",
+    "completed": "Tarea completada",
+    "failed": "La recuperación de la tarea falló",
+    "failedHelp": "La tarea guardada no se pudo restaurar de forma segura. Revísala antes de continuar.",
+    "resuming": "Restaurando la tarea interrumpida…",
+    "review": "Revisa la tarea antes de continuar. Las herramientas no se repetirán automáticamente.",
+    "safeResume": "Continuando desde el contexto guardado de la conversación.",
+    "dismiss": "Descartar",
+    "continue": "Continuar"
   },
   "lightbox": {
     "title": "Vista previa de imagen",

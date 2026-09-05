@@ -84,7 +84,10 @@ def test_plugin_skill_lifecycle_and_precedence(tmp_path: Path) -> None:
     assert loader.get_explicitly_invoked_skills("Use $shared") == ["shared"]
     assert loader.get_always_skills() == ["shared"]
     assert "Plugin body" in (loader.load_skill("shared") or "")
-    assert "`demo/skills/shared/SKILL.md`" in loader.build_skills_summary()
+    summary = loader.build_skills_summary()
+    assert "### Agent Plugin skills (`plugins`)" in summary
+    assert "`demo/skills/shared/SKILL.md`" in summary
+    assert str(tmp_path.resolve()) not in summary
 
     set_agent_plugin_enabled(tmp_path, "demo", False)
     assert [entry["source"] for entry in loader.list_skills()] == ["builtin"]
@@ -126,7 +129,7 @@ def test_plugin_manifest_boundary(tmp_path: Path, manifest: object, valid: bool)
 
 
 def test_plugin_logo_is_validated_and_contained(tmp_path: Path) -> None:
-    extension = {"extensions": {"dev.nanobot": {"logo": "./assets/icon.png"}}}
+    extension = {"extensions": {"dev.auto_cut_bot": {"logo": "./assets/icon.png"}}}
     plugin = _plugin(tmp_path, "demo", **extension)
     icon = plugin / "assets" / "icon.png"
     icon.parent.mkdir()

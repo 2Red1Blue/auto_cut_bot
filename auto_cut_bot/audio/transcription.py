@@ -43,12 +43,6 @@ _AUDIO_MIME_ALLOWED: frozenset[str] = frozenset({
     "audio/x-wav",
 })
 
-# Providers that don't require an API key — value is a sentinel so
-# ``EffectiveTranscriptionConfig.configured`` (bool check) passes.
-_NO_API_KEY_PROVIDERS: dict[str, str] = {
-    "funasr": "local",
-}
-
 
 @dataclass(frozen=True)
 class EffectiveTranscriptionConfig:
@@ -97,10 +91,6 @@ def _resolve_transcription_api_key(
     api_key = resolve_env_refs(getattr(provider_cfg, "api_key", None) or "") if provider_cfg else ""
     if api_key:
         return api_key
-
-    # Providers that don't require an API key (self-hosted / local)
-    if provider in _NO_API_KEY_PROVIDERS:
-        return _NO_API_KEY_PROVIDERS[provider]
 
     spec = find_by_name(provider)
     if provider == "siliconflow":

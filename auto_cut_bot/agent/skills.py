@@ -9,6 +9,8 @@ from typing import Any, cast
 
 import yaml
 
+from auto_cut_bot.runtime_context import RuntimeContextBlock
+
 # Default builtin skills directory (relative to this file)
 BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
@@ -177,7 +179,34 @@ class SkillsLoader:
                 invoked.append(name)
         return invoked
 
-    def build_skills_summary(self, exclude: set[str] | None = None) -> str:
+    def build_explicit_skill_runtime_context(
+        self,
+        text: str,
+    ) -> RuntimeContextBlock | None:
+        """Load non-always skills explicitly invoked by the current message."""
+        skill_names = self.get_explicitly_invoked_skills(text)
+        if not skill_names:
+            return None
+        always_active = set(self.get_always_skills())
+        skill_names = [name for name in skill_names if name not in always_active]
+        content = self.load_skills_for_context(skill_names)
+        if not content:
+            return None
+        return RuntimeContextBlock(
+            source="explicit_skills",
+            content=(
+                "[Active Skills — instructions for this user turn]\n"
+                f"{content}\n"
+                "[/Active Skills]"
+            ),
+        )
+
+    def build_skills_summary(
+        self,
+        exclude: set[str] | None = None,
+        *,
+        workspace: Path | None = None,
+    ) -> str:
         """
         Build a summary of all skills (name, description, path, availability).
 
@@ -186,6 +215,7 @@ class SkillsLoader:
 
         Args:
             exclude: Set of skill names to omit from the summary.
+            workspace: Effective project workspace used to choose safe display paths.
 
         Returns:
             Markdown-formatted skills summary.
@@ -194,6 +224,9 @@ class SkillsLoader:
         if not all_skills:
             return ""
 
+        agent_workspace = self.workspace.expanduser().resolve()
+        project_workspace = (workspace or self.workspace).expanduser().resolve()
+        use_relative_roots = project_workspace == agent_workspace
         sections: list[str] = []
         groups = (
             ("Workspace skills", "workspace", self.workspace_skills),
@@ -209,7 +242,12 @@ class SkillsLoader:
             if not entries:
                 continue
 
-            lines = [f"### {label} (`{root.expanduser().resolve()}`)"]
+            resolved_root = root.expanduser().resolve()
+            if use_relative_roots:
+                display_root = Path("plugins" if source == "plugin" else "skills")
+            else:
+                display_root = resolved_root
+            lines = [f"### {label} (`{display_root}`)"]
             for entry in entries:
                 skill_name = entry["name"]
                 meta = self._get_skill_meta(skill_name)
@@ -277,7 +315,7 @@ class SkillsLoader:
             return content[match.end():].strip()
         return content
 
-    def _parse_auto_cut_bot_metadata(self, raw: object) -> dict[str, Any]:
+    def _parse_nanobot_metadata(self, raw: object) -> dict[str, Any]:
         """Extract auto_cut_bot/openclaw metadata from a frontmatter field.
 
         ``raw`` may be a dict (already parsed by yaml.safe_load) or a JSON str.
@@ -307,7 +345,7 @@ class SkillsLoader:
     def _get_skill_meta(self, name: str) -> dict[str, Any]:
         """Get auto_cut_bot metadata for a skill (cached in frontmatter)."""
         raw_meta = self.get_skill_metadata(name) or {}
-        return self._parse_auto_cut_bot_metadata(raw_meta.get("metadata"))
+        return self._parse_nanobot_metadata(raw_meta.get("metadata"))
 
     def get_always_skills(self) -> list[str]:
         """Get skills marked as always=true that meet requirements."""
@@ -316,7 +354,7 @@ class SkillsLoader:
             for entry in self.list_skills(filter_unavailable=True)
             if (meta := self.get_skill_metadata(entry["name"]) or {})
             and (
-                self._parse_auto_cut_bot_metadata(meta.get("metadata")).get("always")
+                self._parse_nanobot_metadata(meta.get("metadata")).get("always")
                 or meta.get("always")
             )
         ]

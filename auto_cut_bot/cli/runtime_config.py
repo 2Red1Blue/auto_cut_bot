@@ -114,16 +114,6 @@ def _load_config_for_cli(
         raise typer.Exit(1) from exc
 
 
-def _find_project_config() -> Path | None:
-    """Search upward from CWD for auto_cut_bot.config.json."""
-    current = Path.cwd().resolve()
-    for directory in (current, *current.parents):
-        candidate = directory / "auto_cut_bot.config.json"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 def _load_runtime_config(config: str | None = None, workspace: str | None = None) -> Config:
     """Load config and optionally override the active workspace."""
     from auto_cut_bot.config.loader import set_config_path
@@ -136,12 +126,6 @@ def _load_runtime_config(config: str | None = None, workspace: str | None = None
             raise typer.Exit(1)
         set_config_path(config_path)
         console.print(f"[dim]Using config: {config_path}[/dim]")
-    else:
-        # Always prefer project-local config (search upward from CWD)
-        project_config = _find_project_config()
-        if project_config:
-            set_config_path(project_config)
-            console.print(f"[dim]Using project config: {project_config}[/dim]")
 
     loaded = _load_config_for_cli(config_path, resolve_env=True)
     if workspace:

@@ -83,7 +83,6 @@ def test_loop_has_no_mutable_runtime_mirrors_or_legacy_snapshot_api(tmp_path: Pa
     }.isdisjoint(loop.__dict__)
     assert not hasattr(loop, "_apply_provider_snapshot")
     assert not hasattr(loop, "_build_model_preset_snapshot")
-    assert not hasattr(loop, "_sync_replay_max_messages")
 
 
 def test_llm_runtime_refreshes_provider_snapshot(tmp_path: Path) -> None:
@@ -134,7 +133,7 @@ def test_provider_snapshot_missing_env_reports_explicit_config_path(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    name = "NANOBOT_TEST_REFRESH_MISSING_KEY"
+    name = "AUTO_CUT_BOT_TEST_REFRESH_MISSING_KEY"
     monkeypatch.delenv(name, raising=False)
     config_path = tmp_path / "custom.json"
     config_path.write_text(

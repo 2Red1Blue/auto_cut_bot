@@ -45,7 +45,7 @@ def test_store_inbound_document_preserves_safe_name(tmp_path: Path) -> None:
     paths, rejection = store_inbound_attachments(
         [
             {
-                "data_url": _data_url("text/csv", b"name,value\nauto_cut_bot,1"),
+                "data_url": _data_url("text/csv", b"name,value\nnanobot,1"),
                 "name": "report.csv",
             },
         ],
@@ -58,7 +58,7 @@ def test_store_inbound_document_preserves_safe_name(tmp_path: Path) -> None:
     saved = Path(paths[0])
     assert saved.parent == tmp_path
     assert saved.name.endswith("_report.csv")
-    assert saved.read_bytes() == b"name,value\nauto_cut_bot,1"
+    assert saved.read_bytes() == b"name,value\nnanobot,1"
 
 
 def test_invalid_batch_removes_files_already_persisted(tmp_path: Path) -> None:

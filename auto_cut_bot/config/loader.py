@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any, cast, overload
 
-from dotenv import load_dotenv
 from pydantic import BaseModel, ValidationError
 from pydantic_settings import SettingsError
 
@@ -22,13 +21,6 @@ _current_config_path: Path | None = None
 _schema_refs_ready = False
 
 
-def _load_dotenv_from_project(config_path: Path) -> None:
-    """Load .env file from the project directory (next to config file)."""
-    env_path = config_path.parent / ".env"
-    if env_path.is_file():
-        load_dotenv(env_path, override=False)
-
-
 def _as_config_object(value: object) -> dict[str, Any] | None:
     """Narrow an untrusted JSON configuration value to an object."""
     return cast(dict[str, Any], value) if isinstance(value, dict) else None
@@ -41,19 +33,9 @@ def set_config_path(path: Path) -> None:
 
 
 def get_config_path() -> Path:
-    """Get the configuration file path.
-
-    Resolution order:
-      1. Explicit path set via set_config_path() (--config flag)
-      2. Project-local config: ./auto_cut_bot.config.json (CWD)
-      3. Global config: ~/.auto_cut_bot/config.json
-    """
+    """Get the configuration file path."""
     if _current_config_path:
         return _current_config_path
-    # Check for project-local config (enables zero-onboard deployment)
-    local_config = Path.cwd() / "auto_cut_bot.config.json"
-    if local_config.is_file():
-        return local_config
     return Path.home() / ".auto_cut_bot" / "config.json"
 
 
@@ -73,9 +55,6 @@ def load_config(config_path: Path | None = None) -> Config:
         _schema_refs_ready = True
 
     path = config_path or get_config_path()
-
-    # Load .env from project directory (if exists) before parsing config
-    _load_dotenv_from_project(path)
 
     if not path.exists():
         try:

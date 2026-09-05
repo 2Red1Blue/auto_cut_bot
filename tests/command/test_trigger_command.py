@@ -22,18 +22,18 @@ async def test_trigger_command_creates_session_bound_local_trigger(tmp_path: Pat
         channel="websocket",
         sender_id="user",
         chat_id="chat-1",
-        content="/trigger@auto_cut_bot_bot PR review",
+        content="/trigger@nanobot_bot PR review",
         metadata={"webui": True},
     )
     ctx = CommandContext(
         msg=msg,
         session=None,
         key="websocket:chat-1",
-        raw="/trigger@auto_cut_bot_bot PR review",
+        raw="/trigger@nanobot_bot PR review",
         loop=loop,
     )
 
-    assert router.is_dispatchable_command("/trigger@auto_cut_bot_bot PR review") is True
+    assert router.is_dispatchable_command("/trigger@nanobot_bot PR review") is True
     response = await router.dispatch(ctx)
 
     assert response is not None
@@ -87,14 +87,14 @@ async def test_trigger_command_without_name_returns_usage_only(tmp_path: Path) -
         channel="websocket",
         sender_id="user",
         chat_id="chat-1",
-        content="/trigger@auto_cut_bot_bot",
+        content="/trigger@nanobot_bot",
         metadata={"webui": True},
     )
     ctx = CommandContext(
         msg=msg,
         session=None,
         key="websocket:chat-1",
-        raw="/trigger@auto_cut_bot_bot",
+        raw="/trigger@nanobot_bot",
         loop=loop,
     )
 

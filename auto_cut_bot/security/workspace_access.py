@@ -22,7 +22,7 @@ _PROVIDER_LABELS = {
 }
 
 _CURRENT_WORKSPACE_SCOPE: ContextVar["WorkspaceScope | None"] = ContextVar(
-    "auto_cut_bot_workspace_scope",
+    "nanobot_workspace_scope",
     default=None,
 )
 

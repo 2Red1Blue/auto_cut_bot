@@ -195,8 +195,8 @@ def _load_manifest(plugin_root: Path) -> AgentPlugin | None:
         return None
     extension = payload.get("extensions")
     extension_payload = cast(dict[str, object], extension) if isinstance(extension, dict) else {}
-    nanobot_value = extension_payload.get("dev.nanobot")
-    auto_cut_bot = cast(dict[str, object], auto_cut_bot_value) if isinstance(auto_cut_bot_value, dict) else {}
+    nanobot_value = extension_payload.get("dev.auto_cut_bot")
+    auto_cut_bot = cast(dict[str, object], nanobot_value) if isinstance(nanobot_value, dict) else {}
     return AgentPlugin(
         name=name,
         root=plugin_root,

@@ -43,6 +43,7 @@ from auto_cut_bot.utils.llm_runtime import LLMRuntime
 
 __all__ = [
     "Nanobot",
+    "LLMUsage",
     "RunResult",
     "RunStream",
     "SessionInfo",
@@ -287,7 +288,7 @@ class Nanobot:
                     type=STREAM_EVENT_RUN_COMPLETED,
                     content=result.content,
                     result=result,
-                    usage=dict(result.usage),
+                    usage=result.usage,
                     metadata=dict(result.metadata),
                 ))
                 return result
@@ -300,7 +301,7 @@ class Nanobot:
                 ))
                 raise
             finally:
-                emitter.close()
+                await emitter.close()
 
         task = asyncio.create_task(_run())
         return RunStream(task, queue)

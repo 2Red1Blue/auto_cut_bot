@@ -206,7 +206,7 @@ export function WeixinPanel({
               {displayName}
             </h3>
             <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
-              {channelTx("description", "Use nanobot from WeChat conversations.")}
+              {channelTx("description", "Use auto_cut_bot from WeChat conversations.")}
             </p>
             {missingSupport && feature.install_supported ? (
               <Button

@@ -2,10 +2,10 @@
 
 from loguru import logger
 
-__all__ = ["_set_auto_cut_bot_logs"]
+__all__ = ["_set_nanobot_logs"]
 
 
-def _set_auto_cut_bot_logs(enabled: bool) -> None:
+def _set_nanobot_logs(enabled: bool) -> None:
     if enabled:
         logger.enable("auto_cut_bot")
     else:

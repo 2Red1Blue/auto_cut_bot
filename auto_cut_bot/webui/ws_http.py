@@ -28,6 +28,11 @@ from auto_cut_bot.command.builtin import builtin_command_palette
 from auto_cut_bot.cron.session_turns import is_bound_cron_job
 from auto_cut_bot.cron.types import CronJob, CronSchedule
 from auto_cut_bot.security.workspace_access import WorkspaceScope
+from auto_cut_bot.session.manager import SessionManager
+from auto_cut_bot.session.recovery import RecoveryActionError
+from auto_cut_bot.session.session_handles import (
+    SessionHandleResolver,
+)
 from auto_cut_bot.triggers.local_types import LocalTrigger
 from auto_cut_bot.webui.file_preview import (
     WebUIFilePreviewError,
@@ -97,6 +102,8 @@ from auto_cut_bot.webui.session_automations import (
     session_automation_jobs,
     session_automations_payload,
 )
+from auto_cut_bot.webui.session_context import session_context_payload
+from auto_cut_bot.webui.session_identity import is_webui_session_key
 from auto_cut_bot.webui.session_list_index import (
     WEBUI_SESSION_INDEX_INTERNAL_FIELDS,
     indexed_workspace_scope,
@@ -125,8 +132,8 @@ from auto_cut_bot.webui.transcript import build_webui_thread_response
 from auto_cut_bot.webui.workspaces import WebUIWorkspaceController
 
 _SLOW_WEBUI_HTTP_LOG_MS = 1_000
-_WEBUI_MUTATION_PAYLOAD_ATTR = "_auto_cut_bot_webui_mutation_payload"
-_WEBUI_MUTATION_REQUEST_ATTR = "_auto_cut_bot_webui_mutation_request"
+_WEBUI_MUTATION_PAYLOAD_ATTR = "_nanobot_webui_mutation_payload"
+_WEBUI_MUTATION_REQUEST_ATTR = "_nanobot_webui_mutation_request"
 _NO_STORE_HEADERS = [("Cache-Control", "no-store")]
 
 _WEBUI_MUTATION_PATHS = {
@@ -140,6 +147,8 @@ _WEBUI_MUTATION_PATHS = {
     "skill.delete": "/api/webui/skills/delete",
     "sidebar.update": "/api/webui/sidebar-state/update",
     "workspace.pick_folder": "/api/workspaces/pick-folder",
+    "recovery.continue": "/api/webui/recovery/continue",
+    "recovery.dismiss": "/api/webui/recovery/dismiss",
     "settings.agent.update": "/api/settings/update",
     "settings.model_configuration.create": "/api/settings/model-configurations/create",
     "settings.model_configuration.update": "/api/settings/model-configurations/update",
@@ -215,7 +224,6 @@ if TYPE_CHECKING:
     from auto_cut_bot.bus.queue import MessageBus
     from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
     from auto_cut_bot.cron.service import CronService
-    from auto_cut_bot.session.manager import SessionManager
     from auto_cut_bot.triggers.local_store import LocalTriggerStore
     from auto_cut_bot.webui.settings_services import WebUISettingsServices
 
@@ -319,6 +327,9 @@ class GatewayHTTPHandler:
         mcp_runtime_status: Callable[[], Mapping[str, str]] | None = None,
         mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         skill_state_action: Callable[[set[str]], None] | None = None,
+        recovery_action: (
+            Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None
+        ) = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -336,6 +347,7 @@ class GatewayHTTPHandler:
             disabled_skills if disabled_skills is not None else set()
         )
         self.skill_state_action = skill_state_action
+        self.recovery_action = recovery_action
         self._skill_install_lock = asyncio.Lock()
         self._folder_picker_lock = asyncio.Lock()
         self.cron_service = cron_service
@@ -383,7 +395,7 @@ class GatewayHTTPHandler:
     # -- Token management ---------------------------------------------------
 
     def check_api_token(self, request: WsRequest) -> bool:
-        if getattr(request, "_auto_cut_bot_trusted_proxy_authenticated", False):
+        if getattr(request, "_nanobot_trusted_proxy_authenticated", False):
             return True
         return self.tokens.check_api_token(request)
 
@@ -396,7 +408,7 @@ class GatewayHTTPHandler:
         response: Any | None = None
         setattr(
             request,
-            "_auto_cut_bot_trusted_proxy_authenticated",
+            "_nanobot_trusted_proxy_authenticated",
             _is_trusted_proxy_authenticated_request(connection, request.headers, self.config),
         )
 
@@ -435,7 +447,7 @@ class GatewayHTTPHandler:
                 except TypeError:
                     headers = Headers()
         request = WsRequest(path, headers)
-        setattr(request, "_auto_cut_bot_trusted_proxy_authenticated", True)
+        setattr(request, "_nanobot_trusted_proxy_authenticated", True)
         setattr(request, _WEBUI_MUTATION_REQUEST_ATTR, True)
         setattr(request, _WEBUI_MUTATION_PAYLOAD_ATTR, dict(payload))
         response = await self._dispatch_resolved(connection, request, path)
@@ -449,6 +461,8 @@ class GatewayHTTPHandler:
         if re.match(r"^/api/sessions/[^/]+/delete$", path):
             return True
         if re.match(r"^/api/webui/automations/(enable|disable|delete|run|update)$", path):
+            return True
+        if path in {"/api/webui/recovery/continue", "/api/webui/recovery/dismiss"}:
             return True
         return path in {
             "/api/webui/skills/install",
@@ -500,6 +514,11 @@ class GatewayHTTPHandler:
 
         # Settings routes (delegated)
         response = await self.settings_routes.dispatch(connection, request, got)
+        if response is not None:
+            return response
+
+        # Recovery routes
+        response = await self._dispatch_recovery_route(request, got)
         if response is not None:
             return response
 
@@ -678,6 +697,10 @@ class GatewayHTTPHandler:
         if m:
             return self._handle_webui_thread_get(request, m.group(1))
 
+        m = re.match(r"^/api/sessions/([^/]+)/context$", got)
+        if m:
+            return await self._handle_session_context_get(request, m.group(1))
+
         m = re.match(r"^/api/sessions/([^/]+)/file-preview$", got)
         if m:
             return self._handle_file_preview(request, m.group(1))
@@ -692,6 +715,45 @@ class GatewayHTTPHandler:
 
         return None
 
+    async def _dispatch_recovery_route(
+        self,
+        request: WsRequest,
+        path: str,
+    ) -> Response | None:
+        match = re.fullmatch(r"/api/webui/recovery/(continue|dismiss)", path)
+        if match is None:
+            return None
+        if not getattr(request, _WEBUI_MUTATION_REQUEST_ATTR, False):
+            return _http_error(405, "WebUI recovery actions require an authenticated WebSocket")
+        if self.recovery_action is None:
+            return _http_error(503, "WebUI recovery is unavailable")
+        payload = _mutation_payload(request)
+        if payload is None:
+            return _http_error(400, "invalid recovery payload")
+        try:
+            result = await self.recovery_action(match.group(1), payload)
+        except RecoveryActionError as exc:
+            return _http_error(exc.status, str(exc))
+        return _http_json_response(result)
+
+    async def _handle_session_context_get(self, request: WsRequest, key: str) -> Response:
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        decoded_key = _decode_api_key(key)
+        if decoded_key is None:
+            return _http_error(400, "invalid session key")
+        if not _is_websocket_channel_session_key(decoded_key):
+            return _http_error(404, "session not found")
+        if self.session_manager is None:
+            return _http_error(503, "session manager unavailable")
+        session = await asyncio.to_thread(
+            self.session_manager.read_session_snapshot,
+            decoded_key,
+        )
+        if session is None:
+            return _http_error(404, "session not found")
+        return _http_json_response(session_context_payload(session))
+
     async def _handle_sessions_list(self, request: WsRequest) -> Response:
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
@@ -705,20 +767,25 @@ class GatewayHTTPHandler:
 
     def _sessions_list_payload(self) -> dict[str, Any]:
         assert self.session_manager is not None
-        sessions = list_webui_sessions(self.session_manager)
         from auto_cut_bot.session.webui_turns import websocket_turn_wall_started_at
 
+        sessions = list_webui_sessions(self.session_manager)
+        handles = SessionHandleResolver(self.session_manager).list_all_by_key()
         cleaned: list[dict[str, Any]] = []
         default_scope: WorkspaceScope | None = None
         for s in sessions:
             key = s.get("key")
-            if not (isinstance(key, str) and key.startswith("websocket:")):
+            if not (isinstance(key, str) and is_webui_session_key(key)):
                 continue
             row = {
                 k: v
                 for k, v in s.items()
                 if k != "path" and k not in WEBUI_SESSION_INDEX_INTERNAL_FIELDS
             }
+            # Keep the additive recovery field absent for ordinary sessions so
+            # older clients and compact list responses stay unchanged.
+            if row.get("recovery_state") is None:
+                row.pop("recovery_state", None)
             chat_id = key.split(":", 1)[1]
             started_at = websocket_turn_wall_started_at(chat_id)
             if started_at is not None:
@@ -732,6 +799,9 @@ class GatewayHTTPHandler:
                 default_scope=default_scope,
             )
             row["workspace_scope"] = scope.payload()
+            handle = handles.get(key)
+            if handle is not None:
+                row["handle"] = handle.public_payload()
             cleaned.append(row)
         return {"sessions": cleaned}
 
@@ -882,9 +952,12 @@ class GatewayHTTPHandler:
                         self.local_trigger_store.delete(job.id)
                 elif self.cron_service is not None:
                     self.cron_service.remove_job(job.id)
+        draft_deleted = self.workspaces.discard_draft_scope(decoded_key)
         session_deleted = self.session_manager.delete_session(decoded_key)
         transcript_deleted = delete_webui_thread(decoded_key)
-        return _http_json_response({"deleted": bool(session_deleted or transcript_deleted)})
+        return _http_json_response(
+            {"deleted": bool(draft_deleted or session_deleted or transcript_deleted)}
+        )
 
     # -- Automation routes --------------------------------------------------
 
@@ -1550,4 +1623,4 @@ def _positive_int(value: Any) -> int | None:
 
 
 def _is_websocket_channel_session_key(key: str) -> bool:
-    return key.startswith("websocket:")
+    return is_webui_session_key(key)

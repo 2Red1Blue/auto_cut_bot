@@ -161,6 +161,7 @@
       "webuiDefaultAccess": "Akses bawaan",
       "currentModel": "Konfigurasi saat ini",
       "brandLogos": "Logo merek",
+      "browserNotifications": "Notifikasi tugas",
       "cliAppsCatalog": "Katalog",
       "cliAppsFilter": "Saring",
       "engine": "Mesin",
@@ -269,7 +270,7 @@
       "save": "Simpan",
       "saving": "Menyimpan",
       "saveOrder": "Simpan urutan",
-      "savePreset": "Simpan prasetel",
+      "savePreset": "Simpan",
       "delete": "Hapus",
       "deleting": "Menghapus...",
       "edit": "Ubah",
@@ -421,7 +422,7 @@
       "presetName": "Nama prasetel",
       "presetNameHelp": "Digunakan di antarmuka dan perintah /model. Nama harus unik.",
       "presetNameDuplicate": "Preset dengan nama ini sudah ada.",
-      "presetNamePlaceholder": "Menulis cepat",
+      "presetNamePlaceholder": "mis. Menulis cepat",
       "advancedOptions": "Opsi lanjutan",
       "advancedSummary": "Konteks {{context}} · Maks. {{max}} token",
       "maxTokens": "Maks. token keluaran",
@@ -999,7 +1000,8 @@
     "activity": {
       "running": "Agen sedang berjalan",
       "complete": "Agen selesai",
-      "updated": "Aktivitas baru"
+      "updated": "Aktivitas baru",
+      "recovery": "Percakapan ini memerlukan perhatian Anda"
     },
     "pin": "Sematkan",
     "unpin": "Lepas sematan",
@@ -1178,6 +1180,21 @@
       "removeQuotedContext": "Hapus konteks kutipan",
       "modelNotConfigured": "Model belum dikonfigurasi",
       "configureModel": "Konfigurasi model",
+      "chooseAI": "Pilih AI Anda",
+      "switchModel": "Ganti model untuk percakapan ini",
+      "manageModels": "Kelola model",
+      "context": {
+        "tooltip": "Konteks {{percent}}%",
+        "detailsLabel": "Buka penggunaan konteks",
+        "panelTitle": "Penggunaan konteks",
+        "contextTitle": "Konteks",
+        "recentRounds": "Putaran terbaru",
+        "inputTrend": "Token masukan",
+        "input": "Token masukan",
+        "cacheHitRate": "Rasio hit KV cache",
+        "output": "Token keluaran",
+        "duration": "Waktu pembuatan"
+      },
       "queued": {
         "label": "Panduan antrean",
         "guide": "Pandu",
@@ -1394,6 +1411,11 @@
     "fileEditShowFewerLines": "Tampilkan lebih sedikit baris",
     "fileEditOpenFile": "Buka file",
     "fileEditDiffTruncated": "Perbedaan dipotong. Buka file untuk melihat perubahan lengkap.",
+    "usage": {
+      "context": "Konteks terbaru: {{tokens}}{{capacity}} token",
+      "requests": "{{count}} permintaan model",
+      "estimated": "Termasuk penggunaan perkiraan"
+    },
     "activityThinkingFor": "Berpikir selama {{duration}}",
     "activityThought": "Selesai berpikir",
     "activityThoughtFor": "Selesai berpikir dalam {{duration}}",
@@ -1411,6 +1433,18 @@
     "cliRunFailed": "Gagal",
     "automationSourceFallback": "Otomatisasi",
     "automationTriggered": "Dipicu otomatis"
+  },
+  "recovery": {
+    "actionFailed": "Pemulihan gagal. Coba lagi.",
+    "interrupted": "Tugas terputus",
+    "completed": "Tugas selesai",
+    "failed": "Pemulihan tugas gagal",
+    "failedHelp": "Tugas tersimpan tidak dapat dipulihkan dengan aman. Tinjau sebelum melanjutkan.",
+    "resuming": "Memulihkan tugas yang terputus…",
+    "review": "Tinjau tugas sebelum melanjutkan. Alat tidak akan dijalankan ulang secara otomatis.",
+    "safeResume": "Melanjutkan dari konteks percakapan yang tersimpan.",
+    "dismiss": "Abaikan",
+    "continue": "Lanjutkan"
   },
   "lightbox": {
     "title": "Pratinjau gambar",

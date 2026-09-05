@@ -55,7 +55,8 @@ from auto_cut_bot.cli import terminal as cli_terminal  # noqa: E402
 from auto_cut_bot.cli.agent import agent  # noqa: E402
 from auto_cut_bot.cli.gateway import create_gateway_app  # noqa: E402
 from auto_cut_bot.cli.gateway_runtime import _run_gateway  # noqa: E402
-from auto_cut_bot.cli.log_control import _set_auto_cut_bot_logs  # noqa: E402
+from auto_cut_bot.cli.log_control import _set_nanobot_logs  # noqa: E402
+from auto_cut_bot.cli.process_identity import set_cli_process_identity  # noqa: E402
 from auto_cut_bot.cli.provider import provider_app  # noqa: E402
 from auto_cut_bot.cli.runtime_config import (  # noqa: E402
     _load_inspection_config,
@@ -86,7 +87,12 @@ app = typer.Typer(
     name="auto_cut_bot",
     context_settings={"help_option_names": ["-h", "--help"]},
     help=f"{__logo__} auto_cut_bot - Personal AI Assistant",
-    no_args_is_help=True,
+    epilog=(
+        "Run `auto_cut_bot` without a subcommand to start the terminal agent. "
+        "Use `auto_cut_bot agent --help` for agent options."
+    ),
+    invoke_without_command=True,
+    no_args_is_help=False,
 )
 
 console = Console()
@@ -97,14 +103,23 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: bool = typer.Option(
         None, "--version", "-v", callback=version_callback, is_eager=True
     ),
 ):
     """auto_cut_bot - Personal AI Assistant."""
-    pass
+    # Editable/source installs can retain an older generated console script that
+    # imports this Typer app directly instead of ``auto_cut_bot.cli.entry``. Keep the
+    # role identity correct until that launcher is regenerated.
+    command = ctx.invoked_subcommand
+    set_cli_process_identity([command] if command else ["agent"])
+    if command is None:
+        from auto_cut_bot.cli.entry import _run_agent
+
+        _run_agent([], prog_name="auto_cut_bot")
 
 
 # ============================================================================
@@ -336,7 +351,7 @@ def serve(
     from auto_cut_bot.providers.image_generation import image_gen_provider_configs
     from auto_cut_bot.session.manager import SessionManager
 
-    _set_auto_cut_bot_logs(verbose)
+    _set_nanobot_logs(verbose)
 
     runtime_config = _load_runtime_config(config, workspace)
     api_cfg = runtime_config.api
@@ -587,7 +602,7 @@ def plugins_enable(
     if resolved_config_path is not None:
         set_config_path(resolved_config_path)
     resolved_config_path = resolved_config_path or get_config_path()
-    _set_auto_cut_bot_logs(logs)
+    _set_nanobot_logs(logs)
 
     try:
         payload = feature_support.enable_optional_feature(

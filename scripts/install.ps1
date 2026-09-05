@@ -38,11 +38,13 @@ function Show-InstallFailureHint {
 }
 
 function Show-Usage {
-    Write-Host "Usage: install.ps1 [-Dev|--dev] [-DryRun|--dry-run]"
+    Write-Host "Usage: install.ps1 [-DryRun|--dry-run]"
     Write-Host ""
     Write-Host "By default this installs or upgrades auto-cut-bot-ai from PyPI."
     Write-Host "Use --dev to install from the current main branch on GitHub."
     Write-Host "Use --dry-run to print what would happen without installing or starting setup."
+    Write-Host ""
+    Write-Host "For current main, clone the repository and run 'python -m pip install -e .'."
 }
 
 function Test-Python {
@@ -245,8 +247,7 @@ foreach ($Arg in $RemainingArgs) {
 }
 
 if ($Dev) {
-    $InstallTarget = $MainSource
-    $InstallSource = "GitHub main"
+    Fail "--dev installed an untracked main snapshot and is no longer supported; clone the repository and run 'python -m pip install -e .' instead."
 }
 
 $Python = Find-Python
