@@ -3146,6 +3146,8 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "GenerateVlmEvidenceCommand success requires a committed generation attempt"
                 )
+            if command_name == "ReprocessVlmEvidenceCommand@1":
+                raise CommandStateError("VLM reprocess success requires its audited deterministic writer")
             if command_name == VLM_BATCH_FINALIZER_COMMAND_NAME:
                 raise CommandStateError(
                     "FinalizeVlmBatchCommand success requires the explicit VLM batch owner API"
@@ -3183,6 +3185,65 @@ class PostgresRuntimeStore:
             return self._write_success(cursor, success, job_id)
 
         return self._transaction(operation)
+
+    def commit_reprocessed_vlm_success(self, request: object, success: CommandSuccess) -> CommandOutcome:
+        """Independently reconstruct a zero-provider derivation before its atomic commit."""
+        from ..pipeline.reprocess_vlm_evidence_command import (
+            REPROCESS_VLM_COMMAND, ReprocessVlmEvidenceRequest, rebuild_reprocessed_vlm_evidence,
+        )
+
+        if type(request) is not ReprocessVlmEvidenceRequest:
+            raise StoreValidationError("VLM reprocess writer requires its exact request")
+        evidence = rebuild_reprocessed_vlm_evidence(self, request)
+        if success.artifacts != (evidence.artifact,):
+            raise StoreValidationError("VLM reprocess result differs from audited parent derivation")
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(cursor, success.command_slot_id)
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            cursor.execute("SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s", (job_id,))
+            owner = cursor.fetchone()
+            if (command_name != REPROCESS_VLM_COMMAND or request_hash != request.request_hash
+                    or owner is None or (_text(owner[0]), _text(owner[1])) != (request.job.job_key, request.job.profile)):
+                raise StoreValidationError("VLM reprocess writer does not bind the exact command and Job")
+            if state != "running":
+                return self._replay_or_raise(cursor, success.command_slot_id, job_id, "succeeded", success.set_hash)
+            return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def read_vlm_reprocess_parent(
+        self, job: Job, *, command_slot_id: UUID, receipt_id: UUID,
+        attempt_id: UUID, expected_request_hash: str,
+    ) -> GenerationAttempt:
+        """Audit one failed generation's completed response without claiming or retrying it."""
+        terminal = self.read_terminal_command_receipt(
+            job, command_slot_id=command_slot_id, receipt_id=receipt_id,
+            expected_request_hash=expected_request_hash, expected_command_name="GenerateVlmEvidenceCommand",
+            expected_execution_kind="generation", max_failure_detail_bytes=1024 * 1024,
+        )
+        chain = self.read_generation_attempt_chain(job, command_slot_id)
+        matches = tuple(item for item in chain if item.attempt_id == attempt_id)
+        if len(matches) != 1 or not chain or any(item.state != "failed" for item in chain):
+            raise StoreValidationError("VLM reprocess parent is not in the exact terminal attempt chain")
+        attempt = matches[0]
+        if (attempt.job_id != terminal.job_id or attempt.request_hash != expected_request_hash
+                or attempt.raw_response is None):
+            raise StoreValidationError("VLM reprocess parent has no completed response bound to this Job")
+        detail = _strict_json_object(attempt.failure_detail_json or "{}", "VLM parser failure")
+        if (set(detail) != {"reason_code", "parser_message"} or detail["reason_code"] != attempt.failure_code
+                or type(detail["parser_message"]) is not str):
+            raise StoreValidationError("VLM reprocess requires a completed response rejected by the parser")
+        terminal_detail = _strict_json_object(terminal.failure_detail_json, "terminal VLM failure")
+        attempts_value = terminal_detail.get("attempts")
+        if type(attempts_value) is not list:
+            raise StoreValidationError("terminal VLM Receipt has no causal attempt closure")
+        declared = tuple(
+            entry.get("attempt_id") for entry in attempts_value if type(entry) is dict
+        )
+        if declared != tuple(str(item.attempt_id) for item in chain):
+            raise StoreValidationError("terminal VLM Receipt does not bind the complete original attempt chain")
+        return attempt
 
     def commit_production_recipe_success(
         self,

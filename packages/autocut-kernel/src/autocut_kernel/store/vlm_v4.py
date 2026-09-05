@@ -11,8 +11,11 @@ from ..media.types import canonical_sha256
 from ..source_manifest import decode_source_manifest
 from ..vlm.models import VlmParsePolicy, VlmRequestIdentity
 from ..vlm.retry_policy import GenerationRetryPolicy
-from ..vlm.semantic_contracts import VLM_PARSER_V3, VLM_PARSER_V4, parser_contract_sha256_for
-from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4, parse_vlm_response_v4
+from ..vlm.normalized_contracts import (
+    VLM_PARSER_V3, VLM_PARSER_V4, VLM_PARSER_NORMALIZED_V4, V4_PARSERS,
+    parse_registered_vlm_response, require_parser_contract,
+)
+from ..vlm.semantic_parser_v4 import decode_vlm_semantic_pack_v4
 from .errors import StoreValidationError
 from .models import (
     VLM_BATCH_FINALIZER_STRATEGY_VERSION,
@@ -50,10 +53,10 @@ def generation_semantic_version(
     parser = request_payload.get("parser_strategy_version")
     schema = pack_payload.get("schema_version")
     if type(schema) is not int or (parser, schema) not in (  # noqa: E721
-        (VLM_PARSER_V3, 3), (VLM_PARSER_V4, 4),
+        (VLM_PARSER_V3, 3), (VLM_PARSER_V4, 4), (VLM_PARSER_NORMALIZED_V4, 4),
     ):
         raise StoreValidationError("VLM frozen parser and semantic pack schema disagree")
-    if parser == VLM_PARSER_V4:
+    if parser in V4_PARSERS:
         response_schema = request_payload.get("response_schema")
         properties = cast(dict[str, object], response_schema).get("properties") if type(response_schema) is dict else None
         version = cast(dict[str, object], properties).get("schema_version") if type(properties) is dict else None
@@ -70,7 +73,8 @@ def verify_v4_semantic_pack(
     source: PersistedWholeSeriesSourceManifest,
 ) -> PersistedVlmSemanticPackV4:
     """Reconstruct from the exact committed Source owner and original provider bytes."""
-    if generation_semantic_version(request_payload, pack_payload) != (VLM_PARSER_V4, 4):
+    parser, schema = generation_semantic_version(request_payload, pack_payload)
+    if parser not in V4_PARSERS or schema != 4:
         raise StoreValidationError("V4 verifier cannot accept a legacy semantic pack")
     base_fields = {
         "model_id", "parse_policy", "parser_strategy_version", "parser_contract_sha256", "prompt", "prompt_version",
@@ -91,8 +95,7 @@ def verify_v4_semantic_pack(
             raise StoreValidationError("V4 frozen WindowContextPack hash is invalid")
     else:
         raise StoreValidationError("V4 provider request payload does not match its closed schema")
-    if request_payload["parser_contract_sha256"] != parser_contract_sha256_for(VLM_PARSER_V4):
-        raise StoreValidationError("V4 frozen parser contract does not match the installed implementation")
+    require_parser_contract(parser, cast(str, request_payload["parser_contract_sha256"]))
     retry_value = request_payload["retry_policy"]
     if type(retry_value) is not dict:  # noqa: E721
         raise StoreValidationError("V4 frozen retry policy must be an object")
@@ -151,7 +154,7 @@ def verify_v4_semantic_pack(
         },
         "identity_sha256": identity.canonical_hash,
         "job": {"job_key": child.source_job.job_key, "profile": child.source_job.profile},
-        "parser_strategy_version": VLM_PARSER_V4,
+        "parser_strategy_version": parser,
         "retry_policy_sha256": request_payload["retry_policy_sha256"],
         "proxy_blob": manifest.proxy_blob_ref.to_mapping(),
         "source_provenance_sha256": source.canonical_hash,
@@ -171,9 +174,11 @@ def verify_v4_semantic_pack(
         pack_payload, manifest=manifest, manifest_set=manifest_set,
         request_identity=identity, policy=policy,
     )
-    reparsed = parse_vlm_response_v4(
+    reparsed = parse_registered_vlm_response(
         raw_response, manifest=manifest, manifest_set=manifest_set,
         request_identity=identity, policy=policy,
+        parser_strategy_version=parser,
+        parser_contract_sha256=cast(str, request_payload["parser_contract_sha256"]),
     )
     if reparsed.canonical_hash != decoded.canonical_hash or reparsed.to_mapping() != decoded.to_mapping():
         raise StoreValidationError("V4 persisted pack does not match exact raw-response reparse")

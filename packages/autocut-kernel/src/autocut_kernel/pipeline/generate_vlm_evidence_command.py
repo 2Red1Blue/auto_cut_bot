@@ -44,9 +44,11 @@ from ..vlm import (
     WindowManifest,
     WindowManifestSet,
 )
-from ..vlm.semantic_contracts import (
+from ..vlm.normalized_contracts import (
     REGISTERED_VLM_PARSERS,
     VLM_PARSER_V4,
+    V4_PARSERS,
+    VLM_PARSER_NORMALIZED_V4,
     SemanticPackValue,
     parse_registered_vlm_response,
     require_parser_contract,
@@ -298,8 +300,8 @@ class GenerateVlmEvidenceRequest:
             cast(dict[str, object], version_schema).get("const")
             if isinstance(version_schema, dict) else None
         )
-        if self.parser_strategy_version == VLM_PARSER_V4 or wire_version == 4:
-            if self.parser_strategy_version != VLM_PARSER_V4 or type(wire_version) is not int or wire_version != 4:  # noqa: E721
+        if self.parser_strategy_version in V4_PARSERS or wire_version == 4:
+            if self.parser_strategy_version not in V4_PARSERS or type(wire_version) is not int or wire_version != 4:  # noqa: E721
                 raise ValueError("V4 parser requires the explicit V4 response wire schema")
         _json_object(self.request_parameters_json, "request_parameters_json")
         if type(self.parse_policy) is not VlmParsePolicy:  # noqa: E721
@@ -316,7 +318,7 @@ class GenerateVlmEvidenceRequest:
         return _json_bytes(
             {
                 **({"parser_contract_sha256": self.parser_contract_sha256}
-                   if self.parser_strategy_version == VLM_PARSER_V4 else {}),
+                   if self.parser_strategy_version in V4_PARSERS else {}),
                 "model_id": self.model_id,
                 "parse_policy": self.parse_policy.to_mapping(),
                 "parser_strategy_version": self.parser_strategy_version,
@@ -665,7 +667,7 @@ class GenerateVlmEvidenceCommand:
             )
             return self._recover_failed_attempt(request, outcome, failed)
 
-        artifacts = _artifacts(request, attempt, semantic_pack)
+        artifacts = _artifacts(request, attempt, semantic_pack, raw_response=raw_response)
         success = CommandSuccess(
             outcome.command_slot_id,
             _artifact_set_hash(artifacts),
@@ -807,7 +809,7 @@ class GenerateVlmEvidenceCommand:
             outcome,
             attempt,
             semantic_pack,
-            _artifacts(request, attempt, semantic_pack),
+            _artifacts(request, attempt, semantic_pack, raw_response=raw_response),
         )
 
     @staticmethod
@@ -852,6 +854,7 @@ def _artifacts(
     request: GenerateVlmEvidenceRequest,
     attempt: GenerationAttempt,
     semantic_pack: SemanticPackValue,
+    *, raw_response: bytes | None = None,
 ) -> tuple[ArtifactMember, ...]:
     if attempt.raw_response is None:
         raise ValueError("generation artifacts require an exact raw-response BlobRef")
@@ -877,6 +880,12 @@ def _artifacts(
         "raw_response_blob": _blob_mapping(attempt.raw_response),
         "raw_response_sha256": semantic_pack.raw_response_sha256,
     }
+    if request.parser_strategy_version == VLM_PARSER_NORMALIZED_V4:
+        from ..vlm.enum_normalization import normalize_vlm_enum_sets
+
+        if raw_response is None:
+            raise ValueError("normalized generation requires original provider bytes")
+        response_record["normalization"] = normalize_vlm_enum_sets(raw_response, request.parse_policy).to_mapping()
     return (
         _artifact(
             request,
