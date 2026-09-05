@@ -21,15 +21,15 @@ from ..vlm.models import (
     VlmFact,
     VlmSemanticMeasurement,
 )
-from ..vlm.window import ProxyTimelineMap
+from ..vlm.window import ProxyTimelineMap, WindowManifest, WindowManifestSet
 from .candidate_catalog import (
     Candidate,
     CandidateCatalog,
     CandidateCatalogPolicy,
     CandidateEventBinding,
     CandidateMeasurement,
-    CandidateSupport,
     candidate_confidence_text,
+    project_candidate_support,
 )
 from .candidate_duration import conservative_support_duration
 from .ledger_models import CoverageLedger
@@ -219,6 +219,9 @@ def _candidate(
     graph_identity: SemanticMemberIdentity,
     ledger: CoverageLedger,
     timeline_map: ProxyTimelineMap,
+    manifest: WindowManifest,
+    manifest_set: WindowManifestSet,
+    strategy_version: str,
 ) -> Candidate:
     window = committed.source_window
     pack_identity = _identity(committed.semantic_pack.reference)
@@ -251,7 +254,11 @@ def _candidate(
         tuple(_measurement(
             item, owner=pack_identity, known_facts=known_facts, known_events=known_events
         ) for item in raw.measurements),
-        CandidateSupport.from_vlm_support(raw.support, conservative_support_duration(raw.support, timeline_map)),
+        project_candidate_support(
+            raw.support, conservative_support_duration(raw.support, timeline_map),
+            strategy_version=strategy_version, expected_manifest=manifest,
+            expected_manifest_set=manifest_set,
+        ),
     )
 
 
@@ -348,6 +355,7 @@ def project_candidate_catalog(
     decoded_source = decode_candidate_source_context(inputs)
     card_identity, graph_identity, ledger_identity, _facts, _events = _check_stage1_universe(inputs, stage1)
     timeline_maps = _timeline_maps(decoded_source)
+    episodes = {episode.manifest.canonical_hash: episode for episode in decoded_source.episodes}
     source_identity = _identity(inputs.source_manifest.reference)
     candidates: list[Candidate] = []
     for committed in inputs.inputs:
@@ -356,17 +364,20 @@ def project_candidate_catalog(
                 raw, committed, source_identity=source_identity, card_identity=card_identity,
                 graph_identity=graph_identity, ledger=stage1.coverage.coverage_ledger,
                 timeline_map=timeline_maps[committed.source_window.window_manifest_sha256],
+                manifest=episodes[committed.source_window.window_manifest_sha256].manifest,
+                manifest_set=episodes[committed.source_window.window_manifest_sha256].manifest_set,
+                strategy_version=policy.strategy_version,
             ))
     candidates.sort(key=lambda item: item.candidate_id)
     if len({item.candidate_id for item in candidates}) != len(candidates):
         raise CandidateProjectionError("candidate identity is duplicated across committed VLM inputs")
     binding = stage1.coverage.coverage_ledger.input_binding_sha256
     catalog_id = canonical_json_hash({
-        "schema_version": "candidate-catalog-v1", "input_binding_sha256": binding,
+        "schema_version": policy.strategy_version, "input_binding_sha256": binding,
         "policy_sha256": policy.canonical_hash, "candidate_ids": [item.candidate_id for item in candidates],
     })
     catalog = CandidateCatalog(
         catalog_id, binding, inputs.source_grant.canonical_hash, card_identity, graph_identity,
-        ledger_identity, policy.canonical_hash, tuple(candidates),
+        ledger_identity, policy.canonical_hash, tuple(candidates), schema_version=policy.strategy_version,
     )
     return CandidateCatalogProjection(_artifact(scope, revision, catalog), catalog)

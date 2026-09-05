@@ -13,7 +13,7 @@ from typing import cast
 
 from ..media.types import TickRange, TimeBase
 from ..vlm.models import VlmSemanticSupport
-from ..vlm.semantic_support_v4 import _ObservationSupportV4
+from ..vlm.semantic_support_v4 import SemanticSupportV4, _ObservationSupportV4
 from ..vlm.window import ProxyTimelineMap, ProxyTimelineSegment
 
 _SUPPORTED_SUPPORT_TYPES: tuple[type, ...] = (VlmSemanticSupport, _ObservationSupportV4)
@@ -66,7 +66,7 @@ def _seconds(ticks: int, time_base: TimeBase) -> Fraction:
 
 
 def conservative_support_duration(
-    support: VlmSemanticSupport,
+    support: VlmSemanticSupport | SemanticSupportV4,
     timeline_map: ProxyTimelineMap,
 ) -> ConservativeDuration:
     """Derive an uncertainty-shrunk lower bound from original support channels.
@@ -85,7 +85,7 @@ def conservative_support_duration(
 
 
 def conservative_support_bounds(
-    support: VlmSemanticSupport,
+    support: VlmSemanticSupport | SemanticSupportV4,
     timeline_map: ProxyTimelineMap,
 ) -> tuple[int, int]:
     """Return conservative inner Source bounds, without creating edit endpoints.

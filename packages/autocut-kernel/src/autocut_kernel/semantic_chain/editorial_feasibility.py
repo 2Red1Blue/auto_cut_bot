@@ -17,7 +17,7 @@ from ..contracts.compiler.canonical import canonical_json_hash
 from ..store.models import CommittedSemanticInputs, CommittedVlmSemanticInput
 from ..vlm.models import VlmCandidateHypothesis, VlmEvent
 from ..vlm.window import ProxyTimelineMap
-from .candidate_catalog import Candidate, CandidateSupport
+from .candidate_catalog import Candidate, project_candidate_support
 from .candidate_duration import conservative_support_bounds, conservative_support_duration
 from .candidate_projection import decode_candidate_source_context
 from .editorial_blueprint import EditorialBlueprintProjection, project_editorial_blueprints
@@ -235,6 +235,7 @@ def _candidate_domain(semantic: CommittedSemanticInputs, stage1: Stage1Values, s
     if stage1.dependency_proof.source_member_ref != source_owner:
         raise EditorialFeasibilityError("Stage 1 proof belongs to a different Source")
     maps = {episode.manifest.canonical_hash: episode.manifest.timeline_map for episode in decoded.episodes}
+    episodes = {episode.manifest.canonical_hash: episode for episode in decoded.episodes}
     raw_candidates: dict[SemanticObjectRef, tuple[VlmCandidateHypothesis, CommittedVlmSemanticInput]] = {}
     for committed in semantic.inputs:
         ref = committed.semantic_pack.reference
@@ -264,7 +265,12 @@ def _candidate_domain(semantic: CommittedSemanticInputs, stage1: Stage1Values, s
                 or coverage_window.source_window_ref != candidate.source_window_ref
                 or candidate.narrative_functions != tuple(item.value for item in raw.narrative_functions)
                 or candidate.editing_modes != tuple(item.value for item in raw.editing_modes)
-                or candidate.support != CandidateSupport.from_vlm_support(raw.support, conservative_support_duration(raw.support, timeline))):
+                or candidate.support != project_candidate_support(
+                    raw.support, conservative_support_duration(raw.support, timeline),
+                    strategy_version=catalog.schema_version,
+                    expected_manifest=episodes[window.window_manifest_sha256].manifest,
+                    expected_manifest_set=episodes[window.window_manifest_sha256].manifest_set,
+                )):
             raise EditorialFeasibilityError("Catalog candidate differs from raw capability/Source/support")
         inner_start, inner_end = conservative_support_bounds(raw.support, timeline)
         events = {item.event_id: item for item in committed.semantic_pack.semantic_pack.events}

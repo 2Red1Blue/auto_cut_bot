@@ -8,7 +8,7 @@ candidate is physically editable or authorize any later Stage.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Callable, TypeVar, cast
 
@@ -25,9 +25,11 @@ from ..vlm.models import (
 )
 from ..vlm.semantic_support_v4 import (
     FrameAnchoredObservationSupportV4,
+    IntervalMsV4,
     VideoObservationSupportV4,
     frame_aliases,
 )
+from ..vlm.window import WindowManifest, WindowManifestSet
 from .candidate_duration import ConservativeDuration
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 
@@ -39,6 +41,8 @@ _TAGS = tuple(item.value for item in VlmCandidateTag)
 _MEASUREMENT_KINDS = tuple(item.value for item in VlmMeasurementKind)
 _T = TypeVar("_T")
 _SAFE = 2**53 - 1
+CANDIDATE_LEGACY_STRATEGY = "candidate-catalog-v1"
+CANDIDATE_OBSERVATION_STRATEGY = "candidate-catalog-observation-v2"
 
 
 class CandidateCatalogError(ValueError):
@@ -145,7 +149,9 @@ class CandidateCatalogPolicy:
     required_measurement_kinds: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if _text(self.strategy_version, "strategy version") != "candidate-catalog-v1":
+        if _text(self.strategy_version, "strategy version") not in (
+            CANDIDATE_LEGACY_STRATEGY, CANDIDATE_OBSERVATION_STRATEGY,
+        ):
             raise CandidateCatalogError("candidate catalog strategy is unsupported")
         object.__setattr__(self, "minimum_confidence", _decimal(self.minimum_confidence, "minimum_confidence"))
         values = self.required_measurement_kinds
@@ -215,7 +221,12 @@ class CandidateSupport:
             raise CandidateCatalogError("candidate support duration must be exact")
 
     @classmethod
-    def from_vlm_support(cls, value: VlmSemanticSupport, duration: ConservativeDuration) -> CandidateSupport:
+    def from_vlm_support(
+        cls, value: VlmSemanticSupport | VideoObservationSupportV4 | FrameAnchoredObservationSupportV4,
+        duration: ConservativeDuration,
+    ) -> CandidateSupport:
+        # Frozen legacy projection, including its historical V4 frame expansion.
+        # New commands select project_candidate_support's observation strategy.
         if type(value) is VlmSemanticSupport:  # noqa: E721
             frame_ids = value.supporting_frame_ids
         elif isinstance(value, (VideoObservationSupportV4, FrameAnchoredObservationSupportV4)):
@@ -262,6 +273,223 @@ class CandidateSupport:
             _hash(item["core_owner_window_manifest_sha256"], "candidate support owner window"),
             ConservativeDuration.from_mapping(item["conservative_duration"]),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFrameAnchor:
+    """One actually declared anchor; existence is checked against the request manifest."""
+
+    alias: str
+    frame_id: str
+    frame_sha256: str
+    proxy_pts: int
+    source_pts: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"f[0-9]{4,}", _text(self.alias, "frame alias")) is None:
+            raise CandidateCatalogError("candidate frame alias is invalid")
+        _text(self.frame_id, "frame ID")
+        _hash(self.frame_sha256, "frame hash")
+        _integer(self.proxy_pts, "frame proxy PTS", minimum=-_SAFE)
+        _integer(self.source_pts, "frame source PTS", minimum=-_SAFE)
+
+    def to_mapping(self) -> dict[str, object]:
+        return {"alias": self.alias, "frame_id": self.frame_id, "frame_sha256": self.frame_sha256,
+                "proxy_pts": self.proxy_pts, "source_pts": self.source_pts}
+
+    @classmethod
+    def from_mapping(cls, value: object) -> CandidateFrameAnchor:
+        item = _closed(value, ("alias", "frame_id", "frame_sha256", "proxy_pts", "source_pts"))
+        return cls(_text(item["alias"], "alias"), _text(item["frame_id"], "frame ID"),
+                   _hash(item["frame_sha256"], "frame hash"),
+                   _integer(item["proxy_pts"], "proxy PTS", minimum=-_SAFE),
+                   _integer(item["source_pts"], "source PTS", minimum=-_SAFE))
+
+
+_OBSERVATION_FIELDS = (
+    "support_kind", "proxy_interval", "source_interval", "confidence",
+    "core_owner_window_manifest_sha256", "conservative_duration",
+    "observed_window_manifest_sha256", "window_manifest_set_sha256",
+    "proxy_blob_ref_sha256", "interval_ms",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class VideoCandidateSupport:
+    """Video observation with original uncertainty and binding, without any frame claim."""
+
+    proxy_interval: VlmProxyInterval
+    source_interval: MappedSourceInterval
+    confidence: str
+    core_owner_window_manifest_sha256: str
+    conservative_duration: ConservativeDuration
+    observed_window_manifest_sha256: str
+    window_manifest_set_sha256: str
+    proxy_blob_ref_sha256: str
+    interval_ms: IntervalMsV4
+
+    def __post_init__(self) -> None:
+        if type(self.proxy_interval) is not VlmProxyInterval or type(self.source_interval) is not MappedSourceInterval:  # noqa: E721
+            raise CandidateCatalogError("candidate observation timing must be exact")
+        for interval in (self.proxy_interval.proxy_range, self.source_interval.coarse_range):
+            _integer(interval.start_pts, "observation start", minimum=-_SAFE)
+            _integer(interval.end_pts, "observation end", minimum=-_SAFE)
+        for value in (self.proxy_interval.uncertainty_pts,
+                      self.source_interval.provider_uncertainty_proxy_pts,
+                      self.source_interval.mapping_error_bound_source_pts):
+            _integer(value, "observation uncertainty")
+        for base in (self.source_interval.source_time_base, self.source_interval.proxy_time_base):
+            _integer(base.numerator, "observation base numerator", minimum=1)
+            _integer(base.denominator, "observation base denominator", minimum=1)
+        if self.proxy_interval.uncertainty_pts != self.source_interval.provider_uncertainty_proxy_pts:
+            raise CandidateCatalogError("observation uncertainty differs between clocks")
+        _decimal(self.confidence, "observation confidence")
+        for value in (self.core_owner_window_manifest_sha256, self.observed_window_manifest_sha256,
+                      self.window_manifest_set_sha256, self.proxy_blob_ref_sha256):
+            _hash(value, "observation binding")
+        if self.core_owner_window_manifest_sha256 != self.observed_window_manifest_sha256:
+            raise CandidateCatalogError("observation has a different core owner window")
+        if type(self.conservative_duration) is not ConservativeDuration or type(self.interval_ms) is not IntervalMsV4:  # noqa: E721
+            raise CandidateCatalogError("observation duration and milliseconds must be exact")
+        for value in (self.interval_ms.start_ms, self.interval_ms.end_ms, self.interval_ms.uncertainty_ms):
+            _integer(value, "observation milliseconds")
+
+    @property
+    def support_kind(self) -> str:
+        return "video_observation"
+
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "support_kind": self.support_kind, "proxy_interval": self.proxy_interval.to_mapping(),
+            "source_interval": self.source_interval.to_mapping(), "confidence": self.confidence,
+            "core_owner_window_manifest_sha256": self.core_owner_window_manifest_sha256,
+            "conservative_duration": self.conservative_duration.to_mapping(),
+            "observed_window_manifest_sha256": self.observed_window_manifest_sha256,
+            "window_manifest_set_sha256": self.window_manifest_set_sha256,
+            "proxy_blob_ref_sha256": self.proxy_blob_ref_sha256,
+            "interval_ms": self.interval_ms.to_mapping(),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: object) -> VideoCandidateSupport:
+        item = _closed(value, _OBSERVATION_FIELDS)
+        if item["support_kind"] != "video_observation":
+            raise CandidateCatalogError("unsupported video candidate support kind")
+        return cls(*_observation_values(item))
+
+
+@dataclass(frozen=True, slots=True)
+class FrameAnchoredCandidateSupport(VideoCandidateSupport):
+    frame_anchors: tuple[CandidateFrameAnchor, ...]
+
+    def __post_init__(self) -> None:
+        VideoCandidateSupport.__post_init__(self)
+        if (type(self.frame_anchors) is not tuple or not self.frame_anchors  # noqa: E721
+                or any(type(anchor) is not CandidateFrameAnchor for anchor in self.frame_anchors)):
+            raise CandidateCatalogError("frame-anchored candidate requires exact declared anchors")
+        if len({anchor.alias for anchor in self.frame_anchors}) != len(self.frame_anchors):
+            raise CandidateCatalogError("frame-anchored candidate repeats an alias")
+
+    @property
+    def support_kind(self) -> str:
+        return "frame_anchored"
+
+    def to_mapping(self) -> dict[str, object]:
+        return {**VideoCandidateSupport.to_mapping(self),
+                "frame_anchors": [anchor.to_mapping() for anchor in self.frame_anchors]}
+
+    @classmethod
+    def from_mapping(cls, value: object) -> FrameAnchoredCandidateSupport:
+        item = _closed(value, (*_OBSERVATION_FIELDS, "frame_anchors"))
+        if item["support_kind"] != "frame_anchored":
+            raise CandidateCatalogError("unsupported frame candidate support kind")
+        return cls(*_observation_values(item),
+                   _array(item["frame_anchors"], CandidateFrameAnchor.from_mapping, "frame anchors"))
+
+
+def _observation_values(item: dict[str, object]) -> tuple[
+    VlmProxyInterval, MappedSourceInterval, str, str, ConservativeDuration,
+    str, str, str, IntervalMsV4,
+]:
+    proxy = _closed(item["proxy_interval"], ("start_pts", "end_pts", "uncertainty_pts"))
+    interval = _closed(item["interval_ms"], ("start_ms", "end_ms", "uncertainty_ms"))
+    return (
+        VlmProxyInterval(TickRange(_integer(proxy["start_pts"], "start", minimum=-_SAFE),
+                                  _integer(proxy["end_pts"], "end", minimum=-_SAFE)),
+                         _integer(proxy["uncertainty_pts"], "uncertainty")),
+        _mapped_source_interval(item["source_interval"]), _decimal(item["confidence"], "confidence"),
+        _hash(item["core_owner_window_manifest_sha256"], "core window"),
+        ConservativeDuration.from_mapping(item["conservative_duration"]),
+        _hash(item["observed_window_manifest_sha256"], "observed window"),
+        _hash(item["window_manifest_set_sha256"], "window set"),
+        _hash(item["proxy_blob_ref_sha256"], "proxy blob"),
+        IntervalMsV4(_integer(interval["start_ms"], "start ms"),
+                     _integer(interval["end_ms"], "end ms"),
+                     _integer(interval["uncertainty_ms"], "uncertainty ms")),
+    )
+
+
+def project_candidate_support(
+    value: VlmSemanticSupport | VideoObservationSupportV4 | FrameAnchoredObservationSupportV4,
+    duration: ConservativeDuration, *, strategy_version: str,
+    expected_manifest: WindowManifest, expected_manifest_set: WindowManifestSet,
+) -> CandidateSupport | VideoCandidateSupport | FrameAnchoredCandidateSupport:
+    """Project a versioned support only after checking its exact observed request window."""
+    if strategy_version == CANDIDATE_LEGACY_STRATEGY:
+        return CandidateSupport.from_vlm_support(value, duration)
+    if strategy_version != CANDIDATE_OBSERVATION_STRATEGY:
+        raise CandidateCatalogError("candidate support strategy is unsupported")
+    if type(expected_manifest) is not WindowManifest or type(expected_manifest_set) is not WindowManifestSet:  # noqa: E721
+        raise CandidateCatalogError("candidate observation requires exact request manifests")
+    expected_manifest_set.require_member(expected_manifest)
+    if type(value) is VlmSemanticSupport:  # noqa: E721
+        if (value.core_owner_window_manifest_sha256 != expected_manifest.canonical_hash
+                or not set(value.supporting_frame_ids) <= {
+                    sample.frame_id for sample in expected_manifest.frame_samples
+                }):
+            raise CandidateCatalogError("legacy frame support is outside its exact request window")
+        return CandidateSupport.from_vlm_support(value, duration)
+    if type(value) not in (VideoObservationSupportV4, FrameAnchoredObservationSupportV4):
+        raise CandidateCatalogError("candidate observation support has an unknown type")
+    if value.manifest != expected_manifest or value.manifest_set != expected_manifest_set:
+        raise CandidateCatalogError("candidate observation belongs to another request window")
+    args = (
+        value.proxy_interval, value.source_interval,
+        candidate_confidence_text(value.confidence, "candidate observation confidence"),
+        value.core_owner_window_manifest_sha256, duration, expected_manifest.canonical_hash,
+        expected_manifest_set.canonical_hash, expected_manifest.proxy_blob_ref.canonical_hash,
+        value.interval_ms,
+    )
+    if type(value) is VideoObservationSupportV4:  # noqa: E721
+        return VideoCandidateSupport(*args)
+    # Resolve only declared aliases against the exact request table. Never add
+    # other sampled frames; order follows the original model declaration.
+    table = frame_aliases(expected_manifest).by_alias
+    if any(anchor != table.get(alias) for alias, anchor in zip(value.frame_refs, value.frame_anchors, strict=True)):
+        raise CandidateCatalogError("candidate frame anchor differs from its request frame")
+    anchors = tuple(CandidateFrameAnchor(anchor.alias, anchor.frame_id, anchor.frame_sha256,
+                                         anchor.proxy_pts, anchor.source_pts)
+                    for anchor in value.frame_anchors)
+    return FrameAnchoredCandidateSupport(*args, anchors)
+
+
+def _decode_candidate_support(
+    value: object, schema_version: str,
+) -> CandidateSupport | VideoCandidateSupport | FrameAnchoredCandidateSupport:
+    if schema_version == CANDIDATE_LEGACY_STRATEGY:
+        return CandidateSupport.from_mapping(value)
+    if schema_version != CANDIDATE_OBSERVATION_STRATEGY:
+        raise CandidateCatalogError("candidate support schema is unsupported")
+    if type(value) is not dict:  # noqa: E721
+        raise CandidateCatalogError("candidate support must be a mapping")
+    kind = cast(dict[str, object], value).get("support_kind")
+    if kind == "video_observation":
+        return VideoCandidateSupport.from_mapping(value)
+    if kind == "frame_anchored":
+        return FrameAnchoredCandidateSupport.from_mapping(value)
+    if kind is None:
+        return CandidateSupport.from_mapping(value)
+    raise CandidateCatalogError("candidate support kind is unsupported")
 
 
 def _time_base(value: object, label: str) -> TimeBase:
@@ -411,7 +639,7 @@ class Candidate:
     narrative_functions: tuple[str, ...]
     tags: tuple[str, ...]
     measurements: tuple[CandidateMeasurement, ...]
-    support: CandidateSupport
+    support: CandidateSupport | VideoCandidateSupport | FrameAnchoredCandidateSupport
 
     def __post_init__(self) -> None:
         _owner(self.candidate_ref, "vlm_semantic_pack", "vlm_candidate", "candidate")
@@ -444,7 +672,7 @@ class Candidate:
             raise CandidateCatalogError("candidate measurements are invalid")
         if any(ref.member_ref != self.candidate_ref.member_ref for item in self.measurements for ref in (*item.fact_refs, *item.event_refs)):
             raise CandidateCatalogError("candidate measurement belongs to a different VLM pack")
-        if type(self.support) is not CandidateSupport:  # noqa: E721
+        if type(self.support) not in (CandidateSupport, VideoCandidateSupport, FrameAnchoredCandidateSupport):
             raise CandidateCatalogError("candidate support is invalid")
         if self.support.core_owner_window_manifest_sha256 != self.source_window_ref.object_id:
             raise CandidateCatalogError("candidate support window differs from candidate window")
@@ -474,7 +702,7 @@ class Candidate:
         }
 
     @classmethod
-    def from_mapping(cls, value: object) -> Candidate:
+    def from_mapping(cls, value: object, *, schema_version: str = CANDIDATE_LEGACY_STRATEGY) -> Candidate:
         item = _closed(value, (
             "candidate_ref", "source_ref", "source_window_ref", "coverage_window_id", "candidate_kind", "local_candidate_id",
             "reason", "anchor_summary", "payoff_or_open_question", "open_question", "dialogue_excerpt", "anchor_event",
@@ -494,7 +722,7 @@ class Candidate:
             _array(item["narrative_functions"], lambda entry: _text(entry, "narrative function"), "narrative_functions"),
             _array(item["tags"], lambda entry: _text(entry, "candidate tag"), "tags"),
             _array(item["measurements"], CandidateMeasurement.from_mapping, "measurements"),
-            CandidateSupport.from_mapping(item["support"]),
+            _decode_candidate_support(item["support"], schema_version),
         )
 
 
@@ -508,8 +736,11 @@ class CandidateCatalog:
     coverage_ledger_member_ref: SemanticMemberIdentity
     policy_sha256: str
     candidates: tuple[Candidate, ...]
+    schema_version: str = field(default=CANDIDATE_LEGACY_STRATEGY, kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.schema_version not in (CANDIDATE_LEGACY_STRATEGY, CANDIDATE_OBSERVATION_STRATEGY):
+            raise CandidateCatalogError("catalog schema is unsupported")
         _hash(self.catalog_id, "catalog ID")
         for label in ("input binding", "source grant", "policy"):
             object.__setattr__(self, {"input binding": "input_binding_sha256", "source grant": "source_grant_sha256", "policy": "policy_sha256"}[label], _hash(getattr(self, {"input binding": "input_binding_sha256", "source grant": "source_grant_sha256", "policy": "policy_sha256"}[label]), label))
@@ -526,6 +757,8 @@ class CandidateCatalog:
         if len({item.source_ref.member_ref for item in self.candidates}) > 1:
             raise CandidateCatalogError("catalog candidates have different SourceManifest owners")
         for candidate in self.candidates:
+            if self.schema_version == CANDIDATE_LEGACY_STRATEGY and type(candidate.support) is not CandidateSupport:  # noqa: E721
+                raise CandidateCatalogError("legacy catalog requires legacy frame support")
             if candidate.source_ref.member_ref.scope != self.narrative_graph_member_ref.scope:
                 raise CandidateCatalogError("catalog candidate belongs to a different scope")
             events = (candidate.anchor_event, *candidate.supporting_events,
@@ -536,6 +769,8 @@ class CandidateCatalog:
 
     def to_mapping(self) -> dict[str, object]:
         return {
+            **({"schema_version": self.schema_version}
+               if self.schema_version != CANDIDATE_LEGACY_STRATEGY else {}),
             "catalog_id": self.catalog_id, "input_binding_sha256": self.input_binding_sha256,
             "source_grant_sha256": self.source_grant_sha256,
             "event_card_member_ref": self.event_card_member_ref.to_mapping(),
@@ -546,16 +781,22 @@ class CandidateCatalog:
 
     @classmethod
     def from_mapping(cls, value: object) -> CandidateCatalog:
+        version = (cast(dict[str, object], value).get("schema_version", CANDIDATE_LEGACY_STRATEGY)
+                   if type(value) is dict else CANDIDATE_LEGACY_STRATEGY)  # noqa: E721
+        if version not in (CANDIDATE_LEGACY_STRATEGY, CANDIDATE_OBSERVATION_STRATEGY):
+            raise CandidateCatalogError("catalog schema is unsupported")
         item = _closed(value, (
             "catalog_id", "input_binding_sha256", "source_grant_sha256", "event_card_member_ref",
             "narrative_graph_member_ref", "coverage_ledger_member_ref", "policy_sha256", "candidates",
-        ))
+        ) + (("schema_version",) if version == CANDIDATE_OBSERVATION_STRATEGY else ()))
         return cls(
             _hash(item["catalog_id"], "catalog ID"), _hash(item["input_binding_sha256"], "input binding"),
             _hash(item["source_grant_sha256"], "source grant"), _identity(item["event_card_member_ref"], "EventCard identity"),
             _identity(item["narrative_graph_member_ref"], "Graph identity"), _identity(item["coverage_ledger_member_ref"], "Ledger identity"),
             _hash(item["policy_sha256"], "policy"),
-            _array(item["candidates"], Candidate.from_mapping, "candidates"),
+            _array(item["candidates"], lambda entry: Candidate.from_mapping(
+                entry, schema_version=cast(str, version)), "candidates"),
+            schema_version=cast(str, version),
         )
 
     @property
