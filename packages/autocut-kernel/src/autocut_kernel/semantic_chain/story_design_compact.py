@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import Callable, TypeVar, cast
 
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash, sha256_bytes
 from .member_refs import SemanticObjectRef
@@ -13,6 +13,7 @@ from .story_design_compact_context import (
     build_story_design_compact_context,
 )
 from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
+from .story_design_compact_errors import CompactDraftError
 from .story_design_draft import StoryDesignDraftError, StoryDesignDraftPolicy, _bounded_value, _check_limits
 from .story_design_models import (
     PHYSICAL_REQUIREMENT_MODES,
@@ -29,6 +30,7 @@ from .story_design_models import (
 COMPACT_PROMPT_VERSION = "stage2-proposal-compact-v2"
 COMPACT_WIRE_SCHEMA_VERSION = "stage2-story-design-compact-v2"
 COMPACT_PROJECTION_VERSION = "stage2-compact-domain-projection-v2"
+_T = TypeVar("_T")
 _PROPOSAL_FIELDS = (
     "title", "narrative_claim", "thread_refs", "obligation_refs", "key_subject_refs",
     "genre_tags", "editing_profile_ref", "target_duration_seconds", "teaser_strategy",
@@ -41,6 +43,7 @@ def compact_contract_sha256() -> str:
     """Exact installed v2 implementation identity; never used for legacy v1."""
     directory = Path(__file__).parent
     names = ("story_design_compact.py", "story_design_compact_context.py", "story_design_compact_models.py",
+             "story_design_compact_errors.py",
              "story_design_draft.py", "story_design_models.py", "story_design_validation.py")
     return canonical_json_hash({
         "prompt_version": COMPACT_PROMPT_VERSION, "wire_schema_version": COMPACT_WIRE_SCHEMA_VERSION,
@@ -53,24 +56,42 @@ def _ordered_refs(refs: set[SemanticObjectRef]) -> tuple[SemanticObjectRef, ...]
     return tuple(sorted(refs, key=lambda ref: canonical_json_bytes(ref.to_mapping())))
 
 
-def _references(value: object, context: StoryDesignCompactContext, prefix: str) -> tuple[SemanticObjectRef, ...]:
-    refs = _array(value, lambda alias: context.resolve(alias, prefix))
-    if len(set(refs)) != len(refs):
-        raise StoryDesignDraftError("COMPACT_DUPLICATE_REFERENCE")
-    return refs
+def _at(path: str, proposal_index: int | None, call: Callable[[], _T]) -> _T:
+    try:
+        return call()
+    except CompactDraftError as error:
+        raise CompactDraftError(error.error_code, json_path=path, proposal_index=proposal_index) from error
+    except ValueError as error:
+        raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=path, proposal_index=proposal_index) from error
 
 
-def merge_compact_source_constraints(value: object, context: StoryDesignCompactContext) -> SourceConstraints:
-    data = _closed(value, ("source_selection", "allowed_source_refs", "forbidden_source_refs"))
-    allowed = _references(data["allowed_source_refs"], context, "s")
-    forbidden = _references(data["forbidden_source_refs"], context, "s")
+def _references(
+    value: object, context: StoryDesignCompactContext, prefix: str, *, path: str = "$", proposal_index: int | None = None,
+) -> tuple[SemanticObjectRef, ...]:
+    values = _at(path, proposal_index, lambda: _array(value, lambda item: item))
+    refs = []
+    for index, alias in enumerate(values):
+        ref_path = f"{path}[{index}]"
+        ref = _at(ref_path, proposal_index, lambda: context.resolve(alias, prefix))
+        if ref in refs:
+            raise CompactDraftError("COMPACT_DUPLICATE_REFERENCE", json_path=ref_path, proposal_index=proposal_index)
+        refs.append(ref)
+    return tuple(refs)
+
+
+def merge_compact_source_constraints(
+    value: object, context: StoryDesignCompactContext, *, path: str = "$", proposal_index: int | None = None,
+) -> SourceConstraints:
+    data = _at(path, proposal_index, lambda: _closed(value, ("source_selection", "allowed_source_refs", "forbidden_source_refs")))
+    allowed = _references(data["allowed_source_refs"], context, "s", path=f"{path}.allowed_source_refs", proposal_index=proposal_index)
+    forbidden = _references(data["forbidden_source_refs"], context, "s", path=f"{path}.forbidden_source_refs", proposal_index=proposal_index)
     selection = data["source_selection"]
     if selection == "all_granted" and not allowed:
         model_sources = set(context.granted_sources)
     elif selection == "subset" and allowed:
         model_sources = set(allowed)
     else:
-        raise StoryDesignDraftError("COMPACT_SOURCE_SELECTION_INVALID")
+        raise CompactDraftError("COMPACT_SOURCE_SELECTION_INVALID", json_path=f"{path}.source_selection", proposal_index=proposal_index)
     granted = set(context.granted_sources)
     job = context.job_policy.source_constraints
     # Historical empty Job allowlists mean unrestricted, not the empty set.
@@ -80,7 +101,7 @@ def merge_compact_source_constraints(value: object, context: StoryDesignCompactC
     if not effective:
         # SourceConstraints((), (), ...) would silently turn this into an
         # unrestricted allowlist. Reject explicitly instead of broadening it.
-        raise StoryDesignDraftError("COMPACT_MATERIAL_INFEASIBLE")
+        raise CompactDraftError("COMPACT_MATERIAL_INFEASIBLE", json_path=path, proposal_index=proposal_index)
     return SourceConstraints(_ordered_refs(effective), _ordered_refs(denied), "render_source")
 
 
@@ -114,21 +135,32 @@ def decode_story_design_compact(
 ) -> ProposalDraftSetV2:
     if type(context) is not StoryDesignCompactContext or type(policy) is not StoryDesignDraftPolicy:  # noqa: E721
         raise StoryDesignDraftError("compact decoder requires exact typed context and policy")
-    value = _bounded_value(raw, policy)
-    _compact_limits(value, policy)
-    root = _closed(value, ("schema_version", "proposals"))
+    if type(raw) is not bytes or not 0 < len(raw) <= policy.max_response_bytes:  # noqa: E721
+        raise CompactDraftError("COMPACT_BUDGET_EXCEEDED")
+    try:
+        value = _bounded_value(raw, policy)
+    except ValueError as error:
+        raise CompactDraftError("COMPACT_JSON_INVALID") from error
+    try:
+        _compact_limits(value, policy)
+    except ValueError as error:
+        raise CompactDraftError("COMPACT_BUDGET_EXCEEDED") from error
+    root = _at("$", None, lambda: _closed(value, ("schema_version", "proposals")))
     if root["schema_version"] != COMPACT_WIRE_SCHEMA_VERSION:
-        raise StoryDesignDraftError("unsupported compact model wire schema")
-    items = _array(root["proposals"], lambda row: _closed(row, _PROPOSAL_FIELDS))
+        raise CompactDraftError("COMPACT_SCHEMA_UNSUPPORTED", json_path="$.schema_version")
+    items = _at("$.proposals", None, lambda: _array(root["proposals"], lambda row: row))
     nodes = {node.node_id: node for node in context.graph.nodes}
     profiles = sorted(context.story_policy.editing_profiles, key=lambda row: canonical_json_bytes(row.to_mapping()))
     profile_refs = {f"style{index}": profile for index, profile in enumerate(profiles, 1)}
     proposals = []
-    for ordinal, item in enumerate(items, 1):
+    for ordinal, raw_item in enumerate(items, 1):
+        proposal_index = ordinal - 1
+        path = f"$.proposals[{proposal_index}]"
+        item = _at(path, proposal_index, lambda: _closed(raw_item, _PROPOSAL_FIELDS))
         proposal_id = canonical_json_hash({"strategy": COMPACT_PROJECTION_VERSION,
                                           "input_binding_sha256": context.input_binding_sha256,
                                           "proposal_ordinal": ordinal})
-        obligations = _references(item["obligation_refs"], context, "o")
+        obligations = _references(item["obligation_refs"], context, "o", path=f"{path}.obligation_refs", proposal_index=proposal_index)
         facts: set[SemanticObjectRef] = set()
         for ref in obligations:
             attributes = nodes[ref.object_id].attributes
@@ -139,24 +171,31 @@ def decode_story_design_compact(
                     raise StoryDesignDraftError("compact obligation names absent Fact")
                 facts.add(SemanticObjectRef(context.graph_owner, "fact", fact_id))
         requirements = []
-        for index, row in enumerate(_array(item["material_requirements"], lambda row: _closed(row, _REQUIREMENT_FIELDS)), 1):
-            additional = _array(row["additional_checks"], PhysicalRequirement.from_mapping)
+        material = _at(f"{path}.material_requirements", proposal_index,
+                       lambda: _array(item["material_requirements"], lambda row: row))
+        for index, raw_row in enumerate(material, 1):
+            requirement_path = f"{path}.material_requirements[{index - 1}]"
+            row = _at(requirement_path, proposal_index, lambda: _closed(raw_row, _REQUIREMENT_FIELDS))
+            additional = _at(f"{requirement_path}.additional_checks", proposal_index,
+                             lambda: _array(row["additional_checks"], PhysicalRequirement.from_mapping))
             if len(set(additional)) != len(additional):
-                raise StoryDesignDraftError("compact physical checks contain duplicates")
+                raise CompactDraftError("COMPACT_FIELD_INVALID", json_path=f"{requirement_path}.additional_checks", proposal_index=proposal_index)
             physical = tuple(sorted(set(additional) | set(context.story_policy.required_physical_requirements),
                                     key=lambda check: check.requirement_kind))
             requirements.append(MaterialRequirement(
                 canonical_json_hash({"proposal_id": proposal_id, "requirement_ordinal": index}),
-                context.resolve(row["obligation_ref"], "o"), _positive(row["minimum_usable_seconds"]),
-                physical, merge_compact_source_constraints(row["source_constraints"], context),
+                _at(f"{requirement_path}.obligation_ref", proposal_index, lambda: context.resolve(row["obligation_ref"], "o")),
+                _at(f"{requirement_path}.minimum_usable_seconds", proposal_index, lambda: _positive(row["minimum_usable_seconds"])),
+                physical, merge_compact_source_constraints(row["source_constraints"], context,
+                                                           path=f"{requirement_path}.source_constraints", proposal_index=proposal_index),
             ))
-        profile_alias = _text(item["editing_profile_ref"])
+        profile_alias = _at(f"{path}.editing_profile_ref", proposal_index, lambda: _text(item["editing_profile_ref"]))
         if profile_alias not in profile_refs:
-            raise StoryDesignDraftError("COMPACT_EDITING_PROFILE_NOT_FOUND")
+            raise CompactDraftError("COMPACT_EDITING_PROFILE_NOT_FOUND", json_path=f"{path}.editing_profile_ref", proposal_index=proposal_index)
         proposals.append(ProposalDraftV2(
             proposal_id, _text(item["title"]), _text(item["narrative_claim"]),
-            _references(item["thread_refs"], context, "t"), obligations, _ordered_refs(facts),
-            _references(item["key_subject_refs"], context, "p"), _array(item["genre_tags"], _text),
+            _references(item["thread_refs"], context, "t", path=f"{path}.thread_refs", proposal_index=proposal_index), obligations, _ordered_refs(facts),
+            _references(item["key_subject_refs"], context, "p", path=f"{path}.key_subject_refs", proposal_index=proposal_index), _array(item["genre_tags"], _text),
             profile_refs[profile_alias], IntegerRange.from_mapping(item["target_duration_seconds"]),
             _text(item["teaser_strategy"]), _text(item["audience_hook"]), tuple(requirements),
         ))
@@ -164,11 +203,14 @@ def decode_story_design_compact(
     # Bounds include program expansion: compact spelling cannot bypass domain
     # fact/reference/text ceilings. No truncation of selected obligations.
     expanded = result.to_mapping()
-    _check_limits(expanded, policy)
+    try:
+        _check_limits(expanded, policy)
+    except ValueError as error:
+        raise CompactDraftError("COMPACT_BUDGET_EXCEEDED") from error
     expanded_refs = sum(len(row.narrative_refs) + len(row.source_refs) + len(row.material_requirements)
                         for row in result.proposals)
     if expanded_refs > policy.max_total_references:
-        raise StoryDesignDraftError("expanded compact references exceed bound")
+        raise CompactDraftError("COMPACT_BUDGET_EXCEEDED")
     from .story_design_validation import validate_story_proposals
 
     validate_story_proposals(

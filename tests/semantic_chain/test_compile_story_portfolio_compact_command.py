@@ -85,6 +85,8 @@ def test_compact_invalid_refs_are_durable_denial_without_new_upstream_call(field
     command = CompileStoryPortfolioCommand(store, provider)
     result = command.execute(request)
     assert result.outcome.state == "denied"
+    detail = json.loads(result.outcome.failure_detail_json)["attempts"][-1]["failure_detail"]
+    assert detail["diagnostic"]["validation"]["json_path"] == f"$.proposals[0].{field}[0]"
     assert command.execute(request).outcome == result.outcome
     assert store.record is None
     assert len(provider.dispatches) == 1

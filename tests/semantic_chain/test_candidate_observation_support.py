@@ -147,15 +147,26 @@ def _v4_projection_inputs(*, frame_anchored=False):
     wire["continuity"]["ends_mid_event"] = False
     wire["continuity"]["continues_into_next"] = False
     wire["continuity"]["exit_state_fact_refs"] = []
+    # This Source fixture spans 100 native 90 kHz ticks, not the 100 ms
+    # duration of _wire's own manifest. Bind every observation, including
+    # temporal segments, to the actual representable playback milliseconds.
+    timeline = manifest.timeline_map
+    duration_ms = (timeline.proxy_range.duration_pts * timeline.proxy_time_base.numerator
+                   * 1000 // timeline.proxy_time_base.denominator)
+    assert duration_ms >= 1
+    interval = {"start_ms": 0, "end_ms": duration_ms, "uncertainty_ms": 0}
+    for name in ("entities", "facts", "events", "candidate_hypotheses"):
+        for item in wire[name]:
+            item["support"]["interval_ms"] = dict(interval)
+    for segment in wire["continuity"]["temporal_segments"]:
+        segment["support"]["interval_ms"] = dict(interval)
     if frame_anchored:
-        # Use a real frame relative to this fixture's nonzero proxy origin.
-        table = manifest.timeline_map
+        # Prove the declared frame lies before the exact whole-ms boundary;
+        # outward tick rounding must not manufacture anchor inclusion.
         frame = manifest.frame_samples[1]
-        time_ms = (frame.proxy_pts - table.proxy_range.start_pts) * table.proxy_time_base.numerator * 1000 // table.proxy_time_base.denominator
-        start, end = max(0, time_ms - 1), time_ms + 1
-        for name in ("entities", "facts", "events", "candidate_hypotheses"):
-            for item in wire[name]:
-                item["support"]["interval_ms"] = {"start_ms": start, "end_ms": end, "uncertainty_ms": 0}
+        assert (0 <= (frame.proxy_pts - timeline.proxy_range.start_pts)
+                * timeline.proxy_time_base.numerator * 1000
+                < duration_ms * timeline.proxy_time_base.denominator)
         wire["candidate_hypotheses"][0]["support"].update({
             "support_kind": "frame_anchored_observation", "frame_refs": ["f0002"],
         })

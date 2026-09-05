@@ -6,6 +6,7 @@ from typing import Literal
 from uuid import UUID
 
 from ..contracts.compiler.canonical import sha256_bytes
+from ..semantic_chain.story_design_compact_errors import CompactDraftError
 from ..semantic_chain.story_design_validation import StoryProposalValidationError
 
 
@@ -26,7 +27,7 @@ def story_design_failure_detail(
     while current is not None and id(current) not in seen and len(causes) < 8:
         seen.add(id(current))
         causes.append(type(current).__name__)
-        if type(current) is StoryProposalValidationError:
+        if type(current) in (StoryProposalValidationError, CompactDraftError):
             validation = current.to_diagnostic()
             break
         current = current.__cause__

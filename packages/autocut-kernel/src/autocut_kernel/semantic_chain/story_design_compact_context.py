@@ -13,6 +13,7 @@ from .candidate_projection import CandidateCatalogProjection
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 from .narrative_models import EntityAttributes, NarrativeGraph
 from .stage1_result import Stage1Values
+from .story_design_compact_errors import CompactDraftError
 from .story_design_context import story_design_input_binding
 from .story_design_models import JobPolicy, StoryDesignPolicy
 
@@ -50,17 +51,17 @@ class StoryDesignCompactContext:
 
     def resolve(self, alias: object, prefix: str) -> SemanticObjectRef:
         if type(alias) is not str or not alias.startswith(prefix):  # noqa: E721
-            raise ValueError("COMPACT_REFERENCE_TYPE_MISMATCH")
+            raise CompactDraftError("COMPACT_REFERENCE_TYPE_MISMATCH")
         for name, ref in self.aliases:
             if name == alias:
                 return ref
-        raise ValueError("COMPACT_REFERENCE_NOT_FOUND")
+        raise CompactDraftError("COMPACT_REFERENCE_NOT_FOUND")
 
     def alias_for(self, ref: SemanticObjectRef) -> str:
         for alias, reference in self.aliases:
             if reference == ref:
                 return alias
-        raise ValueError("COMPACT_REFERENCE_NOT_FOUND")
+        raise CompactDraftError("COMPACT_REFERENCE_NOT_FOUND")
 
 
 def build_story_design_compact_context(
@@ -74,7 +75,9 @@ def build_story_design_compact_context(
     inputs.source_grant.require_purpose("render_source")
     graph = stage1.coverage.narrative_graph
     owner = stage1.coverage.identity("narrative_graph")
-    source_owner = SemanticMemberIdentity.from_committed_member_reference(inputs.source_manifest.reference)
+    source = inputs.source_manifest.reference
+    source_owner = SemanticMemberIdentity(source.artifact_type, source.logical_id,
+                                          source.revision, source.scope, source.content_hash)
     if source_owner != stage1.dependency_proof.source_member_ref:
         raise ValueError("compact context Source differs from admitted Stage 1")
     sources = tuple(SemanticObjectRef(source_owner, "source", source.source_id)
