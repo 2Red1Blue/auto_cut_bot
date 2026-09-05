@@ -13,7 +13,10 @@ from typing import cast
 
 from ..media.types import TickRange, TimeBase
 from ..vlm.models import VlmSemanticSupport
+from ..vlm.semantic_support_v4 import _ObservationSupportV4
 from ..vlm.window import ProxyTimelineMap, ProxyTimelineSegment
+
+_SUPPORTED_SUPPORT_TYPES: tuple[type, ...] = (VlmSemanticSupport, _ObservationSupportV4)
 
 
 class CandidateDurationError(ValueError):
@@ -74,8 +77,8 @@ def conservative_support_duration(
     and earliest possible end across all segment mapping errors. Looking only
     at a shrunken endpoint can miss a neighbouring segment's larger error.
     """
-    if type(support) is not VlmSemanticSupport or type(timeline_map) is not ProxyTimelineMap:  # noqa: E721
-        raise CandidateDurationError("support must be an exact VlmSemanticSupport")
+    if not isinstance(support, _SUPPORTED_SUPPORT_TYPES) or type(timeline_map) is not ProxyTimelineMap:  # noqa: E721
+        raise CandidateDurationError("support must be an exact VlmSemanticSupport or V4 observation support")
     latest_start, earliest_end = conservative_support_bounds(support, timeline_map)
     lower = _seconds(max(0, earliest_end - latest_start), timeline_map.source_time_base)
     return ConservativeDuration(lower.numerator, lower.denominator)
@@ -91,8 +94,8 @@ def conservative_support_bounds(
     reversed or equal, which denotes zero usable coarse support; callers must
     never repair it into a physical range.
     """
-    if type(support) is not VlmSemanticSupport or type(timeline_map) is not ProxyTimelineMap:  # noqa: E721
-        raise CandidateDurationError("support must be an exact VlmSemanticSupport")
+    if not isinstance(support, _SUPPORTED_SUPPORT_TYPES) or type(timeline_map) is not ProxyTimelineMap:  # noqa: E721
+        raise CandidateDurationError("support must be an exact VlmSemanticSupport or V4 observation support")
     proxy = support.proxy_interval
     if type(proxy.proxy_range) is not TickRange:
         raise CandidateDurationError("support proxy range is invalid")

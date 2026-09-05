@@ -143,7 +143,7 @@ def prepare_stage1_request(request: BuildNarrativeGraphRequest, inputs: Committe
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
         "text": build_draft_text_format(request.generation.adapter_strategy_version,
                                         "stage1_cross_window_draft_v1", stage1_draft_response_schema(request.draft_policy)),
-        "max_output_tokens": request.generation.max_output_tokens, "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
+        "max_output_tokens": request.generation.max_output_tokens, "thinking": {"type": "disabled"}, "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
     }
     if not math.isfinite(cast(float, body["temperature"])):
         raise ValueError("generation temperature must be finite")

@@ -178,6 +178,7 @@ def prepare_stage2_request(
         "text": build_draft_text_format(request.generation.adapter_strategy_version,
                                         "stage2_story_design_draft_v1", schema),
         "max_output_tokens": request.generation.max_output_tokens,
+        "thinking": {"type": "disabled"},
         "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
     }
     provider_payload = json.dumps(body, ensure_ascii=False, separators=(",", ":"), sort_keys=True, allow_nan=False).encode("utf-8")

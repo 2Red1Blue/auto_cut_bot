@@ -23,6 +23,11 @@ from ..vlm.models import (
     VlmProxyInterval,
     VlmSemanticSupport,
 )
+from ..vlm.semantic_support_v4 import (
+    FrameAnchoredObservationSupportV4,
+    VideoObservationSupportV4,
+    frame_aliases,
+)
 from .candidate_duration import ConservativeDuration
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
 
@@ -211,10 +216,18 @@ class CandidateSupport:
 
     @classmethod
     def from_vlm_support(cls, value: VlmSemanticSupport, duration: ConservativeDuration) -> CandidateSupport:
-        if type(value) is not VlmSemanticSupport:  # noqa: E721
+        if type(value) is VlmSemanticSupport:  # noqa: E721
+            frame_ids = value.supporting_frame_ids
+        elif isinstance(value, (VideoObservationSupportV4, FrameAnchoredObservationSupportV4)):
+            if isinstance(value, FrameAnchoredObservationSupportV4):
+                frame_ids = tuple(sorted(set(anchor.frame_sha256 for anchor in value.frame_anchors)))
+            else:
+                table = frame_aliases(value.manifest)
+                frame_ids = tuple(sorted(entry.frame_sha256 for entry in table.entries))
+        else:
             raise CandidateCatalogError("candidate support must be an exact VLM support")
         return cls(
-            value.proxy_interval, value.source_interval, value.supporting_frame_ids,
+            value.proxy_interval, value.source_interval, frame_ids,
             candidate_confidence_text(value.confidence, "candidate support confidence"), value.core_owner_window_manifest_sha256, duration,
         )
 

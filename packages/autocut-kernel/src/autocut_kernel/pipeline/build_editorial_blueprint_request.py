@@ -198,6 +198,7 @@ def prepare_stage3_request(
         "text": build_draft_text_format(request.generation.adapter_strategy_version,
                                         "stage3_editorial_blueprint_draft_v1", schema),
         "max_output_tokens": request.generation.max_output_tokens,
+        "thinking": {"type": "disabled"},
         "temperature": float(Decimal(request.generation.temperature)),
         "stream": True,
         "store": True,

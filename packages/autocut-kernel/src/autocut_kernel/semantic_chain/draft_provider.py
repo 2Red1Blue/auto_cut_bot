@@ -30,7 +30,7 @@ DRAFT_SUPPORTED_ADAPTER_STRATEGY_VERSIONS = frozenset({
     DRAFT_LEGACY_ADAPTER_STRATEGY_VERSION, DRAFT_DIRECT_SCHEMA_ADAPTER_STRATEGY_VERSION,
 })
 _MAX_DEPTH = 64
-_FIELDS = {"model", "input", "text", "max_output_tokens", "temperature", "stream", "store"}
+_FIELDS = {"model", "input", "text", "max_output_tokens", "thinking", "temperature", "stream", "store"}
 
 
 class DraftProviderError(ValueError):
@@ -167,6 +167,9 @@ def decode_draft_request_payload(raw: bytes) -> dict[str, object]:
     tokens = body["max_output_tokens"]
     if type(tokens) is not int or not 1 <= tokens <= 32768:  # noqa: E721
         raise DraftProviderError("max_output_tokens must be an exact integer from 1 to 32768")
+    reasoning = body["thinking"]
+    if type(reasoning) is not dict or set(reasoning) != {"type"} or reasoning.get("type") != "disabled":  # noqa: E721
+        raise DraftProviderError("thinking must be exactly {\"type\": \"disabled\"}")
     temperature = body["temperature"]
     if type(temperature) not in (int, float) or not 0 <= cast(int | float, temperature) <= 2:
         raise DraftProviderError("temperature must be an explicit finite number from 0 to 2")

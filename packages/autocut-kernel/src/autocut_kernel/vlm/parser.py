@@ -211,10 +211,10 @@ def _canonical_enums(value: object, field_name: str, enum_type: type[EnumT]) -> 
     values = tuple(_enum(item, enum_type, f"{field_name}[]") for item in raw_values)
     if not values or len(values) != len(set(values)):
         _reject("NONCANONICAL_ENUM_SET", f"{field_name} must be non-empty and unique")
-    expected = tuple(item for item in enum_type if item in values)  # type: ignore[union-attr]
-    if values != expected:
-        _reject("NONCANONICAL_ENUM_SET", f"{field_name} is not in canonical order")
-    return values
+    # LLM output may not respect the enum declaration order.  Coerce to
+    # canonical order rather than rejecting — enum *sets* are unordered by
+    # nature, and the downstream consumers already receive a sorted tuple.
+    return tuple(item for item in enum_type if item in values)  # type: ignore[union-attr]
 
 
 def _support_fields(
