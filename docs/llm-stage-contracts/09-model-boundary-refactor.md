@@ -296,4 +296,58 @@ Debug 按 stage/operation/attempt 保存 request、raw、normalized、projection
   Graph 检查才发现其实际 node_type=entity。采用严格解码后受限迁移，不增加宽松 decoder。
 - 最后的文字澄清由主审核对源码；不能宣称两位审查者对最终全文一致批准，更不是代码测试通过。
   B/C/D 在各自实现提交前仍须按本节已知问题做独立代码审查。
-- 当前仅方案/任务文档已创建。没有新的付费模型调用、数据库修改、运行时切换或重构代码测试。
+- 上述为设计时点记录；用户随后批准开始实施。代码与验证进展见 §9，不将设计审查视为代码验收。
+
+## 9. A 首批实现与真实响应诊断（2026-09-05）
+
+已提交 Stage 2 精确诊断与只读离线工具，尚未实现 B compact、C 持久化 reprocess、D 候选支持类型或 E 新真实运行。
+本批不改 Prompt/Schema/校验准入，不改原始响应，不重跑 VLM，不切换 operational 服务。
+
+### 交付与用法
+
+- `StoryProposalValidationError.to_diagnostic()`：受限 rule/code/path/期望与实际类型/缺失与多余数量。
+- Command 在 compilation / independent_evaluation 两处保留有界 cause 类型、attempt ID 与原响应 hash。
+  `failure_code` 不变；`reason` 改为脱敏固定文本，消费者应按 code/diagnostic 处理，不能匹配错误全文。
+- `scripts/diagnose_stage2_debug.py --context context.json --response response.bin`：只检查已保存字节。
+  context 是真实 request `body.input[0].content[0].text` 中的 `stage2-proposal-context-v1` JSON；
+  response 是对应 raw-output.bin，不能用另一个 run 的上下文拼接。
+  Kernel 必须已安装或显式位于 `PYTHONPATH`；测试/诊断在 PC WSL 验证 checkout 执行。
+- CLI exit 0 仅表示 `proposal_rules_passed`；1 为规则拒绝；2 为不支持、非法或超界输入。
+  明确输出 `authority_verified=false`、`full_policy_and_resource_verification=false`、`provider_calls=0`。
+  无数据库权威验证、无 Receipt 写入；不可作为恢复运行成功的证据。
+- 首版工具对每个输入文件上限为 16 MiB，JSON depth 64；这是离线工具限制，不是生产 Context 合法性上限。
+  超界可能是合法但尚不支持的上下文，不得据此拒绝生产任务。大上下文专用边界和公共 decoder API 后续收敛。
+
+### 真实样本结果
+
+在 `/home/laiu/auto_cut_bot-v213-validation` 对已保存的 run
+`pipeline_run_ccc10a8fcc4d4c8497c7aad25b584928` 执行离线诊断：
+
+| 项目 | 结果 |
+|---|---|
+| 原响应 | 89,172 bytes；`sha256:be4986b404ab1432e2e1d0b579941cb632df2504ef3b85ead269c37bfad3c969` |
+| 提取的 Context | 215,481 bytes；`sha256:664bc6fd15b00f9d2f061c018ca7df10dc2d03782c6a82da1b1924d688cabaf0` |
+| 范围 | 4 proposals，38 graph nodes，1 source |
+| 首个复现规则错误 | `SD-REF-001 / GRAPH_REFERENCE_TYPE_MISMATCH` |
+| 路径 | `$.proposals[0].key_character_refs[0]` |
+| 期望 / 实际 | `character` / `entity` |
+| Provider 调用 | 0 |
+
+这里证明的是当前程序对保存响应的离线复现，不是恢复了历史数据库中丢失的最内层 exception，
+也不证明修复这一个字段后整个 Portfolio 就能通过。私有上下文和响应不提交 Git。
+
+### 代码交叉审查及处置
+
+- `349db6d4-fb50-4247-8c36-b3d4af4f18cc`：Codex 指 owner 变量未定义；完整源码
+  `story_design_validation.py` 已定义两集合，属短 diff 缺上下文误报。Claude 超时，未计为批准。
+- `f9314e39-16f1-451d-83c1-ffcc834178d2`：Claude APPROVE；Codex REQUEST_CHANGES，
+  指错种类 obligation 会越过验证造成 KeyError。主审核对 `ProposalDraft.__post_init__` 的 `_refs(..., object_type=kind)`
+  已在结构构造时拒绝该输入；已有 `test_narrative_refs_require_exact_graph_owner_and_correct_object_kind` 覆盖，
+  不重复增加一层同义校验。未宣称双模型一致批准。
+- 采纳 Claude 的引用遍历漂移建议，增加四字段拼接与 `narrative_refs` 等价回归。
+  大 Context 限制、private decoder 依赖和 path grammar 集中化为已知工具维护项，非放宽准入的理由。
+- 首轮 PC 83 passed / 1 failed：新增测试重新建上下文造成请求绑定不匹配。
+  修复测试为复用同一请求/Store 后，PC 84 passed，目标 Ruff 通过；未修改业务规则来使测试通过。
+- 最终加入 DTO 种类校验与引用遍历回归后，在代码 `3d7a68a0` 上 PC WSL **145 passed（21.31s）**，
+  七个目标文件 Ruff 全通过，`git diff --check` 通过。测试使用真实 compiler + synthetic provider/Store，
+  不声称实际 Ark 请求或 PostgreSQL 事务测试；真实保存 raw 的离线结果单列于上。
