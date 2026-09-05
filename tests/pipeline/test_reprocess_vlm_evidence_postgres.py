@@ -108,7 +108,9 @@ def test_remaining_reference_error_commits_new_denial_without_generation(prepare
 
 
 def test_v1_replay_and_explicit_v2_projection_use_distinct_durable_receipts(prepared):
-    from autocut_kernel.pipeline.reprocess_vlm_evidence_command import project_reprocessed_semantic_input
+    from autocut_kernel.pipeline.reprocess_vlm_evidence_command import (
+        project_reprocessed_semantic_input,
+    )
     from autocut_kernel.store.models import canonical_payload_hash
 
     request, parent, _ = _failed_parent(prepared)

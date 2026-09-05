@@ -12,7 +12,10 @@ Examples:
 The default is read-only validation; --execute explicitly permits a new derived
 Command/Receipt. Exit codes: 0 validated/succeeded; 1 durable rejection or parser
 rejection; 2 invalid input or unavailable configuration/implementation;
-3 persistence or unexpected execution failure. This is a local operational CLI,
+3 nonterminal, persistence, unexpected execution, or post-commit reporting failure.
+A succeeded_reporting_incomplete result preserves the succeeded Receipt: inspect
+that exact Receipt without changing the request or creating another request key.
+This is a local operational CLI,
 not a declaration that a public Pipeline recovery endpoint has been deployed.
 """
 
@@ -34,7 +37,11 @@ from autocut_kernel.pipeline.reprocess_vlm_evidence_command import (
     ReprocessVlmEvidenceRequest,
     rebuild_reprocessed_vlm_evidence,
 )
-from autocut_kernel.store.models import ArtifactMember, CommandOutcome, CommittedArtifactMemberReference
+from autocut_kernel.store.models import (
+    ArtifactMember,
+    CommandOutcome,
+    CommittedArtifactMemberReference,
+)
 from autocut_kernel.vlm.normalized_contracts import ParserImplementationUnavailableError
 from autocut_kernel.vlm.parser import VlmResponseIndeterminate, VlmResponseRejected
 
@@ -97,7 +104,6 @@ def _configured_store() -> DerivedVlmBatchStore:
     if not dsn or not dsn.strip():
         raise RecoveryConfigurationError("a Kernel PostgreSQL DSN must be configured in the environment")
     import psycopg
-
     from autocut_kernel.store.postgres import PostgresRuntimeStore
 
     return PostgresRuntimeStore(lambda: psycopg.connect(dsn))
@@ -134,6 +140,7 @@ def main(argv: list[str] | None = None, *, store: DerivedVlmBatchStore | None = 
     activity.add_argument("--dry-run", action="store_true", help="validate only (the default)")
     report: dict[str, object] = {"provider_calls": 0, "execution_requested": False}
     phase = "arguments"
+    committed_outcome: CommandOutcome | None = None
     try:
         args = parser.parse_args(argv)
         report.update({"mode": args.mode, "execution_requested": args.execute})
@@ -151,7 +158,9 @@ def main(argv: list[str] | None = None, *, store: DerivedVlmBatchStore | None = 
                 report.update(_outcome_report(result.outcome))
                 if result.outcome.state != "succeeded":
                     print(json.dumps(report, sort_keys=True))
-                    return 1
+                    return 1 if result.outcome.state in ("denied", "failed") else 3
+                committed_outcome = result.outcome
+                phase = "report_committed_result"
                 if result.evidence is None:
                     raise RecoveryInputError("succeeded reprocess did not expose its audited evidence")
                 artifacts = result.evidence.artifacts
@@ -166,7 +175,9 @@ def main(argv: list[str] | None = None, *, store: DerivedVlmBatchStore | None = 
                 report.update(_outcome_report(outcome))
                 if outcome.state != "succeeded":
                     print(json.dumps(report, sort_keys=True))
-                    return 1
+                    return 1 if outcome.state in ("denied", "failed") else 3
+                committed_outcome = outcome
+                phase = "report_committed_result"
                 artifact, *_ = rebuild_derived_vlm_batch(bound_store, request)
                 artifacts = (artifact,)
                 report["members"] = _member_refs(outcome, artifacts)
@@ -190,6 +201,13 @@ def main(argv: list[str] | None = None, *, store: DerivedVlmBatchStore | None = 
         # Database exceptions can contain credentials or signed URLs. Never print them.
         report.update({"status": "failed", "phase": phase, "error_code": "RECOVERY_EXECUTION_FAILED",
                        "exception_kind": type(error).__name__})
+        exit_code = 3
+    if committed_outcome is not None and exit_code != 0:
+        # Reporting must not overwrite a durable success with a failed command state.
+        report.update(_outcome_report(committed_outcome))
+        report.update({"status": "succeeded_reporting_incomplete", "command_state": "succeeded",
+                       "error_code": "POST_COMMIT_REPORT_UNAVAILABLE", "members": [], "artifacts": [],
+                       "next_action": "inspect_existing_receipt_without_changing_request"})
         exit_code = 3
     print(json.dumps(report, sort_keys=True))
     return exit_code

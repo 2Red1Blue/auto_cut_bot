@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-
 from autocut_kernel.pipeline import reprocess_vlm_batch_command as batch_core
 from autocut_kernel.pipeline import reprocess_vlm_evidence_command as reprocess_core
 from autocut_kernel.store.models import (
@@ -19,7 +18,11 @@ from autocut_kernel.store.models import (
     canonical_payload_hash,
     canonical_recipe_scope,
 )
-from autocut_kernel.vlm.normalized_contracts import VLM_PARSER_NORMALIZED_V4, parser_contract_sha256_for
+from autocut_kernel.vlm.normalized_contracts import (
+    VLM_PARSER_NORMALIZED_V4,
+    parser_contract_sha256_for,
+)
+
 from scripts import reprocess_vlm_evidence as cli
 
 
@@ -276,6 +279,47 @@ def test_terminal_denial_is_reported_without_payload_or_new_commit(harness, caps
     report = json.loads(output.out)
     assert report["status"] == "denied" and report["error_code"] == "UNKNOWN_REFERENCE"
     assert "hidden" not in output.out + output.err
+    assert "members" not in report and store.commits == 0
+
+
+@pytest.mark.parametrize("error", [ValueError("private-report-secret"), RuntimeError("private-report-secret"),
+                                  cli.VlmResponseRejected("UNKNOWN_REFERENCE", "private-report-secret")])
+def test_postcommit_reporting_failure_preserves_success_and_exact_receipt(harness, monkeypatch, capsys, error):
+    store, path, request, _ = harness("finalize-batch")
+
+    def report_unavailable(*_args):
+        raise error
+
+    monkeypatch.setattr(cli, "rebuild_derived_vlm_batch", report_unavailable)
+    assert cli.main(["--mode", "finalize-batch", "--request", str(path), "--execute"], store=store) == 3
+    output = capsys.readouterr()
+    report = json.loads(output.out)
+    assert report["status"] == "succeeded_reporting_incomplete" and report["command_state"] == "succeeded"
+    assert report["error_code"] == "POST_COMMIT_REPORT_UNAVAILABLE"
+    assert report["receipt_id"] == str(store.outcome.receipt_id)
+    assert report["artifact_set_id"] == str(store.outcome.artifact_set_id)
+    assert report["command_slot_id"] == str(store.outcome.command_slot_id)
+    assert report["idempotency_key"] == request.idempotency_key
+    assert report["members"] == report["artifacts"] == []
+    assert report["next_action"] == "inspect_existing_receipt_without_changing_request"
+    assert store.claims == store.commits == 1
+    assert "private-report-secret" not in output.out + output.err
+
+
+@pytest.mark.parametrize("mode", ["reprocess", "finalize-batch"])
+@pytest.mark.parametrize("state", ["pending", "running"])
+def test_nonterminal_outcomes_are_not_reported_as_permanent_denials(harness, monkeypatch, capsys, mode, state):
+    store, path, _, _ = harness(mode)
+    outcome = CommandOutcome(store.outcome.command_slot_id, state)
+    if mode == "reprocess":
+        monkeypatch.setattr(cli.ReprocessVlmEvidenceCommand, "execute",
+                            lambda *_args: reprocess_core.ReprocessVlmEvidenceResult(outcome))
+    else:
+        monkeypatch.setattr(cli.FinalizeDerivedVlmBatchCommand, "execute", lambda *_args: outcome)
+    assert cli.main(["--mode", mode, "--request", str(path), "--execute"], store=store) == 3
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == state
+    assert report["receipt_id"] is None and report["artifact_set_id"] is None
     assert "members" not in report and store.commits == 0
 
 

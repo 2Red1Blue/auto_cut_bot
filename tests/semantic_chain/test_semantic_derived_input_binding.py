@@ -14,8 +14,11 @@ from autocut_kernel.semantic_chain.editorial_context_models import ExactContextM
 from autocut_kernel.semantic_chain.member_refs import SemanticObjectRef
 from autocut_kernel.semantic_chain.stage1_draft import _member_binding, stage1_draft_prompt_inputs
 from autocut_kernel.store.models import (
-    ArtifactMember, CommittedArtifactMemberReference, PersistedReprocessedVlmChild,
-    PersistedVlmSemanticPackV4, canonical_payload_hash,
+    ArtifactMember,
+    CommittedArtifactMemberReference,
+    PersistedReprocessedVlmChild,
+    PersistedVlmSemanticPackV4,
+    canonical_payload_hash,
 )
 from autocut_kernel.vlm.enum_normalization import normalize_vlm_enum_sets
 from autocut_kernel.vlm.semantic_pack_v4 import VlmSemanticPackV4
