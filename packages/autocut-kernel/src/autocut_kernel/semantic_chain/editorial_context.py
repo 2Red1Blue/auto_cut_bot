@@ -19,6 +19,7 @@ from ..contracts.compiler.canonical import (
     load_canonical_json_bytes,
     sha256_bytes,
 )
+from ..media.types import canonical_sha256
 from ..source_manifest import decode_source_manifest
 from ..store.models import (
     VLM_REQUEST_IDENTITY_FIELDS,
@@ -127,7 +128,7 @@ def _derived_request(member: ExactContextMember) -> tuple[dict[str, object], Vlm
     policy = _derived_policy(record)
     proxy = _blob(record["proxy_blob"])
     request = cast(dict[str, object], record["request"])
-    request_hash = canonical_json_hash(request)
+    request_hash = canonical_sha256(request)
     if (member.member_ref.logical_id != "reprocessed_vlm_" + request_hash[7:]
             or record["window_manifest_sha256"] != identity.window_manifest_sha256
             or record["window_manifest_set_sha256"] != identity.window_manifest_set_sha256
@@ -180,7 +181,7 @@ def _raw_pool(
     )):
         record, identity, _ = request
         identity.assert_manifest_binding(episode.manifest, episode.manifest_set)
-        expected_pack_id = ("reprocessed_semantic_pack_" + canonical_json_hash(record["request"])[7:]
+        expected_pack_id = ("reprocessed_semantic_pack_" + canonical_sha256(record["request"])[7:]
                             if request_member.member_ref.artifact_type == "reprocessed_vlm_evidence"
                             else f"semantic_pack_{pack.window_manifest_sha256[7:39]}")
         if (record["episode_index"] != ordinal or record["source_manifest_sha256"] != pool[0].member_ref.content_hash

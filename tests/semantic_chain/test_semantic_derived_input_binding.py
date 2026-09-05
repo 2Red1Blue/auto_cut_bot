@@ -6,6 +6,7 @@ from uuid import UUID
 
 import pytest
 from autocut_kernel.contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
+from autocut_kernel.media.types import canonical_sha256
 from autocut_kernel.semantic_chain.authority import _committed_input_binding
 from autocut_kernel.semantic_chain.candidate_projection import decode_candidate_source_context
 from autocut_kernel.semantic_chain.derived_input_binding import bind_derived_input
@@ -60,7 +61,7 @@ def _derived_inputs(*, version=2):
     }
     if version == 2:
         request["projection_version"] = 2
-    request_hash = canonical_json_hash(request)
+    request_hash = canonical_sha256(request)
     record = {
         "schema_version": f"reprocessed-vlm-evidence-v{version}", "request": request,
         "parent_parser_strategy": "strict-semantic-pack-v4", "parent_parser_contract_sha256": "sha256:" + "b" * 64,
@@ -134,6 +135,34 @@ def test_stage3_decodes_full_derived_v4_and_retains_exact_fact_and_candidate_own
 def test_stage3_v1_projection_is_explicitly_unavailable_not_guessed():
     with pytest.raises(ValueError, match="reprocess locally to v2"):
         _raw_packs(_raw_context_pool(_derived_inputs(version=1)))
+
+
+def test_unicode_job_uses_request_contract_hash_for_both_derived_logical_ids():
+    """Only a pure content-join regression; this is not a Store acceptance."""
+    inputs = _derived_inputs()
+    pool = list(_raw_context_pool(inputs))
+    record = json.loads(pool[1].payload_json)
+    record["request"]["job"]["job_key"] = "派生证据结构测试"
+    request_hash = canonical_sha256(record["request"])
+    other_hash = canonical_json_hash(record["request"])
+    assert request_hash != other_hash
+    payload = canonical_json_bytes(record).decode()
+    pool[1] = _exact(replace(pool[1].member_ref, logical_id="reprocessed_vlm_" + request_hash[7:],
+                             content_hash=canonical_payload_hash(payload)), payload)
+    pool[2] = replace(pool[2], member_ref=replace(pool[2].member_ref,
+                                                logical_id="reprocessed_semantic_pack_" + request_hash[7:]))
+    packs = _raw_packs(tuple(pool))
+    refs = _raw_pool(tuple(pool), packs, inputs.source_grant.canonical_hash)
+    assert SemanticObjectRef(pool[2].member_ref, "vlm_fact", packs[0].facts[0].fact_id) in refs
+
+    bad_record = replace(pool[1], member_ref=replace(pool[1].member_ref,
+                                                    logical_id="reprocessed_vlm_" + other_hash[7:]))
+    with pytest.raises(ValueError, match="exact request identity"):
+        _request(bad_record)
+    pool[2] = replace(pool[2], member_ref=replace(pool[2].member_ref,
+                                                logical_id="reprocessed_semantic_pack_" + other_hash[7:]))
+    with pytest.raises(ValueError, match="pair does not close"):
+        _raw_pool(tuple(pool), packs, inputs.source_grant.canonical_hash)
 
 
 @pytest.mark.parametrize("field", ["request_identity", "parse_policy", "proxy_blob"])

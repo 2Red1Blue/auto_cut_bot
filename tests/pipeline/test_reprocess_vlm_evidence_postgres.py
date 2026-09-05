@@ -76,6 +76,7 @@ def _failed_parent(prepared, *, unknown_ref=False):
         original.request_hash, attempt.request_payload.content_hash, attempt.raw_response.content_hash,
         prepared.source_reference.artifact_set_id, original.episode_index, original.artifact_revision,
         parser_contract_sha256_for(VLM_PARSER_NORMALIZED_V4),
+        projection_version=2,
     )
     return request, attempt, terminal
 

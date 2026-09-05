@@ -74,7 +74,7 @@ class ReprocessVlmEvidenceRequest:
     episode_index: int
     parent_artifact_revision: int
     target_parser_contract_sha256: str
-    projection_version: int = 2
+    projection_version: int = 1
 
     def __post_init__(self) -> None:
         if type(self.job) is not Job:

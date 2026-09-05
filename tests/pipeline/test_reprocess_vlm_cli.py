@@ -121,6 +121,10 @@ def test_v1_request_roundtrip_preserves_original_hash_and_v2_is_explicit():
     from autocut_kernel.media.types import canonical_sha256
 
     v1 = _request("reprocess", projection_version=1)
+    existing_caller = reprocess_core.ReprocessVlmEvidenceRequest(**{
+        name: getattr(v1, name) for name in v1.__dataclass_fields__ if name != "projection_version"
+    })
+    assert existing_caller == v1 and existing_caller.request_hash == v1.request_hash
     legacy = {
         "strategy_version": "reprocess-vlm-evidence-v1",
         "target_parser_strategy": VLM_PARSER_NORMALIZED_V4,
