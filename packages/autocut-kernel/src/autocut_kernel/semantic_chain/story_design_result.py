@@ -8,6 +8,7 @@ from ..contracts.compiler.canonical import load_canonical_json_bytes
 from ..store.models import ArtifactMember, ArtifactScope
 from .member_refs import SemanticMemberIdentity
 from .portfolio_admission import PortfolioAdmission
+from .story_design_compact_models import ProposalDraftV2
 from .story_design_compiler import STAGE2_BUSINESS_MEMBER_TYPES
 from .story_design_members import StoryDesignBusinessValues, decode_story_design_business_members
 
@@ -42,6 +43,9 @@ def decode_story_design_members(
     admission = PortfolioAdmission.from_mapping(load_canonical_json_bytes(
         member.payload_json.encode("utf-8"), origin="portfolio_admission",
     )[0])
+    compact = bool(business.proposal_set.proposals) and type(business.proposal_set.proposals[0].proposal) is ProposalDraftV2
+    if compact != (admission.evaluation_strategy_version == "stage2-sd-compact-v2"):
+        raise ValueError("Stage 2 Admission strategy differs from proposal codec")
     if set(admission.business_members) != {SemanticMemberIdentity.from_artifact_member(item) for item in members[:4]}:
         raise ValueError("Stage 2 Admission subject differs from the four business members")
     if (admission.input_binding_sha256 != business.proposal_set.input_binding_sha256

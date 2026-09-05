@@ -13,8 +13,8 @@ from ..contracts.compiler.canonical import canonical_json_bytes, sha256_bytes
 from ..semantic_chain.draft_provider import DraftProviderPort
 from ..semantic_chain.member_refs import SemanticMemberIdentity
 from ..semantic_chain.portfolio_admission import PortfolioAdmission, Stage2Check
+from ..semantic_chain.story_design_boundary import decode_bound_story_draft, uses_compact_story_design
 from ..semantic_chain.story_design_compiler import compile_story_design
-from ..semantic_chain.story_design_draft import decode_story_design_draft
 from ..semantic_chain.story_design_evaluation import evaluate_story_design_business_members
 from ..semantic_chain.story_design_members import decode_story_design_business_members
 from ..semantic_chain.story_design_result import StoryDesignValues, decode_story_design_members
@@ -86,18 +86,24 @@ def _evaluate(
 ) -> PortfolioAdmission:
     """Called only after this Command/reader has performed input and audit reads."""
     request = prepared.request
-    draft = decode_story_design_draft(raw, expected_input_binding_sha256=prepared.input_binding_sha256,
-                                      policy=request.draft_policy)
+    draft = decode_bound_story_draft(
+        inputs.semantic, inputs.narrative.values, prepared.projection, raw,
+        job_policy=request.job_policy, story_policy=request.story_policy,
+        candidate_policy=request.candidate_policy, draft_policy=request.draft_policy,
+        prompt_version=request.generation.prompt_version,
+    )
     values = decode_story_design_business_members(business, scope=request.artifact_scope)
     checks = evaluate_story_design_business_members(
         inputs.semantic, inputs.narrative.values, raw, members=business,
         candidate_policy=request.candidate_policy, job_policy=request.job_policy,
         story_policy=request.story_policy, draft_policy=request.draft_policy,
+        prompt_version=request.generation.prompt_version,
     )
     return PortfolioAdmission(
         prepared.input_binding_sha256, sha256_bytes(raw), draft.canonical_hash,
         request.draft_policy.canonical_hash, request.candidate_policy.canonical_hash,
-        request.story_policy.canonical_hash, request.job_policy.canonical_hash, "stage2-sd-v1",
+        request.story_policy.canonical_hash, request.job_policy.canonical_hash,
+        "stage2-sd-compact-v2" if uses_compact_story_design(request.generation.prompt_version) else "stage2-sd-v1",
         tuple(SemanticMemberIdentity.from_artifact_member(member) for member in business),
         values.portfolio.target_story_ids,
         (*checks, Stage2Check("SD-IN-001", "pass", ()), Stage2Check("SD-IN-002", "pass", ())),
@@ -160,6 +166,7 @@ class CompileStoryPortfolioCommand:
                 scope=request.artifact_scope, revision=request.artifact_revision,
                 candidate_policy=request.candidate_policy, job_policy=request.job_policy,
                 story_policy=request.story_policy, draft_policy=request.draft_policy,
+                prompt_version=request.generation.prompt_version,
             )
         except ValueError as error:
             return self._deny(prepared, outcome, attempt, "STAGE2_DRAFT_OR_COMPILATION_REJECTED", story_design_failure_detail(

@@ -47,6 +47,7 @@ from .narrative_models import (
 )
 from .stage1_result import Stage1Values
 from .story_design_context import story_design_input_binding
+from .story_design_compact_models import ProposalDraftSetV2
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import (
     JobPolicy,
@@ -249,11 +250,11 @@ def _requirement(
 
 def evaluate_material_support(
     inputs: CommittedSemanticInputs, stage1: Stage1Values, projection: CandidateCatalogProjection,
-    draft: ProposalDraftSet, *, job_policy: JobPolicy, story_policy: StoryDesignPolicy,
+    draft: ProposalDraftSet | ProposalDraftSetV2, *, job_policy: JobPolicy, story_policy: StoryDesignPolicy,
     candidate_policy: CandidateCatalogPolicy,
 ) -> MaterialSupportEvaluation:
     """Retain every proposal/requirement and every safe alternative, with no top-K."""
-    if type(inputs) is not CommittedSemanticInputs or type(draft) is not ProposalDraftSet:  # noqa: E721
+    if type(inputs) is not CommittedSemanticInputs or type(draft) not in (ProposalDraftSet, ProposalDraftSetV2):  # noqa: E721
         raise MaterialSupportError("material support requires exact typed semantic inputs/draft")
     try:
         binding = story_design_input_binding(stage1, projection, job_policy=job_policy,

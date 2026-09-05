@@ -105,7 +105,7 @@ class PortfolioAdmission:
     def __post_init__(self) -> None:
         for field in _HASH_FIELDS:
             _hash(getattr(self, field))
-        if type(self.evaluation_strategy_version) is not str or self.evaluation_strategy_version != "stage2-sd-v1":  # noqa: E721
+        if type(self.evaluation_strategy_version) is not str or self.evaluation_strategy_version not in ("stage2-sd-v1", "stage2-sd-compact-v2"):  # noqa: E721
             raise ValueError("unsupported Stage 2 evaluation strategy")
         if type(self.business_members) is not tuple or any(type(item) is not SemanticMemberIdentity for item in self.business_members):  # noqa: E721
             raise ValueError("Stage 2 Admission requires exact member identities")

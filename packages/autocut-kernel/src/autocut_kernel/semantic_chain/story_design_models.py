@@ -398,6 +398,11 @@ class ProposalDraft:
         _one_owner(self.source_refs)
 
     @property
+    def subject_refs(self) -> tuple[SemanticObjectRef, ...]:
+        """Uniform consumer access without changing the v1 character-only wire."""
+        return self.key_character_refs
+
+    @property
     def narrative_refs(self) -> tuple[SemanticObjectRef, ...]:
         return (self.thread_refs + self.required_obligation_refs + self.required_fact_refs
                 + self.key_character_refs)

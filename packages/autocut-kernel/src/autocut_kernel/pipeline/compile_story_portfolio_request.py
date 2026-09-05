@@ -26,7 +26,13 @@ from ..semantic_chain.stage1_command_policy import (
     require_nonempty_text,
 )
 from ..semantic_chain.stage1_result import Stage1Values
+from ..semantic_chain.story_design_boundary import uses_compact_story_design
 from ..semantic_chain.story_design_command_policy import Stage2CommandPolicy
+from ..semantic_chain.story_design_compact import (
+    build_story_design_compact_context,
+    compact_contract_sha256,
+    story_design_compact_response_schema,
+)
 from ..semantic_chain.story_design_context import story_design_input_binding
 from ..semantic_chain.story_design_draft import (
     StoryDesignDraftPolicy,
@@ -170,13 +176,26 @@ def prepare_stage2_request(
         ("narrative_graph", values.coverage.narrative_graph.to_mapping()),
     ):
         context[kind] = {"member_ref": values.coverage.identity(kind).to_mapping(), "payload": payload}
-    prompt = request.generation.prompt_template + "\n\n" + canonical_json_bytes(context).decode("utf-8")
     schema = story_design_draft_response_schema(request.draft_policy)
+    response_name = "stage2_story_design_draft_v1"
+    private_mapping = None
+    if uses_compact_story_design(request.generation.prompt_version):
+        compact = build_story_design_compact_context(
+            inputs.semantic, values, projection, job_policy=request.job_policy,
+            story_policy=request.story_policy, candidate_policy=request.candidate_policy,
+        )
+        context = compact.model_view()
+        private_mapping = compact.private_mapping()
+        if compact.input_binding_sha256 != binding:
+            raise ValueError("compact projection input binding differs from prepared request")
+        schema = story_design_compact_response_schema(request.draft_policy)
+        response_name = "stage2_story_design_compact_v2"
+    prompt = request.generation.prompt_template + "\n\n" + canonical_json_bytes(context).decode("utf-8")
     body = {
         "model": request.generation.model_id,
         "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
         "text": build_draft_text_format(request.generation.adapter_strategy_version,
-                                        "stage2_story_design_draft_v1", schema),
+                                        response_name, schema),
         "max_output_tokens": request.generation.max_output_tokens,
         "thinking": {"type": "disabled"},
         "temperature": float(Decimal(request.generation.temperature)), "stream": True, "store": True,
@@ -196,4 +215,16 @@ def prepare_stage2_request(
         "retry_policy": request.retry_policy.to_mapping(),
         "retry_policy_sha256": request.retry_policy.canonical_hash,
     }
+    if private_mapping is not None:
+        envelope.update({
+            "schema_version": "stage2-generation-request-v2",
+            "model_boundary": {
+                "prompt_version": request.generation.prompt_version,
+                "wire_schema_version": "stage2-story-design-compact-v2",
+                "domain_schema_version": "stage2-story-design-domain-v2",
+                "implementation_sha256": compact_contract_sha256(),
+                "reference_map": private_mapping,
+                "reference_map_sha256": canonical_json_hash(private_mapping),
+            },
+        })
     return PreparedStage2Request(request, binding, provider_payload, canonical_json_bytes(envelope), projection)

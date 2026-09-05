@@ -17,8 +17,8 @@ from .portfolio_admission import SD_RULE_IDS, Stage2Check
 from .portfolio_search import PortfolioSearchError, verify_assignment
 from .stage1_result import Stage1Values
 from .story_design_compiler import material_search_universe, select_material_portfolio
-from .story_design_context import story_design_input_binding
-from .story_design_draft import StoryDesignDraftPolicy, decode_story_design_draft
+from .story_design_boundary import decode_bound_story_draft
+from .story_design_draft import StoryDesignDraftPolicy
 from .story_design_members import decode_story_design_business_members
 from .story_design_models import JobPolicy, StoryDesignPolicy
 from .story_design_validation import validate_story_proposals
@@ -42,6 +42,7 @@ def evaluate_story_design_business_members(
     inputs: CommittedSemanticInputs, stage1: Stage1Values, raw_draft: bytes, *,
     members: tuple[ArtifactMember, ...], candidate_policy: CandidateCatalogPolicy,
     job_policy: JobPolicy, story_policy: StoryDesignPolicy, draft_policy: StoryDesignDraftPolicy,
+    prompt_version: str | None = None,
 ) -> tuple[Stage2Check, ...]:
     """Perform all seventeen business checks; unreadable content raises ValueError.
 
@@ -56,9 +57,11 @@ def evaluate_story_design_business_members(
     values = decode_story_design_business_members(members, scope=scope)
     expected_projection = project_candidate_catalog(inputs, stage1, scope=scope,
                                                     revision=members[0].revision, policy=candidate_policy)
-    binding = story_design_input_binding(stage1, expected_projection, job_policy=job_policy,
-                                         story_policy=story_policy, candidate_policy=candidate_policy)
-    draft = decode_story_design_draft(raw_draft, expected_input_binding_sha256=binding, policy=draft_policy)
+    draft = decode_bound_story_draft(
+        inputs, stage1, expected_projection, raw_draft, job_policy=job_policy,
+        story_policy=story_policy, candidate_policy=candidate_policy,
+        draft_policy=draft_policy, prompt_version=prompt_version,
+    )
     graph = stage1.coverage.narrative_graph
     graph_ref = stage1.coverage.identity("narrative_graph")
     source_owner = stage1.dependency_proof.source_member_ref

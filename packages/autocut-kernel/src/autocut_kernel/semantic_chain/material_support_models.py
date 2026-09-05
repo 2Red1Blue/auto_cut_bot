@@ -14,11 +14,13 @@ from typing import Callable, Literal, TypeVar, cast
 from ..contracts.compiler.canonical import canonical_json_bytes, canonical_json_hash
 from .candidate_duration import ConservativeDuration
 from .member_refs import SemanticMemberIdentity, SemanticObjectRef
+from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import ProposalDraft
 
 MaterialStatus = Literal["supported", "unsupported", "indeterminate"]
 MATERIAL_SUPPORT_SCHEMA_VERSION = "stage2-material-support-v1"
+MATERIAL_SUPPORT_V2_SCHEMA_VERSION = "stage2-material-support-v2"
 MATERIAL_REASON_CODES = frozenset({
     "source_forbidden", "source_not_allowed", "fact_not_declared", "fact_context_only",
     "fact_outside_support", "duration_insufficient", "candidate_tainted",
@@ -284,14 +286,14 @@ class RequirementMaterialSupport:
 @dataclass(frozen=True, slots=True)
 class ProposalMaterialSupport:
     proposal_index: int
-    proposal: ProposalDraft
+    proposal: ProposalDraft | ProposalDraftV2
     requirements: tuple[RequirementMaterialSupport, ...]
     narrative_taint_seed_refs: tuple[SemanticObjectRef, ...]
     dependency_unknown: bool
 
     def __post_init__(self) -> None:
         _integer(self.proposal_index)
-        if type(self.proposal) is not ProposalDraft:  # noqa: E721
+        if type(self.proposal) not in (ProposalDraft, ProposalDraftV2):
             raise MaterialSupportError("material row must preserve its typed proposal")
         rows = _tuple(self.requirements, RequirementMaterialSupport)
         if not rows or len(rows) != len(self.proposal.material_requirements):
@@ -324,11 +326,15 @@ class ProposalMaterialSupport:
         }
 
     @classmethod
-    def from_mapping(cls, value: object) -> ProposalMaterialSupport:
+    def from_mapping(cls, value: object, *, proposal_version: int = 1) -> ProposalMaterialSupport:
         data = _closed(value, ("proposal_index", "proposal", "requirements",
                               "narrative_taint_seed_refs", "dependency_unknown", "status"))
+        if type(proposal_version) is not int or proposal_version not in (1, 2):  # noqa: E721
+            raise MaterialSupportError("unsupported material proposal version")
+        proposal = (ProposalDraft.from_mapping(data["proposal"]) if proposal_version == 1
+                    else ProposalDraftV2.from_mapping(data["proposal"]))
         result = cls(
-            _integer(data["proposal_index"]), ProposalDraft.from_mapping(data["proposal"]),
+            _integer(data["proposal_index"]), proposal,
             _array(data["requirements"], RequirementMaterialSupport.from_mapping),
             _array(data["narrative_taint_seed_refs"], SemanticObjectRef.from_mapping),
             cast(bool, data["dependency_unknown"]),
@@ -356,7 +362,14 @@ class MaterialSupportEvaluation:
             raise MaterialSupportError("material evaluation changed original proposal indexes")
         if len({row.proposal.proposal_id for row in rows}) != len(rows):
             raise MaterialSupportError("material evaluation duplicates proposal IDs")
-        if ProposalDraftSet(self.input_binding_sha256, tuple(row.proposal for row in rows)).canonical_hash != self.draft_sha256:
+        proposal_types = {type(row.proposal) for row in rows}
+        if len(proposal_types) > 1:
+            raise MaterialSupportError("material evaluation mixes v1 and v2 proposal codecs")
+        if proposal_types == {ProposalDraftV2}:
+            draft_hash = ProposalDraftSetV2(self.input_binding_sha256, tuple(cast(ProposalDraftV2, row.proposal) for row in rows)).canonical_hash
+        else:
+            draft_hash = ProposalDraftSet(self.input_binding_sha256, tuple(cast(ProposalDraft, row.proposal) for row in rows)).canonical_hash
+        if draft_hash != self.draft_sha256:
             raise MaterialSupportError("material evaluation does not retain the exact bound draft")
         universe_counts: set[int] = set()
         candidate_sources: dict[SemanticObjectRef, SemanticObjectRef] = {}
@@ -398,7 +411,8 @@ class MaterialSupportEvaluation:
 
     def to_mapping(self) -> dict[str, object]:
         return {
-            "schema_version": MATERIAL_SUPPORT_SCHEMA_VERSION,
+            "schema_version": (MATERIAL_SUPPORT_V2_SCHEMA_VERSION if self.proposals and type(self.proposals[0].proposal) is ProposalDraftV2
+                               else MATERIAL_SUPPORT_SCHEMA_VERSION),
             "input_binding_sha256": self.input_binding_sha256, "draft_sha256": self.draft_sha256,
             "candidate_catalog_ref": self.candidate_catalog_ref.to_mapping(),
             "source_grant_sha256": self.source_grant_sha256,
@@ -409,13 +423,18 @@ class MaterialSupportEvaluation:
     def from_mapping(cls, value: object) -> MaterialSupportEvaluation:
         data = _closed(value, ("schema_version", "input_binding_sha256", "draft_sha256",
                               "candidate_catalog_ref", "source_grant_sha256", "proposals"))
-        if type(data["schema_version"]) is not str or data["schema_version"] != MATERIAL_SUPPORT_SCHEMA_VERSION:  # noqa: E721
+        version = data["schema_version"]
+        if type(version) is not str or version not in (MATERIAL_SUPPORT_SCHEMA_VERSION, MATERIAL_SUPPORT_V2_SCHEMA_VERSION):  # noqa: E721
             raise MaterialSupportError("material evaluation has unsupported version")
-        return cls(
+        result = cls(
             _hash(data["input_binding_sha256"]), _hash(data["draft_sha256"]),
             SemanticMemberIdentity.from_mapping(data["candidate_catalog_ref"]),
-            _hash(data["source_grant_sha256"]), _array(data["proposals"], ProposalMaterialSupport.from_mapping),
+            _hash(data["source_grant_sha256"]), _array(data["proposals"], lambda row: ProposalMaterialSupport.from_mapping(
+                row, proposal_version=2 if version == MATERIAL_SUPPORT_V2_SCHEMA_VERSION else 1)),
         )
+        if result.to_mapping()["schema_version"] != version:
+            raise MaterialSupportError("material evaluation schema does not match proposal codec")
+        return result
 
     @property
     def canonical_hash(self) -> str:

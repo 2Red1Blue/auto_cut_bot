@@ -26,8 +26,8 @@ from .portfolio_search import (
 )
 from .portfolio_values import InitialSourceUsageLedger, StoryPortfolio, StorySelection
 from .stage1_result import Stage1Values
-from .story_design_context import story_design_input_binding
-from .story_design_draft import StoryDesignDraftPolicy, decode_story_design_draft
+from .story_design_boundary import decode_bound_story_draft
+from .story_design_draft import StoryDesignDraftPolicy
 from .story_design_models import JobPolicy, StoryDesignPolicy
 
 STAGE2_BUSINESS_MEMBER_TYPES = (
@@ -135,6 +135,7 @@ def compile_story_design(
     inputs: CommittedSemanticInputs, stage1: Stage1Values, raw_draft: bytes, *,
     scope: ArtifactScope, revision: int, candidate_policy: CandidateCatalogPolicy,
     job_policy: JobPolicy, story_policy: StoryDesignPolicy, draft_policy: StoryDesignDraftPolicy,
+    prompt_version: str | None = None,
 ) -> StoryDesignCompilation:
     """Rebuild candidate/support evidence, decode the bound raw draft, then select.
 
@@ -143,10 +144,11 @@ def compile_story_design(
     """
     projection = project_candidate_catalog(inputs, stage1, scope=scope, revision=revision,
                                            policy=candidate_policy)
-    binding = story_design_input_binding(stage1, projection, job_policy=job_policy,
-                                         story_policy=story_policy, candidate_policy=candidate_policy)
-    draft = decode_story_design_draft(raw_draft, expected_input_binding_sha256=binding,
-                                      policy=draft_policy)
+    draft = decode_bound_story_draft(
+        inputs, stage1, projection, raw_draft, job_policy=job_policy,
+        story_policy=story_policy, candidate_policy=candidate_policy,
+        draft_policy=draft_policy, prompt_version=prompt_version,
+    )
     support = evaluate_material_support(inputs, stage1, projection, draft, job_policy=job_policy,
                                          story_policy=story_policy, candidate_policy=candidate_policy)
     return compose_story_design_members(projection, support, job_policy=job_policy)

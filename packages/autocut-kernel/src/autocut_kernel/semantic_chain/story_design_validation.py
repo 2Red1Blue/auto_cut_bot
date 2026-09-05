@@ -10,7 +10,8 @@ from __future__ import annotations
 import re
 
 from .member_refs import SemanticObjectRef
-from .narrative_models import NarrativeGraph, ObligationAttributes
+from .narrative_models import EntityAttributes, NarrativeGraph, ObligationAttributes
+from .story_design_compact_models import ProposalDraftSetV2, ProposalDraftV2
 from .story_design_draft import ProposalDraftSet
 from .story_design_models import JobPolicy, SourceConstraints, StoryDesignPolicy
 
@@ -22,7 +23,7 @@ _DIAGNOSTIC_ERROR_CODES = frozenset({
     "STORY_PROPOSAL_VALIDATION_FAILED", "GRAPH_REFERENCE_TYPE_MISMATCH",
     "GRAPH_REFERENCE_FOREIGN_OWNER", "GRAPH_REFERENCE_NOT_FOUND",
     "SOURCE_REFERENCE_FOREIGN_OWNER", "SOURCE_REFERENCE_NOT_FOUND",
-    "REQUIRED_FACT_CLOSURE_MISMATCH",
+    "REQUIRED_FACT_CLOSURE_MISMATCH", "SUBJECT_NOT_PERSON",
 })
 _DIAGNOSTIC_OBJECT_TYPES = frozenset({
     "entity", "character", "fact", "event", "beat", "story_thread", "obligation",
@@ -30,7 +31,7 @@ _DIAGNOSTIC_OBJECT_TYPES = frozenset({
 })
 _DIAGNOSTIC_PATH = re.compile(
     r"\$(?:\.proposals\[[0-9]+\](?:\.(?:thread_refs|required_obligation_refs|"
-    r"required_fact_refs|key_character_refs)(?:\[[0-9]+\])?|"
+    r"required_fact_refs|key_character_refs|key_subject_refs)(?:\[[0-9]+\])?|"
     r"\.material_requirements\[[0-9]+\]\.source_constraints\."
     r"(?:allowed_source_refs|forbidden_source_refs)\[[0-9]+\])|"
     r"\.job_policy\.source_constraints\."
@@ -85,7 +86,7 @@ class StoryProposalValidationError(ValueError):
 
 
 def validate_story_proposals(
-    draft: ProposalDraftSet, *, graph: NarrativeGraph,
+    draft: ProposalDraftSet | ProposalDraftSetV2, *, graph: NarrativeGraph,
     graph_object_refs: tuple[SemanticObjectRef, ...], source_refs: tuple[SemanticObjectRef, ...],
     job_policy: JobPolicy, story_policy: StoryDesignPolicy,
 ) -> None:
@@ -96,7 +97,7 @@ def validate_story_proposals(
     here does not prove they ever existed in a Store. Material/taint/canonical
     selection and physical handoff truth remain independent checks.
     """
-    if (type(draft) is not ProposalDraftSet or type(graph) is not NarrativeGraph  # noqa: E721
+    if (type(draft) not in (ProposalDraftSet, ProposalDraftSetV2) or type(graph) is not NarrativeGraph  # noqa: E721
             or type(job_policy) is not JobPolicy or type(story_policy) is not StoryDesignPolicy):  # noqa: E721
         raise StoryProposalValidationError("SD-IN-001", "proposal validation requires exact typed inputs")
     if (type(graph_object_refs) is not tuple or type(source_refs) is not tuple  # noqa: E721
@@ -147,7 +148,7 @@ def validate_story_proposals(
             ("thread_refs", proposal.thread_refs),
             ("required_obligation_refs", proposal.required_obligation_refs),
             ("required_fact_refs", proposal.required_fact_refs),
-            ("key_character_refs", proposal.key_character_refs),
+            (("key_subject_refs" if type(proposal) is ProposalDraftV2 else "key_character_refs"), proposal.subject_refs),
         ):
             for ref_index, ref in enumerate(refs):
                 if ref in graph_refs:
@@ -166,6 +167,19 @@ def validate_story_proposals(
                     error_code=error_code, expected_object_type=ref.object_type,
                     actual_object_type=actual_type,
                 )
+        if type(proposal) is ProposalDraftV2:
+            graph_nodes = {node.node_id: node for node in graph.nodes}
+            for ref_index, ref in enumerate(proposal.key_subject_refs):
+                attributes = graph_nodes[ref.object_id].attributes
+                if ref.object_type == "entity" and (
+                    type(attributes) is not EntityAttributes or attributes.entity_kind != "person"
+                ):
+                    raise StoryProposalValidationError(
+                        "SD-REF-001", "observed subject must be a person", index,
+                        json_path=f"$.proposals[{index}].key_subject_refs[{ref_index}]",
+                        error_code="SUBJECT_NOT_PERSON", expected_object_type="entity",
+                        actual_object_type="entity",
+                    )
         if (not set(proposal.genre_tags) <= set(story_policy.allowed_genre_tags)
                 or proposal.editing_profile not in story_policy.editing_profiles
                 or proposal.teaser_strategy not in story_policy.teaser_strategies):
