@@ -58,6 +58,7 @@ source_prep
 - [06 LLM 与程序责任边界重设计](./06-llm-program-responsibility-redesign.md)
 - [07 V23 全字段 Parity Matrix 与外部参考](./07-v23-field-parity-and-external-references.md)
 - [08 字幕感知 VLM 到 ExactSpan 的融合设计](./08-subtitle-aware-vlm-to-exact-span-design.md)
+- [09 模型边界重构：丰富语义、确定性投影与局部恢复](./09-model-boundary-refactor.md)（待实施；细化 06–08，不代表已上线）
 
 其中 `00`–`05` 描述当前代码，`06` 是经过现状审查和外部方案调研后的目标设计，`07` 是
 V23 到目标契约的逐字段防丢失账本与参考资料索引，`08` 定义烧录字幕感知 VLM 与

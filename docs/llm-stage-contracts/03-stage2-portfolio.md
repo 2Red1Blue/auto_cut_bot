@@ -23,6 +23,9 @@ Stage 2 只在 Stage 1 成功并可重建同一份 request/outcome/content 后�
 
 根字段固定为 `schema_version`、`input_binding_sha256`、`proposals[]`。每个 proposal：
 
+`narrative_refs` 是 Kernel 从多类引用计算的 Python 属性，不是要求模型返回的 wire 字段；
+模型字段是下表的 `thread_refs`、`required_obligation_refs` 等。不能据此把合法响应误判为字段缺失。
+
 | 字段 | 含义 |
 |---|---|
 | `proposal_id` | 本批次唯一提案 ID |
