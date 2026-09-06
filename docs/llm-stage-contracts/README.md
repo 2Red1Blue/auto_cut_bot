@@ -61,6 +61,7 @@ source_prep
 - [09 模型边界重构：丰富语义、确定性投影与局部恢复](./09-model-boundary-refactor.md)（实现与验证记录；未自动切换 HTTP 默认）
 - [10 局部恢复与 Stage 2 单独运行](./10-local-recovery-and-stage2-runbook.md)（已实现的操作入口与真实验收剩余项）
 - [11 开源自动剪辑参考与复用边界](./11-open-source-reuse-landscape.md)（外部项目、可吸收机制与 Kernel 隔离规则）
+- [12 开源参考项目的 fixture runner 约定](./12-reuse-fixture-runner.md)（§4 引入流程第 2 步的运行规范）
 
 其中 `00`–`05` 描述当前代码，`06` 是经过现状审查和外部方案调研后的目标设计，`07` 是
 V23 到目标契约的逐字段防丢失账本与参考资料索引，`08` 定义烧录字幕感知 VLM 与
