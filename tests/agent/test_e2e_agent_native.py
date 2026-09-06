@@ -1,3 +1,7 @@
+
+import pytest
+
+pytest.importorskip("autocut_core", reason="local autocut_core package not installed in this environment")
 """End-to-end integration test: Phase 1 tools -> Phase 2 agents -> Phase 3 engine."""
 
 import pytest

@@ -92,8 +92,6 @@ def mb_ref() -> str:
 
 def sync() -> None:
     mb = mb_ref()
-    # Files upstream changed or deleted since the last sync point.
-    changed = set(git("diff", "--name-only", mb, upstream_ref(), "--", UPSTREAM_PREFIX, "tests/").split())
     written = deleted = 0
     for up in sorted(upstream_files(UPSTREAM_PREFIX) + upstream_files("tests/")):
         if up in LOCAL_KEEP:
@@ -141,8 +139,6 @@ def verify(full: bool) -> int:
         print(stray.stdout[:2000])
         return 1
     print("stray-reference check: OK")
-    cmd = [sys.executable, "-m", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
-           "--collect-only"] + (["--ignore=tests/"] if False else [])
     r = subprocess.run(["uv", "run", "pytest", "tests/", "-q", "-p", "no:cacheprovider",
                         "--collect-only"], cwd=REPO)
     if r.returncode != 0:

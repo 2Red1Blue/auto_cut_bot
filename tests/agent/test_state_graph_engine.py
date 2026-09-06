@@ -6,6 +6,11 @@ Tests cover StateGraphEngine, InMemoryAdapters, and FeatureFlagGateway.
 
 from __future__ import annotations
 
+
+import pytest
+
+pytest.importorskip("autocut_core", reason="local autocut_core package not installed in this environment")
+
 import logging
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4

@@ -146,7 +146,7 @@ export function WeixinPanel({
       touchedFieldsRef.current = remainingFields;
       setTouchedFields(remainingFields);
       setSaveState(remainingFields.size ? "idle" : "saved");
-      if (payload.nanobot_features) context.onFeaturesUpdate(payload.nanobot_features);
+      if (payload.auto_cut_bot_features) context.onFeaturesUpdate(payload.auto_cut_bot_features);
     } catch (err) {
       setSaveError((err as Error).message);
     } finally {

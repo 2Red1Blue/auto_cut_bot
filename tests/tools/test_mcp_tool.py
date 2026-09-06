@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -65,6 +66,13 @@ def fake_mcp_runtime() -> dict[str, object | None]:
 def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (*_PROXY_ENV_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
+    # On macOS, urllib's getproxies() also reads system-wide proxy settings
+    # (SystemConfiguration), which would leak into env_proxy_applies_to_url()
+    # / httpx_env_proxy_mounts() even with the env vars cleared above. Force
+    # env-only proxy discovery so these tests are hermetic.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.getproxies", urllib.request.getproxies_environment
+    )
 
 
 @pytest.fixture(autouse=True)

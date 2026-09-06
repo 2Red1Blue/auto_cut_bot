@@ -2796,7 +2796,12 @@ def test_webui_foreground_refuses_occupied_webui_port(monkeypatch, tmp_path: Pat
     result = runner.invoke(app, ["webui", "--config", str(config_file), "--yes"])
 
     assert result.exit_code == 1
-    assert "auto_cut_bot cannot start because one of its local ports is already in use" in result.stdout
+    # The renamed CLI name is long enough that rich wraps this sentence at the
+    # default 80-column test terminal, so match against de-wrapped output.
+    assert (
+        "auto_cut_bot cannot start because one of its local ports is already in use"
+        in _without_rendered_line_breaks(result.stdout)
+    )
     assert "--port" in result.stdout
     assert "--gateway-port" in result.stdout
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import socket
 from unittest.mock import patch
+from urllib.request import getproxies_environment as _getproxies_environment
 
 import httpx
 import pytest
@@ -28,6 +29,15 @@ _PROXY_ENV_VARS = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "http
 def _clear_proxy_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (*_PROXY_ENV_VARS, "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(name, raising=False)
+    # macOS: urllib's getproxies() also reads the system-wide proxy via System
+    # Configuration (not just env vars), which would make
+    # httpx_env_proxy_mounts() return proxy mounts that bypass the mocked /
+    # pinned transports. Restrict proxy detection to environment variables
+    # (Linux CI behavior) so tests that set env proxies still see them.
+    monkeypatch.setattr(
+        "auto_cut_bot.security.network.getproxies",
+        _getproxies_environment,
+    )
 
 
 def _fake_resolve_private(hostname, port, family=0, type_=0):

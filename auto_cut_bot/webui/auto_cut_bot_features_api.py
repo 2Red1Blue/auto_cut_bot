@@ -25,7 +25,7 @@ def auto_cut_bot_features_payload(*, config_path: Path | None = None) -> dict[st
     return optional_features_payload(config=load_config(config_path))
 
 
-def auto_cut_bot_feature_instance_target(query: QueryParams) -> str | None:
+def nanobot_feature_instance_target(query: QueryParams) -> str | None:
     """Preserve the difference between a global action and an explicit instance."""
     instance_id = query_first(query, "instance_id")
     if instance_id is None:
@@ -41,7 +41,7 @@ def auto_cut_bot_features_action(
     config_path: Path | None = None,
 ) -> dict[str, Any]:
     name = (query_first(query, "name") or "").strip()
-    instance_id = auto_cut_bot_feature_instance_target(query)
+    instance_id = nanobot_feature_instance_target(query)
     if not name:
         raise OptionalFeatureError("missing feature name")
     if action == "enable":

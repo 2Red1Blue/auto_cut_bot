@@ -1438,7 +1438,7 @@ async def test_feishu_connect_routes_write_config_and_hot_reload(
         },
     )
     monkeypatch.setattr(
-        "auto_cut_bot.webui.settings_routes.nanobot_features_action",
+        "auto_cut_bot.webui.settings_routes.auto_cut_bot_features_action",
         lambda _action, _query, *, allow_install=True, config_path=None: {
             "features": [{
                 "name": "feishu",
@@ -1497,7 +1497,7 @@ async def test_feishu_connect_routes_write_config_and_hot_reload(
     assert body["instance_id"] == "default"
     assert "app_secret" not in body
     assert calls == [("enable", "feishu", "default")]
-    assert body["nanobot_features"]["requires_restart"] is False
+    assert body["auto_cut_bot_features"]["requires_restart"] is False
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["channels"]["feishu"]["instances"][0]["id"] == "default"
     assert data["channels"]["feishu"]["instances"][0]["appId"] == "cli_app"
@@ -1633,7 +1633,7 @@ async def test_channel_configure_route_saves_discord_config_and_hot_reloads(
             "last_action": {"ok": True, "message": "Enabled channel 'discord'", "enabled": True},
         }
 
-    monkeypatch.setattr("auto_cut_bot.webui.settings_routes.nanobot_features_action", fake_feature_action)
+    monkeypatch.setattr("auto_cut_bot.webui.settings_routes.auto_cut_bot_features_action", fake_feature_action)
     calls: list[tuple[str, str, str]] = []
 
     async def channel_feature_action(action: str, name: str, instance_id: str) -> dict[str, Any]:
@@ -1673,7 +1673,7 @@ async def test_channel_configure_route_saves_discord_config_and_hot_reloads(
     assert body["name"] == "discord"
     assert "discord-token" not in response.text
     assert calls == [("enable", "discord", "default")]
-    assert body["nanobot_features"]["requires_restart"] is False
+    assert body["auto_cut_bot_features"]["requires_restart"] is False
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["channels"]["discord"] == {
         "token": "discord-token",
@@ -1727,7 +1727,7 @@ async def test_channel_configure_route_preserves_existing_channel_values(
     assert body["saved_keys"] == ["channels.discord.allowChannels"]
     discord = next(
         feature
-        for feature in body["nanobot_features"]["features"]
+        for feature in body["auto_cut_bot_features"]["features"]
         if feature["name"] == "discord"
     )
     assert discord["configured"] is True
@@ -1839,7 +1839,7 @@ async def test_nanobot_feature_loopback_reverse_proxy_install_requires_opt_in(
     )
     channel = _ch(bus, session_manager=_seed_session(tmp_path), port=_free_port())
     forwarded_headers = {
-        "Host": "auto_cut_bot.example",
+        "Host": "auto-cut-bot.example",
         "X-Forwarded-For": "203.0.113.42",
     }
     blocked = await _webui_mutate(
@@ -3402,7 +3402,7 @@ def test_local_browser_request_requires_loopback_host_and_forwarded_origin() -> 
         is True
     )
     assert is_local_browser_request(_REMOTE, {"Host": "127.0.0.1:8765"}) is False
-    assert is_local_browser_request(_LOCAL, {"Host": "auto_cut_bot.example"}) is False
+    assert is_local_browser_request(_LOCAL, {"Host": "auto-cut-bot.example"}) is False
     assert (
         is_local_browser_request(
             _LOCAL,
@@ -3413,14 +3413,14 @@ def test_local_browser_request_requires_loopback_host_and_forwarded_origin() -> 
     assert (
         is_local_browser_request(
             _LOCAL,
-            {"Host": "127.0.0.1:8765", "X-Forwarded-Host": "auto_cut_bot.example"},
+            {"Host": "127.0.0.1:8765", "X-Forwarded-Host": "auto-cut-bot.example"},
         )
         is False
     )
     assert (
         is_local_browser_request(
             _LOCAL,
-            {"Host": "127.0.0.1:8765", "Forwarded": "for=203.0.113.42;host=auto_cut_bot.example"},
+            {"Host": "127.0.0.1:8765", "Forwarded": "for=203.0.113.42;host=auto-cut-bot.example"},
         )
         is False
     )
@@ -3467,11 +3467,11 @@ def test_trusted_proxy_bootstrap_has_no_tokens(
         _LOCAL,
         _FakeReq(
             {
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "X-Forwarded-For": "203.0.113.42",
-                "Forwarded": "for=203.0.113.42;host=auto_cut_bot.example",
+                "Forwarded": "for=203.0.113.42;host=auto-cut-bot.example",
                 "X-Real-IP": "203.0.113.42",
-                "X-Forwarded-Host": "auto_cut_bot.example",
+                "X-Forwarded-Host": "auto-cut-bot.example",
                 "Cf-Access-Jwt-Assertion": assertion,
             }
         ),
@@ -3493,7 +3493,7 @@ async def test_trusted_proxy_authorizes_rest_without_api_token(bus: MagicMock) -
         _LOCAL,
         _FakeReq(
             {
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "Cf-Access-Jwt-Assertion": "present",
             },
             path="/api/sessions",
@@ -3519,7 +3519,7 @@ def test_forwarding_headers_alone_never_authorize_bootstrap(bus: MagicMock) -> N
         _REMOTE,
         _FakeReq(
             {
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "X-Forwarded-For": "127.0.0.1",
                 "Forwarded": "for=127.0.0.1",
                 "X-Real-IP": "127.0.0.1",
@@ -3647,14 +3647,14 @@ def test_bootstrap_ws_url_uses_forwarded_https_host(bus: MagicMock) -> None:
         _FakeReq(
             {
                 "Authorization": "Bearer s3cret",
-                "Host": "auto_cut_bot.example",
+                "Host": "auto-cut-bot.example",
                 "X-Forwarded-Proto": "https",
             }
         ),
     )
     assert resp.status_code == 200
     body = json.loads(resp.body)
-    assert body["ws_url"] == "wss://auto_cut_bot.example/"
+    assert body["ws_url"] == "wss://auto-cut-bot.example/"
 
 
 def test_bootstrap_ws_url_uses_configured_public_url(bus: MagicMock) -> None:
@@ -3701,7 +3701,7 @@ def test_bootstrap_without_auth_rejects_reverse_proxy_remote_headers(bus: MagicM
     channel = _ch(bus, host="127.0.0.1")
     resp = channel.gateway.http._handle_bootstrap(
         _LOCAL,
-        _FakeReq({"Host": "auto_cut_bot.example", "X-Forwarded-For": "203.0.113.42"}),
+        _FakeReq({"Host": "auto-cut-bot.example", "X-Forwarded-For": "203.0.113.42"}),
     )
     assert resp.status_code == 403
 

@@ -37,10 +37,10 @@
 
 ## Review Gate
 
-1. 完成 `story_plans` 后，必须委派琴 (Jean) 进行独立审核
+1. 完成 `story_plans` 后，必须委派 reviewer 子代理（琴 Jean）进行独立审核
 2. 审核通过 → 继续 Phase 3
-3. 审核拒绝 → 根据 reasons 修改 → 重新委派琴
-4. 不能绕过琴，不能修改琴的审核结果
+3. 审核拒绝 → 根据 reasons 修改 → 重新委派 reviewer（琴）
+4. 不能绕过 reviewer，不能修改琴的审核结果
 
 ## Error Handling
 

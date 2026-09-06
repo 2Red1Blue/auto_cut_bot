@@ -408,7 +408,7 @@ def test_multi_plugin_action_defaults_to_default_instance(
     tmp_path,
 ):
     from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.nanobot_features_api import nanobot_features_action
+    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
 
     class _ManagedMultiPlugin(_FakeMultiChannel):
         name = "managedmulti"
@@ -435,19 +435,19 @@ def test_multi_plugin_action_defaults_to_default_instance(
     )
     monkeypatch.setattr("auto_cut_bot.optional_features.optional_dependency_groups", lambda: {})
 
-    disabled = nanobot_features_action("disable", {"name": ["managedmulti"]})
+    disabled = auto_cut_bot_features_action("disable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [False, True]
     assert disabled["features"][0]["enabled"] is True
 
-    enabled = nanobot_features_action("enable", {"name": ["managedmulti"]})
+    enabled = auto_cut_bot_features_action("enable", {"name": ["managedmulti"]})
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["managedmulti"]
     assert saved["enabled"] is True
     assert [item["enabled"] for item in saved["instances"]] == [True, True]
     assert enabled["features"][0]["enabled"] is True
 
-    explicit = nanobot_features_action(
+    explicit = auto_cut_bot_features_action(
         "disable",
         {"name": ["managedmulti"], "instance_id": ["default"]},
     )
@@ -462,7 +462,7 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
     tmp_path,
 ):
     from auto_cut_bot.config import loader
-    from auto_cut_bot.webui.nanobot_features_api import nanobot_features_action
+    from auto_cut_bot.webui.auto_cut_bot_features_api import auto_cut_bot_features_action
 
     class _SingleDefaultsPlugin(_FakePlugin):
         name = "singleplugin"
@@ -493,7 +493,7 @@ async def test_single_channel_enable_applies_defaults_before_hot_reload(
         MessageBus(),
     )
 
-    payload = nanobot_features_action("enable", {"name": ["singleplugin"]})
+    payload = auto_cut_bot_features_action("enable", {"name": ["singleplugin"]})
     hot_reload = await manager.apply_channel_feature_action("enable", "singleplugin")
 
     saved = json.loads(config_path.read_text(encoding="utf-8"))["channels"]["singleplugin"]

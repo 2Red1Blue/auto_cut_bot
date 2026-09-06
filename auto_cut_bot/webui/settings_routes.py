@@ -30,10 +30,10 @@ from auto_cut_bot.webui.mcp_presets_api import (
     ensure_mcp_oauth_server,
     mcp_presets_settings_action,
 )
-from auto_cut_bot.webui.nanobot_features_api import (
+from auto_cut_bot.webui.auto_cut_bot_features_api import (
     nanobot_feature_instance_target,
-    nanobot_features_action,
-    nanobot_features_payload,
+    auto_cut_bot_features_action,
+    auto_cut_bot_features_payload,
 )
 from auto_cut_bot.webui.settings_api import (
     complete_oauth_provider,
@@ -455,7 +455,7 @@ class WebUISettingsRouter:
             update_image=update_image_generation_settings,
             update_transcription=update_transcription_settings,
             update_network=update_network_safety_settings,
-            nanobot_features_action=nanobot_features_action,
+            auto_cut_bot_features_action=auto_cut_bot_features_action,
             api_runtime=self._api_runtime,
             reload_image=lambda: request_image_generation_reload(self.bus),
         )
@@ -464,8 +464,8 @@ class WebUISettingsRouter:
         return system_domain.SystemSettingsOperations(
             cli_apps_payload=cli_apps_payload,
             cli_apps_action=cli_apps_action,
-            nanobot_features_payload=nanobot_features_payload,
-            nanobot_features_action=nanobot_features_action,
+            auto_cut_bot_features_payload=auto_cut_bot_features_payload,
+            auto_cut_bot_features_action=auto_cut_bot_features_action,
             nanobot_feature_instance_target=nanobot_feature_instance_target,
             validate_channel_config=validate_channel_config,
             load_channel_plugin=load_channel_plugin,
@@ -543,10 +543,10 @@ class WebUISettingsRouter:
         system_domain.assign_channel_config_value
     )
 
-    def _nanobot_features_payload(self) -> dict[str, Any]:
-        return nanobot_features_payload(config_path=self.settings.config.path)
+    def _auto_cut_bot_features_payload(self) -> dict[str, Any]:
+        return auto_cut_bot_features_payload(config_path=self.settings.config.path)
 
-    def _nanobot_features_action(
+    def _auto_cut_bot_features_action(
         self,
         action: str,
         query: QueryParams,
@@ -554,7 +554,7 @@ class WebUISettingsRouter:
         allow_install: bool = True,
     ) -> dict[str, Any]:
         return self.settings.mutate(
-            nanobot_features_action,
+            auto_cut_bot_features_action,
             action,
             query,
             allow_install=allow_install,

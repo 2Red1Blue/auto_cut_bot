@@ -27,6 +27,7 @@ async def test_webui_transcribe_audio_rejects_unconfigured_provider(
     config.transcription.provider = "groq"
     save_config(config, config_path)
     monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", config_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     event, payload = await webui_transcription_event({
         "request_id": "voice-1",
@@ -56,6 +57,7 @@ async def test_webui_transcription_uses_explicit_gateway_config(
     save_config(default, default_path)
     save_config(gateway, gateway_path)
     monkeypatch.setattr("auto_cut_bot.config.loader._current_config_path", default_path)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     event, payload = await webui_transcription_event(
         {

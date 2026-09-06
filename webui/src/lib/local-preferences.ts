@@ -13,6 +13,11 @@ export interface LocalPreferences {
 
 export const LOCAL_PREFS_STORAGE_KEY = "auto_cut_bot-webui.settings-preferences";
 export const LOCAL_PREFS_CHANGED_EVENT = "auto_cut_bot-webui.local-preferences-changed";
+const LOCAL_PREFS_SCHEMA_VERSION = 1;
+
+type PersistedLocalPreferences = Partial<LocalPreferences> & {
+  schemaVersion?: number;
+};
 
 export const DEFAULT_LOCAL_PREFS: LocalPreferences = {
   density: "comfortable",

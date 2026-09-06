@@ -204,6 +204,14 @@ def test_launcher_keeps_the_tui_alive_while_an_existing_gateway_recovers(
         def __init__(self, *, paths: object) -> None:
             self.paths = paths
 
+        def process_is_running(self, pid: int) -> bool:
+            # The only registered client pid is this pytest process, which is
+            # alive. Without this hook the lease's liveness probe shells out to
+            # `ps` via subprocess.run, which would pick up the globally
+            # monkeypatched subprocess.Popen (a FakeProcess, not a context
+            # manager) on platforms whose probe shells out (macOS).
+            return True
+
         def status(self) -> SimpleNamespace:
             nonlocal status_calls
             status_calls += 1
@@ -781,6 +789,14 @@ def test_gateway_reuse_returns_a_degraded_live_gateway_without_waiting(
     class FakeRuntime:
         def __init__(self, *, paths: object) -> None:
             self.paths = paths
+
+        def process_is_running(self, pid: int) -> bool:
+            # The only registered client pid is this pytest process, which is
+            # alive. Without this hook the lease's liveness probe shells out to
+            # `ps` via subprocess.run, which would pick up the globally
+            # monkeypatched subprocess.Popen (a FakeProcess, not a context
+            # manager) on platforms whose probe shells out (macOS).
+            return True
 
         def status(self) -> SimpleNamespace:
             nonlocal status_calls

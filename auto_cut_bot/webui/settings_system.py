@@ -45,8 +45,8 @@ SettingsOperation = Callable[..., Any]
 class SystemSettingsOperations:
     cli_apps_payload: SettingsOperation
     cli_apps_action: SettingsOperation
-    nanobot_features_payload: SettingsOperation
-    nanobot_features_action: SettingsOperation
+    auto_cut_bot_features_payload: SettingsOperation
+    auto_cut_bot_features_action: SettingsOperation
     nanobot_feature_instance_target: SettingsOperation
     validate_channel_config: SettingsOperation
     load_channel_plugin: LoadChannelPlugin
@@ -467,7 +467,7 @@ class SystemSettingsHandler:
     ) -> SettingsRouteResult:
         try:
             payload = await asyncio.to_thread(
-                operations.nanobot_features_payload,
+                operations.auto_cut_bot_features_payload,
                 config_path=self.settings.config.path,
             )
         except Exception:
@@ -477,13 +477,13 @@ class SystemSettingsHandler:
             self._with_channel_runtime_status(payload, operations)
         )
 
-    def _nanobot_features_payload(
+    def _auto_cut_bot_features_payload(
         self,
         operations: SystemSettingsOperations,
     ) -> dict[str, Any]:
-        return operations.nanobot_features_payload(config_path=self.settings.config.path)
+        return operations.auto_cut_bot_features_payload(config_path=self.settings.config.path)
 
-    def _nanobot_features_action(
+    def _auto_cut_bot_features_action(
         self,
         action: str,
         query: QueryParams,
@@ -492,7 +492,7 @@ class SystemSettingsHandler:
         allow_install: bool = True,
     ) -> dict[str, Any]:
         return self.settings.mutate(
-            operations.nanobot_features_action,
+            operations.auto_cut_bot_features_action,
             action,
             query,
             allow_install=allow_install,
@@ -506,7 +506,7 @@ class SystemSettingsHandler:
     ) -> SettingsRouteResult:
         try:
             payload = await asyncio.to_thread(
-                self._nanobot_features_action,
+                self._auto_cut_bot_features_action,
                 action,
                 request.query,
                 operations,
@@ -658,10 +658,10 @@ class SystemSettingsHandler:
         }
         if not enable:
             features = await asyncio.to_thread(
-                self._nanobot_features_payload,
+                self._auto_cut_bot_features_payload,
                 operations,
             )
-            payload["nanobot_features"] = self._with_channel_runtime_status(
+            payload["auto_cut_bot_features"] = self._with_channel_runtime_status(
                 features,
                 operations,
             )
@@ -669,7 +669,7 @@ class SystemSettingsHandler:
                 payload,
                 decorate_restart=True,
                 restart_section="runtime",
-                restart_payload_key="nanobot_features",
+                restart_payload_key="auto_cut_bot_features",
             )
 
         feature_query = {"name": [name]}
@@ -677,7 +677,7 @@ class SystemSettingsHandler:
             feature_query["instance_id"] = [instance_id]
         try:
             features = await asyncio.to_thread(
-                self._nanobot_features_action,
+                self._auto_cut_bot_features_action,
                 "enable",
                 feature_query,
                 operations,
@@ -704,7 +704,7 @@ class SystemSettingsHandler:
             features,
             operations,
         )
-        payload["nanobot_features"] = self._with_channel_runtime_status(
+        payload["auto_cut_bot_features"] = self._with_channel_runtime_status(
             features,
             operations,
         )
@@ -712,7 +712,7 @@ class SystemSettingsHandler:
             payload,
             decorate_restart=True,
             restart_section="runtime",
-            restart_payload_key="nanobot_features",
+            restart_payload_key="auto_cut_bot_features",
         )
 
     async def _channel_validate(
@@ -815,7 +815,7 @@ class SystemSettingsHandler:
             payload,
             decorate_restart=True,
             restart_section="runtime",
-            restart_payload_key="nanobot_features",
+            restart_payload_key="auto_cut_bot_features",
         )
 
     async def _with_channel_connect_success(
@@ -830,7 +830,7 @@ class SystemSettingsHandler:
             target["instance_id"] = [str(payload["instance_id"])]
         try:
             features = await asyncio.to_thread(
-                self._nanobot_features_action,
+                self._auto_cut_bot_features_action,
                 "enable",
                 target,
                 operations,
@@ -838,7 +838,7 @@ class SystemSettingsHandler:
             )
         except OptionalFeatureError as exc:
             features = self.feature_runtime_fallback(
-                self._nanobot_features_payload(operations),
+                self._auto_cut_bot_features_payload(operations),
                 message=(
                     f"{channel_name} connected, but enabling channel support failed: "
                     f"{exc.message}"
@@ -852,7 +852,7 @@ class SystemSettingsHandler:
                 operations,
             )
         updated = dict(payload)
-        updated["nanobot_features"] = self._with_channel_runtime_status(
+        updated["auto_cut_bot_features"] = self._with_channel_runtime_status(
             features,
             operations,
         )
