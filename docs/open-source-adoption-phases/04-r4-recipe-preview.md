@@ -11,11 +11,16 @@ R4A 已实现并推送至 `feat/v213-contract-codegen`：Kernel 的 `RecipeTimel
 ```
 
 API 只返回展示所需的 story/revision、整数 tick、时基、源时钟和候选信息；不返回 Receipt、
-ArtifactSet、scope、Blob ref 或 exact-span 证明哈希。PC WSL 定向回归 82 项通过，目标 Ruff 通过。
+ArtifactSet、scope、Blob ref 或 exact-span 证明哈希。PC WSL 定向回归 84 项通过，目标 Ruff 通过。
 当前 HTTP runtime 未编排 Stage 4，因此尚无真实 HTTP run 的 Stage 4 Recipe 可作端到端读回证据。
 
 R4B 仍是设计态。其输入要求为“持久化、可独立复核的可行 SpanVariant 集”；当前 Recipe 只保存已选择
 的 exact span，不保存可替换 variant 集。不能把任意 UI tick、当前 Recipe 的内容或模型建议伪装成可选 variant。
+
+交叉代码审查已检查公开 provenance、Store 成员/集合 hash、路由落空、错误状态和事件循环阻塞：
+公开 mapping 已去除内部 ref/proof；inspection 重算成员及 ArtifactSet hash；非 Recipe 路径会继续落到
+后续 dispatcher；Store 与 payload decode 在工作线程运行。外部 Claude 审查通道实际返回的模型为
+`glm-5-3-flash`，不作为 Claude 审查通过证据；Codex 审查发现的缺陷均已修复并由 PC 回归覆盖。
 
 ## 目标与完成定义
 
