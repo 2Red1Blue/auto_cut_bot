@@ -10,7 +10,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import psycopg
 from autocut_kernel.context_pack import ContextSelectionPolicy, OwnerEpisodeMap, OwnerEpisodeMapSet
@@ -62,7 +62,6 @@ from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_r
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService, PipelineStagePort, PipelineStageReconcilePort
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
-from .recipe_projection import PipelineRecipeReadService
 from .recompute import FullStageVlmRecomputeBinder, MediaPreflightRecomputeBinder
 from .semantic_authority import (
     SemanticRunAuthority,
@@ -77,6 +76,9 @@ from .stage3_blueprint_stage import Stage3BlueprintPipelineStage
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
 from .vlm_stage import VlmPipelineStage
 from .worker import DurablePipelineWorker
+
+if TYPE_CHECKING:
+    from .recipe_projection import PipelineRecipeReadService
 
 PIPELINE_POSTGRES_DSN_ENV = "AUTO_CUT_BOT_PIPELINE_POSTGRES_DSN"
 PIPELINE_KERNEL_POSTGRES_DSN_ENV = "AUTO_CUT_BOT_PIPELINE_KERNEL_POSTGRES_DSN"
@@ -456,6 +458,8 @@ def compose_pipeline_recipe_read_service_from_environment(
     environ: Mapping[str, str] | None = None,
 ) -> PipelineRecipeReadService | None:
     """Compose only the durable stores needed by the read-only Recipe view."""
+    from .recipe_projection import PipelineRecipeReadService
+
     values = os.environ if environ is None else environ
     control_dsn = values.get(PIPELINE_POSTGRES_DSN_ENV, "").strip()
     if not control_dsn:
