@@ -19,9 +19,8 @@ from autocut_kernel.store import (
     ArtifactScope,
     Job,
     RuntimeStoreError,
-    canonical_recipe_scope,
 )
-from autocut_kernel.store.models import PersistedCommittedArtifactSet
+from autocut_kernel.store.models import PersistedCommittedArtifactSet, canonical_recipe_scope
 
 from .errors import PipelineRunNotFoundError, PipelineRunValidationError
 from .models import PipelineRunSnapshot, validate_run_id
