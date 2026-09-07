@@ -416,6 +416,10 @@ def diff_recipe_timelines(base: RecipeTimeline, target: RecipeTimeline) -> Recip
         raise RecipeTimelineError("RECIPE_DIFF_STORY_MISMATCH")
     if base.output_timescale != target.output_timescale:
         raise RecipeTimelineError("RECIPE_DIFF_TIME_BASE_MISMATCH")
+    # Source clocks intentionally need not match: a legal variant may choose a
+    # different source.  Each clip retains its own clock/time-base pair and no
+    # source ticks are converted during diffing; only output-time comparisons
+    # require one shared timescale.
     base_by_key = {item.stable_key: item for item in base.clips}
     target_by_key = {item.stable_key: item for item in target.clips}
     changes: list[RecipeTimelineChange] = []

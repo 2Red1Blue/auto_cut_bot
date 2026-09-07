@@ -27,7 +27,10 @@ from websockets.http11 import Response
 from auto_cut_bot.command.builtin import builtin_command_palette
 from auto_cut_bot.cron.session_turns import is_bound_cron_job
 from auto_cut_bot.cron.types import CronJob, CronSchedule
-from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
+from auto_cut_bot.pipeline.recipe_read_errors import (
+    PipelineRecipeNotFoundError,
+    PipelineRecipeProjectionError,
+)
 from auto_cut_bot.security.workspace_access import WorkspaceScope
 from auto_cut_bot.session.manager import SessionManager
 from auto_cut_bot.session.session_handles import (
@@ -786,7 +789,7 @@ class GatewayHTTPHandler:
             got,
         )
         if timeline_match is None and diff_match is None:
-            return _http_error(404, "API route not found")
+            return None
         if self.pipeline_recipe_read_service is None:
             return _http_error(503, "pipeline recipes unavailable")
         query = _parse_request_path(request.path)[1]
@@ -815,6 +818,9 @@ class GatewayHTTPHandler:
             return _http_error(400, "invalid pipeline recipe request")
         except PipelineRecipeNotFoundError:
             return _http_error(404, "pipeline recipe not found")
+        except PipelineRecipeProjectionError:
+            self._log.warning("pipeline recipe projection failed")
+            return _http_error(500, "pipeline recipes unavailable")
         except Exception:
             self._log.warning("pipeline recipe request failed")
             return _http_error(500, "pipeline recipes unavailable")

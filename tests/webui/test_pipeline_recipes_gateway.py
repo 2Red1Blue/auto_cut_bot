@@ -131,6 +131,12 @@ async def test_recipe_route_falls_through_for_other_pipeline_paths_and_maps_unkn
     )
     assert fallthrough is None
 
+    unknown_recipe_path = await handler._dispatch_pipeline_recipe_routes(
+        _request(f"/api/pipeline/runs/{_RUN_ID}/recipes/story-1/preview"),
+        f"/api/pipeline/runs/{_RUN_ID}/recipes/story-1/preview",
+    )
+    assert unknown_recipe_path is None
+
     missing = _RecipeService(error=PipelineRecipeNotFoundError(_RUN_ID))
     response = await _handler(authorized=True, service=missing)._dispatch_pipeline_recipe_routes(
         _request(_TIMELINE), _TIMELINE.split("?", 1)[0]

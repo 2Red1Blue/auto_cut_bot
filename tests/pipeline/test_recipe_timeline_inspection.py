@@ -71,3 +71,16 @@ def test_inspection_rechecks_member_content_hash(tmp_path: Path, monkeypatch: py
             artifact_revision=request.artifact_revision,
             limits=RecipeTimelineReadLimits(),
         )
+
+
+def test_inspection_rechecks_artifact_set_hash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request, record = _record(tmp_path, monkeypatch)
+    object.__setattr__(record, "set_hash", "sha256:" + "f" * 64)
+
+    with pytest.raises(CompileProductionRecipeError, match="layout"):
+        inspect_committed_production_recipe_set(
+            record,
+            artifact_scope=request.artifact_scope,
+            artifact_revision=request.artifact_revision,
+            limits=RecipeTimelineReadLimits(),
+        )

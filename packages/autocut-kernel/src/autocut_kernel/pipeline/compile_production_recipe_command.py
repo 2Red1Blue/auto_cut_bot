@@ -1472,6 +1472,8 @@ def inspect_committed_production_recipe_set(
     expected_types = (_REPORT_TYPE, *("recipe" for _ in recipes), _ADMISSION_TYPE)
     expected_ids = (_REPORT_TYPE, *(_RECIPE_PREFIX + recipe.story.story_id for recipe in recipes), _ADMISSION_TYPE)
     if (
+        record.set_hash != artifact_set_hash(record.artifacts)
+        or
         tuple(member.reference.member_ordinal for member in record.members) != tuple(range(len(record.members)))
         or tuple(member.reference.artifact_type for member in record.members) != expected_types
         or tuple(member.reference.logical_id for member in record.members) != expected_ids

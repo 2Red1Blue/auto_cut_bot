@@ -23,7 +23,10 @@ from autocut_kernel.store import (
 )
 from autocut_kernel.store.models import PersistedCommittedArtifactSet, canonical_recipe_scope
 
-from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
+from auto_cut_bot.pipeline.recipe_read_errors import (
+    PipelineRecipeNotFoundError,
+    PipelineRecipeProjectionError,
+)
 
 from .errors import PipelineRunValidationError
 from .models import PipelineRunSnapshot, validate_run_id
@@ -109,7 +112,7 @@ class PipelineRecipeReadService:
                 artifact_revision=revision,
             )
         except RuntimeStoreError as error:
-            raise PipelineRunValidationError("committed Recipe closure is unavailable") from error
+            raise PipelineRecipeProjectionError("committed Recipe closure is unavailable") from error
         if record is None:
             return PipelineRecipeNotReady()
         try:
@@ -123,7 +126,7 @@ class PipelineRecipeReadService:
             )
             return PipelineRecipeTimelineReady(timeline)
         except (RecipeTimelineError, RuntimeStoreError, ValueError) as error:
-            raise PipelineRunValidationError("committed Recipe closure is invalid") from error
+            raise PipelineRecipeProjectionError("committed Recipe closure is invalid") from error
 
     async def get_diff(
         self,
@@ -139,14 +142,14 @@ class PipelineRecipeReadService:
         try:
             return PipelineRecipeDiffReady(diff_recipe_timelines(base.timeline, target.timeline))
         except RecipeTimelineError as error:
-            raise PipelineRunValidationError("committed Recipe diff is unavailable") from error
+            raise PipelineRecipeProjectionError("committed Recipe diff is unavailable") from error
 
     async def _read_snapshot(self, run_id: str) -> PipelineRunSnapshot:
         snapshot = await self._run_store.read_run(run_id)
         if snapshot is None:
             raise PipelineRecipeNotFoundError(run_id)
         if snapshot.execution_profile.is_legacy_unresolved:
-            raise PipelineRunValidationError("committed Recipe view requires a frozen execution profile")
+            raise PipelineRecipeProjectionError("committed Recipe view requires a frozen execution profile")
         return snapshot
 
 
