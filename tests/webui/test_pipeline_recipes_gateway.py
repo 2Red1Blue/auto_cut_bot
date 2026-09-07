@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from websockets.http11 import Request as WsRequest
 
+from auto_cut_bot.config.schema import Config
 from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
 from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
@@ -22,6 +23,10 @@ class _Result:
 
     def to_mapping(self) -> dict[str, object]:
         return self._mapping
+
+
+def test_recipe_gateway_imports_after_config_schema_is_resolved() -> None:
+    assert "tools" in Config.model_fields
 
 
 class _RecipeService:
