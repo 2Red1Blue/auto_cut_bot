@@ -18,13 +18,14 @@ from tools.reuse.models import (
 )
 
 
-def recall_at_k(hits: list[str], relevant: set[str], k: int, *, group: str | None = None) -> MetricResult:
+def recall_at_k(hits: list[str], relevant: set[str], k: int, *, group: str | None = None,
+                metric: str = "recall_at_k") -> MetricResult:
     """Recall@K over a frozen relevant set. Empty R -> null + reason, never 0."""
     if k <= 0:
         raise ExperimentError(ErrorCode.METRIC_INPUT_INCOMPLETE, "recall_at_k: k must be positive")
     if not relevant:
         return MetricResult(
-            metric="recall_at_k", value=None, missing_reason="empty relevant set", group=group
+            metric=metric, value=None, missing_reason="empty relevant set", group=group
         )
     seen: set[str] = set()
     num = 0
@@ -33,7 +34,7 @@ def recall_at_k(hits: list[str], relevant: set[str], k: int, *, group: str | Non
             seen.add(hit)
             num += 1
     denom = float(len(relevant))
-    return MetricResult(metric="recall_at_k", value=num / denom, num=float(num), denom=denom, group=group)
+    return MetricResult(metric=metric, value=num / denom, num=float(num), denom=denom, group=group)
 
 
 def pair_precision_recall(

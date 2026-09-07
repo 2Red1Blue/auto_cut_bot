@@ -53,6 +53,23 @@ macOS 只做静态/协议验证，metadata 中 `isolation_passed` 恒为 false�
 | `adapters/fake.py` | 协议验收 producer adapter |
 | `adapters/narrative_shadow.py` | R1A 叙事策略 shadow A/B producer（baseline/candidate 两臂） |
 | `narrative_strategy/` | R1A 模块：NarrativeDutyPolicy/v1、候选 wire 严格解码、局部修复协议、context 快照导出、A/B 对比报告 |
+| `window_memory/` | R2A 模块：EntityMatchHypothesis/v1、EventDuplicateHypothesis/v1、指标评估 |
+| `videoagent_retrieval/` | R2A 模块：文档投影、确定性 BM25 lexical 索引、manifest 绑定、上游对照接口 |
+
+## R2A：跨窗记忆与检索（2026-09-07 实现状态）
+
+- `entity_matcher.py`：同人合并建议只用"名字+视觉特征"合取证据；**同名-only 永不 merge**（最多 inconclusive），
+  直接针对"同名异人"错误；`max_episode` 前缀上限从机制上排除未来信息。
+- `event_deduper.py`：重复事件只产出 merge_candidate 假设，从不删除/改写原事件。
+- `evaluator.py`：实体 pair P/R、误并率、事件重复/遗漏、Recall@K（分母强制）、context-copy 检查。
+- `videoagent_retrieval/`：Event/Candidate → 文档投影（未投影字段仍绑入 content hash）；
+  `RetrievalIndexManifest/v1` 绑定 refs/hashes/投影版本/算法参数；命中必须经
+  `verify_hit_source` 重读源对象校验，索引不能新增事实；重复 document 拒绝建索引。
+- 上游 VideoAgent/VideoRAG 语义检索未安装，`upstream_adapter.py` 只有接口与诚实的
+  `UpstreamUnavailable` 占位——没有上游运行就没有上游对照结论。
+
+**未完成（不能宣称）**：视频核对过的同人/异人/换装/遮挡标签（实现任务 1，人工标注）、
+真实 VLM 输出上的对照数据、R2B WindowMemorySnapshot/Context Pack v2（须待 R2A 有收益证据）。
 
 ## R1A：叙事策略 shadow A/B（2026-09-07 实现状态）
 
