@@ -54,6 +54,9 @@ def test_projects_exact_source_and_output_ticks_deterministically() -> None:
     assert first.clips[0].video_in_tick == 10
     assert first.clips[0].audio_in_tick == 5
     assert first.clips[0].alternative_id == "alternative-requirement-1"
+    public = first.to_mapping()
+    assert "recipe_reference" not in public and "recipe_sha256" not in public
+    assert "exact_span_proof_sha256" not in public["clips"][0]
 
 
 def test_diff_reports_variant_move_add_and_remove_without_qc_execution() -> None:
@@ -85,3 +88,20 @@ def test_diff_rejects_different_output_timebases() -> None:
 
     with pytest.raises(RecipeTimelineError, match="RECIPE_DIFF_TIME_BASE_MISMATCH"):
         diff_recipe_timelines(timeline, changed)
+
+
+def test_rejects_duplicate_stable_clip_keys() -> None:
+    source = _blob()
+    recipe = _recipe(
+        _span(ordinal=0, requirement_id="r1", candidate_id="c1", source_blob=source),
+        _span(ordinal=1, requirement_id="r2", candidate_id="c2", source_blob=source),
+    )
+    timeline = project_recipe_timeline(recipe, _reference(recipe))
+    duplicate = replace(
+        timeline.clips[1],
+        requirement_id=timeline.clips[0].requirement_id,
+        alternative_id=timeline.clips[0].alternative_id,
+    )
+
+    with pytest.raises(RecipeTimelineError, match="duplicate stable"):
+        replace(timeline, clips=(timeline.clips[0], duplicate))

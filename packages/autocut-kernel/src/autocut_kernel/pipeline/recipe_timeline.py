@@ -163,10 +163,6 @@ class RecipeTimelineClip:
             "audio_time_base": self.audio_time_base.to_mapping(),
             "audio_in_tick": self.audio_in_tick,
             "audio_out_tick": self.audio_out_tick,
-            "exact_span_query_sha256": self.exact_span_query_sha256,
-            "exact_span_result_sha256": self.exact_span_result_sha256,
-            "exact_span_proof_sha256": self.exact_span_proof_sha256,
-            "av_pairing_proof_sha256": self.av_pairing_proof_sha256,
         }
 
 
@@ -221,17 +217,16 @@ class RecipeTimeline:
             raise RecipeTimelineError("timeline Recipe reference hash differs from Recipe content")
         if self.recipe_reference.logical_id != "production_recipe@" + self.story_id:
             raise RecipeTimelineError("timeline Recipe reference story identity differs")
+        if len({item.stable_key for item in self.clips}) != len(self.clips):
+            raise RecipeTimelineError("timeline contains duplicate stable clip keys")
 
     def to_mapping(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
-            "recipe_reference": self.recipe_reference.to_mapping(),
-            "recipe_sha256": self.recipe_sha256,
+            "recipe_revision": self.recipe_reference.revision,
             "story_id": self.story_id,
             "recipe_profile_id": self.recipe_profile_id,
-            "recipe_profile_sha256": self.recipe_profile_sha256,
             "render_profile_id": self.render_profile_id,
-            "render_profile_sha256": self.render_profile_sha256,
             "output_timescale": self.output_timescale,
             "duration_ticks": self.duration_ticks,
             "clips": [item.to_mapping() for item in self.clips],
@@ -299,8 +294,8 @@ class RecipeDiff:
     def to_mapping(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
-            "base_recipe_reference": self.base_recipe_reference.to_mapping(),
-            "target_recipe_reference": self.target_recipe_reference.to_mapping(),
+            "base_recipe_revision": self.base_recipe_reference.revision,
+            "target_recipe_revision": self.target_recipe_reference.revision,
             "story_id": self.story_id,
             "output_timescale": self.output_timescale,
             "requires_qc": self.requires_qc,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypeAlias
@@ -99,7 +100,8 @@ class PipelineRecipeReadService:
         snapshot = await self._read_snapshot(run_id)
         job = Job(run_id, snapshot.request.profile)
         try:
-            record = self._store.find_committed_production_recipe_set(
+            record = await asyncio.to_thread(
+                self._store.find_committed_production_recipe_set,
                 job,
                 artifact_scope=canonical_recipe_scope(job),
                 artifact_revision=revision,
@@ -109,21 +111,15 @@ class PipelineRecipeReadService:
         if record is None:
             return PipelineRecipeNotReady()
         try:
-            inspected = inspect_committed_production_recipe_set(
+            timeline = await asyncio.to_thread(
+                _project_committed_recipe_timeline,
                 record,
-                artifact_scope=canonical_recipe_scope(job),
-                artifact_revision=revision,
-                limits=self._limits,
+                canonical_recipe_scope(job),
+                revision,
+                story_id,
+                self._limits,
             )
-            matches = tuple(
-                (member.reference, recipe)
-                for member, recipe in zip(record.members[1:-1], inspected.recipes, strict=True)
-                if recipe.story.story_id == story_id
-            )
-            if len(matches) != 1:
-                raise RecipeTimelineError("committed Recipe story identity is unavailable or ambiguous")
-            reference, recipe = matches[0]
-            return PipelineRecipeTimelineReady(project_recipe_timeline(recipe, reference, limits=self._limits))
+            return PipelineRecipeTimelineReady(timeline)
         except (RecipeTimelineError, RuntimeStoreError, ValueError) as error:
             raise PipelineRunValidationError("committed Recipe closure is invalid") from error
 
@@ -160,6 +156,30 @@ def _validate_story_id(story_id: str) -> None:
 def _validate_revision(revision: int) -> None:
     if type(revision) is not int or revision < 1:  # noqa: E721
         raise PipelineRunValidationError("Recipe revision is invalid")
+
+
+def _project_committed_recipe_timeline(
+    record: PersistedCommittedArtifactSet,
+    artifact_scope: ArtifactScope,
+    revision: int,
+    story_id: str,
+    limits: RecipeTimelineReadLimits,
+) -> RecipeTimeline:
+    inspected = inspect_committed_production_recipe_set(
+        record,
+        artifact_scope=artifact_scope,
+        artifact_revision=revision,
+        limits=limits,
+    )
+    matches = tuple(
+        (member.reference, recipe)
+        for member, recipe in zip(record.members[1:-1], inspected.recipes, strict=True)
+        if recipe.story.story_id == story_id
+    )
+    if len(matches) != 1:
+        raise RecipeTimelineError("committed Recipe story identity is unavailable or ambiguous")
+    reference, recipe = matches[0]
+    return project_recipe_timeline(recipe, reference, limits=limits)
 
 
 __all__ = (

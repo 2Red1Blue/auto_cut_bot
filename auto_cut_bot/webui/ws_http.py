@@ -25,6 +25,7 @@ from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
 from auto_cut_bot.command.builtin import builtin_command_palette
+from auto_cut_bot.pipeline.runtime.errors import PipelineRunNotFoundError
 from auto_cut_bot.cron.session_turns import is_bound_cron_job
 from auto_cut_bot.cron.types import CronJob, CronSchedule
 from auto_cut_bot.security.workspace_access import WorkspaceScope
@@ -770,6 +771,8 @@ class GatewayHTTPHandler:
         """Serve exact committed Recipe timelines without compiling or rendering."""
         if not got.startswith("/api/pipeline/runs/"):
             return None
+        if "/recipes/" not in got:
+            return None
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
         if getattr(request, "method", "GET").upper() != "GET":
@@ -810,6 +813,8 @@ class GatewayHTTPHandler:
                 ).to_mapping()
         except ValueError:
             return _http_error(400, "invalid pipeline recipe request")
+        except PipelineRunNotFoundError:
+            return _http_error(404, "pipeline recipe not found")
         except Exception:
             self._log.warning("pipeline recipe request failed")
             return _http_error(500, "pipeline recipes unavailable")

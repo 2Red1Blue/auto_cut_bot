@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from websockets.http11 import Request as WsRequest
 
+from auto_cut_bot.pipeline.runtime.errors import PipelineRunNotFoundError
 from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
 _RUN_ID = "pipeline_run_0123456789abcdef0123456789abcdef"
@@ -109,3 +110,20 @@ async def test_recipe_route_reports_uncomposed_and_ignores_non_get() -> None:
     )
     assert response is None
     assert service.timeline_calls == []
+
+
+@pytest.mark.asyncio
+async def test_recipe_route_falls_through_for_other_pipeline_paths_and_maps_unknown_run() -> None:
+    service = _RecipeService()
+    handler = _handler(authorized=True, service=service)
+    fallthrough = await handler._dispatch_pipeline_recipe_routes(
+        _request(f"/api/pipeline/runs/{_RUN_ID}/controls"),
+        f"/api/pipeline/runs/{_RUN_ID}/controls",
+    )
+    assert fallthrough is None
+
+    missing = _RecipeService(error=PipelineRunNotFoundError(_RUN_ID))
+    response = await _handler(authorized=True, service=missing)._dispatch_pipeline_recipe_routes(
+        _request(_TIMELINE), _TIMELINE.split("?", 1)[0]
+    )
+    assert response is not None and response.status_code == 404

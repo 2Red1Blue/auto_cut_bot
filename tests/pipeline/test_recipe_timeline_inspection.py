@@ -58,3 +58,16 @@ def test_inspection_rejects_wrong_committed_layout(tmp_path: Path, monkeypatch: 
             artifact_revision=request.artifact_revision,
             limits=RecipeTimelineReadLimits(),
         )
+
+
+def test_inspection_rechecks_member_content_hash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request, record = _record(tmp_path, monkeypatch)
+    object.__setattr__(record.members[1], "payload_json", "{}")
+
+    with pytest.raises(CompileProductionRecipeError, match="member identity"):
+        inspect_committed_production_recipe_set(
+            record,
+            artifact_scope=request.artifact_scope,
+            artifact_revision=request.artifact_revision,
+            limits=RecipeTimelineReadLimits(),
+        )

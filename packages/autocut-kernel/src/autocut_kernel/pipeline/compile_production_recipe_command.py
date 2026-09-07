@@ -1452,6 +1452,7 @@ def inspect_committed_production_recipe_set(
     if any(
         member.reference.scope != artifact_scope
         or member.reference.revision != artifact_revision
+        or canonical_payload_hash(member.payload_json) != member.reference.content_hash
         or len(member.payload_json.encode("utf-8", errors="strict")) > limits.max_member_payload_bytes
         for member in record.members
     ):
