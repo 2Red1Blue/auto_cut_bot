@@ -25,7 +25,6 @@ from websockets.http11 import Request as WsRequest
 from websockets.http11 import Response
 
 from auto_cut_bot.command.builtin import builtin_command_palette
-from auto_cut_bot.pipeline.runtime.errors import PipelineRunNotFoundError
 from auto_cut_bot.cron.session_turns import is_bound_cron_job
 from auto_cut_bot.cron.types import CronJob, CronSchedule
 from auto_cut_bot.security.workspace_access import WorkspaceScope
@@ -813,9 +812,14 @@ class GatewayHTTPHandler:
                 ).to_mapping()
         except ValueError:
             return _http_error(400, "invalid pipeline recipe request")
-        except PipelineRunNotFoundError:
-            return _http_error(404, "pipeline recipe not found")
-        except Exception:
+        except Exception as error:
+            # Import lazily: loading pipeline.runtime at WebUI module import
+            # time can create a Config type-rebuild cycle before the gateway is
+            # composed.  A read service has already loaded that package here.
+            from auto_cut_bot.pipeline.runtime.errors import PipelineRunNotFoundError
+
+            if isinstance(error, PipelineRunNotFoundError):
+                return _http_error(404, "pipeline recipe not found")
             self._log.warning("pipeline recipe request failed")
             return _http_error(500, "pipeline recipes unavailable")
         return _http_json_response(payload)
