@@ -1,6 +1,6 @@
 # 13 开源能力吸收：架构与分批实现方案
 
-日期：2026-09-07。代码核查基线：`da10818e`，分支 `feat/v213-contract-codegen`。
+日期：2026-09-07。代码核查基线：`b23581b9`，分支 `feat/v213-contract-codegen`。
 状态：详细设计；本文新增模块、DTO、CLI 参数与实验结果均尚未实现/取得。
 本次交付为设计文档，不表示 reference runner 或真实端到端剪辑已经跑通。
 
@@ -260,15 +260,17 @@ sample smoke 可以早于人工全量标注，产物明确 `quality_not_evaluate
 ## 11. 实施任务与依赖
 
 以下 R 编号仅是本吸收方案工作包，不替代 06–08 的 Global Phase；本文未创建或启动这些实现任务。
+逐阶段的文件、DTO、执行流程、测试和退出条件见
+[实施阶段索引](../open-source-adoption-phases/README.md)。
 
 | 包 | 范围/产出 | 依赖 | 验收 |
 |---|---|---|---|
-| R0 实验可执行性 | 修 runner root/环境隔离/固定引用；ExperimentSpec、Fixture v2、保留 raw/usage/resume | 无 | 无密钥继承、replay 零调用、缺录制有明确状态、文件 hash 校验；1 个假 provider 可完成协议 smoke |
-| R1 叙事策略 | NarratoAI 启发的 Stage 2/3 strategy 实验，复用真实已保存 VLM | R0；真实上游可重读 | 同样输入的 A/B 报告；局部重跑不触发 VLM；不强制新增旁白 |
-| R2 跨窗记忆/检索 | VideoAgent 检索 + MMLVE 实体关联两个独立 runner | R0；独立标签 | 无未来信息、标签不泄露、漏检/误合并有分母；收益通过后才做 Context Pack 新版本 |
-| R3 Agent 工具 | inspect/plan/execute、小型 capability 表、节点→Command 绑定 | 可复用的现有命令 | Agent 单阶段调用、HTTP 不依赖 Agent、相同业务输入的结果与恢复语义一致 |
-| R4 Recipe 预览 | 只读 timeline 与 diff；后续 EditProposal→CAS→新 Recipe | 已有真实 Recipe/本地 Render | 时间映射正确、无 UI 私有写路径；编辑并发冲突不覆盖旧 revision |
-| R5 产品接入 | 只对 R1/R2 验证有益的模块接相应 stage，选择性 Kinocut/FunClip 适配 | 对应实验通过；当前本地成片主线就绪 | 1 部真实剧局部重跑至本地成片、完整 debug、旧 run 可查询、默认回退可执行 |
+| [R0 实验可执行性](../open-source-adoption-phases/00-r0-experiment-foundation.md) | 修 runner root/环境隔离/固定引用；ExperimentSpec、Fixture v2、保留 raw/usage/resume | 无 | 无密钥继承、replay 零调用、缺录制有明确状态、文件 hash 校验；1 个假 provider 可完成协议 smoke |
+| [R1 叙事策略](../open-source-adoption-phases/01-r1-narrative-strategy.md) | NarratoAI 启发的 Stage 2/3 strategy 实验，复用真实已保存 VLM | R0；真实上游可重读 | 同样输入的 A/B 报告；局部重跑不触发 VLM；不强制新增旁白 |
+| [R2 跨窗记忆/检索](../open-source-adoption-phases/02-r2-window-memory-retrieval.md) | VideoAgent 检索 + MMLVE 实体关联两个独立 runner | R0；独立标签 | 无未来信息、标签不泄露、漏检/误合并有分母；收益通过后才做 Context Pack 新版本 |
+| [R3 Agent 工具](../open-source-adoption-phases/03-r3-agent-tools.md) | inspect/plan/execute、小型 capability 表、节点→Command 绑定 | 可复用的现有命令 | Agent 单阶段调用、HTTP 不依赖 Agent、相同业务输入的结果与恢复语义一致 |
+| [R4 Recipe 预览](../open-source-adoption-phases/04-r4-recipe-preview.md) | 只读 timeline 与 diff；后续 EditProposal→CAS→新 Recipe | 已有真实 Recipe/本地 Render | 时间映射正确、无 UI 私有写路径；编辑并发冲突不覆盖旧 revision |
+| [R5 产品接入](../open-source-adoption-phases/05-r5-product-integration.md) | 只对 R1/R2 验证有益的模块接相应 stage，选择性 Kinocut/FunClip 适配 | 对应实验通过；当前本地成片主线就绪 | 1 部真实剧局部重跑至本地成片、完整 debug、旧 run 可查询、默认回退可执行 |
 
 执行顺序：R0 后 R1/R2 可并行；R3 可独立做现有工具盘点，R4 可先设计只读投影。
 同一时间 `context_pack/selector.py`、请求构造器、Store 文件只安排一个实现者，其余用 fixtures 对接。
