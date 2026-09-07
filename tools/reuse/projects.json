@@ -1,0 +1,137 @@
+{
+  "schema": "ReuseProjects/v1",
+  "projects": [
+    {
+      "project_id": "fake",
+      "role": "builtin",
+      "repo_url": null,
+      "local_dir": null,
+      "pinned_commit": "builtin:fake",
+      "license_path": null,
+      "adapter_version": "fake-1",
+      "adapter_module": "tools.reuse.adapters.fake.FakeAdapter",
+      "status": "in_evaluation"
+    },
+    {
+      "project_id": "VideoAgent",
+      "role": "reference",
+      "repo_url": "https://github.com/HKUDS/VideoAgent",
+      "local_dir": "VideoAgent",
+      "pinned_commit": "f207987e3cffb554aaa6ffdbe733efb30f4b51ed",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "MMLVE",
+      "role": "reference",
+      "repo_url": "https://github.com/Wucy0519/MMLVE",
+      "local_dir": "MMLVE",
+      "pinned_commit": "596ebb23d5bf15c04259dd71367008c923d3f425",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "NarratoAI",
+      "role": "reference",
+      "repo_url": "https://github.com/linyqh/NarratoAI",
+      "local_dir": "NarratoAI",
+      "pinned_commit": "9fc6223f0ab816e9a237e7e1d09e16a0ab905312",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "FunClip",
+      "role": "reference",
+      "repo_url": "https://github.com/modelscope/FunClip",
+      "local_dir": "FunClip",
+      "pinned_commit": "2a954d4fbad6a57a5271390be4eb43f80d201b60",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "TimelineStudio",
+      "role": "reference",
+      "repo_url": "https://github.com/MartinDelophy/ai-video-editor",
+      "local_dir": "ai-video-editor",
+      "pinned_commit": "68980d142cce421eab86cd4ef26a4475a6affd56",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "Kinocut",
+      "role": "reference",
+      "repo_url": "https://github.com/KyaniteLabs/kinocut",
+      "local_dir": "kinocut",
+      "pinned_commit": "999dd40000749e3a9dc34fb4090e6adabc9213a4",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "DawnCut",
+      "role": "reference",
+      "repo_url": "https://github.com/kwakseongjae/dawn-cut",
+      "local_dir": "dawn-cut",
+      "pinned_commit": "7de68fce41505d8092ec227806b8d4bea4127675",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "video-highlight-skill",
+      "role": "reference",
+      "repo_url": "https://github.com/inhai-wiki/video-highlight-skill",
+      "local_dir": "video-highlight-skill",
+      "pinned_commit": "35a81e11c02c90289cbca3ca2e9f641e4c050b9d",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "FunASR",
+      "role": "reference",
+      "repo_url": "https://github.com/modelscope/FunASR",
+      "local_dir": "FunASR",
+      "pinned_commit": "680b1b3f10d35c9fc388230800a3c8b0570271b0",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "OpenChatCut",
+      "role": "reference",
+      "repo_url": "https://github.com/0xsline/OpenChatCut",
+      "local_dir": "OpenChatCut",
+      "pinned_commit": "3c2d33a8d4546175b41743da7dbfbf80c207a30b",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    },
+    {
+      "project_id": "OpenCut",
+      "role": "reference",
+      "repo_url": "https://github.com/OpenCut-app/OpenCut",
+      "local_dir": "OpenCut",
+      "pinned_commit": "400f097becba5db0fbc305d5a65348cb81c20356",
+      "license_path": "LICENSE",
+      "adapter_version": "pending-0",
+      "adapter_module": "tools.reuse.adapters.PendingAdapter",
+      "status": "registered"
+    }
+  ]
+}
