@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
     from auto_cut_bot.cron.service import CronService
     from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
+    from auto_cut_bot.pipeline.runtime.recipe_projection import PipelineRecipeReadService
     from auto_cut_bot.session.manager import SessionManager
     from auto_cut_bot.triggers.local_store import LocalTriggerStore
 
@@ -46,6 +47,7 @@ class GatewayServices:
     cron_pending_job_ids: Callable[[str], set[str]] | None
     local_trigger_pending_ids: Callable[[str], set[str]] | None
     pipeline_highlight_read_service: PipelineHighlightReadService | None
+    pipeline_recipe_read_service: PipelineRecipeReadService | None
 
 
 def build_gateway_services(
@@ -72,6 +74,7 @@ def build_gateway_services(
     mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
     skill_state_action: Callable[[set[str]], None] | None = None,
     pipeline_highlight_read_service: PipelineHighlightReadService | None = None,
+    pipeline_recipe_read_service: PipelineRecipeReadService | None = None,
     logger: Any = default_logger,
 ) -> GatewayServices:
     settings = WebUISettingsServices.create(
@@ -135,6 +138,7 @@ def build_gateway_services(
         mcp_reload=mcp_reload,
         skill_state_action=skill_state_action,
         pipeline_highlight_read_service=pipeline_highlight_read_service,
+        pipeline_recipe_read_service=pipeline_recipe_read_service,
         log=logger,
     )
     return GatewayServices(
@@ -152,4 +156,5 @@ def build_gateway_services(
         cron_pending_job_ids=cron_pending_job_ids,
         local_trigger_pending_ids=local_trigger_pending_ids,
         pipeline_highlight_read_service=pipeline_highlight_read_service,
+        pipeline_recipe_read_service=pipeline_recipe_read_service,
     )

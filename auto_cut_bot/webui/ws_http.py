@@ -221,6 +221,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
     from auto_cut_bot.cron.service import CronService
     from auto_cut_bot.pipeline.runtime.highlight_projection import PipelineHighlightReadService
+    from auto_cut_bot.pipeline.runtime.recipe_projection import PipelineRecipeReadService
     from auto_cut_bot.triggers.local_store import LocalTriggerStore
     from auto_cut_bot.webui.settings_services import WebUISettingsServices
 
@@ -257,6 +258,22 @@ def _request_query(request: WsRequest) -> dict[str, list[str]]:
             text = str(value)
         query[key] = [text]
     return query
+
+
+def _positive_pipeline_query(
+    query: Mapping[str, list[str]],
+    name: str,
+    *,
+    default: int | None,
+) -> int:
+    values = query.get(name)
+    if values is None:
+        if default is None:
+            raise ValueError(f"{name} is required")
+        return default
+    if len(values) != 1 or re.fullmatch(r"[1-9][0-9]{0,8}", values[0]) is None:
+        raise ValueError(f"{name} must be a positive integer")
+    return int(values[0])
 
 
 def _default_model_name_from_config(config_path: Path | None = None) -> str | None:
@@ -325,6 +342,7 @@ class GatewayHTTPHandler:
         mcp_reload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
         skill_state_action: Callable[[set[str]], None] | None = None,
         pipeline_highlight_read_service: PipelineHighlightReadService | None = None,
+        pipeline_recipe_read_service: PipelineRecipeReadService | None = None,
         log: Any = logger,
     ) -> None:
         self.config = config
@@ -349,6 +367,7 @@ class GatewayHTTPHandler:
         self.cron_pending_job_ids = cron_pending_job_ids
         self.local_trigger_pending_ids = local_trigger_pending_ids
         self.pipeline_highlight_read_service = pipeline_highlight_read_service
+        self.pipeline_recipe_read_service = pipeline_recipe_read_service
         self._log = log
         self._runtime_surface = runtime_surface
 
@@ -517,6 +536,10 @@ class GatewayHTTPHandler:
 
         # Pipeline highlight evidence is a read-only, optionally composed view.
         response = await self._dispatch_pipeline_highlight_routes(request, got)
+        if response is not None:
+            return response
+
+        response = await self._dispatch_pipeline_recipe_routes(request, got)
         if response is not None:
             return response
 
@@ -716,6 +739,8 @@ class GatewayHTTPHandler:
         """Serve the narrow, exact committed-highlight projection when configured."""
         if not got.startswith("/api/pipeline/runs/"):
             return None
+        if not got.endswith("/highlights"):
+            return None
         if not self.check_api_token(request):
             return _http_error(401, "Unauthorized")
         if getattr(request, "method", "GET").upper() != "GET":
@@ -735,6 +760,59 @@ class GatewayHTTPHandler:
         except Exception:
             self._log.warning("pipeline highlights request failed")
             return _http_error(500, "pipeline highlights unavailable")
+        return _http_json_response(payload)
+
+    async def _dispatch_pipeline_recipe_routes(
+        self,
+        request: WsRequest,
+        got: str,
+    ) -> Response | None:
+        """Serve exact committed Recipe timelines without compiling or rendering."""
+        if not got.startswith("/api/pipeline/runs/"):
+            return None
+        if not self.check_api_token(request):
+            return _http_error(401, "Unauthorized")
+        if getattr(request, "method", "GET").upper() != "GET":
+            return None
+        timeline_match = re.fullmatch(
+            r"/api/pipeline/runs/(pipeline_run_[0-9a-f]{32})/recipes/([A-Za-z0-9_.:@-]{1,256})/timeline",
+            got,
+        )
+        diff_match = re.fullmatch(
+            r"/api/pipeline/runs/(pipeline_run_[0-9a-f]{32})/recipes/([A-Za-z0-9_.:@-]{1,256})/diff",
+            got,
+        )
+        if timeline_match is None and diff_match is None:
+            return _http_error(404, "API route not found")
+        if self.pipeline_recipe_read_service is None:
+            return _http_error(503, "pipeline recipes unavailable")
+        query = _parse_request_path(request.path)[1]
+        try:
+            if timeline_match is not None:
+                if set(query) - {"revision"}:
+                    raise ValueError("unexpected query")
+                revision = _positive_pipeline_query(query, "revision", default=1)
+                payload = (
+                    await self.pipeline_recipe_read_service.get_timeline(
+                        timeline_match.group(1), timeline_match.group(2), revision
+                    )
+                ).to_mapping()
+            else:
+                assert diff_match is not None
+                if set(query) != {"base_revision", "target_revision"}:
+                    raise ValueError("unexpected query")
+                base_revision = _positive_pipeline_query(query, "base_revision", default=None)
+                target_revision = _positive_pipeline_query(query, "target_revision", default=None)
+                payload = (
+                    await self.pipeline_recipe_read_service.get_diff(
+                        diff_match.group(1), diff_match.group(2), base_revision, target_revision
+                    )
+                ).to_mapping()
+        except ValueError:
+            return _http_error(400, "invalid pipeline recipe request")
+        except Exception:
+            self._log.warning("pipeline recipe request failed")
+            return _http_error(500, "pipeline recipes unavailable")
         return _http_json_response(payload)
 
     async def _handle_session_context_get(self, request: WsRequest, key: str) -> Response:

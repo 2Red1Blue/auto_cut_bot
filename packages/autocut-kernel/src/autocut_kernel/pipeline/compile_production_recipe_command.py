@@ -96,6 +96,7 @@ from .production_recipe import (
     ProductionSpan,
     ProductionStory,
 )
+from .recipe_timeline import RecipeTimelineReadLimits
 from .production_recipe_admission import (
     PHYSICAL_EDIT_REPLAY_EVALUATOR_STRATEGY_VERSION,
     PHYSICAL_EDIT_RULE_IDS,
@@ -290,6 +291,31 @@ class PersistedProductionRecipeSet:
             raise CompileProductionRecipeError(
                 "persisted Stage 4 value requires valid physical Admission"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class InspectedProductionRecipeSet:
+    """Static decoding of an exact committed Stage 4 set for read-only views.
+
+    This value deliberately does not contain ``VerifiedPhysicalEditAdmission``:
+    inspection validates persisted shape and provenance, but cannot re-grant
+    rendering authority or substitute for the execution-time admission replay.
+    """
+
+    record: PersistedCommittedArtifactSet
+    report: PhysicalEditCompilationReport
+    recipes: tuple[ProductionRecipe, ...]
+    admission: PhysicalEditAdmission
+
+    def __post_init__(self) -> None:
+        if type(self.record) is not PersistedCommittedArtifactSet:  # noqa: E721
+            raise CompileProductionRecipeError("inspected Stage 4 set requires an exact Store record")
+        if type(self.report) is not PhysicalEditCompilationReport:  # noqa: E721
+            raise CompileProductionRecipeError("inspected Stage 4 set requires an exact report")
+        if not self.recipes or any(type(item) is not ProductionRecipe for item in self.recipes):  # noqa: E721
+            raise CompileProductionRecipeError("inspected Stage 4 set requires non-empty Recipes")
+        if type(self.admission) is not PhysicalEditAdmission:  # noqa: E721
+            raise CompileProductionRecipeError("inspected Stage 4 set requires exact Admission wire")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1393,6 +1419,70 @@ def read_committed_production_recipe_set(
     return PersistedProductionRecipeSet(record, report, recipes, stored_verified)
 
 
+def inspect_committed_production_recipe_set(
+    record: PersistedCommittedArtifactSet,
+    *,
+    artifact_scope: ArtifactScope,
+    artifact_revision: int,
+    limits: RecipeTimelineReadLimits,
+) -> InspectedProductionRecipeSet:
+    """Decode one exact persisted Stage 4 set without compiling or admitting it.
+
+    The inspection path is intentionally narrower than
+    :func:`read_committed_production_recipe_set`: it accepts only a record
+    already joined to a succeeded Receipt by the Store, checks the static
+    producer/layout/codec closure needed for display, and performs no physical
+    evidence replay or renderer action.
+    """
+    if type(record) is not PersistedCommittedArtifactSet:  # noqa: E721
+        raise CompileProductionRecipeError("Stage 4 inspection requires an exact Store record")
+    if type(artifact_scope) is not ArtifactScope:  # noqa: E721
+        raise CompileProductionRecipeError("Stage 4 inspection requires an exact ArtifactScope")
+    if type(artifact_revision) is not int or artifact_revision < 1:  # noqa: E721
+        raise CompileProductionRecipeError("Stage 4 inspection requires a positive artifact revision")
+    if type(limits) is not RecipeTimelineReadLimits:  # noqa: E721
+        raise CompileProductionRecipeError("Stage 4 inspection requires exact read limits")
+    if (
+        record.command_name != COMPILE_PRODUCTION_RECIPE_COMMAND
+        or record.execution_kind != "deterministic"
+        or len(record.members) < 3
+        or len(record.members) > limits.max_members
+    ):
+        raise CompileProductionRecipeError("Stage 4 inspection producer or member census is invalid")
+    if any(
+        member.reference.scope != artifact_scope
+        or member.reference.revision != artifact_revision
+        or len(member.payload_json.encode("utf-8", errors="strict")) > limits.max_member_payload_bytes
+        for member in record.members
+    ):
+        raise CompileProductionRecipeError("Stage 4 inspection member identity or size is invalid")
+    payloads = tuple(member.payload_json.encode("utf-8", errors="strict") for member in record.members)
+    if sum(map(len, payloads)) > limits.max_total_payload_bytes:
+        raise CompileProductionRecipeError("Stage 4 inspection total payload exceeds its read limit")
+    try:
+        decoded = tuple(load_canonical_json_bytes(payload, origin="Stage 4 inspection member") for payload in payloads)
+        report = PhysicalEditCompilationReport.from_mapping(decoded[0][0])
+        recipes = tuple(ProductionRecipe.from_mapping(item[0]) for item in decoded[1:-1])
+        admission = PhysicalEditAdmission.from_mapping(decoded[-1][0])
+    except (TypeError, ValueError) as error:
+        raise CompileProductionRecipeError("Stage 4 inspection member codec is invalid") from error
+    if len(recipes) > limits.max_recipes:
+        raise CompileProductionRecipeError("Stage 4 inspection Recipe census exceeds its read limit")
+    expected_types = (_REPORT_TYPE, *("recipe" for _ in recipes), _ADMISSION_TYPE)
+    expected_ids = (_REPORT_TYPE, *(_RECIPE_PREFIX + recipe.story.story_id for recipe in recipes), _ADMISSION_TYPE)
+    if (
+        tuple(member.reference.member_ordinal for member in record.members) != tuple(range(len(record.members)))
+        or tuple(member.reference.artifact_type for member in record.members) != expected_types
+        or tuple(member.reference.logical_id for member in record.members) != expected_ids
+        or tuple(subject.story_id for subject in admission.recipe_subjects)
+        != tuple(recipe.story.story_id for recipe in recipes)
+    ):
+        raise CompileProductionRecipeError("Stage 4 inspection layout differs from report or Admission")
+    if any(recipe.story.ordinal != 0 for recipe in recipes):
+        raise CompileProductionRecipeError("Stage 4 inspection Recipe story ordinals are invalid")
+    return InspectedProductionRecipeSet(record, report, recipes, admission)
+
+
 __all__ = (
     "COMPILE_PRODUCTION_RECIPE_COMMAND",
     "PRODUCTION_RECIPE_COMMAND_STRATEGY",
@@ -1407,10 +1497,12 @@ __all__ = (
     "CompileProductionRecipeError",
     "CompileProductionRecipeRequest",
     "CompileProductionRecipeResult",
+    "InspectedProductionRecipeSet",
     "PersistedProductionRecipeSet",
     "ProductionRecipeCommandStore",
     "ProductionRecipeCompilationLimits",
     "ResolvedCompileProductionRecipeRequest",
     "read_committed_production_recipe_set",
+    "inspect_committed_production_recipe_set",
     "resolve_compile_production_recipe_request",
 )

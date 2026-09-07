@@ -1,0 +1,12 @@
+{
+  "id": "implement-r4-recipe-preview",
+  "title": "实现 R4 Recipe 时间线预览与受控修订",
+  "status": "in_progress",
+  "complexity": "L",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "implementation",
+  "nextAction": "实现 R4A 纯时间线投影、inspection reader、Runtime 服务和只读 HTTP 路由",
+  "createdAt": "2026-09-07T00:00:00+08:00",
+  "branch": "feat/v213-contract-codegen"
+}

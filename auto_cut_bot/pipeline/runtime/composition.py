@@ -58,6 +58,7 @@ from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_poli
 
 from .context_prepare_stage import ContextPreparePipelineStage
 from .highlight_projection import PipelineHighlightReadService
+from .recipe_projection import PipelineRecipeReadService
 from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_read_limits
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService, PipelineStagePort, PipelineStageReconcilePort
@@ -446,6 +447,26 @@ def compose_pipeline_highlight_read_service_from_environment(
         return psycopg.connect(kernel_dsn)
 
     return PipelineHighlightReadService(
+        PostgresPipelineRunStore(control_factory),
+        PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory)),
+    )
+
+
+def compose_pipeline_recipe_read_service_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> PipelineRecipeReadService | None:
+    """Compose only the durable stores needed by the read-only Recipe view."""
+    values = os.environ if environ is None else environ
+    control_dsn = values.get(PIPELINE_POSTGRES_DSN_ENV, "").strip()
+    if not control_dsn:
+        return None
+    kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
+    control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
+
+    def kernel_factory() -> psycopg.Connection[tuple[object, ...]]:
+        return psycopg.connect(kernel_dsn)
+
+    return PipelineRecipeReadService(
         PostgresPipelineRunStore(control_factory),
         PostgresRuntimeStore(cast(Callable[[], KernelDbConnection], kernel_factory)),
     )
@@ -1044,5 +1065,6 @@ __all__ = (
     "SourceCatalogEntry",
     "compose_pipeline_run_service_from_environment",
     "compose_pipeline_highlight_read_service_from_environment",
+    "compose_pipeline_recipe_read_service_from_environment",
     "compose_pipeline_runtime_from_environment",
 )
