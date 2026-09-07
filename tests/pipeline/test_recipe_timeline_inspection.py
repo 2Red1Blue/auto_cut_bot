@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,12 +49,11 @@ def test_inspection_decodes_exact_set_without_recompiling(tmp_path: Path, monkey
 
 def test_inspection_rejects_wrong_committed_layout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request, record = _record(tmp_path, monkeypatch)
-    bad_member = replace(record.members[0], reference=replace(record.members[0].reference, logical_id="forged"))
-    bad_record = replace(record, members=(bad_member, *record.members[1:]))
+    object.__setattr__(record.members[0].reference, "logical_id", "forged")
 
     with pytest.raises(CompileProductionRecipeError, match="layout"):
         inspect_committed_production_recipe_set(
-            bad_record,
+            record,
             artifact_scope=request.artifact_scope,
             artifact_revision=request.artifact_revision,
             limits=RecipeTimelineReadLimits(),
