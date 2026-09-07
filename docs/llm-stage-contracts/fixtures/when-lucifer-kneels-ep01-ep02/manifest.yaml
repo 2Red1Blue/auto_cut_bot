@@ -1,0 +1,345 @@
+schema_version: '1.0'
+set_id: when-lucifer-kneels-ep01-ep02
+created_utc: '2026-09-07'
+frozen: true
+purpose: R1 跨窗一致性（MMLVE 式）与语义召回（VideoAgent 式）对照的首个 fixture set
+inputs_base: ../../../../../../ac_auto_cut/jobs/when-lucifer-kneels
+videos:
+- file: ep01.mp4
+  episode: 1
+  sha256: 6b21a04893bf00c1bd5fbda0200212d9edd52a641dcf0be38a42058a806ba73e
+  size_bytes: 34238107
+- file: ep02.mp4
+  episode: 2
+  sha256: 4cfd455b9ec405f579242c05dbe71223064e6e6b1f16097a8fec6a38336358a7
+  size_bytes: 30210106
+ground_truth:
+  provenance:
+    source_script: script.docx 原始剧本的解析产物（独立于 pipeline 生成链，作为一等 ground truth）
+    episode_digests: ac_auto_cut v42 pipeline 自身输出（派生参考，仅用于补充，评分时须与 source_script 区分权重）
+    series_bible: pipeline 派生的角色设定集（角色名 canon 参考）
+  series_bible_excerpt_sha256: a51772f6636522c1473bc6e0e1cd5ce29e0c0c937e59b7d72049494ba90f146b
+  episodes:
+  - episode: 1
+    title: 第一集
+    scenes:
+    - scene_id: S1E1
+      heading: 1-1 主城街道 雨夜 外
+      location: 主城街道
+      time_of_day: 雨夜
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - 人类若干
+      dialogues:
+      - character: 老汉甲
+        text: The Devil is here! Run!
+        sequence: 1
+      raw_description: ▲（航拍俯冲——Lucifer主观视角）镜头从漆黑的夜空极速下坠——▲街道上的行人感受到一阵凌冽的风袭来，所有人齐刷刷看向镜头方向（神情都很惊恐），一个推着独轮车的老人最先反应过来，他直接松开车把手，拔腿就跑。▲街道的人纷纷逃跑，人群四散开来。（特写）一个躲在门后的孩子透过门缝向外看，只见Lucifer展开巨大的黑色羽翼，以垂直俯冲的姿态破空而降，越过街道，飞向了墓地方向。
+      start_time: 0.0
+      end_time: 180.0
+    - scene_id: S1E2
+      heading: 1-2 墓地 雨夜 外
+      location: 墓地
+      time_of_day: 雨夜
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      dialogues:
+      - character: Lucifer
+        text: Humans call me Satan. They fear my power. But they don't know... Seven years ago, I gave
+          my heart to a human girl.
+        sequence: 1
+      raw_description: ▲Lucifer飞到墓地最深处，落地时地上的泥浆自动凝固，Lucifer留着微卷的黑发，眼神阴鸷，黑色长衣被雨水浸透，紧贴身体，他走到一座墓碑前停下脚步。▲Lucifer独自站在墓碑前，摊开掌心是一枚锻造工艺古朴的暗银色天使形项链（特写）【重要道具】。
+      start_time: 180.0
+      end_time: 360.0
+    - scene_id: S1E3
+      heading: 1-2 工坊店 日 内 【闪回】
+      location: 工坊店
+      time_of_day: 日
+      is_flashback: true
+      characters_present:
+      - Selene
+      - Eldon
+      dialogues:
+      - character: Eldon
+        text: Selene! You're pregnant! How many times do I have to tell you to stop working the forge?
+        sequence: 1
+      - character: Selene
+        text: Today is our three-year anniversary... Lucifer and I. This necklace... it's my gift to him.
+        sequence: 2
+      - character: Eldon
+        text: The guy hasn't shown his face in three damn months! He doesn’t even know you're pregnant!
+        sequence: 3
+      - character: Selene
+        text: I know you're worried about me, Eldon, really. But Lucifer is an angel. We promised we'd
+          meet once every three months, and that he’d be waiting for me at the Central Cathedral. It's
+          been exactly three months today. I'm going to tell him... we're having a child.
+        sequence: 4
+      - character: Eldon
+        text: I know I can’t stop you, Selene. But the Central Cathedral is where the angels deliver the
+          word of God. Humans are forbidden there. So please, be careful.
+        sequence: 5
+      - character: Selene
+        text: Thank you, Eldon. Just take the cost of the tools out of my pay. I’ll be here first thing
+          tomorrow.
+        sequence: 6
+      - character: Eldon
+        text: Poor girl... she's out of her mind for him...
+        sequence: 7
+      raw_description: 【字幕：七年前】 Seven years earlier▲哥特风格的工坊店内光线昏暗，墙壁上挂满了粗重的锁链、咬合的齿轮与巨大的铁钉。工坊中央的铁砧旁，Selene穿着一件宽大且沾满黑灰的皮质围裙，戴着隔热面罩。她高高举起铁锤，正专注地锻造着那一枚暗银色的天使形状吊坠，突然，一阵强烈的孕吐反应袭来，Selene手臂剧烈一晃——
+        “哐当！” 沉重的铁锤猛地砸偏，狠狠砸在了她的左手手背上。▲Selene疼得倒吸一口凉气，正在一旁挥汗如雨、奋力打磨铁器的Eldon见状大惊失色。这个身高一米九、浑身肌肉如钢铁雕刻般的硬汉，看见Selene受伤立马丢下手中的工具冲过去查看Selene的伤势。▲Selene顾不上已经红肿的手背，用钳子夹起那枚已经在炭火中初具雏形的项链，看着已经锻造成功的项链满意地笑了笑。▲Selene缓缓摘下隔热面罩，露出一张虽显苍白却异常绝美的面容。▲Selene解下皮质围裙，将项链拿起来。▲Selene推开沉重的橡木大门，离开了工坊店。Eldon深深地叹了一口气。
+      start_time: 360.0
+      end_time: 540.0
+    - scene_id: S1E4
+      heading: 1-4 教堂圣殿 日 内
+      location: 教堂圣殿
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - Sariel
+      - Selene
+      - 天使守卫若干
+      dialogues:
+      - character: Sariel
+        text: Lucifer, you knew the law. God strictly forbids any union between angels and humans. Just
+          say you never loved that wretched mortal woman, and I can spare you this pain.
+        sequence: 1
+      - character: Lucifer
+        text: Wretched? You self-righteous angels don't know a damn thing about love. I love Selene. Even
+          if Heaven tears me apart and turns me to ash... you will never make me spit on what we have!
+        sequence: 2
+      - character: Sariel
+        text: Foolish. God's law is absolute. And an archangel's bloodline should never be stained by
+          mortal filth!
+        sequence: 3
+      - character: Lucifer
+        text: Go... Selene... run...
+        sequence: 4
+      - character: Selene
+        text: Lucifer...
+        sequence: 5
+      - character: Lucifer
+        text: Please, Selene... just run!
+        sequence: 6
+      - character: Lucifer
+        text: Selene—! Run!
+        sequence: 7
+      - character: Sariel
+        text: Seize her!
+        sequence: 8
+      raw_description: ▲Selene满心欢喜穿过一条宏伟连拱长廊，长廊两侧，石柱如林般排开，柱头上雕刻着精美的浮雕。然而，当她步入圣殿主厅，眼前的景象却让她的笑容瞬间凝固。▲高耸的尖肋拱顶交错延伸，阳光穿透巨大的玫瑰彩绘玻璃窗，主厅中央，四根巨大的审判石柱上面缠绕着黑色锁链。Lucifer那张俊美至极的面容，此刻已经布满汗水。Lucifer被四根巨大的锁链牢牢锁在神殿中央的审判柱上，他的手臂被铁链穿过，浑身都是血迹。▲Sariel身着一身金边白袍，缓步走到Lucifer面前。▲隐藏在长廊阴影石柱后的Selene，亲眼目睹了Lucifer被折磨，再也忍不住落泪，她眼眶通红，捂住了自己的嘴不让发出声音。▲Lucifer目光冰冷直直盯住Sariel。▲Sariel抬手，手心聚集一团白色圣火，毫无怜悯地用白焰焚烧Lucifer的身体，Lucifer闷哼一声，痛苦让他忍不住四肢颤抖，锁链拉扯着他的手臂，Lucifer一使劲锁链猛烈绷紧将他扯回原位。▲Selene看见Lucifer受苦，身体发软，手里的项链掉落在地上。Lucifer像是感知到了什么，抬头看到了长廊中的Selene，那一瞬间，他眼中的高傲与暴戾荡然无存，只剩下了无尽的害怕与慌乱。▲Selene犹豫的瞬间，Sariel注意到Lucifer的视线，他停手，顺着视线回头看去，正好看见Selene站在石柱很后面。Lucifer知道瞒不住了，疯狂挣扎。▲Selene看见Sariel着急的面容，顾不上其他，听话地转身逃跑。▲Sariel身后的四名天使守卫纷纷展开羽翼，朝Selene追去。
+      start_time: 540.0
+      end_time: 720.0
+    - scene_id: S1E5
+      heading: 1-5 教堂走廊 日 内
+      location: 教堂走廊
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Selene
+      - Sariel
+      - 天使守卫若干
+      dialogues:
+      - character: Selene
+        text: Lord Sariel! It was my fault! I tempted Lucifer! I committed the unforgivable sin! Please,
+          just leave Lucifer out of this. Do whatever you want to me!
+        sequence: 1
+      - character: Sariel
+        text: You want to take Lucifer’s punishment for him? He is an archangel. You are nothing but a
+          human.
+        sequence: 2
+      - character: Selene
+        text: This all happened because I fell in love with an angel. You can take my life... just let
+          Lucifer live!
+        sequence: 3
+      - character: Sariel
+        text: How naive. You mortals are nothing but dust beneath the feet of the divine.
+        sequence: 4
+      raw_description: ▲Selene跌跌撞撞跑到走廊，追上来的Sariel抬手，一道圣光屏障封住了长廊的出口。她转身，四名天使守卫已经包围了她，Selene退无可退。她看着眼前冰冷无情的圣甲卫兵，不知道自己该怎么办。▲Sariel姗姗来迟，到了Selene面前收好三对金色羽翼，轻轻落地。
+      start_time: 720.0
+      end_time: 900.0
+    - scene_id: S1E6
+      heading: 1-6 教堂圣殿 日 内
+      location: 教堂圣殿
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - 天使守卫若干
+      dialogues:
+      - character: 守卫甲
+        text: Wait... he’s tearing through the seals!
+        sequence: 1
+      - character: 守卫乙
+        text: Relax. Those chains were forged by Lord Sariel himself. They don't break—
+        sequence: 2
+      - character: 守卫甲
+        text: He’s loose! Stop him, now!
+        sequence: 3
+      raw_description: ▲圣殿中央，Lucifer展开三对白色羽翼，试图挣脱绳索，神圣锁链剧烈晃动，愤怒的力量让Lucifer漆黑的眼睛变成暴戾的金色（这里是金色，后面成恶魔后就是红色）。▲话未说完。Lucifer周身爆发出恐怖的力量扯断了禁锢他的锁链，锁链寸寸崩裂，碎片四散飞射。守卫被冲击波震飞，撞在石柱上。Lucifer从审判柱上跌落，踉跄着落地。三对白色羽翼因为巨大的力量冲击导致羽毛掉落了一地，鲜血从伤口中涌出，他来不及顾及伤势，跌跌撞撞跑向Selene所在的位置。▲Lucifer跑到门口，突然想起什么，又返回捡起Selene弄丢的项链，身后的天使守卫刚要抓到Lucifer，Lucifer展开三对白色羽翼逃走了。
+      start_time: 900.0
+      end_time: 1080.0
+    - scene_id: S1E7
+      heading: 1-7 教堂走廊 日 内
+      location: 教堂走廊
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Selene
+      - Sariel
+      - 天使守卫若干
+      dialogues:
+      - character: Selene
+        text: Lucifer... I can't let you suffer because of me. For you... I have to vanish from your life
+          completely.
+        sequence: 1
+      - character: Selene
+        text: If God demands someone suffer for this love... then let it be me. Leave Lucifer out of this.
+        sequence: 2
+      - character: Sariel
+        text: Fascinating.
+        sequence: 3
+      - character: Sariel
+        text: Let's just see... how long a lowly human can last under divine punishment.
+        sequence: 4
+      raw_description: ▲Selene摸了摸肚子，痛苦与纠结让她忍不住落泪。▲Sariel挑眉盯着Selene。▲Sariel对着Selene抬手，Selene被一股巨大的力量牵引着被困在了教堂走廊的十字架上。Selene绝望地看着Sariel一步步逼近。
+      start_time: 1080.0
+      end_time: 1260.0
+    - scene_id: S1E8
+      heading: 1-8 教堂走廊 日 内
+      location: 教堂走廊
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - Selene
+      - Sariel
+      - 天使守卫若干
+      dialogues:
+      - character: Lucifer
+        text: Selene—! NO—!!!
+        sequence: 1
+      raw_description: ▲Lucifer飞奔向走廊，一路上拦截他的天使守卫都被他击中倒地，等到Lucifer冲进侧廊，正好看见Selene被火焰燃烧，Lucifer瞳孔紧缩。▲被神火包裹的中间十字架上面，只能看见火光之中是一具烧焦的人形（这里看不出具体烧的是谁，虚假卡点）
+      start_time: 1260.0
+      end_time: 1440.0
+    digest_summary: 人类女子Selene在与堕天使Lucifer的三周年纪念日准备了天使造型项链作为礼物，赴约时却发现Lucifer因与人类相恋违反天规，被大天使Sariel以锁链囚禁、身受重伤。Sariel以赦免刑罚为诱饵逼迫Lucifer否认对Selene的爱，Lucifer宁受神罚也不肯背弃感情，喝令躲在柱后的Selene逃跑。Selene逃跑时被天使卫兵拦截，她主动揽下全部罪责跪求Sariel放过Lucifer，愿以自身性命代受惩罚，却被Sariel以凡人不配为由锁在十字架上承受神罚。Lucifer目睹Selene受难、定情信物被踩碎，暴怒挣断Sariel亲手锻造的锁链，击倒拦路的天使卫兵冲向Selene，最终亲眼看见Selene被圣火吞噬，陷入绝望崩溃。
+    opening_state: 人类女子Selene身着华丽香槟金刺绣礼服，佩戴珍珠金饰发冠与十字架项链，手持为Lucifer准备的三周年纪念天使项链，在大教堂走廊上面带微笑行走，期待与爱人共度纪念日
+    ending_state: Selene被粗黑锁链缚在大教堂的十字架上，整个人被熊熊金色圣火包裹；浑身是伤的Lucifer站在不远处，目眦欲裂，眼泪混着血迹流下，绝望嘶吼Selene的名字，情绪彻底崩溃
+  - episode: 2
+    title: 第二集
+    scenes:
+    - scene_id: S2E1
+      heading: 2-1 教堂走廊 日 内
+      location: 教堂走廊
+      time_of_day: 日
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - Selene
+      - Sariel
+      - 天使守卫若干
+      dialogues:
+      - character: Lucifer
+        text: Selene... forgive me... I failed you! I couldn't protect you.
+        sequence: 1
+      - character: Sariel
+        text: Face reality, Lucifer. I did you a favor. If God had discovered your sin... you would have
+          lost far more than that mortal woman.
+        sequence: 2
+      - character: Lucifer
+        text: If Heaven has no place for my wife... then I'll burn it to the ground!
+        sequence: 3
+      - character: Sariel
+        text: Lucifer! Have you lost your mind?
+        sequence: 4
+      - character: Lucifer
+        text: AAAHHH—!!!
+        sequence: 5
+      - character: Lucifer
+        text: From this day on... I am done with your hypocritical Heaven.
+        sequence: 6
+      raw_description: ▲天火将Selene娇小的身躯彻底吞噬。神火无情地蚕食着她的衣物与肌肤。冲进走廊的Lucifer目眦欲裂，他体内的神力在极致的绝望中疯狂暴走。他完全不顾那能够燃尽神格的神圣天火，一头扎进熊熊烈火之中！Lucifer用颤抖的双臂，拼死将浑身焦黑的Selene从火海中抢抱了出来。▲Lucifer跪倒在废墟中，将头紧紧贴在Selene被烧焦后已经看不出面容的脸颊，神情悲痛忍不住落泪。▲Sariel缓步走来，烈火映照着他完美却冰冷如雕塑的面容，眼神中没有丝毫怜悯。▲Lucifer缓缓抬起头。他眼中的悲伤在这一瞬间彻底湮灭，取而代之的是吞噬天地的极致恨意与暴戾。他缓缓站起身，手里凝聚出星辰权杖。▲Lucifer毫不犹豫举起手里的星辰权杖砍向Sariel，Sariel立马用三对金色羽翼形成结界抵挡Lucifer的攻击。▲Lucifer爆发出滔天怒火，再次挥舞星辰权杖砸向Sariel，Sariel利落展开三对白色羽翼躲避，也在瞬息之间召唤出火焰圣剑。两人在教堂你追我赶，仅仅数个回合的激烈交锋，Lucifer便因伤势过重而动作一滞。Sariel眼神一狠，找准破绽，手中的火焰圣剑在空中划出一道刺眼的血色弧光。▲随着金色神血四处飞溅，Sariel竟然无情地挥剑，生生将重伤不敌的Lucifer背后的三对纯白羽翼齐根斩断！▲漫天纯白的羽毛如大雪般落下，Lucifer狼狈地跪在地上，在他背后，羽翼断裂的伤口一直流着血，血顺着地板蔓延到Sariel脚边。Lucifer愤恨抬头，死死盯着Sariel。▲Lucifer抱着Selene烧焦的尸体义无反顾地离开了圣殿。
+      start_time: 0.0
+      end_time: 180.0
+    - scene_id: S2E2
+      heading: 2-2 墓地 雨夜 外
+      location: 墓地
+      time_of_day: 雨夜
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - 天使守卫甲
+      dialogues:
+      - character: Lucifer
+        text: Selene... I will bleed them dry for this. I'll make all of Heaven burn for what they did
+          to you!
+        sequence: 1
+      - character: Lucifer
+        text: Pathetic little lapdog from Heaven... You've been tailing me this long. Aren't you tired?
+        sequence: 2
+      - character: Lucifer
+        text: Since you’re here... your blood will make a fine offering at my wife’s grave.
+        sequence: 3
+      raw_description: 【字幕：七年后】 Seven years later▲场景切回第一集开头的雨夜。倾盆大雨，Lucifer独自伫立在墓地最深处的无名墓碑前，他低着头，凝视着掌心那条银色项链。▲Lucifer将项链小心翼翼地收回怀中，他转过身准备离开墓地的一瞬间，猛然发现身后有人跟踪。Lucifer冷厉的目光瞬间扫向身后的树枝，猛然抬手，一团火焰呼啸而出，轰然击中树枝的阴影！隐藏的天使守卫惨叫一声跌落在泥水里，狼狈地半跪在地上。▲天使守卫甲强忍剧痛，慌乱地展开纯白双翼想要朝着墓地外逃窜。▲Lucifer双脚一踏，一对巨大的黑色羽翼破空展开，如同一头巨大的黑夜猎鹰一路追击，他的身影决绝地融入了无尽的黑暗雨幕之中。
+      start_time: 180.0
+      end_time: 360.0
+    - scene_id: S2E3
+      heading: 2-3  破旧木屋 雨 内
+      location: 破旧木屋
+      time_of_day: 雨
+      is_flashback: false
+      characters_present:
+      - Selene
+      - Aurora
+      dialogues:
+      - character: Aurora
+        text: Mommy! Mommy, what’s happening to you?
+        sequence: 1
+      - character: Selene
+        text: Aurora... baby... the curse is taking over. I'm running out of time...
+        sequence: 2
+      raw_description: ▲主城边缘，一间破烂不堪、漏风漏雨的木屋独立于丛林深处，唯一称得上是装饰的，是墙上破旧的挂钟（重要道具）。Selene狼狈地瘫倒在破旧的草垫上。她右半边脸呈现出极其丑陋、扭曲的金色诅咒印记。在诅咒的反噬作用下，Selene脸颊被灼烧成数道细小的龟裂纹路，从她的太阳穴一直蔓延到嘴角。Selene痛到在床上打滚，痛苦地捂着自己的脸。▲“吱呀——”破旧的木门被推开。6岁的Aurora拎着一袋子面包进屋，看到Selene痛苦吐血的模样，Aurora吓得瞬间丢掉了手里的袋子，哭着扑到草垫旁。
+      start_time: 360.0
+      end_time: 540.0
+    - scene_id: S2E4
+      heading: 2-4 破旧木屋外 雨夜 外
+      location: 破旧木屋外
+      time_of_day: 雨夜
+      is_flashback: false
+      characters_present:
+      - Lucifer
+      - Selene
+      - Aurora
+      - 天使守卫甲
+      dialogues:
+      - character: Lucifer
+        text: Slippery bastard.
+        sequence: 1
+      - character: Aurora
+        text: Mommy! Please don't leave me! I'll fix this, I promise... I'll save you!
+        sequence: 2
+      raw_description: ▲大雨滂沱，雷声轰鸣。那名受伤的天界守卫躲在木屋后面，Lucifer如鬼魅般紧随其后降落在木屋附近的泥泞道路，发现天使守卫的踪迹在这一刻竟然凭空消失了。▲Lucifer有些烦躁地捏紧拳头，准备离开。就在这时，由于距离极近，木屋内Aurora绝望的哭喊声瞬间穿透了风雨，清晰地传进了他的耳朵。▲Lucifer缓缓转过头，盯着那扇透出微弱火光的破烂木门。▲屋内，瘫倒在草垫上、面容虚弱的Selene，也正好在这一瞬间抬起头。Lucifer看见木屋内的场景时瞳孔瞪大。（虚假卡点，Lucifer仿佛看见Selene）
+      start_time: 540.0
+      end_time: 720.0
+    digest_summary: 开篇展现七年前天堂圣堂内的悲剧：炽天使Lucifer发现妻子Selene被锁链缚在十字架上焚为焦黑躯体，崩溃痛哭自责，金发天使Sariel现身嘲讽称处死Selene是帮他避免更大惩罚，Lucifer怒而召唤法杖宣战，称若天堂没有妻子的位置便将天堂焚毁，两人激战中Lucifer被Sariel的光剑重创，他宣告与虚伪天堂彻底决裂，抱着Selene的遗体离开，Sariel在他身后大笑。时间跳转至七年后，堕天的Lucifer化身为头生犄角、背生恶魔翼的红眼恶魔形态降临人间城镇，被人类称作撒旦，引发镇民恐慌奔逃。他来到墓园在Selene的墓碑前悼念，立誓要让天堂血债血偿，随后发现并击伤长期跟踪自己的银发铠甲天使，顺着天使逃跑的方向追踪到林间破旧木屋。屋内Selene并未死亡，脸上布满金色诅咒裂纹濒临死亡，她和Lucifer的女儿Aurora回家发现母亲垂危崩溃痛哭，Selene告知女儿诅咒即将发作自己时日无多。Lucifer在屋外听到哭声，施放时间停止魔法冻结了周围的时间，走到破窗边时震惊地看到了本应在七年前死去的Selene。
+    opening_state: 烈焰与圣光交织中，Selene被锁链缚在十字架上遭受火刑，处刑现场惨烈肃穆。
+    ending_state: Lucifer在木屋外施放时间停止魔法，空中雨滴悬停，他站在破碎的窗边，震惊地注视着屋内躺在床上、被金色诅咒侵蚀的Selene，床边的Aurora维持着痛哭的静止姿态。
+  series_bible_snapshot: series-bible.snapshot.md
+evaluation_questions:
+- id: q1
+  type: cross_window_entity
+  question: 跨集追踪：Selene 在第 1 集结尾（火刑/被缚）与第 2 集中的状态和关系如何变化？谁应对她的处境负责？
+- id: q2
+  type: cross_window_entity
+  question: 跨集追踪：Lucifer 的情绪弧线（纪念日期待→目眦欲裂→后续行为），第 1→2 集之间的因果是什么？
+- id: q3
+  type: recall
+  question: 第 1 集中 Sariel 提出的交易条件是什么？Lucifer 的回应原文？
+- id: q4
+  type: recall
+  question: 第 2 集的主要场景地点和出场角色有哪些？
+- id: q5
+  type: highlight
+  question: 若从这两集中各选一个高光片段做短视频，依据剧本冲突强度应选哪两段？给出起止时间与理由。

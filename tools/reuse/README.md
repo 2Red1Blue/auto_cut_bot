@@ -24,7 +24,7 @@
 | producer | ledger 处置 | runner | 阻塞 |
 |---|---|---|---|
 | VideoAgent（HKUDS，f207987） | algorithm_candidate | 未建 | 全量依赖不可行（CUDA pytorch cu121 + CosyVoice/DiffSinger/fish-speech TTS 栈）。**可行路径**：选择性抽取 `tools/videorag/`（语义检索）与 `environment/`（intent→roles 编排）做离线对照；这两块依赖面待 runner 建立时核实 |
-| MMLVE（Wucy0519，596ebb2） | algorithm_candidate | 未建 | 需要真实剧集 fixture set（素材 + ground truth），待内容侧提供 |
+| MMLVE（Wucy0519，596ebb2） | algorithm_candidate | 未建 | fixture set 已就绪：`fixtures/when-lucifer-kneels-ep01-ep02/`（含独立剧本 ground truth）；待建 runner |
 | 其余 7 个 | fixture_only | 不适用（不做 runner 对照） | — |
 
 ## 红线（重申）
