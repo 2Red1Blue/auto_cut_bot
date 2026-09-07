@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from auto_cut_bot.agent.tools.cli_apps import CliAppsToolConfig
     from auto_cut_bot.agent.tools.filesystem import FileToolsConfig
     from auto_cut_bot.agent.tools.image_generation import ImageGenerationToolConfig
+    from auto_cut_bot.agent.tools.media_workflow import MediaWorkflowToolConfig
     from auto_cut_bot.agent.tools.self import MyToolConfig
     from auto_cut_bot.agent.tools.shell import ExecToolConfig
     from auto_cut_bot.agent.tools.web import WebToolsConfig
@@ -403,6 +404,9 @@ class ToolsConfig(Base):
     image_generation: ImageGenerationToolConfig = Field(
         default_factory=lambda: _lazy_default("auto_cut_bot.agent.tools.image_generation", "ImageGenerationToolConfig"),
     )
+    media_workflow: MediaWorkflowToolConfig = Field(
+        default_factory=lambda: _lazy_default("auto_cut_bot.agent.tools.media_workflow", "MediaWorkflowToolConfig"),
+    )
     max_session_messages_per_minute: int = Field(default=6, ge=1)
     restrict_to_workspace: bool = False  # policy intent: keep tool access inside workspace when possible
     webui_allow_local_service_access: bool = Field(
@@ -686,6 +690,7 @@ def _resolve_tool_config_refs() -> None:
     from auto_cut_bot.agent.tools.cli_apps import CliAppsToolConfig
     from auto_cut_bot.agent.tools.filesystem import FileToolsConfig
     from auto_cut_bot.agent.tools.image_generation import ImageGenerationToolConfig
+    from auto_cut_bot.agent.tools.media_workflow import MediaWorkflowToolConfig
     from auto_cut_bot.agent.tools.self import MyToolConfig
     from auto_cut_bot.agent.tools.shell import ExecToolConfig
     from auto_cut_bot.agent.tools.web import WebFetchConfig, WebSearchConfig, WebToolsConfig
@@ -700,6 +705,7 @@ def _resolve_tool_config_refs() -> None:
     mod.WebFetchConfig = WebFetchConfig  # type: ignore[attr-defined]
     mod.MyToolConfig = MyToolConfig  # type: ignore[attr-defined]
     mod.ImageGenerationToolConfig = ImageGenerationToolConfig  # type: ignore[attr-defined]
+    mod.MediaWorkflowToolConfig = MediaWorkflowToolConfig  # type: ignore[attr-defined]
 
     ToolsConfig.model_rebuild()
     Config.model_rebuild()
