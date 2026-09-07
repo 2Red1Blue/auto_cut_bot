@@ -51,6 +51,30 @@ macOS 只做静态/协议验证，metadata 中 `isolation_passed` 恒为 false�
 | `metrics.py` | 指标协议：无分母即 null + 原因 |
 | `storage.py` | attempt 目录、原子写、崩溃恢复、finalize 门禁 |
 | `adapters/fake.py` | 协议验收 producer adapter |
+| `adapters/narrative_shadow.py` | R1A 叙事策略 shadow A/B producer（baseline/candidate 两臂） |
+| `narrative_strategy/` | R1A 模块：NarrativeDutyPolicy/v1、候选 wire 严格解码、局部修复协议、context 快照导出、A/B 对比报告 |
+
+## R1A：叙事策略 shadow A/B（2026-09-07 实现状态）
+
+`tools/reuse/narrative_strategy/` 已实现并在合成 Stage 1 fixture 上通过端到端测试：
+
+- `policy.py`：`NarrativeDutyPolicy/v1`（hook/setup/escalation/relationship_turn/reveal/payoff/bridge/cliffhanger）；
+  候选 prompt 增量不吸收字幕选时/强制旁白；schema 扩展保持 closed。
+- `wire.py`：candidate wire `stage2-story-design-compact-narrative-v1`。剥除 duties 后交给
+  kernel 原版 `decode_story_design_compact` 严格解码（未知字段/引用/素材约束不重实现），
+  再校验 duties：未知职责、target_ref 不符、引用不存在/类型错、setup==payoff、重复职责、
+  可证明的 payoff 早于 setup 全部拒绝；同集/事实引用记为 order indeterminate，不静默接受。
+- `repair.py`：`NarrativeRepairRequest/v1` + 错误指纹去重（同输入+同错误不重复调用）、
+  机械错误（JSON/预算/schema 版本）走本地 reprocess、剩余预算检查。
+- `context_io.py`：把 compact context + draft policy 冻结为 shadow payload（真实运行时由
+  已提交 Stage 1 产物导出；接入真实 Store 读取是后续工作）。
+- `adapters/narrative_shadow.py`：R0 runner 接口的 builtin producer `narrative-shadow`，
+  baseline/candidate 各一次调用，请求身份绑定 prompt/schema/context 哈希。
+- `compare.py`：读取两臂 attempt 目录输出 A/B Markdown 报告（仅结构/协议指标）。
+
+**未完成（不能宣称）**：真实上游两剧（调参剧+留出剧）的 shadow A/B 质量数据、盲评、
+setup/payoff 完整性与人工修订量对比、R1B 生产策略注册。这些需要 PC WSL 环境的真实
+Stage 1 输入与真实 provider；当前合成 fixture 结果不构成叙事质量证据。
 
 ## 接入一个新 producer
 

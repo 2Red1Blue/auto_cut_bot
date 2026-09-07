@@ -13,6 +13,17 @@
       "status": "in_evaluation"
     },
     {
+      "project_id": "narrative-shadow",
+      "role": "builtin",
+      "repo_url": null,
+      "local_dir": null,
+      "pinned_commit": "builtin:narrative-shadow",
+      "license_path": null,
+      "adapter_version": "narrative-shadow-1",
+      "adapter_module": "tools.reuse.adapters.narrative_shadow.NarrativeShadowAdapter",
+      "status": "in_evaluation"
+    },
+    {
       "project_id": "VideoAgent",
       "role": "reference",
       "repo_url": "https://github.com/HKUDS/VideoAgent",
