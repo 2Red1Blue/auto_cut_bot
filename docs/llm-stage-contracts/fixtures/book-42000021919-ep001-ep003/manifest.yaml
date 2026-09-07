@@ -1,0 +1,42 @@
+schema_version: "1.0"
+set_id: book-42000021919-ep001-ep003
+created_utc: "2026-09-07"
+frozen: false   # 解冻条件：ground_truth.episodes_info 填入 API 实取数据后置 true
+purpose: >-
+  第二部剧（book 42000021919）的跨窗一致性 / 召回对照 fixture。ground truth 来自
+  外部剧情 API（batch-episodes-info），独立于 ac_auto_cut pipeline 生成链。
+inputs_base: /Users/liuzx/Code/python/work_ai/reference-projects/_media/book-42000021919
+videos:
+  - file: episode-001.mp4
+    episode: 1
+    sha256: f1a6df2f743f005a7812574705d9760aa6a389213a53f31f848d057ef334f78b
+    size_bytes: 23986042
+  - file: episode-002.mp4
+    episode: 2
+    sha256: d94da664aaebef9b548bdbd57ecf48628a95701fc4ef6c1a932624dbe2245a4d
+    size_bytes: 17158419
+  - file: episode-003.mp4
+    episode: 3
+    sha256: aae7a7601f52c2aff94e43d9fa06490ad8c23dcac410b9a42fb1484c206dc276
+    size_bytes: 11432612
+provenance_note: >-
+  视频源在 Windows runtime /mnt/d/code/auto_cut/data/v213-validation/42000021919/
+  （WSL 路径），sha256 于 2026-09-07 经 WSL 计算后同步。base 目录为 Mac 本地副本
+  （待拷贝 episode-001..003）。ep001 实测时长约 241s（ffprobe）。
+ground_truth:
+  status: pending_api_fetch
+  source: 外部剧情 API /assets/tmp/batch-episodes-info + /assets/tmp/batch-content-assets
+  needed_credentials:
+    - AUTO_CUT_BOT_PIPELINE_METADATA_API_BASE_URL
+    - AUTO_CUT_BOT_PIPELINE_METADATA_API_KEY
+  series_id: book:42000021919
+  note: >-
+    API 返回的剧集信息是平台侧元数据，独立于 ac_auto_cut pipeline 生成链，
+    作为该 fixture set 的一等 ground truth（与 lucifer set 的剧本解析同级）。
+evaluation_questions:
+  - id: q1
+    type: cross_window_entity
+    question: 待 API 剧集信息到位后基于真实剧情拟定
+  - id: q2
+    type: recall
+    question: 待 API 剧集信息到位后基于真实剧情拟定
