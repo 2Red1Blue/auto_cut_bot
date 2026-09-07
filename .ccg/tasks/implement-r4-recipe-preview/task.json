@@ -5,8 +5,8 @@
   "complexity": "L",
   "risk": "medium",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "实现 R4A 纯时间线投影、inspection reader、Runtime 服务和只读 HTTP 路由",
+  "currentPhase": "review",
+  "nextAction": "完成 R4A 最终双模型审查；R4B 等待 SpanVariantSet 持久化前置设计/实现",
   "createdAt": "2026-09-07T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

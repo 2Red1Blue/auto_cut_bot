@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
@@ -8,8 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 from websockets.http11 import Request as WsRequest
 
+from auto_cut_bot.bus.queue import MessageBus
+from auto_cut_bot.channels.websocket.runtime import WebSocketConfig
 from auto_cut_bot.config.schema import Config
 from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
+from auto_cut_bot.webui.gateway_services import build_gateway_services
 from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
 _RUN_ID = "pipeline_run_0123456789abcdef0123456789abcdef"
@@ -132,3 +136,23 @@ async def test_recipe_route_falls_through_for_other_pipeline_paths_and_maps_unkn
         _request(_TIMELINE), _TIMELINE.split("?", 1)[0]
     )
     assert response is not None and response.status_code == 404
+
+
+def test_gateway_composition_uses_the_injected_recipe_read_service(tmp_path: Path) -> None:
+    service = _RecipeService()
+    gateway = build_gateway_services(
+        config=WebSocketConfig(),
+        bus=MagicMock(spec=MessageBus),
+        session_manager=None,
+        static_dist_path=None,
+        workspace_path=tmp_path,
+        default_restrict_to_workspace=False,
+        config_path=tmp_path / "config.json",
+        runtime_model_name=None,
+        runtime_surface="browser",
+        runtime_capabilities_overrides=None,
+        pipeline_recipe_read_service=service,  # type: ignore[arg-type]
+    )
+
+    assert gateway.pipeline_recipe_read_service is service
+    assert gateway.http.pipeline_recipe_read_service is service
