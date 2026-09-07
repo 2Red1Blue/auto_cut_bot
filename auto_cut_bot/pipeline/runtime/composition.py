@@ -58,11 +58,11 @@ from auto_cut_bot.pipeline.vlm.policy_binding import validate_installed_vlm_poli
 
 from .context_prepare_stage import ContextPreparePipelineStage
 from .highlight_projection import PipelineHighlightReadService
-from .recipe_projection import PipelineRecipeReadService
 from .media_preflight_stage import MediaPreflightPipelineStage, media_evidence_read_limits
 from .models import EvidenceReadLimits, PipelineExecutionProfile, PipelineRunRequest
 from .ports import PipelineRunService, PipelineStagePort, PipelineStageReconcilePort
 from .postgres import ConnectionFactory, PostgresPipelineRunStore, PostgresPipelineScheduler
+from .recipe_projection import PipelineRecipeReadService
 from .recompute import FullStageVlmRecomputeBinder, MediaPreflightRecomputeBinder
 from .semantic_authority import (
     SemanticRunAuthority,

@@ -13,9 +13,9 @@ from autocut_kernel.pipeline.recipe_timeline import RecipeTimelineReadLimits
 
 from tests.authority.editorial_media_fixture import editorial_timed_media_case
 from tests.pipeline.test_compile_production_recipe_command import (
-    _Stage4Store,
     _install_non_dialogue_blueprint_projection,
     _request,
+    _Stage4Store,
 )
 
 

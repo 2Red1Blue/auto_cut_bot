@@ -14,7 +14,6 @@ from typing import Final, Literal
 from ..rendering.production_render_plan import (
     PRODUCTION_AV_H264_AAC_PROFILE,
     ProductionAvRenderProfile,
-    ProductionRenderPlan,
     build_production_render_plan,
 )
 from ..store.models import CommittedArtifactMemberReference

@@ -96,7 +96,6 @@ from .production_recipe import (
     ProductionSpan,
     ProductionStory,
 )
-from .recipe_timeline import RecipeTimelineReadLimits
 from .production_recipe_admission import (
     PHYSICAL_EDIT_REPLAY_EVALUATOR_STRATEGY_VERSION,
     PHYSICAL_EDIT_RULE_IDS,
@@ -113,6 +112,7 @@ from .production_recipe_admission import (
     build_physical_edit_admission,
     verify_physical_edit_admission,
 )
+from .recipe_timeline import RecipeTimelineReadLimits
 
 COMPILE_PRODUCTION_RECIPE_COMMAND: Final = PRODUCTION_RECIPE_COMMAND_NAME
 PRODUCTION_RECIPE_COMMAND_STRATEGY: Final = "compile-production-recipe-v1"
