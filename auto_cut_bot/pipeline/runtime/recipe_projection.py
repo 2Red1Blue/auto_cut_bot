@@ -23,7 +23,9 @@ from autocut_kernel.store import (
 )
 from autocut_kernel.store.models import PersistedCommittedArtifactSet, canonical_recipe_scope
 
-from .errors import PipelineRunNotFoundError, PipelineRunValidationError
+from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
+
+from .errors import PipelineRunValidationError
 from .models import PipelineRunSnapshot, validate_run_id
 from .ports import PipelineRunStore
 
@@ -142,7 +144,7 @@ class PipelineRecipeReadService:
     async def _read_snapshot(self, run_id: str) -> PipelineRunSnapshot:
         snapshot = await self._run_store.read_run(run_id)
         if snapshot is None:
-            raise PipelineRunNotFoundError(run_id)
+            raise PipelineRecipeNotFoundError(run_id)
         if snapshot.execution_profile.is_legacy_unresolved:
             raise PipelineRunValidationError("committed Recipe view requires a frozen execution profile")
         return snapshot

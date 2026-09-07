@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from websockets.http11 import Request as WsRequest
 
-from auto_cut_bot.pipeline.runtime.errors import PipelineRunNotFoundError
+from auto_cut_bot.pipeline.recipe_read_errors import PipelineRecipeNotFoundError
 from auto_cut_bot.webui.ws_http import GatewayHTTPHandler
 
 _RUN_ID = "pipeline_run_0123456789abcdef0123456789abcdef"
@@ -122,7 +122,7 @@ async def test_recipe_route_falls_through_for_other_pipeline_paths_and_maps_unkn
     )
     assert fallthrough is None
 
-    missing = _RecipeService(error=PipelineRunNotFoundError(_RUN_ID))
+    missing = _RecipeService(error=PipelineRecipeNotFoundError(_RUN_ID))
     response = await _handler(authorized=True, service=missing)._dispatch_pipeline_recipe_routes(
         _request(_TIMELINE), _TIMELINE.split("?", 1)[0]
     )
