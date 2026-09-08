@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from autocut_kernel.pipeline.build_span_variant_set_command import (
     resolve_build_span_variant_set_request,
 )
 from autocut_kernel.store import CommandClaim, CommandSuccess, PostgresRuntimeStore
-from autocut_kernel.store.models import artifact_set_hash
+from autocut_kernel.store.models import artifact_set_hash, canonical_payload_hash
 
 from tests.pipeline.test_build_span_variant_set_command import _prepared_case
 
@@ -114,4 +115,5 @@ def test_postgres_writer_commits_and_replays_exact_child(
         expected_execution_kind="deterministic",
     )
     assert record.set_hash == success_hash
-    assert record.members[0].payload_json == artifact.payload_json
+    assert canonical_payload_hash(record.members[0].payload_json) == artifact.content_hash
+    assert json.loads(record.members[0].payload_json) == json.loads(artifact.payload_json)
