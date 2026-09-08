@@ -742,6 +742,8 @@ def decode_span_variant_set_json(raw: bytes, *, max_bytes: int) -> SpanVariantSe
             parse_float=_reject_number,
             parse_constant=_reject_number,
         )
+    except SpanVariantSetError:
+        raise
     except (ValueError, UnicodeError, RecursionError) as error:
         raise SpanVariantSetError("variant set must be bounded strict UTF-8 JSON") from error
     return decode_span_variant_set(value)
