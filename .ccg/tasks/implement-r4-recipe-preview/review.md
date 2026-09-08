@@ -18,7 +18,23 @@ Codex reviewer 报告的 provenance、set hash、重复 key 与路由问题已�
 Claude backend 实际报告模型为 `glm-5-3-flash`，与任务约定的 Claude 不一致，不能计作独立 Claude 通过；
 保留此限制，不把当前 R4A 描述为双模型一致批准。
 
-## 剩余
+## R4A 交付时的前置缺口（已由下节闭合）
 
-R4B 需要 Stage 4 持久化、可独立复核的 `SpanVariantSet`。当前 ProductionRecipe 只保存选中 span，
-所以没有安全的 `select_variant` 写入源。R4A 不写 Store、不会编译、渲染或生成新 revision。
+当时 ProductionRecipe 只保存选中 span，没有安全的 `select_variant` 写入源。R4A 本身仍保持只读；
+该缺口随后由 R4B-A 的独立 `SpanVariantSet` 子命令闭合。
+
+## R4B-A SpanVariantSet（2026-09-09）
+
+实现：canonical top-K exact result、closed codec、`BuildSpanVariantSetCommand@1`、专用 Postgres writer、
+generic writer/generation-kind deny、完整父 Stage 4 绑定、首次执行与重放的独立重建。
+
+验证：PC WSL 新增及相关 Stage 4 回归 `89 passed`，目标 Ruff passed；独立 PostgreSQL
+transaction/writer/replay `1 passed`。旧 `compile_candidate_av_span` 仍保留原单结果接口，新 portable-count
+限制只作用于 variant API。
+
+审查：Codex 无 Critical，提出父命令身份、Postgres 事务测试和负数/count 边界，均已修复。
+Claude backend 实际仍为 `glm-5-3-flash`，不记录为 Claude 审查通过。预锁前的父重放只读取不可变
+Artifact/Blob，锁内再次核对 child slot command/request/Job；重复计算是当前独立验证成本，后续可在不削弱
+Store writer 复算的前提下减少首次执行后的第三次 readback 重建。
+
+R4B 后续不再缺 variant 来源；剩余是 `EditProposal`、CAS、选定 variant 后的新 Recipe/Admission、Render/QC。

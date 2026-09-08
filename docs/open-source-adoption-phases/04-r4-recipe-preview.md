@@ -14,8 +14,14 @@ API 只返回展示所需的 story/revision、整数 tick、时基、源时钟�
 ArtifactSet、scope、Blob ref 或 exact-span 证明哈希。PC WSL 定向回归 84 项通过，目标 Ruff 通过。
 当前 HTTP runtime 未编排 Stage 4，因此尚无真实 HTTP run 的 Stage 4 Recipe 可作端到端读回证据。
 
-R4B 仍是设计态。其输入要求为“持久化、可独立复核的可行 SpanVariant 集”；当前 Recipe 只保存已选择
-的 exact span，不保存可替换 variant 集。不能把任意 UI tick、当前 Recipe 的内容或模型建议伪装成可选 variant。
+R4B-A 的持久化前置已于 2026-09-09 实现：`BuildSpanVariantSetCommand@1` 从精确父 Stage 4
+request/outcome/ArtifactSet 独立重放完整 A/V relation，保留 canonical top-K（K≤16），记录完整
+`feasible_count/omitted_count/relation hash`，以独立 ArtifactSet/Receipt 提交。单 Artifact 上限 8 MiB，
+generic success 和 generation execution kind 均不能绕过专用 writer。PC WSL 新增/相关回归 89 项、
+真实 PostgreSQL writer/replay 1 项、目标 Ruff 全部通过。
+
+R4B 的 `EditProposal + CAS + 新 Recipe revision` 仍未实现。现在已经有安全 variant 来源，可以在下一切片
+只允许按 `variant_id` 选择；任意 UI tick、当前 Recipe 内容或模型建议仍不能伪装成 variant。
 
 交叉代码审查已检查公开 provenance、Store 成员/集合 hash、路由落空、错误状态和事件循环阻塞：
 公开 mapping 已去除内部 ref/proof；inspection 重算成员及 ArtifactSet hash；非 Recipe 路径会继续落到
@@ -62,9 +68,9 @@ QC issue refs、render preview ref。显示秒数是 UI 派生值，权威值始
 | `created_by` | 必需 | actor 类型与非密钥 ID |
 | `created_at` | 必需 | 审计时间，不改变编辑业务等价性 |
 
-R4B 进入实现前必须先完成 `SpanVariantSet/v1`：每个 beat/requirement 的 variant 绑定相同的
-Blueprint、媒体 evidence、策略和 exact endpoint proof；每个 variant 有稳定 ID，集合由 Stage 4 Command
-持久化并经独立 reader 复核。之后首批 edit op 限定为：
+已实现的 `SpanVariantSet/v1` 为每个 beat/requirement 绑定相同的 Blueprint、媒体 evidence、策略和
+exact endpoint proof；每个 variant 有稳定 ID，集合由独立 Stage 4 子命令持久化并经 reader 复核。
+下一切片的 edit op 限定为：
 
 - `select_variant`：在已提交可行 SpanVariant 中替换；
 - `reorder_beat`：仅当 Blueprint/Story policy 允许顺序变化；

@@ -5,8 +5,8 @@
   "complexity": "L",
   "risk": "medium",
   "domain": "backend",
-  "currentPhase": "review",
-  "nextAction": "审查 R4B-A SpanVariantSet 编译/持久化变更并修复发现",
+  "currentPhase": "implementation",
+  "nextAction": "R4B-A SpanVariantSet 持久化已完成；下一切片实现 EditProposal/CAS 新 Recipe revision",
   "createdAt": "2026-09-07T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
