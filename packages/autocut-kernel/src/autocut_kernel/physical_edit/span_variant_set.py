@@ -257,7 +257,7 @@ def _validate_exact_result(result: CandidateExactSpanResult) -> None:
         raise SpanVariantSetError("variant result must retain a CandidateDialogueGuard")
     if result.dialogue_guard.source_audio_range is None:
         raise SpanVariantSetError("candidate A/V variants require proven local audio coverage")
-    _integer(result.common_segment_ordinal, "common_segment_ordinal")
+    _integer(result.common_segment_ordinal, "common_segment_ordinal", minimum=0)
     key = result.canonical_decision_key
     if type(key) is not tuple or len(key) != 10:  # noqa: E721
         raise SpanVariantSetError("canonical decision key must contain ten exact integers")
@@ -406,7 +406,7 @@ class SpanVariant:
     exact_span_result: CandidateExactSpanResult
 
     def __post_init__(self) -> None:
-        _integer(self.ordinal, "variant.ordinal", maximum=_MAX_VARIANTS - 1)
+        _integer(self.ordinal, "variant.ordinal", minimum=0, maximum=_MAX_VARIANTS - 1)
         query_hash = _hash(self.exact_span_query_sha256, "variant.exact_span_query_sha256")
         _validate_exact_result(self.exact_span_result)
         if self.variant_id != _variant_id(query_hash, self.exact_span_result):
@@ -450,12 +450,12 @@ class SpanVariantEntry:
     variants: tuple[SpanVariant, ...]
 
     def __post_init__(self) -> None:
-        _integer(self.ordinal, "entry.ordinal")
+        _integer(self.ordinal, "entry.ordinal", minimum=0)
         for name in ("story_id", "beat_id", "requirement_id", "alternative_id", "candidate_id"):
             _text(getattr(self, name), f"entry.{name}")
         query_hash = _hash(self.exact_span_query_sha256, "entry.exact_span_query_sha256")
         feasible = _integer(self.feasible_count, "entry.feasible_count", minimum=1)
-        omitted = _integer(self.omitted_count, "entry.omitted_count")
+        omitted = _integer(self.omitted_count, "entry.omitted_count", minimum=0)
         for name in (
             "request_sha256",
             "policy_sha256",
@@ -737,6 +737,12 @@ def _reject_number(value: str) -> object:
     raise SpanVariantSetError(f"unsupported JSON number {value}")
 
 
+def _parse_integer(value: str) -> int:
+    if len(value) > 17:
+        raise SpanVariantSetError("JSON integer exceeds the portable digit bound")
+    return int(value)
+
+
 def decode_span_variant_set_json(raw: bytes, *, max_bytes: int) -> SpanVariantSet:
     if type(raw) is not bytes:  # noqa: E721
         raise SpanVariantSetError("variant set payload must be exact bytes")
@@ -747,6 +753,7 @@ def decode_span_variant_set_json(raw: bytes, *, max_bytes: int) -> SpanVariantSe
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=_unique_object,
+            parse_int=_parse_integer,
             parse_float=_reject_number,
             parse_constant=_reject_number,
         )

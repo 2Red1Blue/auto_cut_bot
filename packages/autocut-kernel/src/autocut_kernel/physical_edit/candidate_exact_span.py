@@ -210,10 +210,6 @@ def _compile_candidate_av_span_variants(
     audio_starts = {tick for _, ticks in starts for tick in ticks}
     audio_ends = {tick for _, ticks in ends for tick in ticks}
     logical_count = len(starts) * len(ends) * len(audio_starts) * len(audio_ends)
-    if logical_count > _MAX_PORTABLE_COUNT:
-        raise CandidatePairLimitError(
-            "logical candidate relation exceeds the portable exact-integer limit"
-        )
     domain_hash = canonical_sha256({
         "strategy": "candidate-local-exact-v1", "starts": starts, "ends": ends,
         "clock_map_sha256": clock_map.certificate.canonical_hash,
@@ -252,10 +248,6 @@ def _compile_candidate_av_span_variants(
                         sort_keys=True, separators=(",", ":"),
                     ).encode("ascii"))
                     feasible_count += 1
-                    if feasible_count > _MAX_PORTABLE_COUNT:
-                        raise CandidatePairLimitError(
-                            "feasible relation exceeds the portable exact-integer limit"
-                        )
                     row = (key, endpoints, ordinal)
                     if len(retained) < retained_limit:
                         insort(retained, row)
@@ -316,7 +308,7 @@ def compile_candidate_av_span_variants(
     carries the complete relation count and digest so callers can record how
     many feasible results were omitted without calling the prefix a relation.
     """
-    return _compile_candidate_av_span_variants(
+    results = _compile_candidate_av_span_variants(
         request,
         root,
         candidate,
@@ -326,3 +318,12 @@ def compile_candidate_av_span_variants(
         policy,
         retained_limit=_validate_max_variants(max_variants),
     )
+    if any(
+        result.feasible_count > _MAX_PORTABLE_COUNT
+        or int(result.logical_cartesian_count_decimal) > _MAX_PORTABLE_COUNT
+        for result in results
+    ):
+        raise CandidatePairLimitError(
+            "candidate variant relation exceeds the portable exact-integer limit"
+        )
+    return results

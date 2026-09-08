@@ -3394,7 +3394,6 @@ class PostgresRuntimeStore:
                 command_name != BUILD_SPAN_VARIANT_SET_COMMAND
                 or request_hash != resolved.request_hash
                 or owner is None
-                or cursor.fetchone() is not None
                 or (_text(owner[0]), _text(owner[1]))
                 != (request.job.job_key, request.job.profile)
                 or expected.scope != canonical_recipe_scope(request.job)

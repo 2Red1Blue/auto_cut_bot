@@ -45,6 +45,7 @@ from ..store.models import (
 )
 from .committed_timed_media import TimedMediaReadLimits
 from .compile_production_recipe_command import (
+    COMPILE_PRODUCTION_RECIPE_COMMAND,
     AuthorityResolver,
     CompileProductionRecipeError,
     CompileProductionRecipeRequest,
@@ -249,6 +250,7 @@ class BuildSpanVariantSetResult:
 
 def _parent_identity_mapping(request: BuildSpanVariantSetRequest) -> dict[str, object]:
     return {
+        "command_name": COMPILE_PRODUCTION_RECIPE_COMMAND,
         "outcome": _succeeded_outcome_mapping(request.parent_outcome),
         "request_hash": request.expected_parent_request_hash,
         "set_hash": request.expected_parent_set_hash,
