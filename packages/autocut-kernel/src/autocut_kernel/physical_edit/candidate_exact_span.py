@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left, bisect_right, insort
 from dataclasses import dataclass
+from typing import Final
 
 from ..media.root_evidence import AudioSourceOutcome, CoverageOutcome, RootMediaEvidenceBundle
 from ..media.timed_evidence import CandidateEvidenceWindowPlan, CandidateTimedEvidenceSet
@@ -27,6 +28,9 @@ from .exact_span import (
     NoLegalSpanError,
 )
 from .presentation_map import PresentationMapValidationError, ReplayedPresentationMap
+
+_MAX_PORTABLE_COUNT: Final = 2**53 - 1
+_MAX_RETAINED_VARIANTS: Final = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,13 +178,20 @@ def _key(request: ExactAvSpanRequest, clock_map: ReplayedPresentationMap,
             vout - vin, aout - ain, vin, vout, ain, aout)
 
 
-def compile_candidate_av_span(
+def _validate_max_variants(max_variants: int) -> int:
+    value = require_pts(max_variants, "max_variants")
+    if not 1 <= value <= _MAX_RETAINED_VARIANTS:
+        raise ExactSpanValidationError("max_variants must be between 1 and 16")
+    return value
+
+
+def _compile_candidate_av_span_variants(
     request: ExactAvSpanRequest, root: RootMediaEvidenceBundle,
     candidate: CandidateTimedEvidenceSet, plan: CandidateEvidenceWindowPlan,
     profile: CandidateTimedSpeechAuthorityInput, clock_map: ReplayedPresentationMap,
-    policy: CandidateExactSpanPolicy,
-) -> CandidateExactSpanResult:
-    """Exhaust all aligned sample pairs, without materializing their Cartesian product."""
+    policy: CandidateExactSpanPolicy, *, retained_limit: int,
+) -> tuple[CandidateExactSpanResult, ...]:
+    """Exhaust the relation while retaining only its canonical bounded prefix."""
     _validate(request, root, candidate, clock_map, policy)
     guard = derive_candidate_dialogue_guard(root, candidate, plan, profile, request.dialogue_requirement)
     desired = request.desired_video_range.tick_range
@@ -209,7 +220,7 @@ def compile_candidate_av_span(
     relation_hash = hashlib.sha256()
     relation_hash.update(b"[")
     feasible_count = visits = 0
-    selected: tuple[tuple[int, ...], tuple[int, int, int, int], int] | None = None
+    retained: list[tuple[tuple[int, ...], tuple[int, int, int, int], int]] = []
     safe_starts = {tick: _safe_video(root, tick, out=False, policy=policy) for tick, _ in starts}
     safe_ends = {tick: _safe_video(root, tick, out=True, policy=policy) for tick, _ in ends}
     for vin, in_samples in starts:
@@ -237,21 +248,77 @@ def compile_candidate_av_span(
                         sort_keys=True, separators=(",", ":"),
                     ).encode("ascii"))
                     feasible_count += 1
-                    if selected is None or key < selected[0]:
-                        selected = (key, endpoints, ordinal)
+                    if feasible_count > _MAX_PORTABLE_COUNT:
+                        raise CandidatePairLimitError(
+                            "feasible relation exceeds the portable exact-integer limit"
+                        )
+                    row = (key, endpoints, ordinal)
+                    if len(retained) < retained_limit:
+                        insort(retained, row)
+                    elif row < retained[-1]:
+                        insort(retained, row)
+                        retained.pop()
     relation_hash.update(b"]")
-    if selected is None:
+    if not retained:
         raise NoLegalSpanError("no legal candidate-local A/V span in the complete relation")
-    key, (vin, vout, ain, aout), ordinal = selected
     video, audio = root.frame_pts_index.context, root.audio_sample_boundaries.context
-    proof = BoundaryProof(
-        root.source_id, root.source_sha256, video.clock_id, video.time_base, vin, vout,
-        audio.clock_id, audio.time_base, ain, aout, root.frame_pts_index.canonical_hash,
-        root.audio_sample_boundaries.canonical_hash, root.visual_validity.canonical_hash,
-        root.subtitle_cues.canonical_hash, clock_map.certificate.canonical_hash,
+    relation_sha256 = "sha256:" + relation_hash.hexdigest()
+    return tuple(
+        CandidateExactSpanResult(
+            TickRange(vin, vout),
+            TickRange(ain, aout),
+            BoundaryProof(
+                root.source_id, root.source_sha256, video.clock_id, video.time_base, vin, vout,
+                audio.clock_id, audio.time_base, ain, aout, root.frame_pts_index.canonical_hash,
+                root.audio_sample_boundaries.canonical_hash, root.visual_validity.canonical_hash,
+                root.subtitle_cues.canonical_hash, clock_map.certificate.canonical_hash,
+            ),
+            guard,
+            ordinal,
+            key,
+            str(logical_count),
+            visits,
+            feasible_count,
+            request.canonical_hash,
+            policy.canonical_hash,
+            domain_hash,
+            relation_sha256,
+        )
+        for key, (vin, vout, ain, aout), ordinal in retained
     )
-    return CandidateExactSpanResult(
-        TickRange(vin, vout), TickRange(ain, aout), proof, guard, ordinal, key,
-        str(logical_count), visits, feasible_count, request.canonical_hash,
-        policy.canonical_hash, domain_hash, "sha256:" + relation_hash.hexdigest(),
+
+
+def compile_candidate_av_span(
+    request: ExactAvSpanRequest, root: RootMediaEvidenceBundle,
+    candidate: CandidateTimedEvidenceSet, plan: CandidateEvidenceWindowPlan,
+    profile: CandidateTimedSpeechAuthorityInput, clock_map: ReplayedPresentationMap,
+    policy: CandidateExactSpanPolicy,
+) -> CandidateExactSpanResult:
+    """Exhaust all aligned sample pairs, without materializing their Cartesian product."""
+    return _compile_candidate_av_span_variants(
+        request, root, candidate, plan, profile, clock_map, policy, retained_limit=1,
+    )[0]
+
+
+def compile_candidate_av_span_variants(
+    request: ExactAvSpanRequest, root: RootMediaEvidenceBundle,
+    candidate: CandidateTimedEvidenceSet, plan: CandidateEvidenceWindowPlan,
+    profile: CandidateTimedSpeechAuthorityInput, clock_map: ReplayedPresentationMap,
+    policy: CandidateExactSpanPolicy, *, max_variants: int,
+) -> tuple[CandidateExactSpanResult, ...]:
+    """Return canonical top-K complete results from one exhaustive relation search.
+
+    The returned tuple is intentionally only the retained prefix.  Every item
+    carries the complete relation count and digest so callers can record how
+    many feasible results were omitted without calling the prefix a relation.
+    """
+    return _compile_candidate_av_span_variants(
+        request,
+        root,
+        candidate,
+        plan,
+        profile,
+        clock_map,
+        policy,
+        retained_limit=_validate_max_variants(max_variants),
     )

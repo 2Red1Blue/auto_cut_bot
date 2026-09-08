@@ -6,7 +6,7 @@
   "risk": "medium",
   "domain": "backend",
   "currentPhase": "implementation",
-  "nextAction": "R4A 已完成；R4B 等待 SpanVariantSet 持久化前置设计/实现",
+  "nextAction": "实现 R4B-A：有界 SpanVariantSet 编译、持久化、精确读回与 canonical 兼容验证",
   "createdAt": "2026-09-07T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

@@ -1,5 +1,11 @@
 """Pure physical-edit domain operations."""
 
+from .candidate_exact_span import (
+    CandidateExactSpanPolicy,
+    CandidateExactSpanResult,
+    compile_candidate_av_span,
+    compile_candidate_av_span_variants,
+)
 from .candidate_timed_speech_authority import (
     CandidateTimedSpeechAuthority,
     CandidateTimedSpeechAuthorityError,
@@ -57,9 +63,23 @@ from .exact_span import (
     compile_exact_av_span,
     select_exact_span,
 )
+from .span_variant_set import (
+    SPAN_VARIANT_SET_POLICY_SCHEMA_VERSION,
+    SPAN_VARIANT_SET_SCHEMA_VERSION,
+    SpanVariant,
+    SpanVariantEntry,
+    SpanVariantSet,
+    SpanVariantSetError,
+    SpanVariantSetPolicy,
+    decode_span_variant_set,
+    decode_span_variant_set_json,
+    encode_span_variant_set_json,
+)
 
 __all__ = [
     "BoundaryProof",
+    "CandidateExactSpanPolicy",
+    "CandidateExactSpanResult",
     "CandidatePairLimitError",
     "CandidateTimedSpeechAuthority",
     "CandidateTimedSpeechAuthorityError",
@@ -94,6 +114,8 @@ __all__ = [
     "VideoClockRange",
     "VideoToAudioClockMapCertificate",
     "compile_exact_av_span",
+    "compile_candidate_av_span",
+    "compile_candidate_av_span_variants",
     "derive_dialogue_guard",
     "derive_editorial_exact_span_query",
     "derive_utterance_ranges",
@@ -103,6 +125,16 @@ __all__ = [
     "project_candidate_timed_speech_authority_from_registry_entry",
     "project_candidate_timed_speech_authority_from_runtime_projection",
     "select_exact_span",
+    "SPAN_VARIANT_SET_POLICY_SCHEMA_VERSION",
+    "SPAN_VARIANT_SET_SCHEMA_VERSION",
+    "SpanVariant",
+    "SpanVariantEntry",
+    "SpanVariantSet",
+    "SpanVariantSetError",
+    "SpanVariantSetPolicy",
+    "decode_span_variant_set",
+    "decode_span_variant_set_json",
+    "encode_span_variant_set_json",
     "TimedSpeechGuardPolicy",
     "TimedSpeechProfile",
     "TimedSpeechProfileBinding",

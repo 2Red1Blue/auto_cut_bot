@@ -3177,6 +3177,10 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "CompileProductionRecipeCommand@1 success requires the Stage 4 owner API"
                 )
+            if command_name == "BuildSpanVariantSetCommand@1":
+                raise CommandStateError(
+                    "BuildSpanVariantSetCommand@1 success requires its audited variant writer"
+                )
             if command_name == PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME:
                 raise CommandStateError(
                     "AcceptProductionRenderQcCollectorCapability@1 success requires the"
@@ -3325,6 +3329,77 @@ class PostgresRuntimeStore:
             if success.artifacts[0].scope != canonical_recipe_scope(job):
                 raise StoreValidationError(
                     "Stage 4 output must use the canonical Job scope"
+                )
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor,
+                    success.command_slot_id,
+                    job_id,
+                    "succeeded",
+                    success.set_hash,
+                )
+            return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def commit_span_variant_set_success(
+        self,
+        request: object,
+        success: CommandSuccess,
+        *,
+        authority_profile_resolver: object,
+        limits: object,
+    ) -> CommandOutcome:
+        """Independently replay one bounded Stage 4 variant derivation before commit."""
+        from ..pipeline.build_span_variant_set_command import (
+            BUILD_SPAN_VARIANT_SET_COMMAND,
+            BuildSpanVariantSetRequest,
+            build_span_variant_set_artifact,
+            rebuild_span_variant_set,
+            resolve_build_span_variant_set_request,
+        )
+        from ..pipeline.committed_timed_media import TimedMediaReadLimits
+        from ..pipeline.compile_production_recipe_command import AuthorityResolver
+
+        if type(request) is not BuildSpanVariantSetRequest:
+            raise StoreValidationError("span variant writer requires its exact request")
+        resolved = resolve_build_span_variant_set_request(
+            self,
+            request,
+            authority_profile_resolver=cast(AuthorityResolver, authority_profile_resolver),
+            limits=cast(TimedMediaReadLimits, limits),
+        )
+        expected = build_span_variant_set_artifact(
+            request,
+            rebuild_span_variant_set(resolved),
+        )
+        if success.artifacts != (expected,):
+            raise StoreValidationError(
+                "span variant result differs from independently rebuilt parent derivation"
+            )
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(
+                cursor,
+                success.command_slot_id,
+            )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            cursor.execute(
+                "SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s",
+                (job_id,),
+            )
+            owner = cursor.fetchone()
+            if (
+                command_name != BUILD_SPAN_VARIANT_SET_COMMAND
+                or request_hash != resolved.request_hash
+                or owner is None
+                or cursor.fetchone() is not None
+                or (_text(owner[0]), _text(owner[1]))
+                != (request.job.job_key, request.job.profile)
+                or expected.scope != canonical_recipe_scope(request.job)
+            ):
+                raise StoreValidationError(
+                    "span variant writer does not bind the exact command, Job, and request"
                 )
             if state != "running":
                 return self._replay_or_raise(

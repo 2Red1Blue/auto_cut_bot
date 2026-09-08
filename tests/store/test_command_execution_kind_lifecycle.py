@@ -191,3 +191,21 @@ def test_batch_owner_api_also_rejects_generation_kind_before_io():
         store.claim_vlm_batch_command(CommandClaim(JOB, VLM_BATCH_IDEMPOTENCY_PREFIX + "unit",
                                                   VLM_BATCH_FINALIZER_COMMAND_NAME, HASH, execution_kind="generation"))
     factory.assert_not_called()
+
+
+def test_span_variant_command_cannot_use_generic_success_writer(monkeypatch):  # type: ignore[no-untyped-def]
+    rows = [
+        (JOB_ID,),
+        ("running",),
+        (JOB_ID, "running", "BuildSpanVariantSetCommand@1", HASH),
+    ]
+    store, cursor, connection = _store(rows)
+    writer = Mock(side_effect=AssertionError("protected writer must be unreachable"))
+    monkeypatch.setattr(store, "_write_success", writer)
+
+    with pytest.raises(CommandStateError, match="audited variant writer"):
+        store.commit_command_success(_success())
+
+    writer.assert_not_called()
+    assert not cursor.rows
+    connection.rollback.assert_called_once()
