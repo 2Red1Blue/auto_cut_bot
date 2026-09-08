@@ -1609,6 +1609,7 @@ class PostgresRuntimeStore:
                 "FinalizeRunOutcome",
                 "ReprocessVlmEvidenceCommand@1",
                 "FinalizeDerivedVlmBatchCommand@1",
+                "BuildSpanVariantSetCommand@1",
             )
             and claim.execution_kind != "deterministic"
         ):

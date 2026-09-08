@@ -210,6 +210,10 @@ def _compile_candidate_av_span_variants(
     audio_starts = {tick for _, ticks in starts for tick in ticks}
     audio_ends = {tick for _, ticks in ends for tick in ticks}
     logical_count = len(starts) * len(ends) * len(audio_starts) * len(audio_ends)
+    if logical_count > _MAX_PORTABLE_COUNT:
+        raise CandidatePairLimitError(
+            "logical candidate relation exceeds the portable exact-integer limit"
+        )
     domain_hash = canonical_sha256({
         "strategy": "candidate-local-exact-v1", "starts": starts, "ends": ends,
         "clock_map_sha256": clock_map.certificate.canonical_hash,

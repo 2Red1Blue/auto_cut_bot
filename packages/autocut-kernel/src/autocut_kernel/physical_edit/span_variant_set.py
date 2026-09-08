@@ -94,7 +94,10 @@ def _count(value: object, label: str) -> int:
     text = _text(value, label)
     if _DECIMAL_COUNT.fullmatch(text) is None:
         raise SpanVariantSetError(f"{label} must be a canonical decimal count")
-    return int(text)
+    result = int(text)
+    if result > _MAX_PORTABLE_COUNT:
+        raise SpanVariantSetError(f"{label} exceeds the portable exact-integer limit")
+    return result
 
 
 def _time_base(value: object, label: str) -> TimeBase:
@@ -622,6 +625,11 @@ class SpanVariantSet:
             raise SpanVariantSetError("variant set contains duplicate entry identities")
         if any(len(item.variants) > self.policy.max_variants for item in self.entries):
             raise SpanVariantSetError("entry retained more variants than policy permits")
+        if any(
+            len(item.variants) != min(item.feasible_count, self.policy.max_variants)
+            for item in self.entries
+        ):
+            raise SpanVariantSetError("entry does not retain the complete canonical policy prefix")
 
     def to_mapping(self) -> dict[str, object]:
         return {

@@ -175,7 +175,8 @@ def test_same_key_name_and_request_with_different_kind_conflicts(existing, reque
 
 
 @pytest.mark.parametrize("name", [CALIBRATION_VALIDATOR_COMMAND, BOOTSTRAP_TIMED_SPEECH_PROFILE_REGISTRY_COMMAND,
-                                 "FinalizeRunOutcome", VLM_BATCH_FINALIZER_COMMAND_NAME])
+                                 "FinalizeRunOutcome", "BuildSpanVariantSetCommand@1",
+                                 VLM_BATCH_FINALIZER_COMMAND_NAME])
 def test_protected_command_cannot_acquire_generation_kind_through_generic_claim(name):
     factory = Mock(side_effect=AssertionError("protected claim must reject before I/O"))
     store = PostgresRuntimeStore(factory)
