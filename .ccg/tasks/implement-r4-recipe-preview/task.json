@@ -5,8 +5,8 @@
   "complexity": "L",
   "risk": "medium",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "实现 R4B-A：有界 SpanVariantSet 编译、持久化、精确读回与 canonical 兼容验证",
+  "currentPhase": "review",
+  "nextAction": "审查 R4B-A SpanVariantSet 编译/持久化变更并修复发现",
   "createdAt": "2026-09-07T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }
