@@ -130,6 +130,16 @@ def _terminal_run_state(command_rows: list[tuple[str, str]]) -> str:
             "stage2_portfolio",
             "stage3_blueprint",
         ),
+        (
+            "source_prep",
+            "context_prepare",
+            "vlm",
+            "stage1_narrative",
+            "stage2_portfolio",
+            "stage3_blueprint",
+            "media_preflight",
+            "stage4_recipe",
+        ),
     }:
         return "succeeded"
     if _PIPELINE_SUCCESS_TERMINAL_STAGE is not None and any(
@@ -266,6 +276,12 @@ class PostgresPipelineRunStore(_PostgresTransactions):
         elif execution_profile.is_semantic_only:
             execution_profile.to_doubao_policy()
             execution_profile.to_generation_retry_policy()
+        elif execution_profile.is_semantic_story_media:
+            execution_profile.to_doubao_policy()
+            execution_profile.to_generation_retry_policy()
+            execution_profile.build_stage1_command_policy()
+            execution_profile.build_stage2_command_policy()
+            execution_profile.build_stage3_command_policy()
         elif execution_profile.is_semantic_story:
             execution_profile.to_doubao_policy()
             execution_profile.to_generation_retry_policy()
@@ -375,6 +391,40 @@ class PostgresPipelineRunStore(_PostgresTransactions):
                             (%s, %s, 2, 'vlm', 'pending', 0)
                         """,
                         (uuid4(), run_id, uuid4(), run_id, uuid4(), run_id),
+                    )
+                elif execution_profile.is_semantic_story_media:
+                    cursor.execute(
+                        """
+                        INSERT INTO runtime.pipeline_commands
+                            (command_id, run_id, ordinal, stage, state, version)
+                        VALUES
+                            (%s, %s, 0, 'source_prep', 'pending', 0),
+                            (%s, %s, 1, 'context_prepare', 'pending', 0),
+                            (%s, %s, 2, 'vlm', 'pending', 0),
+                            (%s, %s, 3, 'stage1_narrative', 'pending', 0),
+                            (%s, %s, 4, 'stage2_portfolio', 'pending', 0),
+                            (%s, %s, 5, 'stage3_blueprint', 'pending', 0),
+                            (%s, %s, 6, 'media_preflight', 'pending', 0),
+                            (%s, %s, 7, 'stage4_recipe', 'pending', 0)
+                        """,
+                        (
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                            uuid4(),
+                            run_id,
+                        ),
                     )
                 elif execution_profile.is_semantic_story:
                     cursor.execute(

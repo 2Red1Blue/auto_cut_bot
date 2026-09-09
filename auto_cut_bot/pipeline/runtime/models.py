@@ -221,6 +221,7 @@ _EXECUTION_PROFILE_SCHEMA_VERSION_V8 = "pipeline-execution-profile-v8"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V9 = "pipeline-execution-profile-v9"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V10 = "pipeline-execution-profile-v10"
 _EXECUTION_PROFILE_SCHEMA_VERSION_V11 = "pipeline-execution-profile-v11"
+_EXECUTION_PROFILE_SCHEMA_VERSION_V12 = "pipeline-execution-profile-v12"
 _RETRY_POLICY_FIELDS = frozenset({"backoff_seconds", "max_attempts", "strategy_version"})
 _HISTORICAL_PROFILE_READ_TOKEN = object()
 _FAIL_CLOSED_BOOTSTRAP_STAGES = (
@@ -363,6 +364,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             and _historical_read_token is not _HISTORICAL_PROFILE_READ_TOKEN
         ):
@@ -386,6 +388,7 @@ class PipelineExecutionProfile:
             not in {
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
         ):
             raise PipelineRunValidationError(
@@ -427,9 +430,10 @@ class PipelineExecutionProfile:
         if explicit_thinking and self.schema_version not in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             raise PipelineRunValidationError(
-                "explicit thinking requires execution profile v10 or v11"
+                "explicit thinking requires execution profile v10, v11 or v12"
             )
         parameter_fields = (
             _REQUEST_PARAMETER_FIELDS | {"thinking_type"}
@@ -477,6 +481,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             expected_parse_policy_fields = _PARSE_POLICY_FIELDS
         elif self.schema_version in {
@@ -585,7 +590,10 @@ class PipelineExecutionProfile:
                 raise PipelineRunValidationError(
                     "semantic-only execution profile cannot claim physical or story policies"
                 )
-        elif self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V11:
+        elif self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }:
             self._decode_generation_retry_policy()
             if (
                 self.provider_id,
@@ -605,7 +613,7 @@ class PipelineExecutionProfile:
                 raise PipelineRunValidationError(
                     "semantic-story execution profile requires the registered V23 VLM authority"
                 )
-            if any(
+            if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V11 and any(
                 value is not None
                 for value in (
                     self.media_preflight_policy_json,
@@ -617,6 +625,10 @@ class PipelineExecutionProfile:
                 raise PipelineRunValidationError(
                     "semantic-story execution profile cannot claim physical evidence policies"
                 )
+            if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V12:
+                self._decode_media_preflight_policy()
+                self._decode_materialization_limits()
+                self.to_evidence_read_limits()
         else:
             raise PipelineRunValidationError("execution profile schema version is unsupported")
         if self.schema_version in {
@@ -625,6 +637,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             self.build_stage1_command_policy()
         elif self.stage1_command_policy_json is not None:
@@ -636,6 +649,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             self.build_stage2_command_policy()
         elif self.stage2_command_policy_json is not None:
@@ -646,6 +660,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             self.build_stage3_command_policy()
         elif self.stage3_command_policy_json is not None:
@@ -656,9 +671,13 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             _build_registered_doubao_policy(self)
-            if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+            if self.schema_version in {
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+            }:
                 self.to_evidence_read_limits()
         elif self.evidence_read_limits_json is not None:
             raise PipelineRunValidationError(
@@ -852,6 +871,96 @@ class PipelineExecutionProfile:
         )
 
     @classmethod
+    def from_semantic_story_media_policies(
+        cls,
+        policy: DoubaoVlmRequestPolicy,
+        media_preflight_policy: LocalMediaPreflightPolicy,
+        *,
+        retry_policy: GenerationRetryPolicy,
+        materialization_limits: MaterializationLimits,
+        stage1_policy: Stage1CommandPolicy,
+        stage2_policy: Stage2CommandPolicy,
+        stage3_policy: Stage3CommandPolicy,
+        evidence_read_limits: EvidenceReadLimits,
+    ) -> PipelineExecutionProfile:
+        """Freeze the V23 semantic-story and physical-evidence policies together.
+
+        Stage 4 remains separately authorized by its command and deliberately
+        does not participate in this execution-profile contract or hash.
+        """
+        from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
+        from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
+        from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
+        from autocut_kernel.store.models import MaterializationLimits
+        from autocut_kernel.vlm import GenerationRetryPolicy
+
+        from auto_cut_bot.pipeline.media_preflight import LocalMediaPreflightPolicy
+        from auto_cut_bot.pipeline.vlm.request_factory import DoubaoVlmRequestPolicy
+
+        if type(policy) is not DoubaoVlmRequestPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact Doubao policy"
+            )
+        if type(media_preflight_policy) is not LocalMediaPreflightPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact media-preflight policy"
+            )
+        if type(retry_policy) is not GenerationRetryPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact retry policy"
+            )
+        if type(materialization_limits) is not MaterializationLimits:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact materialization limits"
+            )
+        if type(stage1_policy) is not Stage1CommandPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact Stage 1 policy"
+            )
+        if type(stage2_policy) is not Stage2CommandPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact Stage 2 policy"
+            )
+        if type(stage3_policy) is not Stage3CommandPolicy:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact Stage 3 policy"
+            )
+        if type(evidence_read_limits) is not EvidenceReadLimits:  # noqa: E721
+            raise PipelineRunValidationError(
+                "semantic-story-media profile requires exact EvidenceReadLimits"
+            )
+        return cls(
+            provider_id=policy.provider_id,
+            model_id=policy.model_id,
+            adapter_strategy_version=policy.adapter_strategy_version,
+            prompt_version=policy.prompt_version,
+            kernel_parser_strategy_version=policy.parser_strategy_version,
+            parser_contract_sha256=policy.parser_contract_sha256,
+            response_schema_json=policy.response_schema_json,
+            request_parameters_json=policy.request_parameters_json,
+            parse_policy_json=_canonical_json(policy.parse_policy.to_mapping()),
+            vlm_stage_strategy_version=policy.stage_strategy_version,
+            generation_retry_policy_json=_canonical_json(retry_policy.to_mapping()),
+            media_preflight_policy_json=_canonical_json(media_preflight_policy.to_mapping()),
+            media_preflight_policy_hash=media_preflight_policy.canonical_hash,
+            materialization_limits_json=_canonical_json(
+                {
+                    "copy_chunk_bytes": materialization_limits.copy_chunk_bytes,
+                    "max_source_bytes": materialization_limits.max_source_bytes,
+                    "staging_quota_bytes": materialization_limits.staging_quota_bytes,
+                    "timed_speech_max_request_bytes": (
+                        materialization_limits.timed_speech_max_request_bytes
+                    ),
+                }
+            ),
+            stage1_command_policy_json=_canonical_json(stage1_policy.to_mapping()),
+            stage2_command_policy_json=_canonical_json(stage2_policy.to_mapping()),
+            stage3_command_policy_json=_canonical_json(stage3_policy.to_mapping()),
+            evidence_read_limits_json=_canonical_json(evidence_read_limits.to_mapping()),
+            schema_version=_EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        )
+
+    @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> PipelineExecutionProfile:
         if any(type(key) is not str for key in value):  # noqa: E721
             raise PipelineRunValidationError("execution profile field names must be strings")
@@ -893,6 +1002,17 @@ class PipelineExecutionProfile:
                 "stage2_command_policy",
                 "stage3_command_policy",
             }
+        elif schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V12:
+            allowed = base_allowed | {
+                "evidence_read_limits",
+                "generation_retry_policy",
+                "materialization_limits",
+                "media_preflight_policy",
+                "media_preflight_policy_hash",
+                "stage1_command_policy",
+                "stage2_command_policy",
+                "stage3_command_policy",
+            }
         elif schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V3,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V4,
@@ -901,7 +1021,6 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
-            _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
         }:
             allowed = base_allowed | {
                 "generation_retry_policy",
@@ -924,6 +1043,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             allowed = allowed | {"stage1_command_policy"}
         if schema_version in {
@@ -931,21 +1051,27 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             allowed = allowed | {"stage2_command_policy"}
         if schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             allowed = allowed | {"stage3_command_policy"}
-        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+        if schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }:
             allowed = allowed | {"evidence_read_limits"}
         if (
             schema_version
             in {
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             and value.get("kernel_parser_strategy_version") == "strict-semantic-pack-v4"
         ):
@@ -971,6 +1097,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             embedded_objects.add("media_preflight_policy")
         if schema_version in {
@@ -979,6 +1106,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             embedded_objects.add("materialization_limits")
         if schema_version in {
@@ -987,6 +1115,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             embedded_objects.add("stage1_command_policy")
         if schema_version in {
@@ -994,15 +1123,20 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             embedded_objects.add("stage2_command_policy")
         if schema_version in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             embedded_objects.add("stage3_command_policy")
-        if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+        if schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }:
             embedded_objects.add("evidence_read_limits")
         for field_name in embedded_objects:
             if type(value[field_name]) is not dict:  # noqa: E721
@@ -1022,6 +1156,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             else _LEGACY_PARSE_POLICY_FIELDS
         )
@@ -1067,6 +1202,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
@@ -1084,6 +1220,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
@@ -1096,6 +1233,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
@@ -1108,6 +1246,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
@@ -1119,6 +1258,7 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
@@ -1129,12 +1269,17 @@ class PipelineExecutionProfile:
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                     _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
                 }
                 else None
             ),
             evidence_read_limits_json=(
                 _canonical_json(value["evidence_read_limits"])
-                if schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9
+                if schema_version
+                in {
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                    _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+                }
                 else None
             ),
             schema_version=cast(str, schema_version),
@@ -1170,7 +1315,10 @@ class PipelineExecutionProfile:
     def has_media_preflight_policy(self) -> bool:
         """Whether this profile can execute the media-preflight stage."""
 
-        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9
+        return self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }
 
     @property
     def is_semantic_only(self) -> bool:
@@ -1182,7 +1330,16 @@ class PipelineExecutionProfile:
     def is_semantic_story(self) -> bool:
         """Whether V23 semantic evidence continues through Story Stage 3."""
 
-        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V11
+        return self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }
+
+    @property
+    def is_semantic_story_media(self) -> bool:
+        """Whether V23 semantic-story policies are joined to physical evidence."""
+
+        return self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V12
 
     @property
     def has_executable_plan(self) -> bool:
@@ -1226,6 +1383,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["generation_retry_policy"] = _decode_canonical_json(
                 self.generation_retry_policy_json,
@@ -1239,6 +1397,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["media_preflight_policy"] = _decode_canonical_json(
                 self.media_preflight_policy_json,
@@ -1251,6 +1410,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["materialization_limits"] = _decode_canonical_json(
                 self.materialization_limits_json,
@@ -1262,6 +1422,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["stage1_command_policy"] = _decode_canonical_json(
                 self.stage1_command_policy_json,
@@ -1272,6 +1433,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["stage2_command_policy"] = _decode_canonical_json(
                 self.stage2_command_policy_json,
@@ -1281,12 +1443,16 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             result["stage3_command_policy"] = _decode_canonical_json(
                 self.stage3_command_policy_json,
                 "stage3_command_policy_json",
             )
-        if self.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+        if self.schema_version in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }:
             result["evidence_read_limits"] = self.to_evidence_read_limits().to_mapping()
         return result
 
@@ -1310,6 +1476,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             or self.is_legacy_unresolved
         ):
@@ -1339,6 +1506,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             or self.is_legacy_unresolved
         ):
@@ -1367,6 +1535,7 @@ class PipelineExecutionProfile:
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
                 _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
             }
             or self.is_legacy_unresolved
         ):
@@ -1409,6 +1578,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             raise PipelineRunValidationError(
                 "execution profile has no frozen media-preflight policy"
@@ -1442,6 +1612,7 @@ class PipelineExecutionProfile:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V7,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V8,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             raise PipelineRunValidationError(
                 "execution profile has no frozen materialization limits"
@@ -1473,8 +1644,11 @@ class PipelineExecutionProfile:
 
     def to_evidence_read_limits(self) -> EvidenceReadLimits:
         """Rebuild independent evidence JSON budgets; history has no defaults."""
-        if self.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
-            raise PipelineRunValidationError("evidence reads require execution profile v9")
+        if self.schema_version not in {
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+        }:
+            raise PipelineRunValidationError("evidence reads require execution profile v9 or v12")
         return EvidenceReadLimits.from_mapping(
             _decode_canonical_json(self.evidence_read_limits_json, "evidence_read_limits_json")
         )
@@ -1554,6 +1728,7 @@ def _build_registered_doubao_policy(
         _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
         _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
         _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+        _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
     }:
         raise PipelineRunValidationError(
             "historical execution profile is read-only and cannot map to a current policy"
@@ -1621,7 +1796,10 @@ def _build_registered_doubao_policy(
     )
     if rebuilt.parser_contract_sha256 is not None:
         registered_mapping["parser_contract_sha256"] = rebuilt.parser_contract_sha256
-    if profile.schema_version == _EXECUTION_PROFILE_SCHEMA_VERSION_V9:
+    if profile.schema_version in {
+        _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+        _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+    }:
         registered_mapping["media_preflight_policy"] = (
             profile.to_media_preflight_policy().to_mapping()
         )
@@ -1773,9 +1951,7 @@ class VlmFullStageRecomputeRequest:
     def from_mapping(cls, value: Mapping[str, object]) -> VlmFullStageRecomputeRequest:
         common = {"base_run_id", "expected_version", "stage", "completion_scope"}
         scope = value.get("completion_scope")
-        expected: set[str] = common | (
-            {"episode_numbers"} if scope == "selected_only" else set()
-        )
+        expected: set[str] = common | ({"episode_numbers"} if scope == "selected_only" else set())
         if set(value) != expected:
             raise PipelineRunValidationError(
                 "recompute body fields do not match the selected completion_scope"
@@ -1852,7 +2028,10 @@ class MediaPreflightRecomputeRequest:
             )
         if len(self.episode_numbers) != 1:
             raise PipelineRunValidationError("selected_only v1 requires exactly one episode number")
-        if type(self.retry_budget) is not int or not 0 <= self.retry_budget <= MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET:  # noqa: E721
+        if (
+            type(self.retry_budget) is not int
+            or not 0 <= self.retry_budget <= MEDIA_PREFLIGHT_RECOMPUTE_MAX_RETRY_BUDGET
+        ):  # noqa: E721
             raise PipelineRunValidationError(
                 "retry_budget must be a non-negative integer no greater than three"
             )
@@ -2013,12 +2192,9 @@ class PipelineRunSnapshot:
             raise PipelineRunValidationError("request must be a PipelineRunRequest")
         if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
             raise PipelineRunValidationError("execution_profile must be a PipelineExecutionProfile")
-        if (
-            self.recompute_request is not None
-            and type(self.recompute_request) not in (  # noqa: E721
-                VlmFullStageRecomputeRequest,
-                MediaPreflightRecomputeRequest,
-            )
+        if self.recompute_request is not None and type(self.recompute_request) not in (  # noqa: E721
+            VlmFullStageRecomputeRequest,
+            MediaPreflightRecomputeRequest,
         ):
             raise PipelineRunValidationError("recompute_request must be canonical")
         if self.request_hash != self.request.request_hash:
@@ -2094,7 +2270,8 @@ class PipelineRunSnapshot:
                     "calibration/recompute run cannot retain executable commands"
                 )
         elif not any(
-            command.status in (
+            command.status
+            in (
                 "pending",
                 "running",
                 "indeterminate",
@@ -2193,12 +2370,9 @@ class PipelineStageContext:
             raise PipelineRunValidationError("stage context command must be persisted")
         if type(self.execution_profile) is not PipelineExecutionProfile:  # noqa: E721
             raise PipelineRunValidationError("stage context execution_profile must be persisted")
-        if (
-            self.recompute_request is not None
-            and type(self.recompute_request) not in (  # noqa: E721
-                VlmFullStageRecomputeRequest,
-                MediaPreflightRecomputeRequest,
-            )
+        if self.recompute_request is not None and type(self.recompute_request) not in (  # noqa: E721
+            VlmFullStageRecomputeRequest,
+            MediaPreflightRecomputeRequest,
         ):
             raise PipelineRunValidationError("stage context recompute_request must be canonical")
         if self.command.stage == "vlm" and self.execution_profile.is_legacy_unresolved:
@@ -2209,6 +2383,7 @@ class PipelineStageContext:
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V10,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             raise PipelineRunValidationError(
                 "VLM execution requires a persisted current execution profile"
@@ -2220,17 +2395,20 @@ class PipelineStageContext:
         ) and self.execution_profile.schema_version not in {
             _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
             _EXECUTION_PROFILE_SCHEMA_VERSION_V11,
+            _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
         }:
             raise PipelineRunValidationError(
                 "physical/story stages require execution profile v9 or v11 for story stages"
             )
         if (
             self.command.stage == "media_preflight"
-            and self.execution_profile.schema_version != _EXECUTION_PROFILE_SCHEMA_VERSION_V9
+            and self.execution_profile.schema_version
+            not in {
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V9,
+                _EXECUTION_PROFILE_SCHEMA_VERSION_V12,
+            }
         ):
-            raise PipelineRunValidationError(
-                "physical/story stages require execution profile v9; media-preflight cannot use v11"
-            )
+            raise PipelineRunValidationError("media-preflight requires execution profile v9 or v12")
 
     @property
     def execution_profile_hash(self) -> str:
