@@ -73,6 +73,12 @@ from .source_prep_stage import SourcePrepPipelineStage
 from .stage1_narrative_stage import Stage1NarrativePipelineStage
 from .stage2_portfolio_stage import Stage2PortfolioPipelineStage
 from .stage3_blueprint_stage import Stage3BlueprintPipelineStage
+from .stage4_authority import (
+    Stage4RecipeAuthorityError,
+    Stage4RecipeAuthorityProfile,
+    load_installed_stage4_recipe_authority,
+)
+from .stage4_recipe_stage import Stage4RecipePipelineStage
 from .stages import PipelineStageReconciler, PipelineStageRegistry, PipelineStageRunner
 from .vlm_stage import VlmPipelineStage
 from .worker import DurablePipelineWorker
@@ -102,8 +108,10 @@ PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV = (
 )
 PIPELINE_EVIDENCE_READ_LIMITS_ENV = "AUTO_CUT_BOT_PIPELINE_EVIDENCE_READ_LIMITS_JSON"
 PIPELINE_PLAN_ENV = "AUTO_CUT_BOT_PIPELINE_PLAN"
+FUNASR_SHARED_TOKEN_ENV = "FUNASR_SHARED_TOKEN"
 SEMANTIC_ONLY_PLAN = "semantic_only"
 SEMANTIC_STORY_PLAN = "semantic_story"
+SEMANTIC_STORY_MEDIA_PLAN = "semantic_story_media"
 
 # Retained as import-compatible names only. They never authorize the real runtime.
 PIPELINE_SOURCE_ROOTS_ENV = "AUTO_CUT_BOT_PIPELINE_SOURCE_ROOTS"
@@ -135,6 +143,13 @@ _SEMANTIC_CONTEXT_ENVIRONMENT = (
     PIPELINE_METADATA_API_BASE_URL_ENV,
     PIPELINE_METADATA_API_KEY_ENV,
     PIPELINE_CONTEXT_OWNER_MAPS_ENV,
+)
+_SEMANTIC_STORY_MEDIA_REQUIRED_ENVIRONMENT = _SEMANTIC_REQUIRED_ENVIRONMENT + (
+    FUNASR_SHARED_TOKEN_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV,
+    PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV,
+    PIPELINE_EVIDENCE_READ_LIMITS_ENV,
 )
 _MATERIALIZATION_LIMIT_FIELDS = frozenset(
     {
@@ -490,9 +505,12 @@ def compose_pipeline_runtime_from_environment(
         return _compose_semantic_only_runtime(values)
     if plan == SEMANTIC_STORY_PLAN:
         return _compose_semantic_only_runtime(values, include_story=True)
+    if plan == SEMANTIC_STORY_MEDIA_PLAN:
+        return _compose_semantic_story_media_runtime(values)
     if plan:
         raise PipelineRuntimeConfigurationError(
-            f"{PIPELINE_PLAN_ENV} must be empty, {SEMANTIC_ONLY_PLAN} or {SEMANTIC_STORY_PLAN}"
+            f"{PIPELINE_PLAN_ENV} must be empty, {SEMANTIC_ONLY_PLAN}, "
+            f"{SEMANTIC_STORY_PLAN} or {SEMANTIC_STORY_MEDIA_PLAN}"
         )
     relevant = _REQUIRED_ENVIRONMENT + (
         PIPELINE_KERNEL_POSTGRES_DSN_ENV,
@@ -944,6 +962,293 @@ def _compose_semantic_only_runtime(
     return PipelineRuntime(service, worker, execution_profile, None, kernel_store)
 
 
+def _compose_semantic_story_media_runtime(
+    values: Mapping[str, str],
+) -> PipelineRuntime:
+    """Compose the explicit V12 Stage 1-4 and local-media plan.
+
+    The V23 semantic authority, installed local-media authority and protected
+    Stage 4 authority are independent inputs.  All three must close before
+    this function constructs a database store or provider client.  Stage 4 is
+    deliberately the terminal port: it does not authorize Render or QC.
+    """
+    missing = tuple(
+        name
+        for name in _SEMANTIC_STORY_MEDIA_REQUIRED_ENVIRONMENT
+        if not values.get(name, "").strip()
+    )
+    if missing:
+        raise PipelineRuntimeConfigurationError(
+            "semantic-story-media pipeline runtime configuration is incomplete; missing: "
+            + ", ".join(missing)
+        )
+    control_dsn = values[PIPELINE_POSTGRES_DSN_ENV].strip()
+    kernel_dsn = values.get(PIPELINE_KERNEL_POSTGRES_DSN_ENV, "").strip() or control_dsn
+    try:
+        catalog = ConfiguredSourceCatalog.from_json(values[PIPELINE_SOURCE_CATALOG_ENV].strip())
+        raw_max_output_tokens = values[PIPELINE_ARK_MAX_OUTPUT_TOKENS_ENV].strip()
+        if not raw_max_output_tokens.isdecimal():
+            raise ValueError("Ark max output tokens must be a decimal integer")
+        semantic_authority = load_installed_semantic_run_authority()
+        configured_policy = replace(
+            semantic_authority.vlm_policy,
+            model_id=values[PIPELINE_ARK_MODEL_ID_ENV].strip(),
+            max_output_tokens=int(raw_max_output_tokens),
+        )
+        if configured_policy != semantic_authority.vlm_policy:
+            raise ValueError("configured Doubao policy differs from installed semantic authority")
+        media_authority_resolver = load_installed_local_run_resolver()
+        stage4_authority = load_installed_stage4_recipe_authority()
+        if type(stage4_authority) is not Stage4RecipeAuthorityProfile:  # noqa: E721
+            raise ValueError("installed Stage 4 authority profile is invalid")
+        decoded_media_policy = cast(
+            object,
+            json.loads(
+                values[PIPELINE_MEDIA_PREFLIGHT_POLICY_ENV].strip(),
+                object_pairs_hook=_closed_json_object,
+            ),
+        )
+        if type(decoded_media_policy) is not dict:  # noqa: E721
+            raise ValueError("media preflight policy must be an object")
+        media_policy = LocalMediaPreflightPolicy.from_mapping(
+            cast(dict[str, object], decoded_media_policy)
+        )
+        materialization_limits = _materialization_limits_from_json(
+            values[PIPELINE_MEDIA_PREFLIGHT_MATERIALIZATION_LIMITS_ENV].strip()
+        )
+        evidence_read_limits = EvidenceReadLimits.from_mapping(
+            json.loads(
+                values[PIPELINE_EVIDENCE_READ_LIMITS_ENV].strip(),
+                object_pairs_hook=_closed_json_object,
+            )
+        )
+        staging_root = _staging_root(values[PIPELINE_MEDIA_PREFLIGHT_STAGING_ROOT_ENV].strip())
+        execution_profile = PipelineExecutionProfile.from_semantic_story_media_policies(
+            semantic_authority.vlm_policy,
+            media_policy,
+            retry_policy=semantic_authority.retry_policy,
+            materialization_limits=materialization_limits,
+            stage1_policy=semantic_authority.stage1_command_policy,
+            stage2_policy=semantic_authority.stage2_command_policy,
+            stage3_policy=semantic_authority.stage3_command_policy,
+            evidence_read_limits=evidence_read_limits,
+        )
+        _validate_semantic_story_authority(execution_profile, semantic_authority)
+        media_evidence_read_limits(execution_profile)
+        validate_installed_media_policy(media_authority_resolver.resource, media_policy)
+        if materialization_limits.timed_speech_max_request_bytes != (
+            media_authority_resolver.resource.local_run.native_timed_speech.max_request_bytes
+        ):
+            raise ValueError("timed speech request limit differs from installed service")
+        runtime_identity_port = FunASRRuntimeMeasurementIdentityHttpPort(
+            timed_speech_endpoint_url=media_policy.timed_speech_endpoint_url,
+            shared_token=values[FUNASR_SHARED_TOKEN_ENV].strip(),
+        )
+        runtime_calibration_policy = runtime_calibration_policy_for_installed_resource(
+            media_authority_resolver.resource
+        )
+        runtime_capability_resolver = InstalledRuntimeCapabilityResolver(runtime_calibration_policy)
+        runtime_authority_resolver = InstalledRuntimeTimedSpeechAuthorityResolver(
+            runtime_capability_resolver,
+            RuntimeTimedMediaAuthoritySelector(
+                runtime_calibration_policy,
+                media_authority_resolver.resource.local_run.source_clock_policy,
+                media_authority_resolver.resource.local_run.timing_policies,
+            ),
+            media_policy.canonical_hash,
+        )
+        api_key = values[PIPELINE_ARK_API_KEY_ENV].strip()
+        tenant_id = values[PIPELINE_ARK_TENANT_ID_ENV].strip()
+        project_id = values[PIPELINE_ARK_PROJECT_ID_ENV].strip()
+        configured_base_url = values.get(PIPELINE_ARK_BASE_URL_ENV, "").strip()
+        debug_sink = _model_io_debug_sink(values)
+        stop_after_probe = _vlm_stop_after_probe(values)
+        provider_config = (
+            DoubaoArkVlmProviderConfig(
+                api_key=api_key,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                base_url=configured_base_url,
+            )
+            if configured_base_url
+            else DoubaoArkVlmProviderConfig(
+                api_key=api_key,
+                tenant_id=tenant_id,
+                project_id=project_id,
+            )
+        )
+        configured_context = tuple(
+            name for name in _SEMANTIC_CONTEXT_ENVIRONMENT if values.get(name, "").strip()
+        )
+        if configured_context and len(configured_context) != len(_SEMANTIC_CONTEXT_ENVIRONMENT):
+            raise PipelineRuntimeConfigurationError(
+                "metadata context configuration must provide base URL, credential and explicit owner map together"
+            )
+        owner_maps: OwnerEpisodeMapSet | None = None
+        context_client: ExternalNarrativeApiClient | None = None
+        if configured_context:
+            owner_maps = _owner_episode_maps_from_json(values[PIPELINE_CONTEXT_OWNER_MAPS_ENV].strip())
+            context_client = ExternalNarrativeApiClient(
+                ExternalNarrativeApiConfig(
+                    base_url=values[PIPELINE_METADATA_API_BASE_URL_ENV].strip(),
+                    api_key=values[PIPELINE_METADATA_API_KEY_ENV].strip(),
+                    credential_scope_id=(
+                        values.get(PIPELINE_METADATA_CREDENTIAL_SCOPE_ENV, "").strip()
+                        or "default"
+                    ),
+                )
+            )
+    except PipelineRuntimeConfigurationError:
+        raise
+    except (
+        SemanticRunAuthorityError,
+        Stage4RecipeAuthorityError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise PipelineRuntimeConfigurationError(
+            "semantic-story-media pipeline Doubao/authority/media configuration is invalid"
+        ) from error
+
+    control_factory = cast(ConnectionFactory, lambda: psycopg.connect(control_dsn))
+
+    def kernel_factory() -> psycopg.Connection[tuple[object, ...]]:
+        return psycopg.connect(kernel_dsn)
+
+    control_store = PostgresPipelineRunStore(control_factory)
+    scheduler = PostgresPipelineScheduler(control_factory)
+    kernel_store = PostgresRuntimeStore(
+        cast(Callable[[], KernelDbConnection], kernel_factory),
+        materialization_staging_root=staging_root,
+    )
+    provider = DoubaoArkVlmProvider(
+        provider_config,
+        file_cache=PostgresArkFileCache(cast(Callable[[], ArkDbConnection], kernel_factory)),
+        debug_sink=debug_sink,
+    )
+    source_stage = SourcePrepPipelineStage(kernel_store, catalog)
+    context_policy = ContextSelectionPolicy()
+    context_stage = ContextPreparePipelineStage(
+        kernel_store, context_client, owner_maps, selection_policy=context_policy
+    )
+    vlm_stage = VlmPipelineStage(
+        kernel_store,
+        provider,
+        context_owner_maps=owner_maps,
+        context_selection_policy=None if owner_maps is None else context_policy,
+        stop_after_probe=stop_after_probe,
+    )
+    stage1_policy = semantic_authority.stage1_command_policy
+    stage2_policy = semantic_authority.stage2_command_policy
+    stage3_policy = semantic_authority.stage3_command_policy
+    narrative_stage = Stage1NarrativePipelineStage(
+        kernel_store,
+        DoubaoDraftProvider(
+            ArkResponsesTransportConfig(
+                provider_config.api_key,
+                provider_config.base_url,
+                provider_config.timeout_seconds,
+                stage1_policy.draft_policy.max_response_bytes,
+            ),
+            max_request_bytes=stage1_policy.draft_policy.max_prompt_bytes,
+            adapter_strategy_version=stage1_policy.generation.adapter_strategy_version,
+            debug_sink=debug_sink,
+        ),
+        semantic_authority=semantic_authority,
+    )
+    portfolio_stage = Stage2PortfolioPipelineStage(
+        kernel_store,
+        DoubaoDraftProvider(
+            ArkResponsesTransportConfig(
+                provider_config.api_key,
+                provider_config.base_url,
+                provider_config.timeout_seconds,
+                stage2_policy.draft_policy.max_response_bytes,
+            ),
+            max_request_bytes=stage2_policy.max_prompt_bytes,
+            adapter_strategy_version=stage2_policy.generation.adapter_strategy_version,
+            debug_sink=debug_sink,
+        ),
+        semantic_authority=semantic_authority,
+    )
+    blueprint_stage = Stage3BlueprintPipelineStage(
+        kernel_store,
+        DoubaoDraftProvider(
+            ArkResponsesTransportConfig(
+                provider_config.api_key,
+                provider_config.base_url,
+                provider_config.timeout_seconds,
+                stage3_policy.draft_policy.max_response_bytes,
+            ),
+            max_request_bytes=stage3_policy.max_prompt_bytes,
+            adapter_strategy_version=stage3_policy.generation.adapter_strategy_version,
+            debug_sink=debug_sink,
+        ),
+        semantic_authority=semantic_authority,
+    )
+    media_preflight_stage = MediaPreflightPipelineStage(
+        kernel_store,
+        LocalMediaPreflightPort(
+            speech_port=FunASRHttpTimedSpeechEvidencePort(
+                shared_token=values[FUNASR_SHARED_TOKEN_ENV].strip(),
+                debug_sink=debug_sink,
+            )
+        ),
+        media_authority_resolver,
+        runtime_authority_resolver,
+        runtime_identity_port,
+    )
+    stage4_recipe_stage = Stage4RecipePipelineStage(
+        kernel_store,
+        media_preflight_stage,
+        stage4_authority,
+        media_authority_resolver,
+        cuda_authority_resolver=runtime_authority_resolver,
+    )
+    stage_ports = (
+        ("source_prep", source_stage),
+        ("context_prepare", context_stage),
+        ("vlm", vlm_stage),
+        ("stage1_narrative", narrative_stage),
+        ("stage2_portfolio", portfolio_stage),
+        ("stage3_blueprint", blueprint_stage),
+        ("media_preflight", media_preflight_stage),
+        ("stage4_recipe", stage4_recipe_stage),
+    )
+    registry = PipelineStageRegistry.from_ports(
+        *cast(tuple[tuple[str, PipelineStagePort], ...], stage_ports)
+    )
+    service = DurablePipelineRunService(
+        control_store,
+        scheduler,
+        catalog,
+        execution_profile=execution_profile,
+        media_preflight_recompute_binder=MediaPreflightRecomputeBinder(kernel_store),
+    )
+    worker = DurablePipelineWorker(
+        worker_id=f"pipeline-http-{os.getpid()}",
+        service=service,
+        scheduler=scheduler,
+        store=control_store,
+        runner=PipelineStageRunner(registry, control_store, debug_sink=debug_sink),
+        reconciler=PipelineStageReconciler.from_ports(
+            control_store,
+            *cast(tuple[tuple[str, PipelineStageReconcilePort], ...], stage_ports),
+            debug_sink=debug_sink,
+        ),
+        concurrency=1,
+        max_batch_size=1,
+    )
+    return PipelineRuntime(
+        service,
+        worker,
+        execution_profile,
+        media_authority_resolver,
+        kernel_store,
+    )
+
+
 def _catalog_text(value: object, index: int, field_name: str) -> str:
     if type(value) is not str or not value.strip() or value != value.strip():  # noqa: E721
         raise PipelineRuntimeConfigurationError(
@@ -1043,6 +1348,7 @@ def _closed_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 __all__ = (
     "ConfiguredSourceCatalog",
+    "FUNASR_SHARED_TOKEN_ENV",
     "PIPELINE_ARK_API_KEY_ENV",
     "PIPELINE_ARK_BASE_URL_ENV",
     "PIPELINE_ARK_MODEL_ID_ENV",
@@ -1066,6 +1372,7 @@ __all__ = (
     "PipelineRuntimePort",
     "SEMANTIC_ONLY_PLAN",
     "SEMANTIC_STORY_PLAN",
+    "SEMANTIC_STORY_MEDIA_PLAN",
     "SourceCatalogEntry",
     "compose_pipeline_run_service_from_environment",
     "compose_pipeline_highlight_read_service_from_environment",

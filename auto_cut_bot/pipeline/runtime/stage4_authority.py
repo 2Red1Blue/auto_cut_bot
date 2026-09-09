@@ -8,7 +8,11 @@ not resolve media, query a Store, or grant render/publication authority.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass
+from importlib import resources
 from typing import Final, Mapping, cast
 
 from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
@@ -24,10 +28,27 @@ from autocut_kernel.pipeline.compile_production_recipe_command import (
 STAGE4_RECIPE_AUTHORITY_SCHEMA_VERSION: Final = "stage4-recipe-authority-v1"
 STAGE4_RECIPE_RUNTIME_STRATEGY: Final = "stage4-recipe-runtime-v1"
 _MAX_EXACT_INTEGER: Final = 2**53 - 1
+_MAX_AUTHORITY_BYTES: Final = 256 * 1024
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class Stage4RecipeAuthorityError(ValueError):
     """A Stage 4 runtime policy source is malformed or not explicit."""
+
+
+def _sha256(value: object, label: str) -> str:
+    if type(value) is not str or _SHA256.fullmatch(value) is None:  # noqa: E721
+        raise Stage4RecipeAuthorityError(f"{label} must be a lowercase sha256 digest")
+    return value
+
+
+def _no_duplicate_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise Stage4RecipeAuthorityError("Stage 4 authority JSON has duplicate keys")
+        result[key] = value
+    return result
 
 
 def _object(value: object, fields: tuple[str, ...], label: str) -> Mapping[str, object]:
@@ -187,9 +208,57 @@ class Stage4RecipeAuthorityProfile:
         )
 
 
+def decode_stage4_recipe_authority(
+    raw: bytes,
+    *,
+    expected_sha256: str,
+) -> Stage4RecipeAuthorityProfile:
+    """Decode one fixed, digest-bound package authority source."""
+    if type(raw) is not bytes or not raw or len(raw) > _MAX_AUTHORITY_BYTES:  # noqa: E721
+        raise Stage4RecipeAuthorityError("Stage 4 authority source is missing or exceeds its bound")
+    digest = _sha256(expected_sha256, "Stage 4 authority digest")
+    actual = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if actual != digest:
+        raise Stage4RecipeAuthorityError("Stage 4 authority source digest mismatch")
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=_no_duplicate_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)),
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError, RecursionError) as error:
+        if isinstance(error, Stage4RecipeAuthorityError):
+            raise
+        raise Stage4RecipeAuthorityError("Stage 4 authority source is not strict UTF-8 JSON") from error
+    return Stage4RecipeAuthorityProfile.from_mapping(value)
+
+
+def load_installed_stage4_recipe_authority() -> Stage4RecipeAuthorityProfile:
+    """Load only the fixed package resources; no path or environment override exists."""
+    try:
+        root = resources.files(__package__).joinpath("_authority")
+        with root.joinpath("stage4-recipe.sha256").open("rb") as stream:
+            digest_raw = stream.read(73)
+        if len(digest_raw) != 72 or not digest_raw.endswith(b"\n"):
+            raise Stage4RecipeAuthorityError("Stage 4 authority digest framing is invalid")
+        with root.joinpath("stage4-recipe.json").open("rb") as stream:
+            raw = stream.read(_MAX_AUTHORITY_BYTES + 1)
+    except Stage4RecipeAuthorityError:
+        raise
+    except (ModuleNotFoundError, OSError, UnicodeError) as error:
+        raise Stage4RecipeAuthorityError("installed Stage 4 authority source is unavailable") from error
+    try:
+        digest = digest_raw[:-1].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise Stage4RecipeAuthorityError("Stage 4 authority digest is not ASCII") from error
+    return decode_stage4_recipe_authority(raw, expected_sha256=digest)
+
+
 __all__ = (
     "STAGE4_RECIPE_AUTHORITY_SCHEMA_VERSION",
     "STAGE4_RECIPE_RUNTIME_STRATEGY",
     "Stage4RecipeAuthorityError",
     "Stage4RecipeAuthorityProfile",
+    "decode_stage4_recipe_authority",
+    "load_installed_stage4_recipe_authority",
 )
