@@ -38,3 +38,21 @@ Artifact/Blob，锁内再次核对 child slot command/request/Job；重复计算
 Store writer 复算的前提下减少首次执行后的第三次 readback 重建。
 
 R4B 后续不再缺 variant 来源；剩余是 `EditProposal`、CAS、选定 variant 后的新 Recipe/Admission、Render/QC。
+
+## R4B-B `select_variant` / CAS（2026-09-10）
+
+实现：`EditProposal/v1` 关闭输入，只允许一个已提交 `SpanVariantSet` 的 `variant_id`；
+`ApplyEditProposalCommand@1` 对父 Recipe/variant set 独立重读和重建，生成同 revision 的
+report→Recipe→Admission closure。专用 Store writer 对完整父 ArtifactSet 的每个 logical head 做
+事务内 CAS；generic writer 显式拒绝该 command。CAS stale 被提交为 terminal denial，不遗留
+`running` slot；静态 reader 与 Render reservation 只在固定的 Compile/Apply producer 集合中接受
+相同的 admitted layout。
+
+验证：Mac 定向 15 项通过；PC WSL 在一次性 `ac_autocut_verify` PostgreSQL 容器中运行 16 项
+既有/相关回归通过，另有新增真实 writer transaction 测试 2 项通过（首次 commit、idempotent replay、
+stale parent 无部分写入）。目标 Ruff 通过。容器已停止并删除。
+
+审查：隔离 Codex reviewer 未发现 Critical；其“stale CAS 可能遗留 running slot”和“多 operation 与
+声明不符”已修复并在上述测试覆盖。其余 Warning 是后续能力边界：本版本不实现链式二次编辑、revert、
+HTTP/UI 或真实 renderer/QC；`Apply` 成功只代表 admitted Recipe revision，绝不代表媒体已产出。
+Claude 通道实际运行模型为 `glm-5-3-flash` 且超时，没有形成可计作 Claude 的独立 review。
