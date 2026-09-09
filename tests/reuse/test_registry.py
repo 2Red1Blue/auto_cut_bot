@@ -77,7 +77,10 @@ class TestFindReferenceRoot:
             find_reference_root(tmp_path / "nope", tmp_path)
         assert exc.value.code == ErrorCode.SOURCE_MISMATCH
 
-    def test_upward_search_finds_repo_root(self, repo_root: Path) -> None:
-        # the real repo layout has reference-projects/ somewhere above the worktree
-        root = find_reference_root(None, repo_root)
+    def test_upward_search_finds_repo_root(self, tmp_path: Path) -> None:
+        # hermetic layout: reference-projects/ sits above the repo root
+        (tmp_path / "reference-projects").mkdir()
+        repo = tmp_path / "work" / "repo"
+        repo.mkdir(parents=True)
+        root = find_reference_root(None, repo)
         assert root.name == "reference-projects"

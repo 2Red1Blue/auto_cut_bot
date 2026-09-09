@@ -33,8 +33,24 @@ uv run python tools/reuse/run.py --spec <spec.json> --mode replay \
 - replay 一次 → 命中 recordings，`budget: null`（本次零 token）。
 - 此 smoke 只证明 runner 协议，不声称任何真实开源方法有效。
 
-PC WSL 上的隔离 replay（`unshare --net` / 容器 `--network=none`）待在 WSL 环境执行；
-macOS 只做静态/协议验证，metadata 中 `isolation_passed` 恒为 false。
+PC WSL 的隔离 replay 已于 2026-09-09 完成（见下节"隔离验证记录"）；macOS 只做静态/协议验证，
+metadata 中 `isolation_passed` 恒为 false。
+
+## 隔离验证记录（2026-09-09，PC WSL）
+
+在 `~/auto_cut_bot-v213-validation`（commit `fd1a870b`）上完成 Linux 隔离 replay 验证：
+
+- 隔离方式：`unshare -Urn`（user+net namespace，映射 root；WSL 非 root 下等价于
+  `unshare --net`）。ns 内 `getent hosts example.com` 失败（rc=2）、仅 loopback 接口。
+- replay（`fake-protocol-smoke-lucifer-replay`）在 ns 内命中全部预录响应，attempt 成功追加，
+  `metadata.isolation_mode=netns`；二次执行新增 attempt-0002，未覆盖既有证据。
+- live（FakeProvider，`fake-protocol-smoke-lucifer`）同样在 ns 内成功（attempt-0001）。
+- `pytest tests/reuse`：121 passed（含把 `test_upward_search_finds_repo_root` 改为自包含
+  布局后的修正——原测试依赖宿主机的 reference-projects 目录，属环境依赖而非缺陷）。
+- `metadata.isolation_passed` 保持恒为 false：runner 自身无法证明"确实处于 ns 内"，
+  隔离证据由启动命令（`unshare -Urn`）与 ns 内探针（DNS 失败）承担，见 `sandbox.py`。
+
+上述 smoke 仍只证明 runner 协议与隔离机制，不声称任何真实开源方法有效。
 
 ## 模块
 
