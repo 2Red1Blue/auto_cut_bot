@@ -11,9 +11,11 @@ import re
 from typing import Protocol, cast
 
 from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
+from autocut_kernel.pipeline.build_editorial_blueprint_request import BuildEditorialBlueprintRequest
 from autocut_kernel.pipeline.build_narrative_graph_command import NarrativeGraphStore
 from autocut_kernel.pipeline.build_narrative_graph_request import BuildNarrativeGraphRequest
 from autocut_kernel.pipeline.compile_story_portfolio_request import CompileStoryPortfolioRequest
+from autocut_kernel.semantic_chain.editorial_command_policy import Stage3CommandPolicy
 from autocut_kernel.semantic_chain.stage1_command_policy import Stage1CommandPolicy
 from autocut_kernel.semantic_chain.story_design_command_policy import Stage2CommandPolicy
 from autocut_kernel.store import (
@@ -205,3 +207,63 @@ def read_stage2_pipeline_request(
             stage1_idempotency_key=predecessor.idempotency_key,
         ),
     )
+
+
+def stage3_blueprint_kernel_idempotency_key(
+    *, run_id: str, execution_profile_hash: str, stage2_idempotency_key: str,
+) -> str:
+    validate_run_id(run_id)
+    if (type(execution_profile_hash) is not str  # noqa: E721
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", execution_profile_hash) is None
+            or type(stage2_idempotency_key) is not str  # noqa: E721
+            or re.fullmatch(r"stage2-portfolio:[0-9a-f]{64}", stage2_idempotency_key) is None):
+        raise PipelineRunValidationError("Stage 3 identity requires exact profile and Stage 2 request keys")
+    digest = canonical_json_hash({"run_id": run_id, "execution_profile_hash": execution_profile_hash,
+                                  "stage2_idempotency_key": stage2_idempotency_key})
+    return "stage3-blueprint:" + digest.removeprefix("sha256:")
+
+
+def read_stage3_recipe_predecessor(
+    store: Stage1NarrativePipelineStore, *, job: Job, run_id: str,
+    execution_profile_hash: str, vlm_policy: DoubaoVlmRequestPolicy,
+    stage1_policy: Stage1CommandPolicy, stage2_policy: Stage2CommandPolicy,
+    stage3_policy: Stage3CommandPolicy,
+) -> tuple[BuildEditorialBlueprintRequest, CommandOutcome] | None:
+    """Read the exact succeeded Stage 3 pair without executing or reading payloads."""
+    if type(stage3_policy) is not Stage3CommandPolicy:  # noqa: E721
+        raise PipelineRunValidationError("semantic predecessor requires an exact Stage 3 policy")
+    stage2_request = read_stage2_pipeline_request(
+        store, job=job, run_id=run_id, execution_profile_hash=execution_profile_hash,
+        vlm_policy=vlm_policy, stage1_policy=stage1_policy, stage2_policy=stage2_policy,
+    )
+    if stage2_request is None:
+        return None
+    stage2_outcome = store.read_outcome(job, stage2_request.idempotency_key)
+    if stage2_outcome is None:
+        return None
+    if type(stage2_outcome) is not CommandOutcome:  # noqa: E721
+        raise PipelineRunValidationError("Stage 2 predecessor outcome is unsupported")
+    if stage2_outcome.state in ("pending", "running"):
+        return None
+    if stage2_outcome.state in ("denied", "failed"):
+        raise PipelineRunValidationError("Stage 3 cannot execute after a terminal Stage 2 predecessor")
+    if stage2_outcome.state != "succeeded":
+        raise PipelineRunValidationError("Stage 2 predecessor outcome is unsupported")
+    request = stage3_policy.build_request(
+        stage2_request, stage2_outcome, stage3_blueprint_kernel_idempotency_key(
+            run_id=run_id, execution_profile_hash=execution_profile_hash,
+            stage2_idempotency_key=stage2_request.idempotency_key,
+        ),
+    )
+    outcome = store.read_outcome(job, request.idempotency_key)
+    if outcome is None:
+        return None
+    if type(outcome) is not CommandOutcome:  # noqa: E721
+        raise PipelineRunValidationError("Stage 3 predecessor outcome is unsupported")
+    if outcome.state in ("pending", "running"):
+        return None
+    if outcome.state in ("denied", "failed"):
+        raise PipelineRunValidationError("Stage 4 cannot execute after a terminal Stage 3 predecessor")
+    if outcome.state != "succeeded":
+        raise PipelineRunValidationError("Stage 3 predecessor outcome is unsupported")
+    return request, outcome

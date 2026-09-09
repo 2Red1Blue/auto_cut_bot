@@ -779,12 +779,21 @@ class MediaPreflightPipelineStage:
         return tuple(children)
 
     @staticmethod
-    def _job(context: PipelineStageContext) -> Job:
+    def _job(
+        context: PipelineStageContext,
+        *,
+        allow_stage4_reader: bool = False,
+    ) -> Job:
         if type(context) is not PipelineStageContext:  # noqa: E721
             raise PipelineRunValidationError(
                 "media-preflight adapter requires an exact stage context"
             )
-        if context.command.stage != "media_preflight":
+        allowed = (
+            ("media_preflight", "stage4_recipe")
+            if allow_stage4_reader
+            else ("media_preflight",)
+        )
+        if context.command.stage not in allowed:
             raise PipelineRunValidationError("media-preflight adapter received another stage")
         validate_run_id(context.run_id)
         return Job(context.run_id, context.request.profile)
@@ -794,6 +803,9 @@ class MediaPreflightPipelineStage:
         context: PipelineStageContext,
         policy: LocalMediaPreflightPolicy,
         runtime: _RuntimeCudaAuthority | None,
+        *,
+        reject_terminal_predecessors: bool = False,
+        allow_stage4_reader: bool = False,
     ) -> tuple[
         PersistedPreparedSources,
         tuple[PrepareTimedMediaEvidenceRequest, ...],
@@ -806,7 +818,7 @@ class MediaPreflightPipelineStage:
                 "media-preflight stage does not accept a VLM recompute request"
             )
         materialization_limits = self._validate_execution_profile(context, policy)
-        job = self._job(context)
+        job = self._job(context, allow_stage4_reader=allow_stage4_reader)
         recompute = context.recompute_request
         evidence_run_id = (
             context.run_id if recompute is None else recompute.base_run_id
@@ -820,6 +832,10 @@ class MediaPreflightPipelineStage:
         if source_outcome is None or source_outcome.state in ("pending", "running"):
             return None
         if source_outcome.state in ("denied", "failed"):
+            if reject_terminal_predecessors:
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader has a terminal source predecessor"
+                )
             return None
         if source_outcome.state != "succeeded":
             raise PipelineRunValidationError("source preparation outcome is unsupported")
@@ -1012,6 +1028,136 @@ class MediaPreflightPipelineStage:
             return source_bundle, (selected,), tuple(requests)
         complete = tuple(requests)
         return source_bundle, complete, complete
+
+    async def read_succeeded_finalizer(
+        self,
+        context: PipelineStageContext,
+    ) -> tuple[
+        FinalizeTimedMediaEvidenceBatchRequest
+        | FinalizeRuntimeTimedMediaEvidenceBatchRequest,
+        CommandOutcome,
+    ] | None:
+        """Reconstruct a committed normal-run finalizer without dispatching work.
+
+        Stage 4 needs the exact immutable batch request that was admitted by
+        media-preflight, rather than a receipt-derived approximation.  This
+        reader deliberately reuses the normal request census and batch-key
+        builders, then closes every child against its exact succeeded outcome.
+        It neither claims detector work nor invokes either finalizer command.
+        """
+
+        if context.recompute_request is not None:
+            raise PipelineRunValidationError(
+                "media-preflight finalizer reader only accepts normal non-recompute stages"
+            )
+        if context.command.stage not in ("media_preflight", "stage4_recipe"):
+            raise PipelineRunValidationError(
+                "media-preflight finalizer reader received another stage"
+            )
+        policy = context.execution_profile.to_media_preflight_policy()
+        await asyncio.to_thread(self._validate_execution_profile, context, policy)
+        runtime = await self._runtime_cuda_authority(context, policy)
+        if isinstance(runtime, PipelineStageResult):
+            return None
+        prepared = await asyncio.to_thread(
+            self._requests,
+            context,
+            policy,
+            runtime,
+            reject_terminal_predecessors=True,
+            allow_stage4_reader=context.command.stage == "stage4_recipe",
+        )
+        if prepared is None:
+            return None
+        source_bundle, requests, aggregate_requests = prepared
+        if requests != aggregate_requests:
+            raise PipelineRunValidationError(
+                "normal media-preflight finalizer reader lost its complete request census"
+            )
+        job = self._job(
+            context,
+            allow_stage4_reader=context.command.stage == "stage4_recipe",
+        )
+        if runtime is None:
+            request = FinalizeTimedMediaEvidenceBatchRequest(
+                job,
+                self._batch_idempotency_key(context, source_bundle, policy),
+                canonical_recipe_scope(job),
+                _ARTIFACT_REVISION,
+                self._succeeded_cpu_children(requests),
+            )
+        else:
+            request = FinalizeRuntimeTimedMediaEvidenceBatchRequest(
+                job,
+                self._runtime_batch_idempotency_key(context, source_bundle, runtime.policy),
+                canonical_recipe_scope(job),
+                _ARTIFACT_REVISION,
+                self._succeeded_runtime_children(requests, runtime),
+            )
+        outcome = self._store.read_outcome(job, request.idempotency_key)
+        if outcome is None or outcome.state in ("pending", "running"):
+            return None
+        if outcome.state != "succeeded":
+            raise PipelineRunValidationError(
+                "media-preflight finalizer reader has a terminal batch outcome"
+            )
+        if outcome.receipt_id is None or outcome.artifact_set_id is None:
+            raise PipelineRunValidationError(
+                "succeeded media-preflight finalizer lost its committed handles"
+            )
+        return request, outcome
+
+    def _succeeded_cpu_children(
+        self,
+        requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+    ) -> tuple[TimedMediaEvidenceBatchChild, ...]:
+        children: list[TimedMediaEvidenceBatchChild] = []
+        for request in requests:
+            outcome = self._store.read_outcome(request.job, request.idempotency_key)
+            if outcome is None or outcome.state in ("pending", "running"):
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader has an unavailable child"
+                )
+            if outcome.state != "succeeded":
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader has a terminal child predecessor"
+                )
+            try:
+                children.append(TimedMediaEvidenceBatchChild(request, outcome))
+            except ValueError as error:
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader child closure drifted"
+                ) from error
+        return tuple(children)
+
+    def _succeeded_runtime_children(
+        self,
+        requests: tuple[PrepareTimedMediaEvidenceRequest, ...],
+        runtime: _RuntimeCudaAuthority,
+    ) -> tuple[RuntimeTimedMediaEvidenceBatchChild, ...]:
+        children: list[RuntimeTimedMediaEvidenceBatchChild] = []
+        for request in requests:
+            outcome = self._store.read_outcome(request.job, request.idempotency_key)
+            if outcome is None or outcome.state in ("pending", "running"):
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader has an unavailable CUDA child"
+                )
+            if outcome.state != "succeeded":
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader has a terminal CUDA child predecessor"
+                )
+            try:
+                children.append(
+                    RuntimeTimedMediaEvidenceBatchChild(
+                        PrepareRuntimeTimedMediaEvidenceRequest(request, runtime.measurement),
+                        outcome,
+                    )
+                )
+            except ValueError as error:
+                raise PipelineRunValidationError(
+                    "media-preflight finalizer reader CUDA child closure drifted"
+                ) from error
+        return tuple(children)
 
     def _validate_execution_profile(
         self,

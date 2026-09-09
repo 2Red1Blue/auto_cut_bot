@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
 
-from autocut_kernel.contracts.compiler.canonical import canonical_json_hash
 from autocut_kernel.pipeline.build_editorial_blueprint_command import (
     BuildEditorialBlueprintCommand,
     BuildEditorialBlueprintResult,
@@ -18,21 +16,11 @@ from autocut_kernel.store import CommandOutcome, Job
 from .errors import PipelineRunValidationError
 from .models import PipelineStageContext, PipelineStageResult, validate_run_id
 from .semantic_authority import SemanticRunAuthority
-from .semantic_predecessors import Stage1NarrativePipelineStore, read_stage2_pipeline_request
-
-
-def stage3_blueprint_kernel_idempotency_key(
-    *, run_id: str, execution_profile_hash: str, stage2_idempotency_key: str,
-) -> str:
-    validate_run_id(run_id)
-    if (type(execution_profile_hash) is not str  # noqa: E721
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", execution_profile_hash) is None
-            or type(stage2_idempotency_key) is not str  # noqa: E721
-            or re.fullmatch(r"stage2-portfolio:[0-9a-f]{64}", stage2_idempotency_key) is None):
-        raise PipelineRunValidationError("Stage 3 identity requires exact profile and Stage 2 request keys")
-    digest = canonical_json_hash({"run_id": run_id, "execution_profile_hash": execution_profile_hash,
-                                  "stage2_idempotency_key": stage2_idempotency_key})
-    return "stage3-blueprint:" + digest.removeprefix("sha256:")
+from .semantic_predecessors import (
+    Stage1NarrativePipelineStore,
+    read_stage2_pipeline_request,
+    stage3_blueprint_kernel_idempotency_key,
+)
 
 
 class Stage3BlueprintPipelineStage:
