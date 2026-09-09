@@ -5,8 +5,8 @@
   "complexity": "L",
   "risk": "medium",
   "domain": "backend",
-  "currentPhase": "implementation",
-  "nextAction": "R4B-A SpanVariantSet 持久化已完成；下一切片实现 EditProposal/CAS 新 Recipe revision",
+  "currentPhase": "review",
+  "nextAction": "Review the select_variant CAS slice, then run the focused PostgreSQL validation on PC WSL; chainable edit/revert remains a separate design",
   "createdAt": "2026-09-07T00:00:00+08:00",
   "branch": "feat/v213-contract-codegen"
 }

@@ -20,8 +20,15 @@ request/outcome/ArtifactSet 独立重放完整 A/V relation，保留 canonical t
 generic success 和 generation execution kind 均不能绕过专用 writer。PC WSL 新增/相关回归 89 项、
 真实 PostgreSQL writer/replay 1 项、目标 Ruff 全部通过。
 
-R4B 的 `EditProposal + CAS + 新 Recipe revision` 仍未实现。现在已经有安全 variant 来源，可以在下一切片
-只允许按 `variant_id` 选择；任意 UI tick、当前 Recipe 内容或模型建议仍不能伪装成 variant。
+R4B-B 的首个受控写路径已实现：`EditProposal/v1` 只能携带已提交 `SpanVariantSet` 的
+`select_variant`，`ApplyEditProposalCommand@1` 会重新读取父 Recipe 与 variant set、重算受影响的
+report/Recipe/Admission，并在 Store 内对完整父 closure 做 CAS 后写入全新的 Recipe revision。任意 UI
+tick、当前 Recipe 内容或模型建议仍不能伪装成 variant；泛用 success writer 也不能绕过专用 writer。
+
+这不是“真实成片已验证”：目前它只交付 Kernel/Store 的 admitted Recipe revision 和 Render/QC consumer
+compatibility。Stage 4 尚未编排进真实 HTTP run，且没有在此切片启动 renderer/QC 或发布可见产物。后续
+`revert_to_revision`、`reorder_beat`、`request_recompile` 以及多次编辑的链式 parent/variant 重新闭合，
+必须各自设计并验证，不能把首次 `select_variant` 的 CAS 误当成通用编辑框架。
 
 交叉代码审查已检查公开 provenance、Store 成员/集合 hash、路由落空、错误状态和事件循环阻塞：
 公开 mapping 已去除内部 ref/proof；inspection 重算成员及 ArtifactSet hash；非 Recipe 路径会继续落到

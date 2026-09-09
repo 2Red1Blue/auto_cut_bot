@@ -55,3 +55,44 @@ Claude 分析调用在项目 AGENTS 规则下递归超时；改用隔离 leaf �
 硬限制：K 最大 16；单 Artifact 最大 8 MiB；总枚举工作沿用父策略的 video/AV visit 上限，超限停止且
 不提交 partial Artifact。父绑定包含 exact request/outcome/set/member refs；所有 re-enumeration 只读取该父请求
 解析出的 persisted Stage3/media/authority 输入，不读取当前默认 profile。墙钟时间只做 telemetry，不决定 hash 或选择。
+
+## R4B-B 受控选择与新 Recipe revision
+
+### 目标与边界
+
+将 R4B 的首个写操作收敛为 `select_variant`：调用方只可提交一个已提交
+`SpanVariantSet/v1` 中的 `variant_id`，不能提交 tick、span、FFmpeg 参数、旧包对象或未绑定的
+Recipe 内容。`EditProposal/v1` 是闭合、不可变的意图载体；`ApplyEditProposalCommand@1` 是唯一的
+写入者。`reorder_beat`、`request_recompile`、`revert_to_revision` 保留为未实现的操作种类，不能以
+unknown field 或兼容默认值进入本版本。
+
+### 不变量
+
+1. proposal 绑定 exact base Recipe ArtifactSet/member ref、base revision/set hash、SpanVariantSet member
+   ref/content hash、variant id、actor 与 reason；审计时间不参加业务内容 hash。
+2. Apply 在 claim 前独立读取 base Recipe 和 SpanVariantSet；重放完整候选 relation，所选 variant 必须
+   与重放后的 canonical payload 相同。调用方给的任何物理端点均不被解析。
+3. Store transaction 以 Job → command slot → current base identity 的固定顺序锁定，并在锁内再次核对
+   CAS。冲突不得产生 ArtifactSet、Receipt、head 或可见 Render。
+4. 成功产物必须携带可复算的 compilation report、Recipe 与独立 Admission；Render/QC 只接收该成功
+   ArtifactSet 的 Recipe member，不接受 proposal 或 variant set。
+5. 同 idempotency key 只在全量重读、重放与 canonical bytes 恒等时回放 Receipt；任何 policy、parent、
+   set、variant 或 committed bytes 漂移均 fail-closed。
+
+### 分层实现与验证
+
+1. 新增 closed `EditProposal/v1` codec 和只含 `select_variant` 的 edit union，配纯 DTO/closed-json
+   negatives。
+2. 新增 `ApplyEditProposalCommand@1`，从 exact persisted inputs 复算选择、构造新 revision 的 Recipe
+   closure，并用 dedicated Store writer 提交。泛用 `commit_command_success` 必须显式拒绝该 command。
+3. 将 admitted Stage 4 set reader 和 render reservation 的 producer/layout 判断抽象为同一闭合的
+   `CompileProductionRecipeCommand@1 | ApplyEditProposalCommand@1` 许可集合；仍要求 report→recipe→admission
+   和 deterministic execution。不得为新 producer 放宽成员、scope、revision 或 admission 核验。
+4. 纯 command、Postgres 事务/replay/CAS、Render/QC rejected-input 测试必须覆盖；PC WSL 用隔离验证库
+   跑真实 PostgreSQL writer/replay。只有真正成功执行 persisted renderer+QC 时才报告“真实成片”。
+
+### 明确不纳入本切片
+
+HTTP/UI、自由拖拽 tick、全局故事重排、真实剧 Stage 1–4 runtime 编排及 R5 产品接入均不与 R4B-B
+混做。它们分别依赖其它 owners 的 Stage 1–3、Stage 4 runtime port 和真实 media/job closure；本切片
+只提供已闭合的 Kernel/Store/Render-QC consumer compatibility。

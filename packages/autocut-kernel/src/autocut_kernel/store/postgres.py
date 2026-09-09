@@ -3182,6 +3182,10 @@ class PostgresRuntimeStore:
                 raise CommandStateError(
                     "BuildSpanVariantSetCommand@1 success requires its audited variant writer"
                 )
+            if command_name == "ApplyEditProposalCommand@1":
+                raise CommandStateError(
+                    "ApplyEditProposalCommand@1 success requires the protected edit writer"
+                )
             if command_name == PRODUCTION_QC_COLLECTOR_CAPABILITY_COMMAND_NAME:
                 raise CommandStateError(
                     "AcceptProductionRenderQcCollectorCapability@1 success requires the"
@@ -3339,6 +3343,167 @@ class PostgresRuntimeStore:
                     "succeeded",
                     success.set_hash,
                 )
+            return self._write_success(cursor, success, job_id)
+
+        return self._transaction(operation)
+
+    def commit_apply_edit_proposal_success(
+        self,
+        request: object,
+        verified: object,
+        *,
+        authority_profile_resolver: object,
+        limits: object,
+    ) -> CommandOutcome:
+        """Commit one verified Recipe edit only while its complete Stage 4 parent is current.
+
+        The proposal's one Recipe member is not a sufficient compare-and-swap
+        target: report, Recipe, and Admission form one Stage 4 closure.  The
+        protected command capability authenticates the prospective members;
+        this Store writer independently rereads/rebuilds them, then locks and
+        compares every member of that exact parent before invoking the shared
+        atomic writer.
+        """
+        from ..pipeline.apply_edit_proposal_command import (
+            APPLY_EDIT_PROPOSAL_COMMAND,
+            ApplyEditProposalRequest,
+            _open_verified_edited_recipe_commit,  # pyright: ignore[reportPrivateUsage]
+            rebuild_applied_edit_artifacts,
+            resolve_apply_edit_proposal_request,
+        )
+        from ..pipeline.committed_timed_media import TimedMediaReadLimits
+        from ..pipeline.compile_production_recipe_command import AuthorityResolver
+
+        if type(request) is not ApplyEditProposalRequest:  # noqa: E721
+            raise StoreValidationError("edit writer requires its exact request")
+        try:
+            success = _open_verified_edited_recipe_commit(verified)
+        except (TypeError, ValueError) as error:
+            raise StoreValidationError(
+                "edit success requires its verified command capability"
+            ) from error
+        if type(success) is not CommandSuccess:  # noqa: E721
+            raise StoreValidationError("edit commit capability did not open an exact success")
+
+        resolved = resolve_apply_edit_proposal_request(
+            self,
+            request,
+            authority_profile_resolver=cast(AuthorityResolver, authority_profile_resolver),
+            limits=cast(TimedMediaReadLimits, limits),
+        )
+        rebuilt = rebuild_applied_edit_artifacts(resolved)
+        if success.artifacts != rebuilt.artifacts:
+            raise StoreValidationError(
+                "edit result differs from independently rebuilt parent derivation"
+            )
+        parent_members = resolved.parent.record.members
+        parent_references = tuple(item.reference for item in parent_members)
+        canonical_scope = canonical_recipe_scope(request.job)
+        if (
+            not parent_references
+            or resolved.parent.record.job != request.job
+            or resolved.parent.record.set_hash != request.proposal.base_recipe_set_hash
+            or request.proposal.base_recipe_ref not in parent_references
+            or any(reference.scope != canonical_scope for reference in parent_references)
+            or tuple(
+                (artifact.scope, artifact.artifact_type, artifact.logical_id)
+                for artifact in success.artifacts
+            )
+            != tuple(
+                (reference.scope, reference.artifact_type, reference.logical_id)
+                for reference in parent_references
+            )
+            or any(artifact.scope != canonical_scope for artifact in success.artifacts)
+        ):
+            raise StoreValidationError(
+                "edit result does not advance the complete canonical Stage 4 parent closure"
+            )
+
+        def operation(cursor: DbCursor) -> CommandOutcome:
+            job_id, state, command_name, request_hash = self._locked_job_then_slot(
+                cursor,
+                success.command_slot_id,
+            )
+            self._require_slot_execution_kind(cursor, success.command_slot_id, "deterministic")
+            cursor.execute("SELECT job_key, profile FROM runtime.jobs WHERE job_id = %s", (job_id,))
+            owner = cursor.fetchone()
+            if (
+                command_name != APPLY_EDIT_PROPOSAL_COMMAND
+                or request_hash != resolved.request_hash
+                or owner is None
+                or (_text(owner[0]), _text(owner[1]))
+                != (request.job.job_key, request.job.profile)
+            ):
+                raise StoreValidationError(
+                    "edit writer does not bind the exact deterministic command, Job, and request"
+                )
+            if state != "running":
+                return self._replay_or_raise(
+                    cursor,
+                    success.command_slot_id,
+                    job_id,
+                    "succeeded",
+                    success.set_hash,
+                )
+            for reference in parent_references:
+                cursor.execute(
+                    """
+                    SELECT 1
+                      FROM runtime.logical_heads AS head
+                      JOIN runtime.artifacts AS artifact
+                        ON artifact.artifact_id = head.artifact_id
+                       AND artifact.job_id = head.job_id
+                       AND artifact.namespace = head.namespace
+                       AND artifact.scope_kind = head.scope_kind
+                       AND artifact.scope_key = head.scope_key
+                       AND artifact.artifact_type = head.artifact_type
+                       AND artifact.logical_id = head.logical_id
+                       AND artifact.revision = head.revision
+                      JOIN runtime.artifact_sets AS artifact_set
+                        ON artifact_set.artifact_set_id = artifact.artifact_set_id
+                       AND artifact_set.job_id = artifact.job_id
+                      JOIN runtime.artifact_set_members AS member
+                        ON member.artifact_set_id = artifact_set.artifact_set_id
+                       AND member.artifact_id = artifact.artifact_id
+                      JOIN runtime.command_receipts AS receipt
+                        ON receipt.command_slot_id = artifact_set.command_slot_id
+                       AND receipt.result_artifact_set_id = artifact_set.artifact_set_id
+                       AND receipt.outcome = 'succeeded'
+                      JOIN runtime.command_slots AS parent_slot
+                        ON parent_slot.command_slot_id = artifact_set.command_slot_id
+                       AND parent_slot.job_id = artifact_set.job_id
+                       AND parent_slot.state = 'succeeded'
+                     WHERE head.job_id = %s
+                       AND head.namespace = %s
+                       AND head.scope_kind = %s
+                       AND head.scope_key = %s
+                       AND head.artifact_type = %s
+                       AND head.logical_id = %s
+                       AND head.revision = %s
+                       AND artifact_set.artifact_set_id = %s
+                       AND receipt.receipt_id = %s
+                       AND member.ordinal = %s
+                       AND artifact.content_hash = %s
+                     FOR UPDATE OF head
+                    """,
+                    (
+                        job_id,
+                        reference.scope.namespace,
+                        reference.scope.kind,
+                        reference.scope.key,
+                        reference.artifact_type,
+                        reference.logical_id,
+                        reference.revision,
+                        reference.artifact_set_id,
+                        reference.receipt_id,
+                        reference.member_ordinal,
+                        reference.content_hash,
+                    ),
+                )
+                if cursor.fetchone() is None:
+                    raise StaleHeadError(
+                        "edit proposal parent closure is stale or no longer the current logical head"
+                    )
             return self._write_success(cursor, success, job_id)
 
         return self._transaction(operation)
@@ -4995,7 +5160,11 @@ class PostgresRuntimeStore:
                     "production render Recipe authority is unavailable"
                 ) from error
             if (
-                committed.command_name != PRODUCTION_RECIPE_COMMAND_NAME
+                committed.command_name
+                not in (
+                    PRODUCTION_RECIPE_COMMAND_NAME,
+                    "ApplyEditProposalCommand@1",
+                )
                 or committed.execution_kind != "deterministic"
                 or recipe.scope != canonical_recipe_scope(job)
                 or recipe.artifact_type != "recipe"
@@ -8806,7 +8975,7 @@ class PostgresRuntimeStore:
                    AND artifact.artifact_set_id = member.artifact_set_id
                    AND artifact.job_id = slot.job_id
                  WHERE slot.job_id = %s
-                   AND slot.command_name = %s
+                   AND slot.command_name IN (%s, %s)
                    AND slot.execution_kind = 'deterministic'
                    AND slot.state = 'succeeded'
                    AND receipt.outcome = 'succeeded'
@@ -8821,6 +8990,7 @@ class PostgresRuntimeStore:
                 (
                     UUID(str(job_id)),
                     PRODUCTION_RECIPE_COMMAND_NAME,
+                    "ApplyEditProposalCommand@1",
                     artifact_scope.namespace,
                     artifact_scope.kind,
                     artifact_scope.key,
@@ -8842,7 +9012,11 @@ class PostgresRuntimeStore:
                 artifact_set_id=UUID(str(artifact_set_id)),
             )
             if (
-                committed.command_name != PRODUCTION_RECIPE_COMMAND_NAME
+                committed.command_name
+                not in (
+                    PRODUCTION_RECIPE_COMMAND_NAME,
+                    "ApplyEditProposalCommand@1",
+                )
                 or committed.execution_kind != "deterministic"
             ):
                 raise SemanticInputIntegrityError("production Recipe producer identity differs")

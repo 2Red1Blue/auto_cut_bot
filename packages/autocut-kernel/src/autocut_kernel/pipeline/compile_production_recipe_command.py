@@ -777,8 +777,29 @@ def _compile_values(
         request.candidate_exact_span_policy.canonical_hash,
         entries,
     )
+    return report, _recipes_from_entries(resolved, entries)
+
+
+def _recipes_from_entries(
+    resolved: ResolvedCompileProductionRecipeRequest,
+    entries: tuple[PhysicalEditCompilationEntry, ...],
+) -> tuple[ProductionRecipe, ...]:
+    """Build closed Recipes from an exact, already validated entry sequence.
+
+    Canonical Stage 4 compilation supplies ordinal-zero selections. A separate,
+    guarded edit command may later substitute only a committed/replayed
+    ``SpanVariant`` result, while retaining this common construction and timing
+    closure. This helper has no Store side effects and grants no Admission.
+    """
+    if (
+        type(resolved) is not ResolvedCompileProductionRecipeRequest  # noqa: E721
+        or type(entries) is not tuple  # noqa: E721
+        or not entries
+        or any(type(item) is not PhysicalEditCompilationEntry for item in entries)  # noqa: E721
+    ):
+        raise CompileProductionRecipeError("Recipe construction requires exact compilation entries")
     source_manifest_ref = (
-        request.stage3_request.stage2_request.stage1_request.inputs.source_manifest
+        resolved.request.stage3_request.stage2_request.stage1_request.inputs.source_manifest
     )
     recipes: list[ProductionRecipe] = []
     for blueprint in resolved.joined.editorial.values.business.projection.blueprints:
@@ -853,7 +874,7 @@ def _compile_values(
         raise _CompilationFailureError(
             STAGE4_OUTPUT_TIMING_INDETERMINATE, "Recipe Story census is incomplete"
         )
-    return report, tuple(recipes)
+    return tuple(recipes)
 
 
 def _subjects(
@@ -1443,7 +1464,11 @@ def inspect_committed_production_recipe_set(
     if type(limits) is not RecipeTimelineReadLimits:  # noqa: E721
         raise CompileProductionRecipeError("Stage 4 inspection requires exact read limits")
     if (
-        record.command_name != COMPILE_PRODUCTION_RECIPE_COMMAND
+        record.command_name
+        not in (
+            COMPILE_PRODUCTION_RECIPE_COMMAND,
+            "ApplyEditProposalCommand@1",
+        )
         or record.execution_kind != "deterministic"
         or len(record.members) < 3
         or len(record.members) > limits.max_members
