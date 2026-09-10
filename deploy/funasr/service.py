@@ -80,7 +80,7 @@ NORMAL_RUNTIME_TIMING_ENGINE_VERSION = "funasr-runtime-timing-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
 SHADOW_BOOTSTRAP_TIMED_OBSERVATION_REQUEST_SCHEMA = (
-    "shadow-bootstrap-timed-observation-request-v1"
+    "shadow-bootstrap-observation-request-v1"
 )
 SHADOW_BOOTSTRAP_TIMED_OBSERVATION_RESPONSE_SCHEMA = (
     "shadow-bootstrap-observation-funasr-raw-response-v1"

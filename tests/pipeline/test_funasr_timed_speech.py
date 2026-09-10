@@ -1410,7 +1410,7 @@ async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
     try:
         calibration_manifest, body = _shadow_calibration_manifest(tmp_path, profile)
         manifest = {
-            "schema_version": "shadow-bootstrap-timed-observation-request-v1",
+            "schema_version": "shadow-bootstrap-observation-request-v1",
             "source": calibration_manifest["source"],
             "source_byte_limits": calibration_manifest["source_byte_limits"],
             "container": calibration_manifest["container"],
