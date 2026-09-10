@@ -1,5 +1,22 @@
 This file provides guidance to AI coding agents working with this repository.
 
+## Mandatory VLM responsibility boundary
+
+Before any Pipeline VLM prompt/schema/parser/compiler/authority change, read
+[the backend specification](.ccg/spec/backend/vlm-observation-boundary.md) in full.
+The user-directed rule effective 2026-09-10 is mandatory: VLM returns rich natural
+language observations and its own interpretations only. Do not ask it to generate
+or select IDs (including local aliases or index references), business enums,
+editorial candidates, support/evidence graphs, measurements or proof/authority
+fields. A shallow JSON container is allowed. Program-assigned IDs and provenance
+do not make model statements true. Downstream consumers must adapt to this boundary.
+
+[The replacement input/output design](docs/llm-stage-contracts/14-vlm-observation-only-contract.md)
+supersedes conflicting VLM-target clauses in older docs, parity matrices and task
+plans. Historical V23/V4 readers remain historical; their shapes are not templates
+for new model output. This is a mandatory design/review gate; automated runtime
+enforcement and migration must be demonstrated separately before activation.
+
 ## Project Overview
 
 auto_cut_bot is a lightweight, open-source AI agent framework written in Python with a React/TypeScript WebUI. It centers around a small agent loop that receives messages from chat channels, invokes an LLM provider, executes tools, and manages session memory.

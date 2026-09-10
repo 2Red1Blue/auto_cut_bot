@@ -1,0 +1,12 @@
+{
+  "id": "vlm-observation-only-contract",
+  "title": "重新设计观察型 VLM 输入输出并固化强制职责边界",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "architecture",
+  "currentPhase": "completed",
+  "nextAction": "Observation-only VLM redesign and mandatory rules delivered and documentation-validated; runtime migration and real-run acceptance remain separate unfinished work.",
+  "createdAt": "2026-09-10",
+  "branch": "feat/v213-contract-codegen"
+}

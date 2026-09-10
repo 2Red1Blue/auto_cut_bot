@@ -1,5 +1,12 @@
 # 当前 Pipeline 的 LLM 阶段契约
 
+> **2026-09-10 强制修订**：新 VLM 输入输出以
+> [14 观察型 VLM 合同](14-vlm-observation-only-contract.md)和
+> [强制规范](../../.ccg/spec/backend/vlm-observation-boundary.md)为准。
+> VLM 只输出丰富观察及自然语言判断，不生成/选择局部 ID、下标引用、业务枚举、候选或举证结构。
+> 以下“当前流程”记录现有代码；旧设计 06–13、parity 表及任务计划中的冲突 VLM 条款已被取代，
+> 不能据此扩展新 Prompt。新合同的 runtime 迁移尚未完成。
+
 本文档集面向 `feat/v213-contract-codegen`：`00`–`05` 描述当前代码，`06`–`08` 描述目标设计与
 迁移账本。历史任务计划、旧 25-stage、旧 ArtifactBus、旧 HITL 和旧 `ac_auto_cut` 复用方式均不是
 实现依据。
@@ -48,6 +55,8 @@ source_prep
 5. 失败查询、debug 目录和当前运行断点见 [错误、重试、Debug 与当前状态](./05-errors-debug-status.md)。
 
 ## 文档入口
+
+- [14 观察型 VLM：新输入输出、字段归属、Prompt/Schema 示例与迁移验收](./14-vlm-observation-only-contract.md)（新的强制目标）
 
 - [00 共同请求与结构化输出](./00-shared-request-envelope.md)
 - [01 VLM：视频窗口语义](./01-vlm.md)

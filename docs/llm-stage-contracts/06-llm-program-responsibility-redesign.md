@@ -1,5 +1,14 @@
 # 06 LLM 与程序责任边界重设计
 
+> **2026-09-10 VLM 设计已被取代**：请先读
+> [14 观察型 VLM 输入输出](14-vlm-observation-only-contract.md)与
+> [强制规范](../../.ccg/spec/backend/vlm-observation-boundary.md)。
+> 本文 §4.1 的 typed graph、evidence atoms、bucket/ordinal refs、等级枚举、editorial signal
+> 角色及 measurement 要求，以及其他章节要求 VLM 保留这些结构/做 section 引用修复的条款，
+> 均不再是实施依据。新 VLM 只描述观察和自身判断；信息丰富度保留在自由文本中。
+> §4.2 后续节点也不能要求 VLM 先提供上述旧结构；必须按 14 §5/§7 迁移其输入。
+> 下文保留用于追溯设计失误与历史运行，不意味着这些旧 VLM 目标仍被认可。
+
 ## 文档状态
 
 - 状态：目标设计，尚未全部实现。
