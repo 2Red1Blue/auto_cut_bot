@@ -8,7 +8,7 @@ path, not a weakened MediaPreflight or Stage 4 authority path.
 
 ```text
 Committed source blob
-  -> FunASR shadow raw endpoint
+  -> FunASR shadow bootstrap endpoint
   -> immutable raw-response blob + anchor-free observations
   -> shadow bootstrap Receipt
   -> later human/trusted-anchor corpus construction
@@ -29,14 +29,31 @@ It must not:
 - carry an accepted timing bound, timing-error field, calibration-record reference,
   or release decision.
 
-## Transport
+## Transport and protocol closure
 
-Reuse only the existing authenticated shadow endpoint:
-`POST /v1/shadow-calibration-funasr-raw`.
-It already binds complete source bytes, source SHA-256, shadow producer identity,
-policy hashes and full source range, and returns raw ASR/VAD output without a
-calibration authority. Bootstrap must not make independent anchors optional in
-the existing calibration DTOs; those DTOs remain calibration-only.
+Bootstrap uses its own authenticated endpoint:
+`POST /v1/shadow-bootstrap-timed-observation`.  Its closed request schema is
+`shadow-bootstrap-observation-request-v1`; it binds complete source bytes,
+source SHA-256, an explicit audio clock/range, source-byte limits, and a
+response limit.  The returned raw schema is
+`shadow-bootstrap-observation-funasr-raw-response-v1` and embeds the same
+request identity.
+
+The service projects provider-specific ASR extensions (for example
+`sentence_info`) down to the three raw fields that the Kernel owns:
+`text`, `words`, and millisecond `timestamp`.  No provider extension crosses
+the immutable protocol boundary.
+
+The Kernel then converts milliseconds to the declared integer audio clock. If
+two native word intervals touch exactly but floor/ceil conversion creates one
+tick of double coverage, it trims only the prior converted end to the next
+start. This repair is allowed solely for that one-tick representation error;
+all other native or converted overlap rejects. The projection records
+`asr_rounding_repair_count` and `max_asr_rounding_repair_tick`, while preserving
+the raw response hash for full replay.
+
+Bootstrap must not make independent anchors optional in any existing
+calibration DTO; those DTOs remain calibration-only.
 
 ## Promotion
 
@@ -44,3 +61,13 @@ After observations exist, a separate anchored corpus imports small local samples
 with independent ASR/VAD anchors. Only the existing measurement/validation path
 can then compute error bounds and issue a CalibrationRecord. Promotion is a new
 run/authority revision; shadow observations remain immutable historical evidence.
+
+## First real-PC evidence
+
+On 2026-09-10, `r0-ep01` was sent to the desktop CUDA service using this path.
+The service returned HTTP 200 with one ASR batch and one VAD batch. The strict
+Kernel replay produced 272 ASR observations and 27 VAD observations, with one
+recorded one-tick rounding repair. The raw request/response and replay summary
+remain on the desktop under
+`/home/laiu/r0-artifacts/shadow-bootstrap/r0-ep01/`; they are untrusted
+observational evidence, not a CalibrationRecord or a publication authorization.
