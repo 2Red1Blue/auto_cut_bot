@@ -54,8 +54,24 @@ Set `FUNASR_MODE=shadow` and leave `FUNASR_PROFILE_JSON` empty.  The service
 then measures its actual CUDA placement, runtime, model trees, decoder and
 timing policy after loading the model.  Its authenticated
 `GET /v1/shadow-calibration/identity` response is the immutable input to the
-calibration command. It enables only `/v1/shadow-calibration-funasr-raw`: it
-cannot activate normal timed speech or either local-window route.
+calibration command. It cannot activate normal timed speech or either
+local-window route.
+
+### First-real-media bootstrap
+
+The first real episode has no independently labelled anchor corpus yet.  In
+shadow mode it may call the authenticated
+`POST /v1/shadow-bootstrap-timed-observation` route with the entire committed
+MP4, its SHA-256, audio clock, and explicit byte limits.  The response contains
+only native ASR/VAD observations and is permanently marked
+`status=untrusted`, `authority_eligible=false`, and
+`independent_anchor_count=0`.
+
+That route is for collecting the evidence from which a later independent
+anchor corpus and CalibrationRecord can be created.  Its output is not a
+timed-media finalizer and cannot be passed to Media Preflight, Stage 4,
+rendering, or release.  A successfully collected bootstrap observation is
+therefore a useful first test result—not an authorization to cut or publish.
 
 The CUDA image copies the official CPython 3.13.13 runtime into the NVIDIA CUDA
 base image; it does not use Ubuntu's Python 3.12 package or a fallback
