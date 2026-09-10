@@ -79,6 +79,12 @@ CUDA_SHADOW_TIMING_ENGINE_VERSION = "funasr-cuda-timing-v1"
 NORMAL_RUNTIME_TIMING_ENGINE_VERSION = "funasr-runtime-timing-v1"
 SHADOW_CALIBRATION_REQUEST_SCHEMA = "shadow-calibration-funasr-raw-request-v1"
 SHADOW_CALIBRATION_RESPONSE_SCHEMA = "shadow-calibration-funasr-raw-response-v1"
+SHADOW_BOOTSTRAP_TIMED_OBSERVATION_REQUEST_SCHEMA = (
+    "shadow-bootstrap-timed-observation-request-v1"
+)
+SHADOW_BOOTSTRAP_TIMED_OBSERVATION_RESPONSE_SCHEMA = (
+    "shadow-bootstrap-observation-funasr-raw-response-v1"
+)
 RUNTIME_TIMED_SPEECH_REQUEST_SCHEMA = "runtime-timed-speech-evidence-request-v2"
 RUNTIME_TIMED_SPEECH_RESPONSE_SCHEMA = "runtime-timed-speech-evidence-response-v2"
 _InferenceResult = TypeVar("_InferenceResult")
@@ -2224,6 +2230,174 @@ class Service:
                 raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
             prior_start = pair[0]
 
+    @staticmethod
+    def validate_shadow_bootstrap_timed_observation_manifest_schema(
+        manifest: object,
+    ) -> dict[str, object]:
+        """Validate the deliberately authority-free shadow bootstrap request."""
+        fields = {
+            "schema_version",
+            "source",
+            "source_byte_limits",
+            "container",
+            "audio_clock",
+            "requested_range",
+            "response_limits",
+        }
+        if type(manifest) is not dict or set(manifest) != fields:
+            raise web.HTTPBadRequest(text="shadow bootstrap manifest schema is not closed")
+        value = cast(dict[str, object], manifest)
+        if value["schema_version"] != SHADOW_BOOTSTRAP_TIMED_OBSERVATION_REQUEST_SCHEMA:
+            raise web.HTTPBadRequest(text="shadow bootstrap manifest schema is invalid")
+        source = value["source"]
+        source_byte_limits = value["source_byte_limits"]
+        container = value["container"]
+        clock = value["audio_clock"]
+        requested = value["requested_range"]
+        response_limits = value["response_limits"]
+        if (
+            type(source) is not dict
+            or set(source) != {"source_id", "source_sha256"}
+            or type(source["source_id"]) is not str
+            or not source["source_id"]
+            or not is_sha256(source["source_sha256"])
+            or type(source_byte_limits) is not dict
+            or set(source_byte_limits)
+            != {
+                "kernel_max_source_bytes",
+                "service_max_request_bytes",
+                "effective_max_source_bytes",
+            }
+            or type(container) is not dict
+            or container != {"media_type": "video/mp4", "safe_suffix": ".mp4"}
+            or type(clock) is not dict
+            or set(clock) != {"clock_id", "time_base", "origin_tick", "duration_tick"}
+            or type(clock["clock_id"]) is not str
+            or not clock["clock_id"]
+            or type(requested) is not dict
+            or set(requested) != {"in_tick", "out_tick"}
+            or type(response_limits) is not dict
+            or set(response_limits) != {"max_response_bytes"}
+        ):
+            raise web.HTTPBadRequest(text="shadow bootstrap manifest member schema is not closed")
+        time_base = clock["time_base"]
+        integer_values = (
+            clock["origin_tick"],
+            clock["duration_tick"],
+            requested["in_tick"],
+            requested["out_tick"],
+            response_limits["max_response_bytes"],
+            *cast(dict[str, object], source_byte_limits).values(),
+        )
+        if (
+            type(time_base) is not dict
+            or set(time_base) != {"numerator", "denominator"}
+            or any(type(item) is not int for item in (*integer_values, *time_base.values()))
+            or clock["duration_tick"] <= 0
+            or requested["out_tick"] <= requested["in_tick"]
+            or response_limits["max_response_bytes"] <= 0
+            or any(item <= 0 for item in cast(dict[str, int], source_byte_limits).values())
+            or any(item <= 0 for item in cast(dict[str, int], time_base).values())
+            or requested
+            != {
+                "in_tick": clock["origin_tick"],
+                "out_tick": clock["origin_tick"] + clock["duration_tick"],
+            }
+        ):
+            raise web.HTTPBadRequest(text="shadow bootstrap manifest clock/bounds are invalid")
+        return value
+
+    def validate_shadow_bootstrap_timed_observation_manifest_identity(
+        self, manifest: dict[str, object]
+    ) -> None:
+        limits = cast(dict[str, int], manifest["source_byte_limits"])
+        if (
+            limits["service_max_request_bytes"] != self.max_request
+            or limits["effective_max_source_bytes"]
+            != min(limits["kernel_max_source_bytes"], limits["service_max_request_bytes"])
+        ):
+            raise web.HTTPConflict(text="measured source-byte policy drift")
+
+    async def shadow_bootstrap_timed_observation(self, req: web.Request) -> web.Response:
+        """Return native shadow observations without granting timing authority."""
+        if not self.ready:
+            raise web.HTTPServiceUnavailable()
+        supplied = req.headers.get("Authorization", "")
+        if not hmac.compare_digest(supplied, f"Bearer {self.shared_token}"):
+            raise web.HTTPUnauthorized(text="unauthorized")
+        if (
+            self.mode != SHADOW_BOOTSTRAP_MODE
+            or self.measured_profile is None
+            or self.measured_profile.get("schema_version")
+            != CUDA_SHADOW_CALIBRATION_PROFILE_SCHEMA
+        ):
+            raise web.HTTPConflict(text="shadow bootstrap mode is unavailable")
+        try:
+            encoded_manifest = req.headers["X-Shadow-Bootstrap-Timed-Observation-Manifest"]
+            raw_manifest = base64.b64decode(encoded_manifest, validate=True)
+            decoded = strict_json_loads(raw_manifest)
+            manifest = self.validate_shadow_bootstrap_timed_observation_manifest_schema(decoded)
+            if (
+                base64.b64encode(raw_manifest).decode("ascii") != encoded_manifest
+                or canon(manifest) != raw_manifest
+            ):
+                raise ValueError("shadow bootstrap manifest is noncanonical")
+        except Exception as error:
+            if isinstance(error, web.HTTPException):
+                raise
+            raise web.HTTPBadRequest(text="bad shadow bootstrap manifest") from error
+        request_identity = sha(raw_manifest)
+        if not hmac.compare_digest(
+            request_identity,
+            req.headers.get("X-Shadow-Bootstrap-Timed-Observation-Request-SHA256", ""),
+        ):
+            raise web.HTTPBadRequest(text="identity")
+        self.validate_shadow_bootstrap_timed_observation_manifest_identity(manifest)
+        limits = cast(dict[str, int], manifest["source_byte_limits"])
+        await self.admit()
+        try:
+            with tempfile.TemporaryDirectory(prefix="funasr-shadow-bootstrap-") as directory:
+                path = Path(directory) / "source.mp4"
+                digest = hashlib.sha256()
+                size = 0
+                with path.open("xb") as output:
+                    async for chunk in req.content.iter_chunked(1 << 20):
+                        size += len(chunk)
+                        if size > limits["effective_max_source_bytes"]:
+                            raise web.HTTPRequestEntityTooLarge(
+                                max_size=limits["effective_max_source_bytes"], actual_size=size
+                            )
+                        digest.update(chunk)
+                        output.write(chunk)
+                source = cast(dict[str, str], manifest["source"])
+                if "sha256:" + digest.hexdigest() != source["source_sha256"]:
+                    raise web.HTTPBadRequest(text="source hash")
+                asr, vad_output = await self.run_inference(path)
+            self.validate_shadow_native_outputs(asr, vad_output)
+            response = {
+                "schema_version": SHADOW_BOOTSTRAP_TIMED_OBSERVATION_RESPONSE_SCHEMA,
+                "status": "untrusted",
+                "authority_eligible": False,
+                "independent_anchor_count": 0,
+                "request_identity_sha256": request_identity,
+                "source": {
+                    **cast(dict[str, object], manifest["source"]),
+                    "audio_clock": manifest["audio_clock"],
+                },
+                "audio_clock": manifest["audio_clock"],
+                "requested_range": manifest["requested_range"],
+                "producer_identities": self.identities,
+                "asr_native_output": asr,
+                "vad_native_output": vad_output,
+            }
+            raw_response = canon(response)
+            response_limits = cast(dict[str, int], manifest["response_limits"])
+            if len(raw_response) > min(self.max_response, response_limits["max_response_bytes"]):
+                raise web.HTTPInternalServerError(text="response bound")
+            return web.Response(body=raw_response, content_type="application/json")
+        finally:
+            await self.release()
+
     async def shadow_calibration_raw(self, req: web.Request) -> web.Response:
         if not self.ready:
             raise web.HTTPServiceUnavailable()
@@ -2769,6 +2943,10 @@ def create_app(service: Service | None = None) -> web.Application:
             web.post("/v1/timed-speech-evidence", s.evidence),
             web.post("/v2/runtime-timed-speech-evidence", s.runtime_evidence),
             web.post("/v1/shadow-calibration-funasr-raw", s.shadow_calibration_raw),
+            web.post(
+                "/v1/shadow-bootstrap-timed-observation",
+                s.shadow_bootstrap_timed_observation,
+            ),
             web.post("/v2/timed-speech-window", s.window_evidence),
             web.post("/v2/shadow-calibration-speech-window", s.shadow_local_window_evidence),
         ]

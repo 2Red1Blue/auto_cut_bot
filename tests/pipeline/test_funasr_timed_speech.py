@@ -1327,6 +1327,7 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
     (vad / "model.pt").write_bytes(b"vad")
     profile = _cuda_shadow_calibration_profile(ns, asr, vad)
     _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_MODE", "shadow")
     service = ns["Service"]()
     client = TestClient(TestServer(ns["create_app"](service)))
     await client.start_server()
@@ -1369,6 +1370,77 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
         )
         assert raw.status == 200
         assert (await raw.json())["producer_identities"] == service.identities
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ns = namespace(monkeypatch, _CudaAutoModel)
+    monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
+    asr = tmp_path / "asr" / "snapshots" / "master"
+    vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
+    asr.mkdir(parents=True)
+    vad.mkdir(parents=True)
+    (asr / "model.pt").write_bytes(b"asr")
+    (vad / "model.pt").write_bytes(b"vad")
+    profile = _cuda_shadow_calibration_profile(ns, asr, vad)
+    _service_environment(monkeypatch, profile, asr, vad)
+    monkeypatch.setenv("FUNASR_MODE", "shadow")
+    service = ns["Service"]()
+    client = TestClient(TestServer(ns["create_app"](service)))
+    await client.start_server()
+    try:
+        calibration_manifest, body = _shadow_calibration_manifest(tmp_path, profile)
+        manifest = {
+            "schema_version": "shadow-bootstrap-timed-observation-request-v1",
+            "source": calibration_manifest["source"],
+            "source_byte_limits": calibration_manifest["source_byte_limits"],
+            "container": calibration_manifest["container"],
+            "audio_clock": calibration_manifest["audio_clock"],
+            "requested_range": calibration_manifest["requested_range"],
+            "response_limits": calibration_manifest["response_limits"],
+        }
+        raw_manifest = ns["canon"](manifest)
+        headers = {
+            "Authorization": "Bearer secret",
+            "X-Shadow-Bootstrap-Timed-Observation-Manifest": base64.b64encode(
+                raw_manifest
+            ).decode(),
+            "X-Shadow-Bootstrap-Timed-Observation-Request-SHA256": ns["sha"](
+                raw_manifest
+            ),
+        }
+        response = await client.post(
+            "/v1/shadow-bootstrap-timed-observation", data=body, headers=headers
+        )
+        assert response.status == 200
+        value = await response.json()
+        assert value["schema_version"] == "shadow-bootstrap-observation-funasr-raw-response-v1"
+        assert value["status"] == "untrusted"
+        assert value["authority_eligible"] is False
+        assert value["independent_anchor_count"] == 0
+        assert value["source"] == manifest["source"]
+        assert value["audio_clock"] == manifest["audio_clock"]
+        assert value["requested_range"] == manifest["requested_range"]
+        assert value["asr_native_output"]
+        assert value["vad_native_output"]
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        for forbidden in (
+            "calibration_record",
+            "timing_error_bound",
+            "accepted_bound",
+            "profile_calibration",
+        ):
+            assert forbidden not in encoded
+
+        denied = await client.post(
+            "/v1/shadow-bootstrap-timed-observation", data=body,
+            headers={**headers, "Authorization": "Bearer wrong"},
+        )
+        assert denied.status == 401
     finally:
         await client.close()
 
