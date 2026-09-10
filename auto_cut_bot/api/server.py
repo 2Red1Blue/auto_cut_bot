@@ -39,6 +39,12 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PipelineRuntimePort,
     compose_pipeline_runtime_from_environment,
 )
+from auto_cut_bot.pipeline.runtime.shadow_bootstrap_entry import (
+    ShadowBootstrapEntryError,
+    ShadowBootstrapObservationEntryService,
+    ShadowBootstrapSourceNotFoundError,
+    ShadowBootstrapSourceNotReadyError,
+)
 from auto_cut_bot.utils.helpers import safe_filename
 from auto_cut_bot.utils.media_decode import (
     MAX_FILE_SIZE,
@@ -65,6 +71,7 @@ __all__ = (
     "handle_pipeline_recompute",
     "handle_pipeline_resume",
     "handle_pipeline_status",
+    "handle_shadow_bootstrap_observation",
 )
 
 
@@ -79,9 +86,10 @@ _PIPELINE_RUN_SERVICE_KEY = web.AppKey[PipelineRunService | None]("pipeline_run_
 _PIPELINE_RUNTIME_KEY = web.AppKey[PipelineRuntimePort | None]("pipeline_runtime")
 _PIPELINE_AUTH_REQUIRED_KEY = web.AppKey[bool]("pipeline_auth_required")
 _PIPELINE_WORKER_ERROR_KEY = web.AppKey[list[str]]("pipeline_worker_error")
+_PIPELINE_SHADOW_BOOTSTRAP_ENTRY_KEY = web.AppKey[ShadowBootstrapObservationEntryService | None]("pipeline_shadow_bootstrap_entry")
 _MISSING = object()
 _PIPELINE_PATHS = frozenset(
-    {"/v1/pipeline/run", "/v1/pipeline/recompute", "/v1/pipeline/resume", "/v1/pipeline/status"}
+    {"/v1/pipeline/run", "/v1/pipeline/recompute", "/v1/pipeline/resume", "/v1/pipeline/status", "/v1/pipeline/shadow-bootstrap-observation"}
 )
 
 
@@ -518,6 +526,7 @@ def _configure_pipeline_control_plane(
     pipeline_runtime: PipelineRuntimePort | None,
     pipeline_auth_required: bool,
     pipeline_poll_interval_seconds: float,
+    shadow_bootstrap_entry: ShadowBootstrapObservationEntryService | None = None,
 ) -> web.Application:
     """Attach the durable pipeline routes without requiring an Agent runtime."""
     app[_PIPELINE_RUNTIME_KEY] = pipeline_runtime
@@ -528,6 +537,7 @@ def _configure_pipeline_control_plane(
     )
     app[_PIPELINE_AUTH_REQUIRED_KEY] = pipeline_auth_required
     app[_PIPELINE_WORKER_ERROR_KEY] = []
+    app[_PIPELINE_SHADOW_BOOTSTRAP_ENTRY_KEY] = shadow_bootstrap_entry
 
     if pipeline_runtime is not None:
 
@@ -604,6 +614,7 @@ def _configure_pipeline_control_plane(
     app.router.add_post("/v1/pipeline/recompute", handle_pipeline_recompute)
     app.router.add_post("/v1/pipeline/resume", handle_pipeline_resume)
     app.router.add_get("/v1/pipeline/status", handle_pipeline_status)
+    app.router.add_post("/v1/pipeline/shadow-bootstrap-observation", handle_shadow_bootstrap_observation)
     app.router.add_get("/health", handle_health)
     return app
 
@@ -612,6 +623,7 @@ def create_pipeline_app(
     *,
     api_key: str,
     pipeline_runtime: PipelineRuntimePort | None = None,
+    shadow_bootstrap_entry: ShadowBootstrapObservationEntryService | None = None,
     pipeline_poll_interval_seconds: float = 1.0,
 ) -> web.Application:
     """Create the Pipeline HTTP control plane without Agent/MCP/chat wiring."""
@@ -635,6 +647,7 @@ def create_pipeline_app(
         pipeline_runtime=runtime,
         pipeline_auth_required=True,
         pipeline_poll_interval_seconds=pipeline_poll_interval_seconds,
+        shadow_bootstrap_entry=shadow_bootstrap_entry,
     )
 
 
@@ -646,6 +659,7 @@ def create_app(
     prepare_agent: Callable[[], Awaitable[None]] | None = None,
     pipeline_run_service: PipelineRunService | None = None,
     pipeline_runtime: PipelineRuntimePort | None = None,
+    shadow_bootstrap_entry: ShadowBootstrapObservationEntryService | None = None,
     pipeline_poll_interval_seconds: float = 1.0,
 ) -> web.Application:
     """Create the aiohttp application.
@@ -691,6 +705,7 @@ def create_app(
         pipeline_runtime=composed_runtime,
         pipeline_auth_required=environment_runtime is not None,
         pipeline_poll_interval_seconds=pipeline_poll_interval_seconds,
+        shadow_bootstrap_entry=shadow_bootstrap_entry,
     )
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
@@ -840,6 +855,43 @@ async def handle_pipeline_status(request: web.Request) -> web.Response:
         logger.exception("Pipeline status store returned an invalid projection")
         return _error_json(500, "Pipeline run persistence invariant failed", "server_error")
     return web.json_response(snapshot.to_mapping())
+
+
+async def handle_shadow_bootstrap_observation(request: web.Request) -> web.Response:
+    """Collect one untrusted observation outside the normal Pipeline stage graph."""
+    entry = _app_value(
+        request.app, _PIPELINE_SHADOW_BOOTSTRAP_ENTRY_KEY, "pipeline_shadow_bootstrap_entry", None
+    )
+    if entry is None:
+        return _error_json(503, "Shadow bootstrap observation is not configured", "server_error")
+    try:
+        body = await request.json()
+    except Exception:
+        return _error_json(400, "Invalid JSON body")
+    if type(body) is not dict or set(body) != {"source_run_id", "episode_index"}:
+        return _error_json(400, "JSON body must contain only source_run_id and episode_index")
+    source_run_id = body["source_run_id"]
+    episode_index = body["episode_index"]
+    if type(source_run_id) is not str or type(episode_index) is not int:  # noqa: E721
+        return _error_json(400, "source_run_id and episode_index have invalid types")
+    try:
+        validate_idempotency_key(request.headers.get("Idempotency-Key", ""))
+        outcome = await asyncio.to_thread(entry.collect, source_run_id, episode_index)
+    except ShadowBootstrapSourceNotFoundError as error:
+        return _error_json(404, str(error), "not_found")
+    except ShadowBootstrapSourceNotReadyError as error:
+        return _error_json(409, str(error), "conflict_error")
+    except ShadowBootstrapEntryError as error:
+        return _error_json(422, str(error), "unprocessable_entity")
+    return web.json_response(
+        {
+            "state": outcome.state,
+            "receipt_id": None if outcome.receipt_id is None else str(outcome.receipt_id),
+            "artifact_set_id": None if outcome.artifact_set_id is None else str(outcome.artifact_set_id),
+            "replayed": not outcome.is_fresh_claim,
+        },
+        status=202,
+    )
 
 
 def _pipeline_run_service(request: web.Request) -> PipelineRunService | None:
