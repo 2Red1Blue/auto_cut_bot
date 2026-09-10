@@ -52,6 +52,10 @@ class CollectShadowBootstrapObservationError(ValueError):
     """The closed collection request or its committed source cannot be verified."""
 
 
+class ShadowBootstrapObservationDispatchUnknownError(RuntimeError):
+    """The HTTP invocation may have reached the provider, so it is not terminal."""
+
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -125,6 +129,10 @@ class CollectShadowBootstrapObservationRequest:
     def __post_init__(self) -> None:
         if type(self.job) is not Job or type(self.source_job) is not Job:  # noqa: E721
             raise CollectShadowBootstrapObservationError("jobs must be exact Job values")
+        if self.job.profile != "shadow" or self.source_job.profile != "shadow":
+            raise CollectShadowBootstrapObservationError(
+                "shadow bootstrap requires shadow source and destination jobs"
+            )
         if type(self.episode_index) is not int or self.episode_index < 0:  # noqa: E721
             raise CollectShadowBootstrapObservationError("episode_index must be a non-negative integer")
         if type(self.source_blob) is not BlobRef:  # noqa: E721
@@ -262,6 +270,11 @@ class CollectShadowBootstrapObservationCommand:
             success = CommandSuccess(claimed.command_slot_id, artifact_set_hash(artifacts), artifacts)
         except MaterializationError as error:
             failure = (error.code, error.detail, error.outcome)
+        except ShadowBootstrapObservationDispatchUnknownError:
+            # The remote model may have completed after the caller lost its
+            # response. Do not fabricate a terminal Receipt; a dedicated
+            # recovery policy must decide whether a successor attempt is safe.
+            return claimed
         except (
             CollectShadowBootstrapObservationError,
             ShadowBootstrapObservationError,
@@ -438,6 +451,7 @@ __all__ = [
     "CollectShadowBootstrapObservationCommand",
     "CollectShadowBootstrapObservationError",
     "CollectShadowBootstrapObservationRequest",
+    "ShadowBootstrapObservationDispatchUnknownError",
     "ShadowBootstrapObservationPort",
     "ShadowBootstrapObservationStore",
 ]

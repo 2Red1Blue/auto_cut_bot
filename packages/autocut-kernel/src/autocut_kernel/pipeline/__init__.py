@@ -55,6 +55,7 @@ from .collect_shadow_bootstrap_observation_command import (
     CollectShadowBootstrapObservationCommand,
     CollectShadowBootstrapObservationError,
     CollectShadowBootstrapObservationRequest,
+    ShadowBootstrapObservationDispatchUnknownError,
     ShadowBootstrapObservationPort,
     ShadowBootstrapObservationStore,
 )
@@ -338,6 +339,7 @@ __all__ = [
     "CollectShadowBootstrapObservationCommand",
     "CollectShadowBootstrapObservationError",
     "CollectShadowBootstrapObservationRequest",
+    "ShadowBootstrapObservationDispatchUnknownError",
     "ShadowBootstrapObservationPort",
     "ShadowBootstrapObservationStore",
     "COMPOSE_WHOLE_EPISODE_EVIDENCE_COMMAND",

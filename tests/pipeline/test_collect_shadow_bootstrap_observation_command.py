@@ -22,6 +22,7 @@ from autocut_kernel.pipeline.collect_shadow_bootstrap_observation_command import
     CollectShadowBootstrapObservationCommand,
     CollectShadowBootstrapObservationError,
     CollectShadowBootstrapObservationRequest,
+    ShadowBootstrapObservationDispatchUnknownError,
 )
 from autocut_kernel.store import (
     ArtifactScope,
@@ -261,3 +262,36 @@ def test_malformed_response_is_terminally_rejected_after_the_single_dispatch(
     assert len(store.rejections) == 1
     assert not store.successes
     assert store.closed_materializations == 1
+
+
+def test_unknown_dispatch_stays_running_without_a_terminal_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, request, port = _fixture(monkeypatch)
+
+    def unknown(*_args: object) -> ShadowBootstrapObservationResult:
+        port.calls += 1
+        raise ShadowBootstrapObservationDispatchUnknownError("provider outcome unknown")
+
+    port.observe = unknown  # type: ignore[method-assign]
+    outcome = CollectShadowBootstrapObservationCommand(store, port).execute(request)
+
+    assert outcome.state == "running"
+    assert port.calls == 1
+    assert not store.successes
+    assert not store.rejections
+    assert store.closed_materializations == 1
+
+
+def test_non_shadow_jobs_are_rejected_before_claim_or_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, request, port = _fixture(monkeypatch)
+
+    with pytest.raises(CollectShadowBootstrapObservationError, match="requires shadow"):
+        CollectShadowBootstrapObservationCommand(store, port).execute(
+            dataclasses.replace(request, job=Job("not-shadow", "test"))
+        )
+
+    assert not store.claims
+    assert port.calls == 0

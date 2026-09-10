@@ -55,6 +55,13 @@ the raw response hash for full replay.
 Bootstrap must not make independent anchors optional in any existing
 calibration DTO; those DTOs remain calibration-only.
 
+An HTTP timeout, truncated response, or transport loss is an **unknown
+dispatch**, not a denied or failed observation. The collection command leaves
+its claim running and writes no terminal Receipt in that case; a later bounded
+recovery policy must create a causally linked successor only after deciding
+whether another provider invocation is safe. It must never silently retry the
+same unknown dispatch.
+
 ## Promotion
 
 After observations exist, a separate anchored corpus imports small local samples

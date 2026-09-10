@@ -16,6 +16,9 @@ from autocut_kernel.media.shadow_bootstrap_observation import (
     encode_shadow_bootstrap_observation_response,
 )
 from autocut_kernel.media.types import TickRange, TimeBase
+from autocut_kernel.pipeline.collect_shadow_bootstrap_observation_command import (
+    ShadowBootstrapObservationDispatchUnknownError,
+)
 from autocut_kernel.store.models import BlobRef
 
 from auto_cut_bot.pipeline.media_preflight.models import (
@@ -147,10 +150,8 @@ def test_non_200_response_is_not_projected_or_retried(tmp_path: Path, status: in
 def test_uncertain_transport_cannot_be_represented_as_observation(tmp_path: Path, raw: object) -> None:
     source, request, transport, port = _case(tmp_path, raw=raw)
 
-    with pytest.raises(LocalMediaToolError) as error:
+    with pytest.raises(ShadowBootstrapObservationDispatchUnknownError):
         port.observe(request, source)
-
-    assert error.value.code == "TIMED_SPEECH_RESULT_UNKNOWN"
     assert len(transport.calls) == 1
 
 

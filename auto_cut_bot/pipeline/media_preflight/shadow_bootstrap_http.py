@@ -15,6 +15,9 @@ from autocut_kernel.media.shadow_bootstrap_observation import (
     decode_shadow_bootstrap_observation_response,
     project_shadow_bootstrap_observation,
 )
+from autocut_kernel.pipeline.collect_shadow_bootstrap_observation_command import (
+    ShadowBootstrapObservationDispatchUnknownError,
+)
 from autocut_kernel.store.models import BlobRef, VerifiedMaterializedBlob
 
 from .http_transport import FileHttpTransport, HttpxFileTransport
@@ -150,15 +153,15 @@ class ShadowBootstrapObservationHttpPort:
             )
         except LocalMediaToolError as error:
             if error.code == "TIMED_SPEECH_RESULT_UNKNOWN":
-                raise
-            raise LocalMediaToolError(
-                "shadow bootstrap result is unknown after incomplete transport response",
-                code="TIMED_SPEECH_RESULT_UNKNOWN",
+                raise ShadowBootstrapObservationDispatchUnknownError(
+                    "shadow bootstrap dispatch outcome is unknown"
+                ) from None
+            raise ShadowBootstrapObservationDispatchUnknownError(
+                "shadow bootstrap dispatch outcome is unknown"
             ) from None
         if type(status) is not int or type(raw_response) is not bytes:
-            raise LocalMediaToolError(
-                "shadow bootstrap result is unknown after incomplete transport response",
-                code="TIMED_SPEECH_RESULT_UNKNOWN",
+            raise ShadowBootstrapObservationDispatchUnknownError(
+                "shadow bootstrap dispatch outcome is unknown"
             )
         if len(raw_response) > request.max_response_bytes:
             raise LocalMediaToolError("shadow bootstrap response exceeded byte bound")
