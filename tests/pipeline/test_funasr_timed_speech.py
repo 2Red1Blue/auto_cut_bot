@@ -1327,7 +1327,7 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
     (vad / "model.pt").write_bytes(b"vad")
     profile = _cuda_shadow_calibration_profile(ns, asr, vad)
     _service_environment(monkeypatch, profile, asr, vad)
-    monkeypatch.setenv("FUNASR_MODE", "shadow")
+    monkeypatch.setenv("FUNASR_MODE", "configured")
     service = ns["Service"]()
     client = TestClient(TestServer(ns["create_app"](service)))
     await client.start_server()
@@ -1389,6 +1389,7 @@ async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
     profile = _cuda_shadow_calibration_profile(ns, asr, vad)
     _service_environment(monkeypatch, profile, asr, vad)
     monkeypatch.setenv("FUNASR_MODE", "shadow")
+    monkeypatch.delenv("FUNASR_PROFILE_JSON")
     service = ns["Service"]()
     client = TestClient(TestServer(ns["create_app"](service)))
     await client.start_server()
@@ -1422,8 +1423,10 @@ async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
         assert value["status"] == "untrusted"
         assert value["authority_eligible"] is False
         assert value["independent_anchor_count"] == 0
-        assert value["source"] == manifest["source"]
-        assert value["audio_clock"] == manifest["audio_clock"]
+        assert value["source"] == {
+            **manifest["source"],
+            "audio_clock": manifest["audio_clock"],
+        }
         assert value["requested_range"] == manifest["requested_range"]
         assert value["asr_native_output"]
         assert value["vad_native_output"]

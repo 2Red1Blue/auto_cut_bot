@@ -2384,7 +2384,6 @@ class Service:
                     **cast(dict[str, object], manifest["source"]),
                     "audio_clock": manifest["audio_clock"],
                 },
-                "audio_clock": manifest["audio_clock"],
                 "requested_range": manifest["requested_range"],
                 "producer_identities": self.identities,
                 "asr_native_output": asr,
