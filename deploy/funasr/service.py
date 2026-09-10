@@ -2231,6 +2231,37 @@ class Service:
             prior_start = pair[0]
 
     @staticmethod
+    def normalize_shadow_native_outputs(asr: object, vad_output: object) -> tuple[object, object]:
+        """Project provider output into the closed raw-observation envelope.
+
+        SenseVoice may attach provider-specific fields such as ``sentence_info``
+        to an otherwise valid result.  Those fields are neither timing evidence
+        nor part of our immutable raw protocol.  Accept the required source
+        members, discard every other member, then validate the resulting closed
+        envelope rather than treating a provider extension as a bad transcript.
+        """
+        if type(asr) is not list or len(asr) != 1 or type(asr[0]) is not dict:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration ASR output is invalid")
+        asr_item = cast(dict[str, object], asr[0])
+        if not {"text", "words", "timestamp"}.issubset(asr_item):
+            raise web.HTTPUnprocessableEntity(text="shadow calibration ASR output is invalid")
+        if type(vad_output) is not list or len(vad_output) != 1 or type(vad_output[0]) is not dict:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
+        vad_item = cast(dict[str, object], vad_output[0])
+        if "value" not in vad_item:
+            raise web.HTTPUnprocessableEntity(text="shadow calibration VAD output is invalid")
+        normalized_asr: object = [
+            {
+                "text": asr_item["text"],
+                "words": asr_item["words"],
+                "timestamp": asr_item["timestamp"],
+            }
+        ]
+        normalized_vad: object = [{"value": vad_item["value"]}]
+        Service.validate_shadow_native_outputs(normalized_asr, normalized_vad)
+        return normalized_asr, normalized_vad
+
+    @staticmethod
     def validate_shadow_bootstrap_timed_observation_manifest_schema(
         manifest: object,
     ) -> dict[str, object]:
@@ -2373,7 +2404,7 @@ class Service:
                 if "sha256:" + digest.hexdigest() != source["source_sha256"]:
                     raise web.HTTPBadRequest(text="source hash")
                 asr, vad_output = await self.run_inference(path)
-            self.validate_shadow_native_outputs(asr, vad_output)
+            asr, vad_output = self.normalize_shadow_native_outputs(asr, vad_output)
             response = {
                 "schema_version": SHADOW_BOOTSTRAP_TIMED_OBSERVATION_RESPONSE_SCHEMA,
                 "status": "untrusted",
@@ -2449,7 +2480,7 @@ class Service:
                 if "sha256:" + digest.hexdigest() != source["source_sha256"]:
                     raise web.HTTPBadRequest(text="source hash")
                 asr, vad_output = await self.run_inference(path)
-            self.validate_shadow_native_outputs(asr, vad_output)
+            asr, vad_output = self.normalize_shadow_native_outputs(asr, vad_output)
             response = {
                 "schema_version": SHADOW_CALIBRATION_RESPONSE_SCHEMA,
                 "request_identity_sha256": request_identity,

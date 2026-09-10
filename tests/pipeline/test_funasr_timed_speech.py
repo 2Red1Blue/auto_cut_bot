@@ -190,6 +190,20 @@ class _CudaAutoModel(_AutoModel):
     actual_device = "cuda"
 
 
+class _CudaAutoModelWithProviderExtensions(_CudaAutoModel):
+    """Representative SenseVoice result with fields outside our raw protocol."""
+
+    def generate(self, **_kwargs: object) -> list[dict[str, object]]:
+        return [
+            {
+                "text": "hello",
+                "words": ["hello"],
+                "timestamp": [[100, 200]],
+                "sentence_info": [{"text": "hello"}],
+            }
+        ]
+
+
 class _BlockingAutoModel(_AutoModel):
     started = threading.Event()
     release = threading.Event()
@@ -1378,7 +1392,7 @@ async def test_cuda_shadow_profile_is_raw_endpoint_only(
 async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    ns = namespace(monkeypatch, _CudaAutoModel)
+    ns = namespace(monkeypatch, _CudaAutoModelWithProviderExtensions)
     monkeypatch.setattr(ns["importlib"].metadata, "version", lambda _name: "test")  # type: ignore[attr-defined]
     asr = tmp_path / "asr" / "snapshots" / "master"
     vad = tmp_path / "vad" / "snapshots" / "v2.0.4"
@@ -1428,7 +1442,9 @@ async def test_cuda_shadow_bootstrap_observation_is_anchor_free_and_untrusted(
             "audio_clock": manifest["audio_clock"],
         }
         assert value["requested_range"] == manifest["requested_range"]
-        assert value["asr_native_output"]
+        assert value["asr_native_output"] == [
+            {"text": "hello", "words": ["hello"], "timestamp": [[100, 200]]}
+        ]
         assert value["vad_native_output"]
         encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
         for forbidden in (
