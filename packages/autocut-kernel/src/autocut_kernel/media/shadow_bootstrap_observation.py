@@ -258,6 +258,8 @@ class DecodedShadowBootstrapObservationResponse:
     raw_response_sha256: str
     asr_observations: tuple[ShadowBootstrapAsrObservation, ...]
     vad_observations: tuple[ShadowBootstrapVadObservation, ...]
+    asr_rounding_repair_count: int
+    max_asr_rounding_repair_tick: int
 
     def __post_init__(self) -> None:
         if type(self.request) is not ShadowBootstrapObservationRequest or type(self.raw_response) is not bytes:  # noqa: E721
@@ -274,6 +276,14 @@ class DecodedShadowBootstrapObservationResponse:
         ):
             if type(observations) is not tuple or any(type(item) is not expected_type for item in observations):  # noqa: E721
                 raise _invalid(f"decoded {name} observations must be exact tuples")
+        if (
+            type(self.asr_rounding_repair_count) is not int  # noqa: E721
+            or type(self.max_asr_rounding_repair_tick) is not int  # noqa: E721
+            or self.asr_rounding_repair_count < 0
+            or self.max_asr_rounding_repair_tick < 0
+            or (self.asr_rounding_repair_count == 0 and self.max_asr_rounding_repair_tick != 0)
+        ):
+            raise _invalid("decoded ASR rounding repair diagnostics are invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,6 +313,8 @@ class ShadowBootstrapObservationResult:
             "raw_response_byte_length": len(self.decoded.raw_response),
             "asr_observations": [item.to_mapping() for item in self.decoded.asr_observations],
             "vad_observations": [item.to_mapping() for item in self.decoded.vad_observations],
+            "asr_rounding_repair_count": self.decoded.asr_rounding_repair_count,
+            "max_asr_rounding_repair_tick": self.decoded.max_asr_rounding_repair_tick,
             "trust_status": self.trust_status,
             "authority_eligible": self.authority_eligible,
             "independent_anchor_count": self.independent_anchor_count,
@@ -369,7 +381,9 @@ def _decode_source(value: object) -> ShadowBootstrapObservationSource:
     )
 
 
-def _decode_asr(value: object, request: ShadowBootstrapObservationRequest) -> tuple[ShadowBootstrapAsrObservation, ...]:
+def _decode_asr(
+    value: object, request: ShadowBootstrapObservationRequest
+) -> tuple[tuple[ShadowBootstrapAsrObservation, ...], int, int]:
     if type(value) is not list or len(cast(list[object], value)) != 1:  # noqa: E721
         raise _invalid("response.asr_native_output must contain exactly one result")
     raw = _object(cast(list[object], value)[0], frozenset({"text", "words", "timestamp"}), "response.asr_native_output[0]")
@@ -382,10 +396,10 @@ def _decode_asr(value: object, request: ShadowBootstrapObservationRequest) -> tu
     if not text.strip():
         if words or pairs:
             raise _invalid("empty ASR text must have empty words and timestamps")
-        return ()
+        return (), 0, 0
     if not words or len(words) != len(pairs):
         raise _invalid("response ASR words and timestamps must have equal nonzero length")
-    observations = tuple(
+    observations = [
         ShadowBootstrapAsrObservation(
             f"asr-word-{position:08d}",
             _text(word, f"response ASR word[{position}]"),
@@ -393,10 +407,37 @@ def _decode_asr(value: object, request: ShadowBootstrapObservationRequest) -> tu
             _ticks_from_ms(start, end, request),
         )
         for position, ((start, end), word) in enumerate(zip(pairs, words, strict=True))
-    )
-    if any(left.observed_range.end_pts > right.observed_range.start_pts for left, right in zip(observations, observations[1:], strict=False)):
-        raise _invalid("ASR observations overlap after source-tick conversion")
-    return observations
+    ]
+    repairs = 0
+    max_repair_tick = 0
+    for position, (previous, current) in enumerate(zip(observations, observations[1:], strict=False)):
+        overlap = previous.observed_range.end_pts - current.observed_range.start_pts
+        if overlap <= 0:
+            continue
+        # A pair that touches exactly in provider milliseconds can straddle one
+        # integer source tick after floor(start)/ceil(end) conversion.  Removing
+        # that one-tick double-coverage is an equivalence-preserving rounding
+        # normalization; every other overlap remains an invalid native result.
+        native_previous_end = pairs[position][1]
+        native_current_start = pairs[position + 1][0]
+        if native_previous_end != native_current_start or overlap != 1:
+            raise _invalid("ASR observations overlap after source-tick conversion")
+        try:
+            normalized_range = TickRange(
+                previous.observed_range.start_pts,
+                current.observed_range.start_pts,
+            )
+        except ValueError as error:
+            raise _invalid("ASR rounding normalization erased a word interval") from error
+        observations[position] = ShadowBootstrapAsrObservation(
+            previous.observation_id,
+            previous.text,
+            previous.source,
+            normalized_range,
+        )
+        repairs += 1
+        max_repair_tick = max(max_repair_tick, overlap)
+    return tuple(observations), repairs, max_repair_tick
 
 
 def _decode_vad(value: object, request: ShadowBootstrapObservationRequest) -> tuple[ShadowBootstrapVadObservation, ...]:
@@ -454,12 +495,17 @@ def decode_shadow_bootstrap_observation_response(
         raise _invalid("response source identity drift")
     if _range(response["requested_range"], "response.requested_range") != request.requested_range:
         raise _invalid("response requested range drift")
+    asr_observations, repair_count, max_repair_tick = _decode_asr(
+        response["asr_native_output"], request
+    )
     return DecodedShadowBootstrapObservationResponse(
         request,
         raw_response,
         "sha256:" + hashlib.sha256(raw_response).hexdigest(),
-        _decode_asr(response["asr_native_output"], request),
+        asr_observations,
         _decode_vad(response["vad_native_output"], request),
+        repair_count,
+        max_repair_tick,
     )
 
 

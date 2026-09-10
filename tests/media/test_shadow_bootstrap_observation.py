@@ -96,3 +96,29 @@ def test_empty_native_observations_remain_explicitly_untrusted() -> None:
         ShadowBootstrapObservationResult(result.decoded, authority_eligible=True)
     with pytest.raises(ShadowBootstrapObservationError, match="exactly zero independent anchors"):
         ShadowBootstrapObservationResult(result.decoded, independent_anchor_count=1)
+
+
+def test_touching_native_milliseconds_normalize_one_source_tick_with_a_trace() -> None:
+    request = ShadowBootstrapObservationRequest(
+        ShadowBootstrapObservationSource(
+            "source-44k", _sha(2), "audio-44k", TimeBase(1, 44_100), TickRange(0, 9_300_000)
+        ),
+        TickRange(0, 9_300_000),
+        1_000_000,
+        2_000_000,
+        16_384,
+    )
+    raw = encode_shadow_bootstrap_observation_response(
+        request,
+        [{"text": "ab", "words": ["a", "b"], "timestamp": [[118_000, 118_359], [118_359, 118_420]]}],
+        [{"value": [[118_000, 118_420]]}],
+    )
+
+    decoded = decode_shadow_bootstrap_observation_response(raw, request)
+    result = project_shadow_bootstrap_observation(decoded).to_mapping()
+
+    assert decoded.asr_rounding_repair_count == 1
+    assert decoded.max_asr_rounding_repair_tick == 1
+    assert decoded.asr_observations[0].observed_range.end_pts == decoded.asr_observations[1].observed_range.start_pts
+    assert result["asr_rounding_repair_count"] == 1
+    assert result["max_asr_rounding_repair_tick"] == 1
