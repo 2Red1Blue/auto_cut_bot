@@ -5,16 +5,19 @@ This file provides guidance to AI coding agents working with this repository.
 Before any Pipeline VLM prompt/schema/parser/compiler/authority change, read
 [the backend specification](.ccg/spec/backend/vlm-observation-boundary.md) in full.
 The user-directed rule effective 2026-09-10 is mandatory: VLM returns rich natural
-language observations and its own interpretations only. Do not ask it to generate
-or select IDs (including local aliases or index references), business enums,
-editorial candidates, support/evidence graphs, measurements or proof/authority
-fields. A shallow JSON container is allowed. Program-assigned IDs and provenance
+language observations and its own interpretations. When an actual task needs selection,
+it may choose existing objects using extremely short, program-preassigned aliases
+(e.g. a/b/c) under a frozen request-local mapping; see specification §2.1.
+Do not ask it to invent IDs, mappings or index graphs, business enums, new editorial
+candidates, support/evidence graphs, measurements or proof/authority fields.
+A shallow JSON container and task-specific mapped-ID selection are allowed. Program-assigned IDs and provenance
 do not make model statements true. Downstream consumers must adapt to this boundary.
 
 [The replacement input/output design](docs/llm-stage-contracts/14-vlm-observation-only-contract.md)
 supersedes conflicting VLM-target clauses in older docs, parity matrices and task
 plans. Historical V23/V4 readers remain historical; their shapes are not templates
-for new model output. This is a mandatory design/review gate; automated runtime
+for new model output; pre-mapped short-ID selection remains allowed as specified.
+This is a mandatory design/review gate; automated runtime
 enforcement and migration must be demonstrated separately before activation.
 
 ## Project Overview

@@ -1,0 +1,12 @@
+{
+  "id": "vlm-mapped-short-id-selection",
+  "title": "修正 VLM 规范以允许程序映射的极短 ID 选择",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "low",
+  "domain": "architecture",
+  "currentPhase": "completed",
+  "nextAction": "User clarification incorporated into mandatory rules and examples; runtime selection variant remains unimplemented.",
+  "createdAt": "2026-09-10",
+  "branch": "feat/v213-contract-codegen"
+}

@@ -3,7 +3,8 @@
 > **现有 V23/V4 行为记录，非新设计模板。** 自 2026-09-10 起，新 VLM 合同以
 > [14 观察型 VLM 设计](14-vlm-observation-only-contract.md)与
 > [强制规范](../../.ccg/spec/backend/vlm-observation-boundary.md)为准。
-> 本页以下局部 ID、枚举、候选及 support/measurement 闭包要求仅解释旧运行，禁止带入新合同。
+> 本页以下模型自造局部 ID、业务枚举、候选及 support/measurement 闭包要求仅解释旧运行。
+> 新合同允许按强制规范 §2.1 选择程序预映射的极短 ID，不允许模型建立映射或自造引用图。
 > 文档重设计已生效；代码仍需独立迁移。
 
 ## 输入前置条件
