@@ -48,6 +48,16 @@ from .build_span_variant_set_command import (
     rebuild_span_variant_set,
     resolve_build_span_variant_set_request,
 )
+from .collect_shadow_bootstrap_observation_command import (
+    COLLECT_SHADOW_BOOTSTRAP_OBSERVATION_COMMAND,
+    SHADOW_BOOTSTRAP_PROJECTION_MEDIA_TYPE,
+    SHADOW_BOOTSTRAP_RAW_RESPONSE_MEDIA_TYPE,
+    CollectShadowBootstrapObservationCommand,
+    CollectShadowBootstrapObservationError,
+    CollectShadowBootstrapObservationRequest,
+    ShadowBootstrapObservationPort,
+    ShadowBootstrapObservationStore,
+)
 from .compile_production_recipe_command import (
     COMPILE_PRODUCTION_RECIPE_COMMAND,
     PRODUCTION_RECIPE_COMMAND_STRATEGY,
@@ -322,6 +332,14 @@ __all__ = [
     "V23SemanticInputsRequest",
     "read_committed_v23_candidate_decision_set",
     "resolve_compile_v23_candidate_decision_set_request",
+    "COLLECT_SHADOW_BOOTSTRAP_OBSERVATION_COMMAND",
+    "SHADOW_BOOTSTRAP_PROJECTION_MEDIA_TYPE",
+    "SHADOW_BOOTSTRAP_RAW_RESPONSE_MEDIA_TYPE",
+    "CollectShadowBootstrapObservationCommand",
+    "CollectShadowBootstrapObservationError",
+    "CollectShadowBootstrapObservationRequest",
+    "ShadowBootstrapObservationPort",
+    "ShadowBootstrapObservationStore",
     "COMPOSE_WHOLE_EPISODE_EVIDENCE_COMMAND",
     "WHOLE_EPISODE_EVIDENCE_STRATEGY_VERSION",
     "ComposeWholeEpisodeEvidenceCommand",
