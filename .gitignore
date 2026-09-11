@@ -109,3 +109,12 @@ webui/websocket_*.jsonl
 .qoder/
 pipeline/data_infra/
 
+
+# Local CCG task state
+.ccg/tasks/
+
+# Local operator scripts; they carry private DSNs and provider API keys
+/wsl-check-db.py
+/wsl-apply-migration.py
+/wsl-submit-run.sh
+/run-mac-pipeline.sh
