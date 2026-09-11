@@ -39,6 +39,9 @@ from auto_cut_bot.pipeline.runtime.composition import (
     PipelineRuntimePort,
     compose_pipeline_runtime_from_environment,
 )
+from auto_cut_bot.pipeline.runtime.shadow_bootstrap_composition import (
+    compose_shadow_bootstrap_entry_from_environment,
+)
 from auto_cut_bot.pipeline.runtime.shadow_bootstrap_entry import (
     ShadowBootstrapEntryError,
     ShadowBootstrapObservationEntryService,
@@ -640,6 +643,7 @@ def create_pipeline_app(
     runtime = pipeline_runtime or compose_pipeline_runtime_from_environment()
     if runtime is None:
         raise PipelineRuntimeConfigurationError("pipeline-only HTTP runtime is not configured")
+    entry = shadow_bootstrap_entry or compose_shadow_bootstrap_entry_from_environment()
     return _configure_pipeline_control_plane(
         web.Application(client_max_size=20 * 1024 * 1024),
         api_key=api_key,
@@ -647,7 +651,7 @@ def create_pipeline_app(
         pipeline_runtime=runtime,
         pipeline_auth_required=True,
         pipeline_poll_interval_seconds=pipeline_poll_interval_seconds,
-        shadow_bootstrap_entry=shadow_bootstrap_entry,
+        shadow_bootstrap_entry=entry,
     )
 
 
@@ -692,6 +696,7 @@ def create_app(
             "environment-composed pipeline runtime requires configured HTTP API authentication"
         )
     composed_runtime = pipeline_runtime or environment_runtime
+    entry = shadow_bootstrap_entry or compose_shadow_bootstrap_entry_from_environment()
     app = web.Application(client_max_size=20 * 1024 * 1024)  # 20MB for base64 images
     app[_AGENT_LOOP_KEY] = agent_loop
     app[_MODEL_NAME_KEY] = model_name
@@ -705,7 +710,7 @@ def create_app(
         pipeline_runtime=composed_runtime,
         pipeline_auth_required=environment_runtime is not None,
         pipeline_poll_interval_seconds=pipeline_poll_interval_seconds,
-        shadow_bootstrap_entry=shadow_bootstrap_entry,
+        shadow_bootstrap_entry=entry,
     )
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
     app.router.add_get("/v1/models", handle_models)
