@@ -149,7 +149,15 @@ def _fixture(monkeypatch: pytest.MonkeyPatch) -> tuple[_Store, CollectShadowBoot
         reference, "{}", (source_blob,), uuid4(), uuid4(), uuid4(), uuid4(), source_job
     )
     store = _Store(persisted, blobs={source_blob.object_id: source_bytes})
-    clock = SimpleNamespace(clock_id="audio-30k", time_base=TimeBase(1, 30_000), full_range=TickRange(0, 6_000))
+    # Mirrors EvidenceContext: an origin tick and a derived end tick, no
+    # full_range accessor.
+    clock = SimpleNamespace(
+        clock_id="audio-30k",
+        time_base=TimeBase(1, 30_000),
+        origin_tick=0,
+        end_tick=6_000,
+    )
+    clock_range = TickRange(clock.origin_tick, clock.end_tick)
     episode = SimpleNamespace(
         proxy_blob=source_blob,
         media_probe=SimpleNamespace(
@@ -161,9 +169,9 @@ def _fixture(monkeypatch: pytest.MonkeyPatch) -> tuple[_Store, CollectShadowBoot
     limits = MaterializationLimits(1024, 1024, 128, 1024)
     observation = ShadowBootstrapObservationRequest(
         ShadowBootstrapObservationSource(
-            "episode-001", source_blob.content_hash, clock.clock_id, clock.time_base, clock.full_range
+            "episode-001", source_blob.content_hash, clock.clock_id, clock.time_base, clock_range
         ),
-        clock.full_range,
+        clock_range,
         limits.max_source_bytes,
         limits.timed_speech_max_request_bytes,
         16_384,

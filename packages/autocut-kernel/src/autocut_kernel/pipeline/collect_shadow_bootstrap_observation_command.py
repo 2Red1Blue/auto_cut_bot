@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 from uuid import UUID
 
+from ..media.root_evidence import EvidenceContext
 from ..media.shadow_bootstrap_observation import (
     ShadowBootstrapObservationError,
     ShadowBootstrapObservationRequest,
@@ -20,6 +21,7 @@ from ..media.shadow_bootstrap_observation import (
     decode_shadow_bootstrap_observation_response,
     project_shadow_bootstrap_observation,
 )
+from ..media.types import TickRange
 from ..source_manifest import SourceManifestDecodeError, decode_source_manifest
 from ..store.models import (
     ArtifactMember,
@@ -109,6 +111,16 @@ def _same_blob(left: object, right: BlobRef) -> bool:
         and getattr(left, "byte_length", None) == right.byte_length
         and getattr(left, "media_type", None) == right.media_type
     )
+
+
+def _context_full_range(clock: EvidenceContext) -> TickRange:
+    """Return the committed episode clock's complete range.
+
+    ``EvidenceContext`` exposes the origin and the derived end tick; it has no
+    ``full_range`` accessor.  The shadow-bootstrap entry builds the request with
+    exactly this pair, so the command must compare against the same identity.
+    """
+    return TickRange(clock.origin_tick, clock.end_tick)
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +338,7 @@ class CollectShadowBootstrapObservationCommand:
             or observation_source.source_sha256 != source.content_sha256
             or observation_source.clock_id != clock.clock_id
             or observation_source.time_base != clock.time_base
-            or observation_source.source_range != clock.full_range
+            or observation_source.source_range != _context_full_range(clock)
             or request.source_blob.media_type != "video/mp4"
         ):
             raise CollectShadowBootstrapObservationError(
