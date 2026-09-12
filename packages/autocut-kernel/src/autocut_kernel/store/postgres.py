@@ -7702,6 +7702,121 @@ class PostgresRuntimeStore:
 
         return self._transaction(operation)
 
+    def assert_observation_source_binding(
+        self, job: Job, binding: object, manifest: object, manifest_set: object,
+        proxy_blob: BlobRef,
+    ) -> None:
+        """Authorize observation media only through one committed SourcePrep owner."""
+        from ..pipeline.observation_generation import ObservationSourceBinding
+        from ..vlm.window import WindowManifest, WindowManifestSet
+
+        if (type(binding) is not ObservationSourceBinding
+                or type(manifest) is not WindowManifest
+                or type(manifest_set) is not WindowManifestSet):
+            raise StoreValidationError("observation source binding requires exact source/window values")
+        source = self.read_whole_series_source_manifest(job, binding.source_artifact_set_id)
+        if (
+            source.receipt_id != binding.source_receipt_id
+            or source.command_slot_id != binding.source_command_slot_id
+            or source.reference.content_hash != binding.source_manifest_sha256
+            or source.canonical_hash != binding.source_provenance_sha256
+        ):
+            raise StoreValidationError("observation source binding differs from committed SourcePrep")
+        try:
+            prepared = decode_source_manifest(source.payload_json, source.proxy_blobs)
+            prepared.census.require_purpose("semantic_analysis")
+            episode = prepared.episodes[binding.episode_index]
+        except (IndexError, SourceManifestDecodeError, TypeError, ValueError) as error:
+            raise StoreValidationError("observation source binding has no committed episode") from error
+        if (
+            episode.manifest != manifest
+            or episode.manifest_set != manifest_set
+            or str(episode.proxy_blob.object_id) != str(proxy_blob.object_id)
+            or episode.proxy_blob.content_hash != proxy_blob.content_hash
+            or episode.proxy_blob.byte_length != proxy_blob.byte_length
+            or episode.proxy_blob.media_type != proxy_blob.media_type
+        ):
+            raise StoreValidationError("observation media differs from committed source episode")
+
+    def commit_observation_generation_success(
+        self, request: object, attempt: GenerationAttempt, success: CommandSuccess,
+    ) -> GenerationAttempt:
+        """Protected observation writer: raw bytes, not caller parsing, own success."""
+        from ..pipeline.observation_generation import (
+            ObservationGenerationRequest,
+            observation_artifacts,
+        )
+        from ..vlm.observation_contract import decode_observation_report
+
+        if type(request) is not ObservationGenerationRequest or type(attempt) is not GenerationAttempt:
+            raise StoreValidationError("observation writer requires exact request and Attempt")
+        persisted_attempt = self.read_generation_attempt(attempt.attempt_id)
+        if (
+            persisted_attempt.command_slot_id != attempt.command_slot_id
+            or persisted_attempt.command_slot_id != success.command_slot_id
+            or persisted_attempt.request_hash != request.request_hash
+            or persisted_attempt.provider_id != request.provider_id
+            or persisted_attempt.provider_idempotency_key
+            != request.provider_idempotency_key_for(persisted_attempt.attempt_ordinal)
+            or persisted_attempt.retry_policy_hash != request.retry_policy.canonical_hash
+            or persisted_attempt.max_attempts != request.retry_policy.max_attempts
+            or self.read_immutable_blob(request.job, persisted_attempt.request_payload)
+            != request.request_payload
+        ):
+            raise ValueError("observation writer request or attempt differs from durable generation identity")
+        self.assert_observation_source_binding(
+            request.job, request.source_binding, request.manifest, request.manifest_set,
+            request.proxy_blob,
+        )
+        if persisted_attempt.raw_response is None:
+            raise StoreValidationError("observation writer requires a completed raw response")
+        raw = self.read_immutable_blob(request.job, persisted_attempt.raw_response)
+        report = decode_observation_report(raw, request.limits, request.alias_map)
+        if success.artifacts != observation_artifacts(request, persisted_attempt, report):
+            raise ValueError("observation success differs from raw reconstruction")
+
+        return self.commit_generation_success(
+            persisted_attempt.attempt_id, expected_version=persisted_attempt.version, success=success,
+        )
+
+    def read_committed_observation_artifacts(
+        self, request: object, outcome: CommandOutcome,
+    ) -> tuple[ArtifactMember, ...]:
+        """Return the exact observation tuple only after generic receipt verification."""
+        from ..pipeline.observation_generation import (
+            OBSERVATION_GENERATION_COMMAND,
+            ObservationGenerationRequest,
+        )
+
+        if type(request) is not ObservationGenerationRequest:
+            raise StoreValidationError("observation reader requires an exact request")
+        if outcome.receipt_id is None or outcome.artifact_set_id is None:
+            raise StoreValidationError("observation reader requires a committed outcome")
+        committed = self.read_committed_artifact_set(
+            request.job, command_slot_id=outcome.command_slot_id,
+            receipt_id=outcome.receipt_id, artifact_set_id=outcome.artifact_set_id,
+            expected_request_hash=request.request_hash,
+            expected_command_name=OBSERVATION_GENERATION_COMMAND,
+            expected_execution_kind="generation",
+        )
+        members = tuple(
+            ArtifactMember(
+                member.reference.artifact_type,
+                member.reference.logical_id,
+                member.reference.revision,
+                member.reference.scope,
+                member.reference.content_hash,
+                member.payload_json,
+            )
+            for member in committed.members
+        )
+        if tuple(item.artifact_type for item in members) != (
+            "vlm_observation_request_record", "vlm_observation_response_record",
+            "vlm_observation_report",
+        ):
+            raise StoreValidationError("committed observation member order is invalid")
+        return members
+
     def commit_generation_rejection(
         self,
         attempt_id: UUID,

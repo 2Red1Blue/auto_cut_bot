@@ -29,6 +29,11 @@ from .doubao_ark_provider import (
     DoubaoArkVlmProviderConfig,
 )
 from .identity_window import IdentityProxyWindow, IdentityProxyWindowBuilder
+from .observation_factory import (
+    OBSERVATION_ARK_ADAPTER_STRATEGY_VERSION,
+    build_observation_ark_body,
+)
+from .observation_provider import OBSERVATION_ARK_PROVIDER_ID, ObservationArkProvider
 from .prompt import (
     VLM_PROMPT_VERSION,
     VLM_RESPONSE_SCHEMA,
@@ -73,6 +78,9 @@ __all__ = [
     "DoubaoVlmRequestPolicy",
     "IdentityProxyWindow",
     "IdentityProxyWindowBuilder",
+    "OBSERVATION_ARK_ADAPTER_STRATEGY_VERSION",
+    "OBSERVATION_ARK_PROVIDER_ID",
+    "ObservationArkProvider",
     "PostgresArkFileCache",
     "QWEN_ADAPTER_STRATEGY_VERSION",
     "QwenVlmProvider",
@@ -90,6 +98,7 @@ __all__ = [
     "VLM_CONTEXTUAL_VIDEO_PROMPT_VERSION",
     "VLM_RESPONSE_SCHEMA",
     "build_vlm_prompt",
+    "build_observation_ark_body",
     "build_vlm_contextual_video_prompt",
     "build_doubao_vlm_request",
     "vlm_response_schema_json",
